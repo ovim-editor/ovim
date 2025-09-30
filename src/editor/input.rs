@@ -16,6 +16,7 @@ impl InputHandler {
                 Self::handle_visual_mode(editor, key_event)
             }
             Mode::Command => Self::handle_command_mode(editor, key_event),
+            Mode::Search => Self::handle_search_mode(editor, key_event),
             Mode::Replace => Self::handle_replace_mode(editor, key_event),
         }
     }
@@ -295,6 +296,26 @@ impl InputHandler {
             KeyCode::Char(':') => {
                 editor.clear_command_line();
                 editor.set_mode(Mode::Command);
+            }
+            // Enter Search mode (forward)
+            KeyCode::Char('/') => {
+                editor.clear_search_buffer();
+                editor.set_search_forward(true);
+                editor.set_mode(Mode::Search);
+            }
+            // Enter Search mode (backward)
+            KeyCode::Char('?') => {
+                editor.clear_search_buffer();
+                editor.set_search_forward(false);
+                editor.set_mode(Mode::Search);
+            }
+            // Search next
+            KeyCode::Char('n') => {
+                editor.search_next();
+            }
+            // Search previous
+            KeyCode::Char('N') => {
+                editor.search_prev();
             }
             // Enter Visual mode
             KeyCode::Char('v') => {
@@ -623,6 +644,32 @@ impl InputHandler {
             }
         }
 
+        Ok(())
+    }
+
+    /// Handles input in Search mode
+    fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            KeyCode::Char(ch) => {
+                // Add character to search buffer
+                editor.append_to_search_buffer(ch);
+            }
+            KeyCode::Backspace => {
+                // Remove last character from search buffer
+                editor.backspace_search_buffer();
+            }
+            KeyCode::Enter => {
+                // Execute the search
+                editor.execute_search();
+                editor.set_mode(Mode::Normal);
+            }
+            KeyCode::Esc => {
+                // Cancel search mode
+                editor.clear_search_buffer();
+                editor.set_mode(Mode::Normal);
+            }
+            _ => {}
+        }
         Ok(())
     }
 

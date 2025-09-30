@@ -13,6 +13,8 @@ pub enum Mode {
     VisualBlock,
     /// Command mode - for entering ex commands
     Command,
+    /// Search mode - for entering search patterns (/ or ?)
+    Search,
     /// Replace mode - for replacing characters
     Replace,
 }
@@ -27,6 +29,7 @@ impl Mode {
             Mode::VisualLine => "VISUAL LINE",
             Mode::VisualBlock => "VISUAL BLOCK",
             Mode::Command => "COMMAND",
+            Mode::Search => "SEARCH",
             Mode::Replace => "REPLACE",
         }
     }
