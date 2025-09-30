@@ -1,4 +1,4 @@
-use crate::editor::{Editor, Motions, Operator, Operators};
+use crate::editor::{Editor, Motions, Operator, Operators, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -31,6 +31,7 @@ impl InputHandler {
                 // Delete operations
                 (Operator::Delete, KeyCode::Char('d')) => {
                     // dd - delete line
+                    editor.save_undo_state();
                     let deleted = Operators::delete_line(editor.buffer_mut(), count)?;
                     editor.registers_mut().delete(deleted);
                     editor.clear_count();
@@ -38,6 +39,7 @@ impl InputHandler {
                 }
                 (Operator::Delete, KeyCode::Char('w')) => {
                     // dw - delete word
+                    editor.save_undo_state();
                     let deleted = Operators::delete_word(editor.buffer_mut(), count)?;
                     editor.registers_mut().delete(deleted);
                     editor.clear_count();
@@ -45,6 +47,7 @@ impl InputHandler {
                 }
                 (Operator::Delete, KeyCode::Char('$')) => {
                     // d$ - delete to end of line
+                    editor.save_undo_state();
                     let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
                     editor.registers_mut().delete(deleted);
                     editor.clear_count();
@@ -75,6 +78,7 @@ impl InputHandler {
                 // Change operations (delete + insert mode)
                 (Operator::Change, KeyCode::Char('c')) => {
                     // cc - change line
+                    editor.save_undo_state();
                     let deleted = Operators::delete_line(editor.buffer_mut(), count)?;
                     editor.registers_mut().delete(deleted);
                     editor.clear_count();
@@ -84,6 +88,7 @@ impl InputHandler {
                 }
                 (Operator::Change, KeyCode::Char('w')) => {
                     // cw - change word
+                    editor.save_undo_state();
                     let deleted = Operators::delete_word(editor.buffer_mut(), count)?;
                     editor.registers_mut().delete(deleted);
                     editor.clear_count();
@@ -92,16 +97,98 @@ impl InputHandler {
                 }
                 (Operator::Change, KeyCode::Char('$')) => {
                     // c$ - change to end of line
+                    editor.save_undo_state();
                     let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
                     editor.registers_mut().delete(deleted);
                     editor.clear_count();
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                // Text objects with 'i' (inner)
+                (_, KeyCode::Char('i')) => {
+                    // Restore operator and set pending command to 'i'
+                    editor.set_pending_operator(operator);
+                    editor.set_pending_command('i');
+                    return Ok(());
+                }
+                // Text objects with 'a' (around)
+                (_, KeyCode::Char('a')) => {
+                    // Restore operator and set pending command to 'a'
+                    editor.set_pending_operator(operator);
+                    editor.set_pending_command('a');
+                    return Ok(());
+                }
                 _ => {
                     // Unknown operator+motion combo
                     editor.clear_count();
                 }
+            }
+        }
+
+        // Handle text objects after 'i' or 'a' with an operator
+        if let Some(text_obj_type) = editor.pending_command() {
+            if (text_obj_type == 'i' || text_obj_type == 'a') && editor.pending_operator().is_some() {
+                let operator = editor.pending_operator().unwrap();
+                editor.clear_pending_command();
+                editor.clear_pending_operator();
+                editor.clear_count();
+
+                let result = match key_event.code {
+                    KeyCode::Char('w') => {
+                        // iw or aw - word
+                        if text_obj_type == 'i' {
+                            TextObjects::inner_word(editor.buffer())
+                        } else {
+                            TextObjects::around_word(editor.buffer())
+                        }
+                    }
+                    KeyCode::Char('"') | KeyCode::Char('\'') | KeyCode::Char('`') => {
+                        // i" or a" - quoted string
+                        let quote = match key_event.code {
+                            KeyCode::Char(c) => c,
+                            _ => unreachable!(),
+                        };
+                        TextObjects::quoted_string(editor.buffer(), quote, text_obj_type == 'a')
+                    }
+                    KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
+                        // i( or a( or ib or ab - parentheses
+                        TextObjects::paired_delimiters(editor.buffer(), '(', ')', text_obj_type == 'a')
+                    }
+                    KeyCode::Char('[') | KeyCode::Char(']') => {
+                        // i[ or a[ - brackets
+                        TextObjects::paired_delimiters(editor.buffer(), '[', ']', text_obj_type == 'a')
+                    }
+                    KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
+                        // i{ or a{ or iB or aB - braces
+                        TextObjects::paired_delimiters(editor.buffer(), '{', '}', text_obj_type == 'a')
+                    }
+                    _ => {
+                        // Unknown text object
+                        return Ok(());
+                    }
+                };
+
+                if let Some(range) = result {
+                    match operator {
+                        Operator::Delete => {
+                            editor.save_undo_state();
+                            let deleted = TextObjects::delete_range(editor.buffer_mut(), range)?;
+                            editor.registers_mut().delete(deleted);
+                        }
+                        Operator::Yank => {
+                            let yanked = TextObjects::yank_range(editor.buffer(), range)?;
+                            editor.registers_mut().yank(yanked);
+                        }
+                        Operator::Change => {
+                            editor.save_undo_state();
+                            let deleted = TextObjects::delete_range(editor.buffer_mut(), range)?;
+                            editor.registers_mut().delete(deleted);
+                            editor.set_mode(Mode::Insert);
+                        }
+                    }
+                }
+
+                return Ok(());
             }
         }
 
@@ -130,21 +217,25 @@ impl InputHandler {
             }
             // Enter Insert mode
             KeyCode::Char('i') => {
+                editor.save_undo_state();
                 editor.set_mode(Mode::Insert);
             }
             KeyCode::Char('a') => {
+                editor.save_undo_state();
                 editor.set_mode(Mode::Insert);
                 // Move cursor right (insert after)
                 let cursor = editor.buffer_mut().cursor_mut();
                 cursor.move_right(1);
             }
             KeyCode::Char('I') => {
+                editor.save_undo_state();
                 editor.set_mode(Mode::Insert);
                 // Move to start of line
                 let cursor = editor.buffer_mut().cursor_mut();
                 cursor.set_col(0);
             }
             KeyCode::Char('A') => {
+                editor.save_undo_state();
                 editor.set_mode(Mode::Insert);
                 // Move to end of line
                 let line_idx = editor.buffer().cursor().line();
@@ -154,11 +245,13 @@ impl InputHandler {
                 }
             }
             KeyCode::Char('o') => {
+                editor.save_undo_state();
                 editor.set_mode(Mode::Insert);
                 // Insert new line below and move to it
                 Self::insert_line_below(editor)?;
             }
             KeyCode::Char('O') => {
+                editor.save_undo_state();
                 editor.set_mode(Mode::Insert);
                 // Insert new line above and move to it
                 Self::insert_line_above(editor)?;
@@ -273,6 +366,7 @@ impl InputHandler {
             // Simple delete commands
             KeyCode::Char('x') => {
                 // x - delete character under cursor
+                editor.save_undo_state();
                 let count = editor.effective_count();
                 let deleted = Operators::delete_char(editor.buffer_mut(), count)?;
                 editor.registers_mut().delete(deleted);
@@ -280,12 +374,14 @@ impl InputHandler {
             }
             KeyCode::Char('D') => {
                 // D - delete to end of line
+                editor.save_undo_state();
                 let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
                 editor.registers_mut().delete(deleted);
                 editor.clear_count();
             }
             KeyCode::Char('C') => {
                 // C - change to end of line
+                editor.save_undo_state();
                 let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
                 editor.registers_mut().delete(deleted);
                 editor.clear_count();
@@ -294,12 +390,25 @@ impl InputHandler {
             // Paste
             KeyCode::Char('p') => {
                 // p - paste after cursor
+                editor.save_undo_state();
                 Self::paste_after(editor)?;
                 editor.clear_count();
             }
             KeyCode::Char('P') => {
                 // P - paste before cursor
+                editor.save_undo_state();
                 Self::paste_before(editor)?;
+                editor.clear_count();
+            }
+            // Undo/Redo
+            KeyCode::Char('u') => {
+                // u - undo
+                editor.undo();
+                editor.clear_count();
+            }
+            KeyCode::Char('r') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+R - redo
+                editor.redo();
                 editor.clear_count();
             }
             _ => {

@@ -2,11 +2,15 @@ mod input;
 mod motions;
 mod operators;
 mod register;
+mod textobjects;
+mod undo;
 
 pub use input::InputHandler;
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use register::RegisterManager;
+pub use textobjects::{TextObjectRange, TextObjects};
+pub use undo::UndoManager;
 
 use crate::buffer::Buffer;
 use crate::mode::Mode;
@@ -32,13 +36,18 @@ pub struct Editor {
     visual_start: Option<(usize, usize)>,
     /// Command line buffer (for : commands)
     command_line: String,
+    /// Undo/redo manager
+    undo_manager: UndoManager,
 }
 
 impl Editor {
     /// Creates a new editor with an empty buffer
     pub fn new() -> Self {
+        let buffer = Buffer::new();
+        let undo_manager = UndoManager::new(&buffer);
+
         Self {
-            buffer: Buffer::new(),
+            buffer,
             mode: Mode::default(),
             should_quit: false,
             count: None,
@@ -47,13 +56,17 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
+            undo_manager,
         }
     }
 
     /// Creates an editor with initial content
     pub fn with_content(content: &str) -> Self {
+        let buffer = Buffer::from_str(content);
+        let undo_manager = UndoManager::new(&buffer);
+
         Self {
-            buffer: Buffer::from_str(content),
+            buffer,
             mode: Mode::default(),
             should_quit: false,
             count: None,
@@ -62,6 +75,7 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
+            undo_manager,
         }
     }
 
@@ -218,7 +232,29 @@ impl Editor {
     /// Loads a file into the editor
     pub fn load_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
         self.buffer = Buffer::load_file(path)?;
+        self.undo_manager = UndoManager::new(&self.buffer);
         Ok(())
+    }
+
+    /// Saves the current buffer state for undo
+    pub fn save_undo_state(&mut self) {
+        self.undo_manager.save_state(&self.buffer);
+    }
+
+    /// Undoes the last change
+    pub fn undo(&mut self) {
+        if let Some((rope, cursor)) = self.undo_manager.undo() {
+            *self.buffer.rope_mut() = rope;
+            *self.buffer.cursor_mut() = cursor;
+        }
+    }
+
+    /// Redoes the next change
+    pub fn redo(&mut self) {
+        if let Some((rope, cursor)) = self.undo_manager.redo() {
+            *self.buffer.rope_mut() = rope;
+            *self.buffer.cursor_mut() = cursor;
+        }
     }
 
     /// Runs the editor (main loop will be implemented later)
