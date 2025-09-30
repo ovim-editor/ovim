@@ -132,4 +132,20 @@ impl Search {
     pub fn last_match(&self) -> Option<(usize, usize)> {
         self.last_match
     }
+
+    /// Finds all matches in a given line text
+    /// Returns a vector of (start_col, end_col) tuples
+    pub fn find_all_in_line(&self, line_text: &str) -> Vec<(usize, usize)> {
+        let mut matches = Vec::new();
+
+        if let Some(ref regex) = self.regex {
+            for mat in regex.find_iter(line_text) {
+                let start_col = line_text[..mat.start()].chars().count();
+                let end_col = line_text[..mat.end()].chars().count();
+                matches.push((start_col, end_col));
+            }
+        }
+
+        matches
+    }
 }

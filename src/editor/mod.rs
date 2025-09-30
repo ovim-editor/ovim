@@ -143,6 +143,11 @@ impl Editor {
         self.search_forward
     }
 
+    /// Gets the current search
+    pub fn current_search(&self) -> Option<&Search> {
+        self.current_search.as_ref()
+    }
+
     /// Executes the current search and moves cursor to first match
     pub fn execute_search(&mut self) {
         if self.search_buffer.is_empty() {
