@@ -1,4 +1,6 @@
 mod input;
+mod macros;
+mod marks;
 mod motions;
 mod operators;
 mod register;
@@ -7,6 +9,8 @@ mod textobjects;
 mod undo;
 
 pub use input::InputHandler;
+pub use macros::MacroManager;
+pub use marks::{JumpList, Mark, MarkManager};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use register::RegisterManager;
@@ -46,6 +50,12 @@ pub struct Editor {
     current_search: Option<Search>,
     /// Undo/redo manager
     undo_manager: UndoManager,
+    /// Mark manager for buffer marks
+    marks: MarkManager,
+    /// Jump list for Ctrl-O and Ctrl-I
+    jump_list: JumpList,
+    /// Macro manager for recording and playback
+    macro_manager: MacroManager,
 }
 
 impl Editor {
@@ -68,6 +78,9 @@ impl Editor {
             search_forward: true,
             current_search: None,
             undo_manager,
+            marks: MarkManager::new(),
+            jump_list: JumpList::new(),
+            macro_manager: MacroManager::new(),
         }
     }
 
@@ -90,6 +103,9 @@ impl Editor {
             search_forward: true,
             current_search: None,
             undo_manager,
+            marks: MarkManager::new(),
+            jump_list: JumpList::new(),
+            macro_manager: MacroManager::new(),
         }
     }
 
@@ -204,6 +220,89 @@ impl Editor {
                 self.buffer.cursor_mut().set_position(line, col);
             }
         }
+    }
+
+    /// Sets a mark at the current cursor position
+    pub fn set_mark(&mut self, name: char) -> bool {
+        let cursor = self.buffer.cursor();
+        self.marks.set_mark(name, cursor.line(), cursor.col())
+    }
+
+    /// Jumps to a mark (exact position with backtick)
+    pub fn jump_to_mark(&mut self, name: char) -> bool {
+        if let Some(mark) = self.marks.get_mark(name) {
+            self.buffer.cursor_mut().set_position(mark.line, mark.col);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Jumps to mark line (apostrophe - goes to first non-blank on line)
+    pub fn jump_to_mark_line(&mut self, name: char) -> bool {
+        if let Some(mark) = self.marks.get_mark(name) {
+            self.buffer.cursor_mut().set_position(mark.line, 0);
+            // TODO: Move to first non-blank character
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Adds current position to jump list
+    pub fn add_jump(&mut self) {
+        let cursor = self.buffer.cursor();
+        self.jump_list.add_jump(cursor.line(), cursor.col());
+    }
+
+    /// Jumps back in the jump list (Ctrl-O)
+    pub fn jump_back(&mut self) -> bool {
+        if let Some((line, col)) = self.jump_list.jump_back() {
+            self.buffer.cursor_mut().set_position(line, col);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Jumps forward in the jump list (Ctrl-I)
+    pub fn jump_forward(&mut self) -> bool {
+        if let Some((line, col)) = self.jump_list.jump_forward() {
+            self.buffer.cursor_mut().set_position(line, col);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Starts recording a macro
+    pub fn start_macro_recording(&mut self, register: char) -> bool {
+        self.macro_manager.start_recording(register)
+    }
+
+    /// Stops macro recording
+    pub fn stop_macro_recording(&mut self) {
+        self.macro_manager.stop_recording();
+    }
+
+    /// Records a key event in the current macro
+    pub fn record_macro_event(&mut self, event: crossterm::event::KeyEvent) {
+        self.macro_manager.record_event(event);
+    }
+
+    /// Returns whether currently recording a macro
+    pub fn is_recording_macro(&self) -> bool {
+        self.macro_manager.is_recording()
+    }
+
+    /// Gets the register being recorded
+    pub fn recording_register(&self) -> Option<char> {
+        self.macro_manager.recording_register()
+    }
+
+    /// Gets a macro by register for playback
+    pub fn get_macro(&self, register: char) -> Option<&Vec<crossterm::event::KeyEvent>> {
+        self.macro_manager.get_macro(register)
     }
 
     /// Gets a reference to the buffer
