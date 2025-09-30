@@ -1,0 +1,12 @@
+This is a test file for ovim.
+
+You can edit this file and save it with :w
+You can quit with :q or :wq
+
+Try these commands:
+- :w (save)
+- :wq (save and quit)
+- :q (quit without saving)
+- :q! (force quit)
+- :e <filename> (edit another file)
+- :w <filename> (save as)
