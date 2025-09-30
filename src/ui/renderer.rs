@@ -95,6 +95,9 @@ impl Renderer {
             None
         };
 
+        // Get current search if active
+        let current_search = editor.current_search();
+
         // Build the visible text
         let mut lines = Vec::new();
         for line_idx in start_line..end_line {
@@ -103,42 +106,58 @@ impl Renderer {
                 // Remove trailing newline if present
                 let line_text = line_text.trim_end_matches('\n');
 
-                // Check if this line is part of visual selection
-                if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
-                    if line_idx >= sel_start_line && line_idx <= sel_end_line {
-                        // Line is in selection - highlight it
-                        let chars: Vec<char> = line_text.chars().collect();
-                        let mut spans = Vec::new();
+                // Check if we need special highlighting (visual selection or search)
+                let has_visual_selection = visual_selection
+                    .map(|((start_line, _), (end_line, _))| line_idx >= start_line && line_idx <= end_line)
+                    .unwrap_or(false);
 
-                        for (col_idx, ch) in chars.iter().enumerate() {
-                            let is_selected = if line_idx == sel_start_line && line_idx == sel_end_line {
-                                // Selection on single line
+                let search_matches = if let Some(search) = current_search {
+                    search.find_all_in_line(line_text)
+                } else {
+                    Vec::new()
+                };
+
+                if has_visual_selection || !search_matches.is_empty() {
+                    // Need character-by-character rendering
+                    let chars: Vec<char> = line_text.chars().collect();
+                    let mut spans = Vec::new();
+
+                    for (col_idx, ch) in chars.iter().enumerate() {
+                        // Check if this character is in visual selection
+                        let is_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
+                            if line_idx == sel_start_line && line_idx == sel_end_line {
                                 col_idx >= sel_start_col && col_idx <= sel_end_col
                             } else if line_idx == sel_start_line {
-                                // First line of selection
                                 col_idx >= sel_start_col
                             } else if line_idx == sel_end_line {
-                                // Last line of selection
                                 col_idx <= sel_end_col
-                            } else {
-                                // Middle line - fully selected
+                            } else if line_idx > sel_start_line && line_idx < sel_end_line {
                                 true
-                            };
-
-                            if is_selected {
-                                spans.push(Span::styled(
-                                    ch.to_string(),
-                                    Style::default().bg(Color::Blue).fg(Color::White),
-                                ));
                             } else {
-                                spans.push(Span::raw(ch.to_string()));
+                                false
                             }
-                        }
+                        } else {
+                            false
+                        };
 
-                        lines.push(Line::from(spans));
-                    } else {
-                        lines.push(Line::from(line_text.to_string()));
+                        // Check if this character is in a search match
+                        let is_search_match = search_matches.iter().any(|(start, end)| {
+                            col_idx >= *start && col_idx < *end
+                        });
+
+                        // Apply styling based on priority: visual selection > search match > normal
+                        let style = if is_selected {
+                            Style::default().bg(Color::Blue).fg(Color::White)
+                        } else if is_search_match {
+                            Style::default().bg(Color::Yellow).fg(Color::Black)
+                        } else {
+                            Style::default()
+                        };
+
+                        spans.push(Span::styled(ch.to_string(), style));
                     }
+
+                    lines.push(Line::from(spans));
                 } else {
                     lines.push(Line::from(line_text.to_string()));
                 }
