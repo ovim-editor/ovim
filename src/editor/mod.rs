@@ -2,6 +2,7 @@ mod input;
 mod motions;
 mod operators;
 mod register;
+mod search;
 mod textobjects;
 mod undo;
 
@@ -9,6 +10,7 @@ pub use input::InputHandler;
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use register::RegisterManager;
+pub use search::Search;
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
 
@@ -36,6 +38,12 @@ pub struct Editor {
     visual_start: Option<(usize, usize)>,
     /// Command line buffer (for : commands)
     command_line: String,
+    /// Search buffer (for / and ? commands)
+    search_buffer: String,
+    /// Search direction: true for forward (/), false for backward (?)
+    search_forward: bool,
+    /// Current search state
+    current_search: Option<Search>,
     /// Undo/redo manager
     undo_manager: UndoManager,
 }
@@ -56,6 +64,9 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
+            search_buffer: String::new(),
+            search_forward: true,
+            current_search: None,
             undo_manager,
         }
     }
@@ -75,6 +86,9 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
+            search_buffer: String::new(),
+            search_forward: true,
+            current_search: None,
             undo_manager,
         }
     }
@@ -97,6 +111,94 @@ impl Editor {
     /// Removes the last character from the command line
     pub fn backspace_command_line(&mut self) {
         self.command_line.pop();
+    }
+
+    /// Gets the search buffer
+    pub fn search_buffer(&self) -> &str {
+        &self.search_buffer
+    }
+
+    /// Clears the search buffer
+    pub fn clear_search_buffer(&mut self) {
+        self.search_buffer.clear();
+    }
+
+    /// Appends a character to the search buffer
+    pub fn append_to_search_buffer(&mut self, ch: char) {
+        self.search_buffer.push(ch);
+    }
+
+    /// Removes the last character from the search buffer
+    pub fn backspace_search_buffer(&mut self) {
+        self.search_buffer.pop();
+    }
+
+    /// Sets the search direction
+    pub fn set_search_forward(&mut self, forward: bool) {
+        self.search_forward = forward;
+    }
+
+    /// Gets the search direction
+    pub fn search_forward(&self) -> bool {
+        self.search_forward
+    }
+
+    /// Executes the current search and moves cursor to first match
+    pub fn execute_search(&mut self) {
+        if self.search_buffer.is_empty() {
+            return;
+        }
+
+        let mut search = Search::new(self.search_buffer.clone(), self.search_forward);
+        let cursor = self.buffer.cursor();
+
+        if let Some((line, col, _)) = search.find_next(&self.buffer, cursor.line(), cursor.col() + 1) {
+            self.buffer.cursor_mut().set_position(line, col);
+            self.current_search = Some(search);
+        }
+    }
+
+    /// Finds the next search match (n command)
+    pub fn search_next(&mut self) {
+        if let Some(ref mut search) = self.current_search {
+            let cursor = self.buffer.cursor();
+            let is_forward = search.is_forward();
+
+            // For forward search, start from col+1; for backward, start from col-1 or col
+            let search_col = if is_forward {
+                cursor.col() + 1
+            } else {
+                if cursor.col() > 0 { cursor.col() - 1 } else { 0 }
+            };
+
+            if let Some((line, col, _)) = search.find_next(&self.buffer, cursor.line(), search_col) {
+                self.buffer.cursor_mut().set_position(line, col);
+            }
+        }
+    }
+
+    /// Finds the previous search match (N command)
+    pub fn search_prev(&mut self) {
+        if let Some(ref search) = self.current_search {
+            // Create a reversed search
+            let is_forward = search.is_forward();
+            let mut rev_search = Search::new(search.pattern().to_string(), !is_forward);
+            let cursor = self.buffer.cursor();
+
+            // For reverse direction: if original was forward, now going backward (use col-1)
+            // if original was backward, now going forward (use col+1)
+            let search_col = if is_forward {
+                // Original was forward, now backward
+                if cursor.col() > 0 { cursor.col() - 1 } else { 0 }
+            } else {
+                // Original was backward, now forward
+                cursor.col() + 1
+            };
+
+            if let Some((line, col, _)) = rev_search.find_next(&self.buffer, cursor.line(), search_col) {
+                self.buffer.cursor_mut().set_position(line, col);
+            }
+        }
     }
 
     /// Gets a reference to the buffer

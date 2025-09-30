@@ -39,9 +39,11 @@ impl Renderer {
             // Render the main text area
             let viewport_start = Self::render_buffer(frame, editor, chunks[0]);
 
-            // Render the status line or command line
+            // Render the status line or command line or search line
             if editor.mode() == crate::mode::Mode::Command {
                 Self::render_command_line(frame, editor, chunks[1]);
+            } else if editor.mode() == crate::mode::Mode::Search {
+                Self::render_search_line(frame, editor, chunks[1]);
             } else {
                 Self::render_status_line(frame, editor, chunks[1]);
             }
@@ -52,6 +54,13 @@ impl Renderer {
                 let cmd_cursor_x = (editor.command_line().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
                 frame.set_cursor_position((
                     chunks[1].x + cmd_cursor_x as u16,
+                    chunks[1].y,
+                ));
+            } else if editor.mode() == crate::mode::Mode::Search {
+                // Position cursor in search line
+                let search_cursor_x = (editor.search_buffer().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
+                frame.set_cursor_position((
+                    chunks[1].x + search_cursor_x as u16,
                     chunks[1].y,
                 ));
             } else {
@@ -201,6 +210,25 @@ impl Renderer {
         ]);
 
         let paragraph = Paragraph::new(command_line)
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Renders the search line
+    fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
+        let search_prefix = if editor.search_forward() { "/" } else { "?" };
+        let search_text = format!("{}{}", search_prefix, editor.search_buffer());
+
+        let search_line = Line::from(vec![
+            Span::styled(
+                search_text,
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Black),
+            ),
+        ]);
+
+        let paragraph = Paragraph::new(search_line)
             .style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
     }
