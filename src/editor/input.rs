@@ -9,6 +9,15 @@ pub struct InputHandler;
 impl InputHandler {
     /// Processes a keyboard event
     pub fn handle_key_event(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        // Record the event if we're recording a macro
+        // (but don't record the 'q' that stops recording)
+        let should_record = editor.is_recording_macro()
+            && !(key_event.code == KeyCode::Char('q') && editor.mode() == Mode::Normal);
+
+        if should_record {
+            editor.record_macro_event(key_event);
+        }
+
         match editor.mode() {
             Mode::Normal => Self::handle_normal_mode(editor, key_event),
             Mode::Insert => Self::handle_insert_mode(editor, key_event),
@@ -204,6 +213,39 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+                    // m{a-z} - set mark
+                    editor.set_mark(ch);
+                    return Ok(());
+                }
+                ('\'', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+                    // '{a-z} - jump to mark line
+                    editor.add_jump(); // Add current position to jump list before jumping
+                    editor.jump_to_mark_line(ch);
+                    return Ok(());
+                }
+                ('`', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+                    // `{a-z} - jump to mark exact position
+                    editor.add_jump(); // Add current position to jump list before jumping
+                    editor.jump_to_mark(ch);
+                    return Ok(());
+                }
+                ('q', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+                    // q{a-z} - start recording macro to register
+                    editor.start_macro_recording(ch);
+                    return Ok(());
+                }
+                ('@', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+                    // @{a-z} - play back macro from register
+                    if let Some(events) = editor.get_macro(ch) {
+                        // Clone the events to avoid borrow checker issues
+                        let events = events.clone();
+                        for event in events {
+                            Self::handle_key_event(editor, event)?;
+                        }
+                    }
+                    return Ok(());
+                }
                 _ => {
                     // Unknown command sequence, clear and continue
                     editor.clear_count();
@@ -215,6 +257,14 @@ impl InputHandler {
             // Quit
             KeyCode::Char('q') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 editor.quit();
+            }
+            // Jump forward (Ctrl-I) - must come before 'i'
+            KeyCode::Char('i') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.jump_forward();
+            }
+            // Jump back (Ctrl-O) - must come before 'o'
+            KeyCode::Char('o') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.jump_back();
             }
             // Enter Insert mode
             KeyCode::Char('i') => {
@@ -316,6 +366,32 @@ impl InputHandler {
             // Search previous
             KeyCode::Char('N') => {
                 editor.search_prev();
+            }
+            // Set mark (m followed by letter)
+            KeyCode::Char('m') => {
+                editor.set_pending_command('m');
+            }
+            // Jump to mark line (' followed by letter)
+            KeyCode::Char('\'') => {
+                editor.set_pending_command('\'');
+            }
+            // Jump to mark exact position (` followed by letter)
+            KeyCode::Char('`') => {
+                editor.set_pending_command('`');
+            }
+            // Start/stop macro recording (q followed by register, or q to stop)
+            KeyCode::Char('q') => {
+                if editor.is_recording_macro() {
+                    // Stop recording
+                    editor.stop_macro_recording();
+                } else {
+                    // Start recording - set pending command to wait for register
+                    editor.set_pending_command('q');
+                }
+            }
+            // Play back macro (@ followed by register)
+            KeyCode::Char('@') => {
+                editor.set_pending_command('@');
             }
             // Enter Visual mode
             KeyCode::Char('v') => {
