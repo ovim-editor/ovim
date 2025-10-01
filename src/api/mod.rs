@@ -3,7 +3,7 @@ mod routes;
 mod state;
 
 pub use routes::create_router;
-pub use state::{ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, SuccessResponse, VisualSelection, parse_key_string};
+pub use state::{ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, SuccessResponse, VisualSelection, parse_key_string};
 
 use anyhow::Result;
 use tokio::sync::mpsc;

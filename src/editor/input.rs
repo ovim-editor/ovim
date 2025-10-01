@@ -1,4 +1,4 @@
-use crate::editor::{Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, TextObjects};
+use crate::editor::{Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, Search, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -27,11 +27,57 @@ impl InputHandler {
             Mode::Command => Self::handle_command_mode(editor, key_event),
             Mode::Search => Self::handle_search_mode(editor, key_event),
             Mode::Replace => Self::handle_replace_mode(editor, key_event),
+            Mode::Picker => Self::handle_picker_mode(editor, key_event),
         }
     }
 
     /// Handles input in Normal mode
     fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        // Handle pending leader key sequences (e.g., <Space>sf, <Space>sg)
+        if editor.pending_leader() {
+            editor.set_pending_leader(false);
+
+            match key_event.code {
+                KeyCode::Char('s') => {
+                    // Expect 'f' or 'g' next
+                    editor.set_pending_command('s');
+                    return Ok(());
+                }
+                _ => {
+                    // Cancel leader sequence
+                    return Ok(());
+                }
+            }
+        }
+
+        // Handle second key in leader sequences
+        if let Some('s') = editor.pending_command() {
+            editor.clear_pending_command();
+
+            match key_event.code {
+                KeyCode::Char('f') => {
+                    // <Space>sf - Find files
+                    let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let picker = crate::editor::Picker::new_file_finder(base_dir);
+                    editor.set_picker(picker);
+                    editor.set_mode(Mode::Picker);
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    // <Space>sg - Live grep
+                    let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let picker = crate::editor::Picker::new_live_grep(base_dir);
+                    editor.set_picker(picker);
+                    editor.set_mode(Mode::Picker);
+                    return Ok(());
+                }
+                _ => {
+                    // Invalid sequence
+                    return Ok(());
+                }
+            }
+        }
+
         // Handle pending operator + motion (like 'dw', 'dd', 'yy')
         if let Some(operator) = editor.pending_operator() {
             editor.clear_pending_operator();
@@ -282,6 +328,71 @@ impl InputHandler {
                     editor.set_pending_command('a');
                     return Ok(());
                 }
+                // Handle operators with motion keys (j, k)
+                (Operator::Delete, KeyCode::Char('j')) => {
+                    // dj - delete current line and line below
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = (start_line + count + 1).min(editor.buffer().line_count());
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+                    let range = Range::new((start_line, 0), (end_line, 0));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+                    Self::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Delete, KeyCode::Char('k')) => {
+                    // dk - delete current line and line above
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let end_line = cursor.line() + 1;
+                    let start_line = cursor.line().saturating_sub(count);
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+                    let range = Range::new((start_line, 0), (end_line, 0));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+                    Self::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Yank, KeyCode::Char('j')) => {
+                    // yj - yank current line and line below
+                    let start_line = editor.buffer().cursor().line();
+                    let end_line = (start_line + count + 1).min(editor.buffer().line_count());
+
+                    let mut yanked = String::new();
+                    for line_idx in start_line..end_line {
+                        if let Some(line) = editor.buffer().line(line_idx) {
+                            yanked.push_str(&line);
+                        }
+                    }
+                    editor.registers_mut().yank(yanked);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Yank, KeyCode::Char('k')) => {
+                    // yk - yank current line and line above
+                    let end_line = editor.buffer().cursor().line() + 1;
+                    let start_line = editor.buffer().cursor().line().saturating_sub(count);
+
+                    let mut yanked = String::new();
+                    for line_idx in start_line..end_line {
+                        if let Some(line) = editor.buffer().line(line_idx) {
+                            yanked.push_str(&line);
+                        }
+                    }
+                    editor.registers_mut().yank(yanked);
+                    editor.clear_count();
+                    return Ok(());
+                }
                 _ => {
                     // Unknown operator+motion combo
                     editor.clear_count();
@@ -498,6 +609,37 @@ impl InputHandler {
             KeyCode::Char('o') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 editor.jump_back();
             }
+            // Scroll down half page (Ctrl-D)
+            KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let half_page = 10; // TODO: calculate based on viewport height
+                let count = editor.count().unwrap_or(half_page);
+                let line_count = editor.buffer().line_count();
+                let mut max_line = line_count.saturating_sub(1);
+
+                // Check if last line is empty (just a newline)
+                // If so, don't allow moving to it (Neovim behavior)
+                if let Some(last_line) = editor.buffer().line(max_line) {
+                    if last_line == "\n" || last_line.is_empty() {
+                        max_line = max_line.saturating_sub(1);
+                    }
+                }
+
+                let cursor = editor.buffer_mut().cursor_mut();
+                let new_line = (cursor.line() + count).min(max_line);
+                cursor.set_line(new_line);
+                Self::clamp_cursor_to_line(editor);
+                editor.clear_count();
+            }
+            // Scroll up half page (Ctrl-U)
+            KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let half_page = 10; // TODO: calculate based on viewport height
+                let count = editor.count().unwrap_or(half_page);
+                let cursor = editor.buffer_mut().cursor_mut();
+                let new_line = cursor.line().saturating_sub(count);
+                cursor.set_line(new_line);
+                Self::clamp_cursor_to_line(editor);
+                editor.clear_count();
+            }
             // Enter Insert mode
             KeyCode::Char('i') => {
                 let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -605,6 +747,37 @@ impl InputHandler {
             KeyCode::Char('N') => {
                 editor.search_prev();
             }
+            // Search for word under cursor (forward)
+            KeyCode::Char('*') => {
+                if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
+                    // Create search pattern with word boundaries
+                    let pattern = format!(r"\b{}\b", regex::escape(&word));
+                    let mut search = Search::new(pattern, true);
+                    let cursor = editor.buffer().cursor();
+
+                    // Find next occurrence (skip current one)
+                    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), cursor.col() + 1) {
+                        editor.buffer_mut().cursor_mut().set_position(line, col);
+                    }
+                    editor.set_current_search(search);
+                }
+            }
+            // Search for word under cursor (backward)
+            KeyCode::Char('#') => {
+                if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
+                    // Create search pattern with word boundaries
+                    let pattern = format!(r"\b{}\b", regex::escape(&word));
+                    let mut search = Search::new(pattern, false);
+                    let cursor = editor.buffer().cursor();
+
+                    // Find previous occurrence
+                    let search_col = if cursor.col() > 0 { cursor.col() - 1 } else { 0 };
+                    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
+                        editor.buffer_mut().cursor_mut().set_position(line, col);
+                    }
+                    editor.set_current_search(search);
+                }
+            }
             // Set mark (m followed by letter)
             KeyCode::Char('m') => {
                 editor.set_pending_command('m');
@@ -647,6 +820,10 @@ impl InputHandler {
                 editor.set_visual_start(cursor.line(), 0);
                 editor.set_mode(Mode::VisualLine);
             }
+            // Leader key (Space)
+            KeyCode::Char(' ') => {
+                editor.set_pending_leader(true);
+            }
             // Word motions
             KeyCode::Char('w') => {
                 let count = editor.effective_count();
@@ -688,7 +865,17 @@ impl InputHandler {
                 let target_line = if let Some(count) = editor.count() {
                     count.saturating_sub(1)
                 } else {
-                    editor.buffer().line_count().saturating_sub(1)
+                    let line_count = editor.buffer().line_count();
+                    let mut last_line = line_count.saturating_sub(1);
+
+                    // Check if last line is empty (just a newline)
+                    // If so, go to the previous line (Neovim behavior)
+                    if let Some(line) = editor.buffer().line(last_line) {
+                        if line == "\n" || line.is_empty() {
+                            last_line = last_line.saturating_sub(1);
+                        }
+                    }
+                    last_line
                 };
                 editor.buffer_mut().cursor_mut().set_position(target_line, 0);
                 editor.clear_count();
@@ -1136,6 +1323,83 @@ impl InputHandler {
         Ok(())
     }
 
+    /// Handles input in Picker mode
+    fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            // Escape - cancel picker
+            KeyCode::Esc => {
+                editor.close_picker();
+                editor.set_mode(Mode::Normal);
+            }
+            // Enter - select current item
+            KeyCode::Enter => {
+                if let Some(picker) = editor.picker() {
+                    if let Some(result) = picker.selected_result() {
+                        // Load file and jump to location
+                        let location = result.location.clone();
+                        let line = result.line;
+                        let col = result.col;
+
+                        // Close picker first
+                        editor.close_picker();
+                        editor.set_mode(Mode::Normal);
+
+                        // Load the file
+                        if let Err(e) = editor.load_file(&location) {
+                            eprintln!("Failed to load file {}: {}", location, e);
+                            return Ok(());
+                        }
+
+                        // Jump to line/col
+                        editor.buffer_mut().cursor_mut().set_position(line, col);
+                    }
+                } else {
+                    // No picker, return to normal
+                    editor.set_mode(Mode::Normal);
+                }
+            }
+            // Backspace - remove character from query
+            KeyCode::Backspace => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.backspace_query();
+                }
+            }
+            // Ctrl-N - move down
+            KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.move_down();
+                }
+            }
+            // Ctrl-P - move up
+            KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.move_up();
+                }
+            }
+            // Down arrow - move down
+            KeyCode::Down => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.move_down();
+                }
+            }
+            // Up arrow - move up
+            KeyCode::Up => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.move_up();
+                }
+            }
+            // Any other character - add to query
+            KeyCode::Char(ch) => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.append_query(ch);
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     /// Polls for the next event
     pub fn poll_event() -> Result<Option<Event>> {
         if event::poll(std::time::Duration::from_millis(100))? {
@@ -1180,7 +1444,19 @@ impl InputHandler {
 
     fn move_down(editor: &mut Editor) {
         let count = editor.effective_count();
-        let max_line = editor.buffer().line_count().saturating_sub(1);
+        let line_count = editor.buffer().line_count();
+        let mut max_line = line_count.saturating_sub(1);
+
+        // Check if last line is empty (just a newline)
+        // If so, don't allow moving to it (Neovim behavior)
+        if max_line < line_count {
+            if let Some(last_line) = editor.buffer().line(max_line) {
+                if last_line == "\n" || last_line.is_empty() {
+                    max_line = max_line.saturating_sub(1);
+                }
+            }
+        }
+
         let cursor = editor.buffer_mut().cursor_mut();
         let new_line = (cursor.line() + count).min(max_line);
         cursor.set_line(new_line);
@@ -1437,7 +1713,20 @@ impl InputHandler {
         }
 
         let cursor_line = editor.buffer().cursor().line();
-        let clamped_line = cursor_line.min(line_count.saturating_sub(1));
+        let mut clamped_line = cursor_line.min(line_count.saturating_sub(1));
+
+        // If the last line is empty (just a newline), don't allow cursor on it
+        // This matches Neovim behavior
+        if clamped_line == line_count.saturating_sub(1) {
+            if let Some(last_line) = editor.buffer().line(clamped_line) {
+                if last_line == "\n" || last_line.is_empty() {
+                    // Last line is empty, move cursor to previous line
+                    if clamped_line > 0 {
+                        clamped_line = clamped_line.saturating_sub(1);
+                    }
+                }
+            }
+        }
 
         if cursor_line != clamped_line {
             editor.buffer_mut().cursor_mut().set_line(clamped_line);

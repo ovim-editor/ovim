@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::{
+    cursor::SetCursorStyle,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -39,6 +40,10 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         // Restore terminal state on drop
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            SetCursorStyle::DefaultUserShape
+        );
     }
 }

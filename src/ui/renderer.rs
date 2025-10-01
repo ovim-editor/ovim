@@ -1,6 +1,7 @@
 use crate::buffer::Buffer;
 use crate::editor::Editor;
 use anyhow::Result;
+use crossterm::cursor::SetCursorStyle;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -26,6 +27,16 @@ impl Renderer {
 
     /// Renders the editor state to the terminal
     pub fn render(&mut self, editor: &Editor) -> Result<()> {
+        // Set cursor style based on mode
+        let cursor_style = match editor.mode() {
+            crate::mode::Mode::Insert => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::Picker => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::Command => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
+            _ => SetCursorStyle::SteadyBlock,
+        };
+        crossterm::execute!(io::stdout(), cursor_style)?;
+
         let cursor_pos = editor.buffer().cursor();
         let cursor_line = cursor_pos.line();
         let cursor_col = cursor_pos.col();
@@ -48,8 +59,23 @@ impl Renderer {
                 Self::render_status_line(frame, editor, chunks[1]);
             }
 
+            // Render picker overlay if in Picker mode
+            if editor.mode() == crate::mode::Mode::Picker {
+                Self::render_picker(frame, editor, frame.area());
+            }
+
             // Set hardware cursor position
-            if editor.mode() == crate::mode::Mode::Command {
+            if editor.mode() == crate::mode::Mode::Picker {
+                // Position cursor in picker query line (after the query text)
+                if let Some(picker) = editor.picker() {
+                    let query_len = picker.query().len();
+                    let picker_area = Self::get_picker_area(frame.area());
+                    frame.set_cursor_position((
+                        picker_area.x + 1 + 2 + query_len as u16, // +1 for border, +2 for "> " prefix
+                        picker_area.y + 1, // +1 for border
+                    ));
+                }
+            } else if editor.mode() == crate::mode::Mode::Command {
                 // Position cursor in command line
                 let cmd_cursor_x = (editor.command_line().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
                 frame.set_cursor_position((
@@ -250,6 +276,148 @@ impl Renderer {
         let paragraph = Paragraph::new(search_line)
             .style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
+    }
+
+    /// Calculates the picker overlay area (centered, takes up 60% of screen)
+    fn get_picker_area(full_area: Rect) -> Rect {
+        let width = (full_area.width * 60) / 100;
+        let height = (full_area.height * 60) / 100;
+        let x = (full_area.width - width) / 2;
+        let y = (full_area.height - height) / 2;
+
+        Rect::new(x, y, width.max(40), height.max(15))
+    }
+
+    /// Renders the picker overlay
+    fn render_picker(frame: &mut Frame, editor: &Editor, _full_area: Rect) {
+        let Some(picker) = editor.picker() else { return };
+
+        let picker_area = Self::get_picker_area(frame.area());
+
+        // Create block with border
+        let mode_name = match picker.mode() {
+            crate::editor::PickerMode::FindFiles => "Find Files",
+            crate::editor::PickerMode::LiveGrep => "Live Grep",
+        };
+
+        let block = Block::default()
+            .title(mode_name)
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+
+        frame.render_widget(block.clone(), picker_area);
+
+        // Split picker area into query line and results
+        let inner_area = block.inner(picker_area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
+            .split(inner_area);
+
+        // Render query line
+        let query_text = format!("> {}", picker.query());
+        let query_line = Line::from(vec![
+            Span::styled(
+                query_text,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        let query_paragraph = Paragraph::new(query_line)
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(query_paragraph, chunks[0]);
+
+        // Render results
+        let results = picker.filtered_results();
+        let selected_idx = picker.selected_index();
+        let max_results = chunks[1].height as usize;
+        let result_width = chunks[1].width as usize;
+
+        // Calculate scroll offset to keep selected item visible
+        let scroll_offset = if selected_idx >= max_results {
+            selected_idx - max_results + 1
+        } else {
+            0
+        };
+
+        let visible_results: Vec<Line> = results
+            .iter()
+            .skip(scroll_offset)
+            .take(max_results)
+            .enumerate()
+            .map(|(idx, result)| {
+                let actual_idx = idx + scroll_offset;
+                let is_selected = actual_idx == selected_idx;
+
+                let text = format!("  {}", result.display);
+                let style = if is_selected {
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray).bg(Color::Black)
+                };
+
+                // Pad line to fill width with background color
+                let padding = result_width.saturating_sub(text.len());
+                Line::from(vec![
+                    Span::styled(text, style),
+                    Span::styled(" ".repeat(padding), style),
+                ])
+            })
+            .collect();
+
+        // Show results or "No matches" message
+        let mut all_lines = visible_results;
+
+        if results.is_empty() {
+            // Truly no matches
+            let text = "  No matches";
+            let padding = result_width.saturating_sub(text.len());
+            all_lines.push(Line::from(vec![
+                Span::styled(
+                    text,
+                    Style::default().fg(Color::Red).bg(Color::Black),
+                ),
+                Span::styled(
+                    " ".repeat(padding),
+                    Style::default().bg(Color::Black),
+                ),
+            ]));
+        } else {
+            // Add result count at the end if there's space
+            let result_count = format!("  {} matches", results.len());
+            if all_lines.len() < max_results {
+                let padding = result_width.saturating_sub(result_count.len());
+                all_lines.push(Line::from(vec![
+                    Span::styled(
+                        result_count,
+                        Style::default().fg(Color::DarkGray).bg(Color::Black),
+                    ),
+                    Span::styled(
+                        " ".repeat(padding),
+                        Style::default().bg(Color::Black),
+                    ),
+                ]));
+            }
+        }
+
+        // Fill remaining lines with empty spans that have background color
+        let lines_to_fill = max_results.saturating_sub(all_lines.len());
+        for _ in 0..lines_to_fill {
+            all_lines.push(Line::from(vec![
+                Span::styled(
+                    " ".repeat(result_width),
+                    Style::default().bg(Color::Black),
+                ),
+            ]));
+        }
+
+        let results_paragraph = Paragraph::new(all_lines)
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(results_paragraph, chunks[1]);
     }
 
     /// Clears the terminal

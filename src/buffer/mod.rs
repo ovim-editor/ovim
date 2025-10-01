@@ -182,6 +182,47 @@ impl Buffer {
         // Reset cursor to beginning
         self.cursor = Cursor::new(0, 0);
     }
+
+    /// Gets the word under the cursor
+    /// Returns the word and its (start_col, end_col) on the current line
+    pub fn word_under_cursor(&self) -> Option<(String, usize, usize)> {
+        let line_idx = self.cursor.line();
+        let col = self.cursor.col();
+
+        if line_idx >= self.line_count() {
+            return None;
+        }
+
+        let line_text = self.line(line_idx)?;
+        let line_text = line_text.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        if chars.is_empty() || col >= chars.len() {
+            return None;
+        }
+
+        // Check if cursor is on a word character
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+        if !is_word_char(chars[col]) {
+            return None;
+        }
+
+        // Find start of word
+        let mut start = col;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+
+        // Find end of word
+        let mut end = col;
+        while end < chars.len() && is_word_char(chars[end]) {
+            end += 1;
+        }
+
+        let word: String = chars[start..end].iter().collect();
+        Some((word, start, end))
+    }
 }
 
 impl Default for Buffer {
