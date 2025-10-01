@@ -7,6 +7,8 @@ pub enum Operator {
     Delete,
     Change,
     Yank,
+    Indent,
+    Dedent,
 }
 
 /// Handles operator commands (delete, change, yank)
@@ -230,5 +232,54 @@ impl Operators {
         buffer.cursor_mut().set_position(start_line, start_col);
 
         Ok(yanked)
+    }
+
+    /// Indents line(s) by adding spaces/tabs at the beginning
+    /// Returns the number of lines indented
+    pub fn indent_lines(buffer: &mut Buffer, start_line: usize, end_line: usize, tab_width: usize) -> Result<usize> {
+        let indent_str = " ".repeat(tab_width);
+        let mut lines_indented = 0;
+
+        for line_idx in start_line..end_line.min(buffer.line_count()) {
+            // Insert indent at the beginning of the line
+            buffer.insert_text_at(line_idx, 0, &indent_str);
+            lines_indented += 1;
+        }
+
+        Ok(lines_indented)
+    }
+
+    /// Dedents line(s) by removing spaces/tabs from the beginning
+    /// Returns the number of lines dedented
+    pub fn dedent_lines(buffer: &mut Buffer, start_line: usize, end_line: usize, tab_width: usize) -> Result<usize> {
+        let mut lines_dedented = 0;
+
+        for line_idx in start_line..end_line.min(buffer.line_count()) {
+            if let Some(line) = buffer.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+
+                // Count leading whitespace to remove (up to tab_width)
+                let chars: Vec<char> = line_text.chars().collect();
+                let mut spaces_to_remove = 0;
+
+                for &ch in chars.iter().take(tab_width) {
+                    if ch == ' ' {
+                        spaces_to_remove += 1;
+                    } else if ch == '\t' {
+                        spaces_to_remove = tab_width;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                if spaces_to_remove > 0 {
+                    buffer.delete_range(line_idx, 0, line_idx, spaces_to_remove);
+                    lines_dedented += 1;
+                }
+            }
+        }
+
+        Ok(lines_dedented)
     }
 }
