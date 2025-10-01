@@ -1,3 +1,4 @@
+mod change;
 mod input;
 mod macros;
 mod marks;
@@ -8,6 +9,7 @@ mod search;
 mod textobjects;
 mod undo;
 
+pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range};
 pub use input::InputHandler;
 pub use macros::MacroManager;
 pub use marks::{JumpList, Mark, MarkManager};
@@ -48,21 +50,35 @@ pub struct Editor {
     search_forward: bool,
     /// Current search state
     current_search: Option<Search>,
-    /// Undo/redo manager
-    undo_manager: UndoManager,
+    /// Change manager for undo/redo and repeat
+    change_manager: ChangeManager,
     /// Mark manager for buffer marks
     marks: MarkManager,
     /// Jump list for Ctrl-O and Ctrl-I
     jump_list: JumpList,
     /// Macro manager for recording and playback
     macro_manager: MacroManager,
+    /// Last find motion (for ; and , repeat)
+    /// (char, FindType::Find/Till, FindDirection::Forward/Backward)
+    last_find: Option<(char, FindType, FindDirection)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FindType {
+    Find,  // f/F - cursor lands on character
+    Till,  // t/T - cursor lands before/after character
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FindDirection {
+    Forward,
+    Backward,
 }
 
 impl Editor {
     /// Creates a new editor with an empty buffer
     pub fn new() -> Self {
         let buffer = Buffer::new();
-        let undo_manager = UndoManager::new(&buffer);
 
         Self {
             buffer,
@@ -77,17 +93,17 @@ impl Editor {
             search_buffer: String::new(),
             search_forward: true,
             current_search: None,
-            undo_manager,
+            change_manager: ChangeManager::new(),
             marks: MarkManager::new(),
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
+            last_find: None,
         }
     }
 
     /// Creates an editor with initial content
     pub fn with_content(content: &str) -> Self {
         let buffer = Buffer::from_str(content);
-        let undo_manager = UndoManager::new(&buffer);
 
         Self {
             buffer,
@@ -102,10 +118,11 @@ impl Editor {
             search_buffer: String::new(),
             search_forward: true,
             current_search: None,
-            undo_manager,
+            change_manager: ChangeManager::new(),
             marks: MarkManager::new(),
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
+            last_find: None,
         }
     }
 
@@ -438,35 +455,65 @@ impl Editor {
     /// Loads a file into the editor
     pub fn load_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
         self.buffer = Buffer::load_file(path)?;
-        self.undo_manager = UndoManager::new(&self.buffer);
+        self.change_manager = ChangeManager::new();
         Ok(())
     }
 
-    /// Saves the current buffer state for undo
-    pub fn save_undo_state(&mut self) {
-        self.undo_manager.save_state(&self.buffer);
+    /// Starts building a composite change (e.g., when entering insert mode)
+    pub fn start_change_building(&mut self, cursor_before: Position) {
+        self.change_manager.start_building(cursor_before);
+    }
+
+    /// Adds a change to the change manager
+    pub fn add_change(&mut self, change: Change) {
+        self.change_manager.add_change(change);
+    }
+
+    /// Finalizes the current composite change
+    pub fn finalize_change_building(&mut self) {
+        self.change_manager.finalize_building();
     }
 
     /// Undoes the last change
     pub fn undo(&mut self) {
-        if let Some((rope, cursor)) = self.undo_manager.undo() {
-            *self.buffer.rope_mut() = rope;
-            *self.buffer.cursor_mut() = cursor;
-        }
+        self.change_manager.undo(&mut self.buffer);
     }
 
     /// Redoes the next change
     pub fn redo(&mut self) {
-        if let Some((rope, cursor)) = self.undo_manager.redo() {
-            *self.buffer.rope_mut() = rope;
-            *self.buffer.cursor_mut() = cursor;
-        }
+        self.change_manager.redo(&mut self.buffer);
+    }
+
+    /// Repeats the last change
+    pub fn repeat_last_change(&mut self) {
+        self.change_manager.repeat_last(&mut self.buffer);
+    }
+
+    /// Checks if buffer is modified relative to last save
+    pub fn is_modified(&self) -> bool {
+        !self.change_manager.is_at_save_point()
+    }
+
+    /// Marks current state as saved
+    pub fn mark_saved(&mut self) {
+        self.change_manager.mark_saved();
+        self.buffer.mark_clean();
     }
 
     /// Runs the editor (main loop will be implemented later)
     pub fn run(&mut self) -> Result<()> {
         // Placeholder for now
         Ok(())
+    }
+
+    /// Sets the last find motion for ; and , repeat
+    pub fn set_last_find(&mut self, ch: char, find_type: FindType, direction: FindDirection) {
+        self.last_find = Some((ch, find_type, direction));
+    }
+
+    /// Gets the last find motion
+    pub fn get_last_find(&self) -> Option<(char, FindType, FindDirection)> {
+        self.last_find
     }
 }
 

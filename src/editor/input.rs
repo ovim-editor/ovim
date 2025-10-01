@@ -1,4 +1,4 @@
-use crate::editor::{Editor, Motions, Operator, Operators, TextObjects};
+use crate::editor::{Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -11,10 +11,10 @@ impl InputHandler {
     pub fn handle_key_event(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         // Record the event if we're recording a macro
         // (but don't record the 'q' that stops recording)
-        let should_record = editor.is_recording_macro()
+        let should_record_macro = editor.is_recording_macro()
             && !(key_event.code == KeyCode::Char('q') && editor.mode() == Mode::Normal);
 
-        if should_record {
+        if should_record_macro {
             editor.record_macro_event(key_event);
         }
 
@@ -41,25 +41,116 @@ impl InputHandler {
                 // Delete operations
                 (Operator::Delete, KeyCode::Char('d')) => {
                     // dd - delete line
-                    editor.save_undo_state();
-                    let deleted = Operators::delete_line(editor.buffer_mut(), count)?;
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let line_count = editor.buffer().line_count();
+                    let end_line = (start_line + count).min(line_count);
+
+                    // Special handling for deleting to/past end of file
+                    // When deleting the last line(s), also delete the newline from the previous line
+                    // This moves the cursor up to the new last line
+                    let (delete_start_line, delete_start_col) = if end_line >= line_count && start_line > 0 {
+                        // Deleting to end of file, and there's a previous line
+                        // Delete from end of previous line (including its newline)
+                        if let Some(prev_line) = editor.buffer().line(start_line - 1) {
+                            let prev_line_text = prev_line.trim_end_matches('\n');
+                            let prev_line_len = prev_line_text.chars().count();
+                            (start_line - 1, prev_line_len)
+                        } else {
+                            (start_line, 0)
+                        }
+                    } else {
+                        (start_line, 0)
+                    };
+
+                    let start_pos = (delete_start_line, delete_start_col);
+                    let end_pos = (end_line, 0);
+
+                    let deleted = editor.buffer_mut().delete_range(
+                        delete_start_line, delete_start_col,
+                        end_line, 0
+                    );
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
                     editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+
+                    // Clamp cursor to buffer bounds (handles end of file)
+                    Self::clamp_cursor_to_buffer(editor);
+
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Delete, KeyCode::Char('w')) => {
-                    // dw - delete word
-                    editor.save_undo_state();
-                    let deleted = Operators::delete_word(editor.buffer_mut(), count)?;
+                    // dw - delete word (stops at newlines)
+                    let start_cursor = editor.buffer().cursor().clone();
+                    let cursor_before = (start_cursor.line(), start_cursor.col());
+                    let start_line = start_cursor.line();
+                    let start_col = start_cursor.col();
+
+                    // Move cursor forward by word count times
+                    Motions::word_forward(editor.buffer_mut(), count);
+
+                    let end_cursor = editor.buffer().cursor();
+                    let mut end_line = end_cursor.line();
+                    let mut end_col = end_cursor.col();
+
+                    // If we crossed a newline, stop at the end of the current line (before newline)
+                    if end_line > start_line {
+                        if let Some(line) = editor.buffer().line(start_line) {
+                            let line_text = line.trim_end_matches('\n');
+                            end_line = start_line;
+                            end_col = line_text.chars().count();
+                        }
+                    }
+
+                    let start_pos = (start_line, start_col);
+                    let end_pos = (end_line, end_col);
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    // Position cursor at deletion start
+                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+
                     editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+
+                    // Clamp cursor to buffer bounds
+                    Self::clamp_cursor_to_buffer(editor);
+
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Delete, KeyCode::Char('$')) => {
                     // d$ - delete to end of line
-                    editor.save_undo_state();
-                    let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
-                    editor.registers_mut().delete(deleted);
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let line_idx = cursor.line();
+                    let col = cursor.col();
+
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let line_len = line_text.chars().count();
+
+                        if col < line_len {
+                            let start_pos = (line_idx, col);
+                            let end_pos = (line_idx, line_len);
+
+                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                            let range = Range::new(start_pos, end_pos);
+                            let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                            editor.registers_mut().delete(deleted);
+                            editor.add_change(change);
+
+                            // Clamp cursor to buffer bounds
+                            Self::clamp_cursor_to_buffer(editor);
+                        }
+                    }
                     editor.clear_count();
                     return Ok(());
                 }
@@ -88,29 +179,92 @@ impl InputHandler {
                 // Change operations (delete + insert mode)
                 (Operator::Change, KeyCode::Char('c')) => {
                     // cc - change line
-                    editor.save_undo_state();
-                    let deleted = Operators::delete_line(editor.buffer_mut(), count)?;
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = (start_line + count).min(editor.buffer().line_count());
+
+                    let start_pos = (start_line, 0);
+                    let end_pos = (end_line, 0);
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
                     editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
                     editor.clear_count();
+                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     Self::insert_line_above(editor)?;
                     return Ok(());
                 }
                 (Operator::Change, KeyCode::Char('w')) => {
                     // cw - change word
-                    editor.save_undo_state();
-                    let deleted = Operators::delete_word(editor.buffer_mut(), count)?;
+                    let start_cursor = editor.buffer().cursor().clone();
+                    let cursor_before = (start_cursor.line(), start_cursor.col());
+                    let start_line = start_cursor.line();
+                    let start_col = start_cursor.col();
+
+                    // Move cursor forward by word count times
+                    Motions::word_forward(editor.buffer_mut(), count);
+
+                    let end_cursor = editor.buffer().cursor();
+                    let end_line = end_cursor.line();
+                    let end_col = end_cursor.col();
+
+                    let start_pos = (start_line, start_col);
+                    let end_pos = (end_line, end_col);
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    // Position cursor at deletion start
+                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+
                     editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+
+                    // Clamp cursor to buffer bounds
+                    Self::clamp_cursor_to_buffer(editor);
+
                     editor.clear_count();
+                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
                 (Operator::Change, KeyCode::Char('$')) => {
                     // c$ - change to end of line
-                    editor.save_undo_state();
-                    let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
-                    editor.registers_mut().delete(deleted);
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let line_idx = cursor.line();
+                    let col = cursor.col();
+
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let line_len = line_text.chars().count();
+
+                        if col < line_len {
+                            let start_pos = (line_idx, col);
+                            let end_pos = (line_idx, line_len);
+
+                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                            let range = Range::new(start_pos, end_pos);
+                            let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                            editor.registers_mut().delete(deleted);
+                            editor.add_change(change);
+
+                            // Clamp cursor to buffer bounds
+                            Self::clamp_cursor_to_buffer(editor);
+                        }
+                    }
                     editor.clear_count();
+                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
@@ -181,18 +335,60 @@ impl InputHandler {
                 if let Some(range) = result {
                     match operator {
                         Operator::Delete => {
-                            editor.save_undo_state();
-                            let deleted = TextObjects::delete_range(editor.buffer_mut(), range)?;
+                            let cursor = editor.buffer().cursor();
+                            let cursor_before = (cursor.line(), cursor.col());
+
+                            // Get the text to be deleted first
+                            let deleted = TextObjects::yank_range(editor.buffer(), range)?;
+
+                            // Create Change with exclusive end position
+                            let change_range = Range::new(
+                                (range.start_line, range.start_col),
+                                (range.end_line, range.end_col + 1)
+                            );
+                            let change = Change::delete(change_range, deleted.clone(), cursor_before);
+
+                            // Apply the change to actually delete the text
+                            change.apply(editor.buffer_mut());
+
                             editor.registers_mut().delete(deleted);
+                            editor.add_change(change);
+
+                            // Clamp cursor to buffer bounds
+                            Self::clamp_cursor_to_buffer(editor);
                         }
                         Operator::Yank => {
                             let yanked = TextObjects::yank_range(editor.buffer(), range)?;
                             editor.registers_mut().yank(yanked);
                         }
                         Operator::Change => {
-                            editor.save_undo_state();
-                            let deleted = TextObjects::delete_range(editor.buffer_mut(), range)?;
+                            let cursor = editor.buffer().cursor();
+                            let cursor_before = (cursor.line(), cursor.col());
+
+                            // Get the text to be deleted first
+                            let deleted = TextObjects::yank_range(editor.buffer(), range)?;
+
+                            // Create Change with exclusive end position
+                            let change_range = Range::new(
+                                (range.start_line, range.start_col),
+                                (range.end_line, range.end_col + 1)
+                            );
+                            let change = Change::delete(change_range, deleted.clone(), cursor_before);
+
+                            // Apply the change to actually delete the text
+                            change.apply(editor.buffer_mut());
+
                             editor.registers_mut().delete(deleted);
+                            editor.add_change(change);
+
+                            // Clamp cursor to buffer bounds
+                            Self::clamp_cursor_to_buffer(editor);
+
+                            // Start building composite change for insert mode
+                            let new_cursor = editor.buffer().cursor();
+                            let new_cursor_pos = (new_cursor.line(), new_cursor.col());
+                            editor.start_change_building(new_cursor_pos);
+
                             editor.set_mode(Mode::Insert);
                         }
                     }
@@ -246,6 +442,42 @@ impl InputHandler {
                     }
                     return Ok(());
                 }
+                ('f', KeyCode::Char(ch)) => {
+                    // f{char} - find next occurrence of char on line
+                    let count = editor.effective_count();
+                    if Motions::find_char_forward(editor.buffer_mut(), ch, count) {
+                        editor.set_last_find(ch, FindType::Find, FindDirection::Forward);
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('F', KeyCode::Char(ch)) => {
+                    // F{char} - find previous occurrence of char on line
+                    let count = editor.effective_count();
+                    if Motions::find_char_backward(editor.buffer_mut(), ch, count) {
+                        editor.set_last_find(ch, FindType::Find, FindDirection::Backward);
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('t', KeyCode::Char(ch)) => {
+                    // t{char} - till next occurrence (cursor before char)
+                    let count = editor.effective_count();
+                    if Motions::till_char_forward(editor.buffer_mut(), ch, count) {
+                        editor.set_last_find(ch, FindType::Till, FindDirection::Forward);
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('T', KeyCode::Char(ch)) => {
+                    // T{char} - till previous occurrence (cursor after char)
+                    let count = editor.effective_count();
+                    if Motions::till_char_backward(editor.buffer_mut(), ch, count) {
+                        editor.set_last_find(ch, FindType::Till, FindDirection::Backward);
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
                 _ => {
                     // Unknown command sequence, clear and continue
                     editor.clear_count();
@@ -268,25 +500,29 @@ impl InputHandler {
             }
             // Enter Insert mode
             KeyCode::Char('i') => {
-                editor.save_undo_state();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
             }
             KeyCode::Char('a') => {
-                editor.save_undo_state();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Move cursor right (insert after)
                 let cursor = editor.buffer_mut().cursor_mut();
                 cursor.move_right(1);
             }
             KeyCode::Char('I') => {
-                editor.save_undo_state();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Move to start of line
                 let cursor = editor.buffer_mut().cursor_mut();
                 cursor.set_col(0);
             }
             KeyCode::Char('A') => {
-                editor.save_undo_state();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Move to end of line
                 let line_idx = editor.buffer().cursor().line();
@@ -296,13 +532,15 @@ impl InputHandler {
                 }
             }
             KeyCode::Char('o') => {
-                editor.save_undo_state();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Insert new line below and move to it
                 Self::insert_line_below(editor)?;
             }
             KeyCode::Char('O') => {
-                editor.save_undo_state();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Insert new line above and move to it
                 Self::insert_line_above(editor)?;
@@ -393,6 +631,11 @@ impl InputHandler {
             KeyCode::Char('@') => {
                 editor.set_pending_command('@');
             }
+            // Repeat last change
+            KeyCode::Char('.') => {
+                editor.repeat_last_change();
+                editor.clear_count();
+            }
             // Enter Visual mode
             KeyCode::Char('v') => {
                 let cursor = editor.buffer().cursor();
@@ -450,6 +693,75 @@ impl InputHandler {
                 editor.buffer_mut().cursor_mut().set_position(target_line, 0);
                 editor.clear_count();
             }
+            // Find character motions
+            KeyCode::Char('f') => {
+                // f{char} - find next occurrence of char on line
+                editor.set_pending_command('f');
+            }
+            KeyCode::Char('F') => {
+                // F{char} - find previous occurrence of char on line
+                editor.set_pending_command('F');
+            }
+            KeyCode::Char('t') => {
+                // t{char} - till next occurrence (cursor before char)
+                editor.set_pending_command('t');
+            }
+            KeyCode::Char('T') => {
+                // T{char} - till previous occurrence (cursor after char)
+                editor.set_pending_command('T');
+            }
+            KeyCode::Char(';') => {
+                // ; - repeat last f/F/t/T motion
+                if let Some((ch, find_type, direction)) = editor.get_last_find() {
+                    let count = editor.effective_count();
+                    match (find_type, direction) {
+                        (FindType::Find, FindDirection::Forward) => {
+                            Motions::find_char_forward(editor.buffer_mut(), ch, count);
+                        }
+                        (FindType::Find, FindDirection::Backward) => {
+                            Motions::find_char_backward(editor.buffer_mut(), ch, count);
+                        }
+                        (FindType::Till, FindDirection::Forward) => {
+                            Motions::till_char_forward(editor.buffer_mut(), ch, count);
+                        }
+                        (FindType::Till, FindDirection::Backward) => {
+                            Motions::till_char_backward(editor.buffer_mut(), ch, count);
+                        }
+                    }
+                }
+                editor.clear_count();
+            }
+            KeyCode::Char(',') => {
+                // , - repeat last f/F/t/T motion in opposite direction
+                if let Some((ch, find_type, direction)) = editor.get_last_find() {
+                    let count = editor.effective_count();
+                    // Reverse the direction
+                    let opposite_direction = match direction {
+                        FindDirection::Forward => FindDirection::Backward,
+                        FindDirection::Backward => FindDirection::Forward,
+                    };
+                    match (find_type, opposite_direction) {
+                        (FindType::Find, FindDirection::Forward) => {
+                            Motions::find_char_forward(editor.buffer_mut(), ch, count);
+                        }
+                        (FindType::Find, FindDirection::Backward) => {
+                            Motions::find_char_backward(editor.buffer_mut(), ch, count);
+                        }
+                        (FindType::Till, FindDirection::Forward) => {
+                            Motions::till_char_forward(editor.buffer_mut(), ch, count);
+                        }
+                        (FindType::Till, FindDirection::Backward) => {
+                            Motions::till_char_backward(editor.buffer_mut(), ch, count);
+                        }
+                    }
+                }
+                editor.clear_count();
+            }
+            // Jump to matching bracket
+            KeyCode::Char('%') => {
+                Motions::jump_to_matching_bracket(editor.buffer_mut());
+                editor.clear_count();
+            }
             // Operators
             KeyCode::Char('d') => {
                 editor.set_pending_operator(Operator::Delete);
@@ -463,37 +775,101 @@ impl InputHandler {
             // Simple delete commands
             KeyCode::Char('x') => {
                 // x - delete character under cursor
-                editor.save_undo_state();
                 let count = editor.effective_count();
-                let deleted = Operators::delete_char(editor.buffer_mut(), count)?;
-                editor.registers_mut().delete(deleted);
+                let cursor = editor.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let line_idx = cursor.line();
+                let col = cursor.col();
+
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    let line_text = line.trim_end_matches('\n');
+                    let chars_count = line_text.chars().count();
+
+                    if col < chars_count {
+                        let end_col = (col + count).min(chars_count);
+                        let start_pos = (line_idx, col);
+                        let end_pos = (line_idx, end_col);
+
+                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, end_col);
+                        let range = Range::new(start_pos, end_pos);
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.registers_mut().delete(deleted);
+                        editor.add_change(change);
+
+                        // Clamp cursor to buffer bounds
+                        Self::clamp_cursor_to_buffer(editor);
+                    }
+                }
                 editor.clear_count();
             }
             KeyCode::Char('D') => {
                 // D - delete to end of line
-                editor.save_undo_state();
-                let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
-                editor.registers_mut().delete(deleted);
+                let cursor = editor.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let line_idx = cursor.line();
+                let col = cursor.col();
+
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    let line_text = line.trim_end_matches('\n');
+                    let line_len = line_text.chars().count();
+
+                    if col < line_len {
+                        let start_pos = (line_idx, col);
+                        let end_pos = (line_idx, line_len);
+
+                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                        let range = Range::new(start_pos, end_pos);
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.registers_mut().delete(deleted);
+                        editor.add_change(change);
+
+                        // Clamp cursor to buffer bounds
+                        Self::clamp_cursor_to_buffer(editor);
+                    }
+                }
                 editor.clear_count();
             }
             KeyCode::Char('C') => {
                 // C - change to end of line
-                editor.save_undo_state();
-                let deleted = Operators::delete_to_end_of_line(editor.buffer_mut())?;
-                editor.registers_mut().delete(deleted);
+                let cursor = editor.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let line_idx = cursor.line();
+                let col = cursor.col();
+
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    let line_text = line.trim_end_matches('\n');
+                    let line_len = line_text.chars().count();
+
+                    if col < line_len {
+                        let start_pos = (line_idx, col);
+                        let end_pos = (line_idx, line_len);
+
+                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                        let range = Range::new(start_pos, end_pos);
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.registers_mut().delete(deleted);
+                        editor.add_change(change);
+
+                        // Clamp cursor to buffer bounds
+                        Self::clamp_cursor_to_buffer(editor);
+                    }
+                }
                 editor.clear_count();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before); // C enters insert mode, start building
                 editor.set_mode(Mode::Insert);
             }
             // Paste
             KeyCode::Char('p') => {
                 // p - paste after cursor
-                editor.save_undo_state();
                 Self::paste_after(editor)?;
                 editor.clear_count();
             }
             KeyCode::Char('P') => {
                 // P - paste before cursor
-                editor.save_undo_state();
                 Self::paste_before(editor)?;
                 editor.clear_count();
             }
@@ -520,6 +896,7 @@ impl InputHandler {
     fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         match key_event.code {
             KeyCode::Esc => {
+                editor.finalize_change_building();
                 editor.set_mode(Mode::Normal);
                 // Move cursor left when exiting insert mode (unless at column 0)
                 let cursor = editor.buffer_mut().cursor_mut();
@@ -682,6 +1059,7 @@ impl InputHandler {
             if parts.len() >= 2 {
                 let filename = parts[1..].join(" ");
                 editor.buffer_mut().save_as(&filename)?;
+                editor.mark_saved();
             }
             return Ok(());
         }
@@ -690,7 +1068,7 @@ impl InputHandler {
         match command {
             "q" | "quit" => {
                 // Quit without checking for modifications
-                if editor.buffer().is_modified() {
+                if editor.is_modified() {
                     // In a real editor, we'd show an error message
                     // For now, just don't quit if modified
                     return Ok(());
@@ -704,15 +1082,18 @@ impl InputHandler {
             "w" | "write" => {
                 // Save to current file
                 editor.buffer_mut().save()?;
+                editor.mark_saved();
             }
             "wq" | "x" => {
                 // Write and quit
                 editor.buffer_mut().save()?;
+                editor.mark_saved();
                 editor.quit();
             }
             "wq!" => {
                 // Force write and quit
                 editor.buffer_mut().save()?;
+                editor.mark_saved();
                 editor.quit();
             }
             _ => {
@@ -821,42 +1202,33 @@ impl InputHandler {
 
     fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
         let cursor = editor.buffer().cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
+        let cursor_before = (cursor.line(), cursor.col());
+        let position = (cursor.line(), cursor.col());
 
-        // Calculate byte position
-        let line_start = editor.buffer().rope().line_to_char(line_idx);
-        let insert_pos = line_start + col;
-
-        // Insert the character
-        editor.buffer_mut().rope_mut().insert_char(insert_pos, c);
-
-        // Move cursor right
-        editor.buffer_mut().cursor_mut().move_right(1);
+        // Create and apply the change
+        let change = Change::insert(position, c.to_string(), cursor_before);
+        change.apply(editor.buffer_mut());
+        editor.add_change(change);
 
         Ok(())
     }
 
     fn insert_newline(editor: &mut Editor) -> Result<()> {
         let cursor = editor.buffer().cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
+        let cursor_before = (cursor.line(), cursor.col());
+        let position = (cursor.line(), cursor.col());
 
-        // Calculate byte position
-        let line_start = editor.buffer().rope().line_to_char(line_idx);
-        let insert_pos = line_start + col;
-
-        // Insert newline
-        editor.buffer_mut().rope_mut().insert_char(insert_pos, '\n');
-
-        // Move cursor to next line, column 0
-        editor.buffer_mut().cursor_mut().set_position(line_idx + 1, 0);
+        // Create and apply the change
+        let change = Change::insert(position, "\n".to_string(), cursor_before);
+        change.apply(editor.buffer_mut());
+        editor.add_change(change);
 
         Ok(())
     }
 
     fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
         let line_idx = cursor.line();
         let col = cursor.col();
 
@@ -865,24 +1237,35 @@ impl InputHandler {
             return Ok(());
         }
 
-        let line_start = editor.buffer().rope().line_to_char(line_idx);
-
-        if col == 0 {
+        let (start_pos, end_pos, deleted_text) = if col == 0 {
             // Delete newline at end of previous line
-            let delete_pos = line_start - 1;
-            editor.buffer_mut().rope_mut().remove(delete_pos..delete_pos + 1);
-
-            // Move cursor to end of previous line
-            if let Some(prev_line) = editor.buffer().line(line_idx - 1) {
-                let prev_line_len = prev_line.trim_end_matches('\n').chars().count();
-                editor.buffer_mut().cursor_mut().set_position(line_idx - 1, prev_line_len);
-            }
+            let prev_line_len = editor.buffer().line(line_idx - 1)
+                .map(|s| s.trim_end_matches('\n').chars().count())
+                .unwrap_or(0);
+            (
+                (line_idx - 1, prev_line_len),
+                (line_idx, 0),
+                "\n".to_string(),
+            )
         } else {
-            // Delete character before cursor
+            // Delete character before cursor on same line
+            // Get the actual character to delete
+            let line_start = editor.buffer().rope().line_to_char(line_idx);
             let delete_pos = line_start + col - 1;
-            editor.buffer_mut().rope_mut().remove(delete_pos..delete_pos + 1);
-            editor.buffer_mut().cursor_mut().move_left(1);
-        }
+            let deleted_char = editor.buffer().rope()
+                .get_char(delete_pos)
+                .unwrap_or(' ');
+            (
+                (line_idx, col - 1),
+                (line_idx, col),
+                deleted_char.to_string(),
+            )
+        };
+
+        let range = Range::new(start_pos, end_pos);
+        let change = Change::delete(range, deleted_text, cursor_before);
+        change.apply(editor.buffer_mut());
+        editor.add_change(change);
 
         Ok(())
     }
@@ -921,30 +1304,25 @@ impl InputHandler {
         }
 
         let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
         let line_idx = cursor.line();
         let col = cursor.col();
 
         // Check if text contains newline (line paste vs character paste)
-        if text.contains('\n') {
+        let position = if text.contains('\n') {
             // Line paste - insert after current line
-            let line_start = editor.buffer().rope().line_to_char(line_idx);
             let line_len = editor.buffer().rope().line(line_idx).len_chars();
-            let insert_pos = line_start + line_len;
-
-            editor.buffer_mut().rope_mut().insert(insert_pos, &text);
-
-            // Move cursor to start of pasted text (next line)
-            editor.buffer_mut().cursor_mut().set_position(line_idx + 1, 0);
+            // For line paste, we insert at the end of current line (after newline if exists)
+            (line_idx, line_len)
         } else {
-            // Character paste - insert after cursor
-            let line_start = editor.buffer().rope().line_to_char(line_idx);
-            let insert_pos = line_start + col + 1;
+            // Character paste - insert after cursor (col + 1)
+            (line_idx, col + 1)
+        };
 
-            editor.buffer_mut().rope_mut().insert(insert_pos, &text);
-
-            // Move cursor to last character of pasted text
-            editor.buffer_mut().cursor_mut().set_col(col + text.chars().count());
-        }
+        // Create and apply the change
+        let change = Change::insert(position, text, cursor_before);
+        change.apply(editor.buffer_mut());
+        editor.add_change(change);
 
         Ok(())
     }
@@ -956,28 +1334,23 @@ impl InputHandler {
         }
 
         let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
         let line_idx = cursor.line();
         let col = cursor.col();
 
         // Check if text contains newline (line paste vs character paste)
-        if text.contains('\n') {
-            // Line paste - insert before current line
-            let line_start = editor.buffer().rope().line_to_char(line_idx);
-
-            editor.buffer_mut().rope_mut().insert(line_start, &text);
-
-            // Move cursor to start of pasted text
-            editor.buffer_mut().cursor_mut().set_col(0);
+        let position = if text.contains('\n') {
+            // Line paste - insert before current line (at start of line)
+            (line_idx, 0)
         } else {
             // Character paste - insert at cursor
-            let line_start = editor.buffer().rope().line_to_char(line_idx);
-            let insert_pos = line_start + col;
+            (line_idx, col)
+        };
 
-            editor.buffer_mut().rope_mut().insert(insert_pos, &text);
-
-            // Move cursor to last character of pasted text
-            editor.buffer_mut().cursor_mut().set_col(col + text.chars().count().saturating_sub(1));
-        }
+        // Create and apply the change
+        let change = Change::insert(position, text, cursor_before);
+        change.apply(editor.buffer_mut());
+        editor.add_change(change);
 
         Ok(())
     }
@@ -1051,5 +1424,41 @@ impl InputHandler {
         }
 
         Ok(())
+    }
+
+    /// Clamps cursor to valid buffer bounds (line and column)
+    fn clamp_cursor_to_buffer(editor: &mut Editor) {
+        // First, clamp line to valid range
+        let line_count = editor.buffer().line_count();
+        if line_count == 0 {
+            // Empty buffer, set to 0,0
+            editor.buffer_mut().cursor_mut().set_position(0, 0);
+            return;
+        }
+
+        let cursor_line = editor.buffer().cursor().line();
+        let clamped_line = cursor_line.min(line_count.saturating_sub(1));
+
+        if cursor_line != clamped_line {
+            editor.buffer_mut().cursor_mut().set_line(clamped_line);
+        }
+
+        // Then, clamp column to valid range for the line
+        let current_line = editor.buffer().cursor().line();
+        if let Some(line) = editor.buffer().line(current_line) {
+            let line_text = line.trim_end_matches('\n');
+            let line_len = line_text.chars().count();
+            let cursor_col = editor.buffer().cursor().col();
+
+            if line_len == 0 {
+                // Empty line, set to column 0
+                if cursor_col != 0 {
+                    editor.buffer_mut().cursor_mut().set_col(0);
+                }
+            } else if cursor_col >= line_len {
+                // Past end of line, clamp to last character
+                editor.buffer_mut().cursor_mut().set_col(line_len - 1);
+            }
+        }
     }
 }

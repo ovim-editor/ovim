@@ -284,4 +284,236 @@ impl Motions {
 
         buffer.cursor_mut().set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
     }
+
+    /// Finds next occurrence of character on current line (f motion)
+    /// Returns true if character was found
+    pub fn find_char_forward(buffer: &mut Buffer, ch: char, count: usize) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= rope.len_lines() {
+            return false;
+        }
+
+        let line = rope.line(line_idx).to_string();
+        let line = line.trim_end_matches('\n');
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut found_count = 0;
+        for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+            if c == ch {
+                found_count += 1;
+                if found_count == count {
+                    buffer.cursor_mut().set_col(i);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Finds previous occurrence of character on current line (F motion)
+    /// Returns true if character was found
+    pub fn find_char_backward(buffer: &mut Buffer, ch: char, count: usize) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= rope.len_lines() {
+            return false;
+        }
+
+        let line = rope.line(line_idx).to_string();
+        let line = line.trim_end_matches('\n');
+        let chars: Vec<char> = line.chars().collect();
+
+        if col == 0 {
+            return false;
+        }
+
+        let mut found_count = 0;
+        for i in (0..col).rev() {
+            if chars[i] == ch {
+                found_count += 1;
+                if found_count == count {
+                    buffer.cursor_mut().set_col(i);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Finds next occurrence and positions cursor before it (t motion)
+    /// Returns true if character was found
+    pub fn till_char_forward(buffer: &mut Buffer, ch: char, count: usize) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= rope.len_lines() {
+            return false;
+        }
+
+        let line = rope.line(line_idx).to_string();
+        let line = line.trim_end_matches('\n');
+        let chars: Vec<char> = line.chars().collect();
+
+        let mut found_count = 0;
+        for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+            if c == ch {
+                found_count += 1;
+                if found_count == count {
+                    // Position cursor one before the character
+                    if i > 0 {
+                        buffer.cursor_mut().set_col(i - 1);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Finds previous occurrence and positions cursor after it (T motion)
+    /// Returns true if character was found
+    pub fn till_char_backward(buffer: &mut Buffer, ch: char, count: usize) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= rope.len_lines() {
+            return false;
+        }
+
+        let line = rope.line(line_idx).to_string();
+        let line = line.trim_end_matches('\n');
+        let chars: Vec<char> = line.chars().collect();
+
+        if col == 0 {
+            return false;
+        }
+
+        let mut found_count = 0;
+        for i in (0..col).rev() {
+            if chars[i] == ch {
+                found_count += 1;
+                if found_count == count {
+                    // Position cursor one after the character
+                    if i + 1 < chars.len() {
+                        buffer.cursor_mut().set_col(i + 1);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Jump to matching bracket/paren/brace (% motion)
+    /// Returns true if a match was found
+    pub fn jump_to_matching_bracket(buffer: &mut Buffer) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= rope.len_lines() {
+            return false;
+        }
+
+        // Get all text from buffer to search across lines
+        let text = rope.to_string();
+        let chars: Vec<char> = text.chars().collect();
+
+        // Convert line+col to absolute position
+        let mut abs_pos = 0;
+        for i in 0..line_idx {
+            if i < rope.len_lines() {
+                abs_pos += rope.line(i).len_chars();
+            }
+        }
+        abs_pos += col;
+
+        if abs_pos >= chars.len() {
+            return false;
+        }
+
+        let current_char = chars[abs_pos];
+
+        // Determine if we're on a bracket and its type
+        let (is_opening, matching_char) = match current_char {
+            '(' => (true, ')'),
+            ')' => (false, '('),
+            '[' => (true, ']'),
+            ']' => (false, '['),
+            '{' => (true, '}'),
+            '}' => (false, '{'),
+            '<' => (true, '>'),
+            '>' => (false, '<'),
+            _ => return false, // Not on a bracket
+        };
+
+        // Search for matching bracket
+        let match_pos = if is_opening {
+            Self::find_matching_bracket_forward(&chars, abs_pos, current_char, matching_char)
+        } else {
+            Self::find_matching_bracket_backward(&chars, abs_pos, matching_char, current_char)
+        };
+
+        if let Some(pos) = match_pos {
+            // Convert absolute position back to line+col
+            let (new_line, new_col) = Self::abs_pos_to_line_col(rope, pos);
+            buffer.cursor_mut().set_position(new_line, new_col);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Find matching closing bracket searching forward
+    fn find_matching_bracket_forward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+        let mut depth = 1;
+        for (i, &ch) in chars.iter().enumerate().skip(start_pos + 1) {
+            if ch == open {
+                depth += 1;
+            } else if ch == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find matching opening bracket searching backward
+    fn find_matching_bracket_backward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+        let mut depth = 1;
+        for i in (0..start_pos).rev() {
+            let ch = chars[i];
+            if ch == close {
+                depth += 1;
+            } else if ch == open {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Convert absolute character position to (line, col)
+    fn abs_pos_to_line_col(rope: &ropey::Rope, abs_pos: usize) -> (usize, usize) {
+        let line = rope.char_to_line(abs_pos.min(rope.len_chars().saturating_sub(1)));
+        let line_start = rope.line_to_char(line);
+        let col = abs_pos.saturating_sub(line_start);
+        (line, col)
+    }
 }

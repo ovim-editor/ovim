@@ -95,6 +95,52 @@ impl Buffer {
         self.modified = false;
     }
 
+    /// Inserts text at a specific position (line, col)
+    pub fn insert_text_at(&mut self, line: usize, col: usize, text: &str) {
+        if line >= self.line_count() {
+            return;
+        }
+
+        let line_start = self.rope.line_to_char(line);
+        let insert_pos = line_start + col;
+
+        // Clamp to valid position
+        let insert_pos = insert_pos.min(self.rope.len_chars());
+
+        self.rope.insert(insert_pos, text);
+        self.modified = true;
+    }
+
+    /// Deletes text in a range and returns the deleted text
+    pub fn delete_range(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> String {
+        if start_line >= self.line_count() {
+            return String::new();
+        }
+
+        let start_line_char = self.rope.line_to_char(start_line);
+        let start_pos = start_line_char + start_col;
+
+        let end_pos = if end_line >= self.line_count() {
+            self.rope.len_chars()
+        } else {
+            let end_line_char = self.rope.line_to_char(end_line);
+            end_line_char + end_col
+        };
+
+        let start_pos = start_pos.min(self.rope.len_chars());
+        let end_pos = end_pos.min(self.rope.len_chars());
+
+        if start_pos >= end_pos {
+            return String::new();
+        }
+
+        let deleted = self.rope.slice(start_pos..end_pos).to_string();
+        self.rope.remove(start_pos..end_pos);
+        self.modified = true;
+
+        deleted
+    }
+
     /// Loads a file into the buffer
     pub fn load_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
@@ -127,6 +173,14 @@ impl Buffer {
         self.file_path = Some(path_str);
         self.modified = false;
         Ok(())
+    }
+
+    /// Replaces the entire buffer content
+    pub fn replace_all(&mut self, content: &str) {
+        self.rope = Rope::from_str(content);
+        self.modified = true;
+        // Reset cursor to beginning
+        self.cursor = Cursor::new(0, 0);
     }
 }
 
