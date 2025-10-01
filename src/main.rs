@@ -10,20 +10,13 @@ use crossterm::event::Event;
 use editor::{Editor, InputHandler};
 use ui::UI;
 use cli::Args;
-use api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, SuccessResponse, VisualSelection, parse_key_string};
+use api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, SuccessResponse, VisualSelection, parse_key_string};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse_args();
-
-    // Create UI with optional dimensions
-    let mut ui = if let Some(dimensions) = args.dimension {
-        UI::with_dimensions(Some(dimensions))?
-    } else {
-        UI::new()?
-    };
 
     // Load file from command line argument if provided
     let mut editor = if let Some(file_path) = &args.file {
@@ -42,7 +35,7 @@ async fn main() -> Result<()> {
     };
 
     // Set up API server if requested
-    let api_rx = if args.expose_rest_api {
+    let api_rx = if args.headless {
         let (tx, rx) = mpsc::unbounded_channel();
 
         // Spawn API server in a separate task
@@ -57,13 +50,46 @@ async fn main() -> Result<()> {
         // Give the server a moment to start and print its address
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        Some(rx)
+        // Run in headless mode (API only, no TUI)
+        run_headless_loop(&mut editor, rx).await?;
+        return Ok(());
     } else {
         None
     };
 
-    // Main event loop
+    // Create UI only if not running in API mode
+    let mut ui = if let Some(dimensions) = args.dimension {
+        UI::with_dimensions(Some(dimensions))?
+    } else {
+        UI::new()?
+    };
+
+    // Main event loop with TUI
     run_event_loop(&mut ui, &mut editor, api_rx).await?;
+
+    Ok(())
+}
+
+async fn run_headless_loop(
+    editor: &mut Editor,
+    mut api_rx: mpsc::UnboundedReceiver<ApiRequest>,
+) -> Result<()> {
+    loop {
+        // Wait for API requests (blocking)
+        match api_rx.recv().await {
+            Some(request) => {
+                handle_api_request(editor, request);
+                // Check if quit was requested
+                if editor.should_quit() {
+                    break;
+                }
+            }
+            None => {
+                // Channel closed, exit
+                break;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -197,6 +223,26 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     let marks = HashMap::new();
     // TODO: Add marks iteration when MarkManager supports it
 
+    // Get picker state if in picker mode
+    let picker = editor.picker().map(|p| {
+        PickerInfo {
+            mode: match p.mode() {
+                crate::editor::PickerMode::FindFiles => "FindFiles".to_string(),
+                crate::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
+            },
+            query: p.query().to_string(),
+            results: p.filtered_results().iter().map(|r| {
+                PickerResultInfo {
+                    display: r.display.clone(),
+                    location: r.location.clone(),
+                    line: r.line,
+                    col: r.col,
+                }
+            }).collect(),
+            selected_index: p.selected_index(),
+        }
+    });
+
     EditorSnapshot {
         buffer: buffer_info,
         cursor: cursor_pos,
@@ -204,6 +250,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         visual_selection,
         registers,
         marks,
+        picker,
     }
 }
 

@@ -36,6 +36,26 @@ pub struct EditorSnapshot {
     pub visual_selection: Option<VisualSelection>,
     pub registers: HashMap<String, String>,
     pub marks: HashMap<String, CursorPosition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picker: Option<PickerInfo>,
+}
+
+/// Picker state information
+#[derive(Debug, Clone, Serialize)]
+pub struct PickerInfo {
+    pub mode: String,
+    pub query: String,
+    pub results: Vec<PickerResultInfo>,
+    pub selected_index: usize,
+}
+
+/// Picker result information
+#[derive(Debug, Clone, Serialize)]
+pub struct PickerResultInfo {
+    pub display: String,
+    pub location: String,
+    pub line: usize,
+    pub col: usize,
 }
 
 /// Buffer information

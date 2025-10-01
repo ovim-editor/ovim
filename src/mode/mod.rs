@@ -17,6 +17,8 @@ pub enum Mode {
     Search,
     /// Replace mode - for replacing characters
     Replace,
+    /// Picker mode - for fuzzy finding files/grep
+    Picker,
 }
 
 impl Mode {
@@ -31,6 +33,7 @@ impl Mode {
             Mode::Command => "COMMAND",
             Mode::Search => "SEARCH",
             Mode::Replace => "REPLACE",
+            Mode::Picker => "PICKER",
         }
     }
 

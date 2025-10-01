@@ -4,6 +4,7 @@ mod macros;
 mod marks;
 mod motions;
 mod operators;
+mod picker;
 mod register;
 mod search;
 mod textobjects;
@@ -15,6 +16,7 @@ pub use macros::MacroManager;
 pub use marks::{JumpList, Mark, MarkManager};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
+pub use picker::{Picker, PickerMode, PickerResult};
 pub use register::RegisterManager;
 pub use search::Search;
 pub use textobjects::{TextObjectRange, TextObjects};
@@ -61,6 +63,12 @@ pub struct Editor {
     /// Last find motion (for ; and , repeat)
     /// (char, FindType::Find/Till, FindDirection::Forward/Backward)
     last_find: Option<(char, FindType, FindDirection)>,
+    /// Picker for fuzzy finding files/grep
+    picker: Option<Picker>,
+    /// Leader key (default: space)
+    leader_key: char,
+    /// Waiting for leader sequence (e.g., after pressing space)
+    pending_leader: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,6 +106,9 @@ impl Editor {
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
+            picker: None,
+            leader_key: ' ',
+            pending_leader: false,
         }
     }
 
@@ -123,6 +134,9 @@ impl Editor {
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
+            picker: None,
+            leader_key: ' ',
+            pending_leader: false,
         }
     }
 
@@ -179,6 +193,11 @@ impl Editor {
     /// Gets the current search
     pub fn current_search(&self) -> Option<&Search> {
         self.current_search.as_ref()
+    }
+
+    /// Sets the current search
+    pub fn set_current_search(&mut self, search: Search) {
+        self.current_search = Some(search);
     }
 
     /// Executes the current search and moves cursor to first match
@@ -514,6 +533,41 @@ impl Editor {
     /// Gets the last find motion
     pub fn get_last_find(&self) -> Option<(char, FindType, FindDirection)> {
         self.last_find
+    }
+
+    /// Sets the picker
+    pub fn set_picker(&mut self, picker: Picker) {
+        self.picker = Some(picker);
+    }
+
+    /// Gets a reference to the picker
+    pub fn picker(&self) -> Option<&Picker> {
+        self.picker.as_ref()
+    }
+
+    /// Gets a mutable reference to the picker
+    pub fn picker_mut(&mut self) -> Option<&mut Picker> {
+        self.picker.as_mut()
+    }
+
+    /// Closes the picker
+    pub fn close_picker(&mut self) {
+        self.picker = None;
+    }
+
+    /// Gets the leader key
+    pub fn leader_key(&self) -> char {
+        self.leader_key
+    }
+
+    /// Sets pending leader state
+    pub fn set_pending_leader(&mut self, pending: bool) {
+        self.pending_leader = pending;
+    }
+
+    /// Gets pending leader state
+    pub fn pending_leader(&self) -> bool {
+        self.pending_leader
     }
 }
 

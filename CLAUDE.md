@@ -35,15 +35,12 @@ cargo build --release
 # Run with a file
 cargo run -- myfile.txt
 
-# Run with REST API enabled (uses random available port)
-cargo run -- myfile.txt --expose-rest-api
+# Run in headless mode with REST API (no TUI, uses random available port)
+cargo run -- myfile.txt --headless
 # Output will show: API URL: http://127.0.0.1:<PORT>
 
 # Run with custom viewport dimensions
 cargo run -- myfile.txt --dimension=80x24
-
-# Combine options
-cargo run -- myfile.txt --expose-rest-api --dimension=120x40
 
 # Run tests
 cargo test
@@ -51,9 +48,9 @@ cargo test
 
 ## Testing the REST API
 
-1. **Start ovim with API enabled:**
+1. **Start ovim in headless mode:**
    ```bash
-   cargo run -- test.txt --expose-rest-api
+   cargo run -- test.txt --headless
    ```
    Note the port number from the output (e.g., `http://127.0.0.1:56789`)
 
@@ -80,16 +77,15 @@ cargo test
 
 ### Command-Line Options
 
-- **`--expose-rest-api`**: Enable the REST API server on `http://localhost:3000` for remote control and introspection
+- **`--headless`**: Run in headless mode with REST API enabled (no TUI). The API server runs on a dynamically allocated port (output shows: `API URL: http://127.0.0.1:<PORT>`)
 - **`--dimension=WIDTHxHEIGHT`**: Set the viewport dimensions (e.g., `80x24` for 80 columns by 24 rows). Useful for:
   - Automated testing with consistent dimensions
-  - Running in headless environments
   - Taking screenshots at specific sizes
   - Debugging rendering issues
 
 ## REST API
 
-When started with the `--expose-rest-api` flag, ovim exposes a REST API on `http://localhost:3000` that allows external tools to control and introspect the editor remotely.
+When started with the `--headless` flag, ovim runs in headless mode without a TUI and exposes a REST API on a dynamically allocated port that allows external tools to control and introspect the editor remotely.
 
 ### Use Cases
 
@@ -232,51 +228,52 @@ This design ensures thread safety and consistency without requiring complex lock
 
 ### Example Usage
 
-Start ovim with the REST API enabled:
+Start ovim in headless mode:
 ```bash
-cargo run -- myfile.txt --expose-rest-api
+cargo run -- myfile.txt --headless
+# Note the port from output: API URL: http://127.0.0.1:56789
 ```
 
-In a separate terminal, test the API:
+In a separate terminal, test the API (replace 56789 with your actual port):
 
 ```bash
 # Get editor snapshot
-curl http://localhost:3000/snapshot
+curl http://127.0.0.1:56789/snapshot
 
 # Send keys to delete a line
-curl -X POST http://localhost:3000/keys \
+curl -X POST http://127.0.0.1:56789/keys \
   -H "Content-Type: application/json" \
   -d '{"keys": "dd"}'
 
 # Get buffer content
-curl http://localhost:3000/buffer
+curl http://127.0.0.1:56789/buffer
 
 # Set buffer content
-curl -X PUT http://localhost:3000/buffer \
+curl -X PUT http://127.0.0.1:56789/buffer \
   -H "Content-Type: application/json" \
   -d '{"content": "Hello, World!\nThis is a test."}'
 
 # Get cursor position
-curl http://localhost:3000/cursor
+curl http://127.0.0.1:56789/cursor
 
 # Get current mode
-curl http://localhost:3000/mode
+curl http://127.0.0.1:56789/mode
 
 # Execute a save command
-curl -X POST http://localhost:3000/command \
+curl -X POST http://127.0.0.1:56789/command \
   -H "Content-Type: application/json" \
   -d '{"command": "w"}'
 
 # Complex example: navigate and edit
-curl -X POST http://localhost:3000/keys \
+curl -X POST http://127.0.0.1:56789/keys \
   -H "Content-Type: application/json" \
   -d '{"keys": "gg"}' # Go to first line
 
-curl -X POST http://localhost:3000/keys \
+curl -X POST http://127.0.0.1:56789/keys \
   -H "Content-Type: application/json" \
   -d '{"keys": "iHello "}' # Insert "Hello "
 
-curl -X POST http://localhost:3000/keys \
+curl -X POST http://127.0.0.1:56789/keys \
   -H "Content-Type: application/json" \
   -d '{"keys": "<Esc>"}' # Exit insert mode
 ```

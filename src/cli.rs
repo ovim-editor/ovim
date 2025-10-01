@@ -7,9 +7,9 @@ pub struct Args {
     /// File to open
     pub file: Option<String>,
 
-    /// Enable REST API server on localhost:3000
+    /// Run in headless mode with REST API enabled (no TUI)
     #[arg(long)]
-    pub expose_rest_api: bool,
+    pub headless: bool,
 
     /// Set viewport dimensions (e.g., 80x24)
     #[arg(long, value_parser = parse_dimensions)]
