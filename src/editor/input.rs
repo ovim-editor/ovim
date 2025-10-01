@@ -80,8 +80,97 @@ impl InputHandler {
 
         // Handle pending operator + motion (like 'dw', 'dd', 'yy')
         if let Some(operator) = editor.pending_operator() {
-            editor.clear_pending_operator();
             let count = editor.effective_count();
+
+            // Handle indent/dedent with motions - these are always line-wise
+            match (operator, key_event.code) {
+                (Operator::Indent, KeyCode::Char('G')) => {
+                    editor.clear_pending_operator();
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = if let Some(cnt) = editor.count() {
+                        cnt.saturating_sub(1)
+                    } else {
+                        editor.buffer().line_count().saturating_sub(1)
+                    };
+                    let tab_width = 4;
+
+                    Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Dedent, KeyCode::Char('G')) => {
+                    editor.clear_pending_operator();
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = if let Some(cnt) = editor.count() {
+                        cnt.saturating_sub(1)
+                    } else {
+                        editor.buffer().line_count().saturating_sub(1)
+                    };
+                    let tab_width = 4;
+
+                    Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Indent, KeyCode::Char('g')) => {
+                    // >gg - indent from current line to first line
+                    editor.set_pending_command('g');
+                    return Ok(());
+                }
+                (Operator::Dedent, KeyCode::Char('g')) => {
+                    // <gg - dedent from current line to first line
+                    editor.set_pending_command('g');
+                    return Ok(());
+                }
+                _ => {}
+            }
+
+            // Handle gg motion for indent/dedent
+            if let Some('g') = editor.pending_command() {
+                match (operator, key_event.code) {
+                    (Operator::Indent, KeyCode::Char('g')) => {
+                        editor.clear_pending_operator();
+                        editor.clear_pending_command();
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+                        let end_line = cursor.line();
+                        let start_line = if let Some(cnt) = editor.count() {
+                            cnt.saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        let tab_width = 4;
+
+                        Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                        editor.clear_count();
+                        return Ok(());
+                    }
+                    (Operator::Dedent, KeyCode::Char('g')) => {
+                        editor.clear_pending_operator();
+                        editor.clear_pending_command();
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+                        let end_line = cursor.line();
+                        let start_line = if let Some(cnt) = editor.count() {
+                            cnt.saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        let tab_width = 4;
+
+                        Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                        editor.clear_count();
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+
+            editor.clear_pending_operator();
 
             match (operator, key_event.code) {
                 // Delete operations
@@ -393,6 +482,82 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                // Indent operations
+                (Operator::Indent, KeyCode::Char('>')) => {
+                    // >> - indent line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = start_line + count;
+                    let tab_width = 4; // TODO: get from settings
+
+                    Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Indent, KeyCode::Char('j')) | (Operator::Indent, KeyCode::Down) => {
+                    // >j - indent current and next line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = start_line + count + 1;
+                    let tab_width = 4;
+
+                    Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Indent, KeyCode::Char('k')) | (Operator::Indent, KeyCode::Up) => {
+                    // >k - indent current and previous line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let current_line = cursor.line();
+                    let start_line = current_line.saturating_sub(count);
+                    let end_line = current_line + 1;
+                    let tab_width = 4;
+
+                    Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                // Dedent operations
+                (Operator::Dedent, KeyCode::Char('<')) => {
+                    // << - dedent line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = start_line + count;
+                    let tab_width = 4; // TODO: get from settings
+
+                    Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Dedent, KeyCode::Char('j')) | (Operator::Dedent, KeyCode::Down) => {
+                    // <j - dedent current and next line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = start_line + count + 1;
+                    let tab_width = 4;
+
+                    Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Dedent, KeyCode::Char('k')) | (Operator::Dedent, KeyCode::Up) => {
+                    // <k - dedent current and previous line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let current_line = cursor.line();
+                    let start_line = current_line.saturating_sub(count);
+                    let end_line = current_line + 1;
+                    let tab_width = 4;
+
+                    Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
                 _ => {
                     // Unknown operator+motion combo
                     editor.clear_count();
@@ -502,6 +667,8 @@ impl InputHandler {
 
                             editor.set_mode(Mode::Insert);
                         }
+                        // Indent/dedent don't make sense with text objects, just ignore
+                        Operator::Indent | Operator::Dedent => {}
                     }
                 }
 
@@ -712,6 +879,16 @@ impl InputHandler {
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
                     editor.buffer_mut().cursor_mut().set_col(col);
                 }
+                editor.clear_count();
+            }
+            KeyCode::Char('^') => {
+                // ^ - move to first non-blank character
+                Motions::first_non_blank(editor.buffer_mut());
+                editor.clear_count();
+            }
+            KeyCode::Char('_') => {
+                // _ - move to first non-blank character (same as ^)
+                Motions::first_non_blank_underscore(editor.buffer_mut());
                 editor.clear_count();
             }
             // Count prefix
@@ -949,6 +1126,28 @@ impl InputHandler {
                 Motions::jump_to_matching_bracket(editor.buffer_mut());
                 editor.clear_count();
             }
+            // Paragraph motions
+            KeyCode::Char('}') => {
+                let count = editor.effective_count();
+                Motions::paragraph_forward(editor.buffer_mut(), count);
+                editor.clear_count();
+            }
+            KeyCode::Char('{') => {
+                let count = editor.effective_count();
+                Motions::paragraph_backward(editor.buffer_mut(), count);
+                editor.clear_count();
+            }
+            // Sentence motions
+            KeyCode::Char(')') => {
+                let count = editor.effective_count();
+                Motions::sentence_forward(editor.buffer_mut(), count);
+                editor.clear_count();
+            }
+            KeyCode::Char('(') => {
+                let count = editor.effective_count();
+                Motions::sentence_backward(editor.buffer_mut(), count);
+                editor.clear_count();
+            }
             // Operators
             KeyCode::Char('d') => {
                 editor.set_pending_operator(Operator::Delete);
@@ -958,6 +1157,12 @@ impl InputHandler {
             }
             KeyCode::Char('c') => {
                 editor.set_pending_operator(Operator::Change);
+            }
+            KeyCode::Char('>') => {
+                editor.set_pending_operator(Operator::Indent);
+            }
+            KeyCode::Char('<') => {
+                editor.set_pending_operator(Operator::Dedent);
             }
             // Simple delete commands
             KeyCode::Char('x') => {
@@ -1058,6 +1263,76 @@ impl InputHandler {
             KeyCode::Char('P') => {
                 // P - paste before cursor
                 Self::paste_before(editor)?;
+                editor.clear_count();
+            }
+            // Join lines
+            KeyCode::Char('J') => {
+                // J - join current line with next line
+                let count = editor.effective_count();
+                Self::join_lines(editor, count)?;
+                editor.clear_count();
+            }
+            // Substitute
+            KeyCode::Char('s') => {
+                // s - substitute character(s) under cursor
+                let count = editor.effective_count();
+                let cursor = editor.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let line_idx = cursor.line();
+                let col = cursor.col();
+
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    let line_text = line.trim_end_matches('\n');
+                    let chars_count = line_text.chars().count();
+
+                    if col < chars_count {
+                        let end_col = (col + count).min(chars_count);
+                        let start_pos = (line_idx, col);
+                        let end_pos = (line_idx, end_col);
+
+                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, end_col);
+                        let range = Range::new(start_pos, end_pos);
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.registers_mut().delete(deleted);
+                        editor.add_change(change);
+
+                        // Clamp cursor to buffer bounds
+                        Self::clamp_cursor_to_buffer(editor);
+                    }
+                }
+                editor.clear_count();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
+                editor.set_mode(Mode::Insert);
+            }
+            KeyCode::Char('S') => {
+                // S - substitute entire line
+                let cursor = editor.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let start_line = cursor.line();
+                let count = editor.effective_count();
+                let end_line = (start_line + count).min(editor.buffer().line_count());
+
+                let start_pos = (start_line, 0);
+                let end_pos = (end_line, 0);
+
+                let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+                let range = Range::new(start_pos, end_pos);
+                let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                editor.registers_mut().delete(deleted);
+                editor.add_change(change);
+                editor.clear_count();
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                editor.start_change_building(cursor_before);
+                editor.set_mode(Mode::Insert);
+                Self::insert_line_above(editor)?;
+            }
+            // Toggle case
+            KeyCode::Char('~') => {
+                // ~ - toggle case of character under cursor
+                Self::toggle_case_at_cursor(editor)?;
                 editor.clear_count();
             }
             // Undo/Redo
@@ -1192,6 +1467,29 @@ impl InputHandler {
                 let cursor = editor.buffer().cursor();
                 editor.set_visual_start(cursor.line(), 0);
                 editor.set_mode(Mode::VisualLine);
+            }
+            // Indent/dedent in visual mode
+            KeyCode::Char('>') => {
+                if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let tab_width = 4;
+
+                    Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                }
+                editor.clear_visual_start();
+                editor.set_mode(Mode::Normal);
+            }
+            KeyCode::Char('<') => {
+                if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let tab_width = 4;
+
+                    Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                }
+                editor.clear_visual_start();
+                editor.set_mode(Mode::Normal);
             }
             _ => {}
         }
@@ -1695,6 +1993,134 @@ impl InputHandler {
 
                     let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
                     editor.registers_mut().yank(yanked);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let start_line = cursor.line();
+
+        // Join count lines (minimum 1, which joins current with next)
+        let lines_to_join = count.max(1);
+
+        for _ in 0..lines_to_join {
+            let line_idx = start_line;
+
+            // Don't join if we're on the last line
+            if line_idx >= editor.buffer().line_count().saturating_sub(1) {
+                break;
+            }
+
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let line_len = line_text.chars().count();
+
+                // Delete the newline at the end of the current line
+                let start_pos = (line_idx, line_len);
+                let end_pos = (line_idx + 1, 0);
+
+                let deleted = editor.buffer_mut().delete_range(line_idx, line_len, line_idx + 1, 0);
+
+                // Insert a space where the newline was
+                let insert_pos = (line_idx, line_len);
+                editor.buffer_mut().insert_text_at(line_idx, line_len, " ");
+
+                // Record the change
+                let range = Range::new(start_pos, end_pos);
+                let change = Change::delete(range, deleted, cursor_before);
+                editor.add_change(change);
+            }
+        }
+
+        // Position cursor at the join point
+        if let Some(line) = editor.buffer().line(start_line) {
+            let line_len = line.trim_end_matches('\n').chars().count();
+            editor.buffer_mut().cursor_mut().set_position(start_line, line_len.saturating_sub(1).max(0));
+        }
+
+        Ok(())
+    }
+
+    fn indent_lines_with_tracking(editor: &mut Editor, start_line: usize, end_line: usize, tab_width: usize, cursor_before: (usize, usize)) -> Result<()> {
+        for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
+            let indent_str = " ".repeat(tab_width);
+            let change = Change::insert((line_idx, 0), indent_str.clone(), cursor_before);
+            change.apply(editor.buffer_mut());
+            editor.add_change(change);
+        }
+        Ok(())
+    }
+
+    fn dedent_lines_with_tracking(editor: &mut Editor, start_line: usize, end_line: usize, tab_width: usize, cursor_before: (usize, usize)) -> Result<()> {
+        for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let chars: Vec<char> = line_text.chars().collect();
+                let mut spaces_to_remove = 0;
+
+                for &ch in chars.iter().take(tab_width) {
+                    if ch == ' ' {
+                        spaces_to_remove += 1;
+                    } else if ch == '\t' {
+                        spaces_to_remove = tab_width;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                if spaces_to_remove > 0 {
+                    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, spaces_to_remove);
+                    let range = Range::new((line_idx, 0), (line_idx, spaces_to_remove));
+                    let change = Change::delete(range, deleted, cursor_before);
+                    editor.add_change(change);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if let Some(line) = editor.buffer().line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            let chars: Vec<char> = line_text.chars().collect();
+
+            if col < chars.len() {
+                let ch = chars[col];
+                let toggled = if ch.is_lowercase() {
+                    ch.to_uppercase().to_string()
+                } else {
+                    ch.to_lowercase().to_string()
+                };
+
+                // Delete the character
+                let start_pos = (line_idx, col);
+                let end_pos = (line_idx, col + 1);
+                let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
+                let range = Range::new(start_pos, end_pos);
+                let delete_change = Change::delete(range, deleted, cursor_before);
+
+                // Insert the toggled character
+                let insert_change = Change::insert((line_idx, col), toggled.clone(), cursor_before);
+                insert_change.apply(editor.buffer_mut());
+
+                editor.add_change(delete_change);
+                editor.add_change(insert_change);
+
+                // Move cursor right (Vim behavior)
+                let new_col = col + toggled.chars().count();
+                if new_col < chars.len() {
+                    editor.buffer_mut().cursor_mut().set_col(new_col);
                 }
             }
         }

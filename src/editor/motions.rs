@@ -516,4 +516,231 @@ impl Motions {
         let col = abs_pos.saturating_sub(line_start);
         (line, col)
     }
+
+    /// Move to first non-blank character on line (^ motion)
+    pub fn first_non_blank(buffer: &mut Buffer) {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+
+        if let Some(line) = buffer.line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            let chars: Vec<char> = line_text.chars().collect();
+
+            // Find first non-whitespace character
+            let first_non_blank = chars.iter()
+                .position(|&c| !c.is_whitespace())
+                .unwrap_or(0);
+
+            buffer.cursor_mut().set_col(first_non_blank);
+        }
+    }
+
+    /// Move to first non-blank character on line (_ motion, same as ^)
+    pub fn first_non_blank_underscore(buffer: &mut Buffer) {
+        Self::first_non_blank(buffer);
+    }
+
+    /// Move forward to start of next paragraph ({ and } motions)
+    pub fn paragraph_forward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            Self::paragraph_forward_once(buffer);
+        }
+    }
+
+    fn paragraph_forward_once(buffer: &mut Buffer) {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let mut line_idx = cursor.line();
+
+        // Skip current paragraph (non-blank lines)
+        while line_idx < rope.len_lines() {
+            if let Some(line) = buffer.line(line_idx) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+            }
+            line_idx += 1;
+        }
+
+        // Skip blank lines
+        while line_idx < rope.len_lines() {
+            if let Some(line) = buffer.line(line_idx) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    break;
+                }
+            }
+            line_idx += 1;
+        }
+
+        // Clamp to buffer bounds
+        line_idx = line_idx.min(rope.len_lines().saturating_sub(1));
+        buffer.cursor_mut().set_position(line_idx, 0);
+    }
+
+    /// Move backward to start of previous paragraph
+    pub fn paragraph_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            Self::paragraph_backward_once(buffer);
+        }
+    }
+
+    fn paragraph_backward_once(buffer: &mut Buffer) {
+        let cursor = buffer.cursor();
+        let mut line_idx = cursor.line();
+
+        if line_idx == 0 {
+            return;
+        }
+
+        line_idx = line_idx.saturating_sub(1);
+
+        // Skip blank lines
+        while line_idx > 0 {
+            if let Some(line) = buffer.line(line_idx) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    break;
+                }
+            }
+            line_idx = line_idx.saturating_sub(1);
+        }
+
+        // Skip current paragraph (non-blank lines)
+        while line_idx > 0 {
+            if let Some(line) = buffer.line(line_idx.saturating_sub(1)) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+            }
+            line_idx = line_idx.saturating_sub(1);
+        }
+
+        buffer.cursor_mut().set_position(line_idx, 0);
+    }
+
+    /// Move forward to start of next sentence (( and ) motions)
+    pub fn sentence_forward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            Self::sentence_forward_once(buffer);
+        }
+    }
+
+    fn sentence_forward_once(buffer: &mut Buffer) {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Get text from current position onwards
+        let mut current_line = line_idx;
+        let mut current_col = col + 1;
+
+        // Look for sentence-ending punctuation (.!?) followed by space/newline
+        while current_line < rope.len_lines() {
+            if let Some(line) = buffer.line(current_line) {
+                let chars: Vec<char> = line.chars().collect();
+
+                while current_col < chars.len() {
+                    let ch = chars[current_col];
+                    if ch == '.' || ch == '!' || ch == '?' {
+                        // Check if followed by space or at end of line
+                        if current_col + 1 >= chars.len() || chars[current_col + 1].is_whitespace() {
+                            // Skip whitespace after punctuation
+                            current_col += 1;
+                            while current_col < chars.len() && chars[current_col].is_whitespace() {
+                                current_col += 1;
+                            }
+
+                            if current_col >= chars.len() {
+                                // Move to next line
+                                if current_line + 1 < rope.len_lines() {
+                                    buffer.cursor_mut().set_position(current_line + 1, 0);
+                                } else {
+                                    buffer.cursor_mut().set_position(current_line, chars.len().saturating_sub(1).max(0));
+                                }
+                            } else {
+                                buffer.cursor_mut().set_position(current_line, current_col);
+                            }
+                            return;
+                        }
+                    }
+                    current_col += 1;
+                }
+            }
+
+            current_line += 1;
+            current_col = 0;
+        }
+
+        // No sentence found, move to end of buffer
+        let last_line = rope.len_lines().saturating_sub(1);
+        buffer.cursor_mut().set_position(last_line, 0);
+    }
+
+    /// Move backward to start of previous sentence
+    pub fn sentence_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            Self::sentence_backward_once(buffer);
+        }
+    }
+
+    fn sentence_backward_once(buffer: &mut Buffer) {
+        let cursor = buffer.cursor();
+        let mut line_idx = cursor.line();
+        let mut col = cursor.col();
+
+        if col == 0 && line_idx == 0 {
+            return;
+        }
+
+        // Move back one position
+        if col > 0 {
+            col -= 1;
+        } else if line_idx > 0 {
+            line_idx -= 1;
+            if let Some(line) = buffer.line(line_idx) {
+                col = line.trim_end_matches('\n').chars().count().saturating_sub(1);
+            }
+        }
+
+        // Look for sentence-ending punctuation (.!?) followed by space/newline
+        loop {
+            if let Some(line) = buffer.line(line_idx) {
+                let chars: Vec<char> = line.chars().collect();
+
+                while col > 0 {
+                    let ch = chars[col];
+                    if ch == '.' || ch == '!' || ch == '?' {
+                        // Found sentence end, move past it
+                        col += 1;
+                        // Skip whitespace
+                        while col < chars.len() && chars[col].is_whitespace() {
+                            col += 1;
+                        }
+
+                        if col >= chars.len() && line_idx + 1 < buffer.rope().len_lines() {
+                            buffer.cursor_mut().set_position(line_idx + 1, 0);
+                        } else {
+                            buffer.cursor_mut().set_position(line_idx, col.min(chars.len().saturating_sub(1)));
+                        }
+                        return;
+                    }
+                    col = col.saturating_sub(1);
+                }
+            }
+
+            if line_idx == 0 {
+                buffer.cursor_mut().set_position(0, 0);
+                return;
+            }
+
+            line_idx -= 1;
+            if let Some(line) = buffer.line(line_idx) {
+                col = line.trim_end_matches('\n').chars().count().saturating_sub(1);
+            }
+        }
+    }
 }
