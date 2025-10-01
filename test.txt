@@ -10,3 +10,5 @@ Try these commands:
 - :q! (force quit)
 - :e <filename> (edit another file)
 - :w <filename> (save as)
+
+Hello world

@@ -198,7 +198,14 @@ impl Operators {
             buffer.rope().len_chars()
         };
 
-        Ok(buffer.rope().slice(start_char..end_char).to_string())
+        let mut yanked = buffer.rope().slice(start_char..end_char).to_string();
+
+        // Ensure line yanks always end with newline (for line-wise paste behavior)
+        if !yanked.ends_with('\n') {
+            yanked.push('\n');
+        }
+
+        Ok(yanked)
     }
 
     /// Yanks a word forward from cursor

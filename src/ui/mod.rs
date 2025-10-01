@@ -15,7 +15,12 @@ pub struct UI {
 impl UI {
     /// Creates a new UI instance
     pub fn new() -> Result<Self> {
-        let terminal = Terminal::new()?;
+        Self::with_dimensions(None)
+    }
+
+    /// Creates a new UI instance with optional custom dimensions
+    pub fn with_dimensions(dimensions: Option<(u16, u16)>) -> Result<Self> {
+        let terminal = Terminal::new(dimensions)?;
         let renderer = Renderer::new();
         Ok(Self { terminal, renderer })
     }
