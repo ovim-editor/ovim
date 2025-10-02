@@ -1,4 +1,4 @@
-; Keywords
+; Keywords - use valid keyword tokens from tree-sitter-rust
 [
   "as"
   "async"
@@ -18,7 +18,6 @@
   "match"
   "mod"
   "move"
-  "mut"
   "pub"
   "ref"
   "return"
@@ -31,6 +30,9 @@
   "where"
   "while"
 ] @keyword
+
+; Mutable specifier
+(mutable_specifier) @keyword
 
 ; Function definitions
 (function_item name: (identifier) @function)
