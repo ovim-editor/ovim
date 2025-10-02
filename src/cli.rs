@@ -14,6 +14,10 @@ pub struct Args {
     /// Set viewport dimensions (e.g., 80x24)
     #[arg(long, value_parser = parse_dimensions)]
     pub dimension: Option<(u16, u16)>,
+
+    /// Render the editor to ANSI and exit (useful for debugging)
+    #[arg(long)]
+    pub render: bool,
 }
 
 /// Parse dimension string like "80x24" into (width, height)

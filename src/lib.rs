@@ -1,6 +1,7 @@
 pub mod api;
-pub mod buffer;
 pub mod cli;
-pub mod editor;
 pub mod mode;
+pub mod syntax;
+pub mod buffer;
+pub mod editor;
 pub mod ui;

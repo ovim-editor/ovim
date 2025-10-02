@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use ropey::Rope;
 use std::fs;
 use std::path::Path;
+use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
+use std::ops::Range;
 
 /// Represents a text buffer using a Rope data structure for efficient editing
 pub struct Buffer {
@@ -17,6 +19,8 @@ pub struct Buffer {
     modified: bool,
     /// Optional file path for this buffer
     file_path: Option<String>,
+    /// Optional syntax highlighter
+    syntax: Option<SyntaxHighlighter>,
 }
 
 impl Buffer {
@@ -27,6 +31,7 @@ impl Buffer {
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: None,
+            syntax: None,
         }
     }
 
@@ -37,6 +42,7 @@ impl Buffer {
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: None,
+            syntax: None,
         }
     }
 
@@ -147,12 +153,18 @@ impl Buffer {
         let content = fs::read_to_string(&path)
             .context(format!("Failed to read file: {}", path_str))?;
 
-        Ok(Self {
+        let mut buffer = Self {
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: Some(path_str),
-        })
+            syntax: None,
+        };
+
+        // Enable syntax highlighting based on file extension
+        buffer.enable_syntax_highlighting();
+
+        Ok(buffer)
     }
 
     /// Saves the buffer to its file path
@@ -222,6 +234,34 @@ impl Buffer {
 
         let word: String = chars[start..end].iter().collect();
         Some((word, start, end))
+    }
+
+    /// Enables syntax highlighting for this buffer based on file path
+    pub fn enable_syntax_highlighting(&mut self) {
+        if let Some(ref path) = self.file_path {
+            if let Some(lang) = LanguageRegistry::detect_from_path(path) {
+                if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
+                    highlighter.parse(&self.rope.to_string());
+                    self.syntax = Some(highlighter);
+                }
+            }
+        }
+    }
+
+    /// Gets syntax highlights for a specific line
+    /// Returns a list of (column_range, highlight_group) tuples
+    pub fn highlights_for_line(&self, line_idx: usize) -> Vec<(Range<usize>, HighlightGroup)> {
+        if let Some(ref syntax) = self.syntax {
+            let source = self.rope.to_string();
+            syntax.highlights_for_line(line_idx, &source)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Checks if syntax highlighting is enabled
+    pub fn has_syntax_highlighting(&self) -> bool {
+        self.syntax.is_some()
     }
 }
 

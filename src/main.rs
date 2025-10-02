@@ -1,3 +1,4 @@
+mod syntax;
 mod buffer;
 mod editor;
 mod ui;
@@ -10,7 +11,7 @@ use crossterm::event::Event;
 use editor::{Editor, InputHandler};
 use ui::UI;
 use cli::Args;
-use api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, SuccessResponse, VisualSelection, parse_key_string};
+use api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -33,6 +34,21 @@ async fn main() -> Result<()> {
             "Welcome to ovim!\n\nA Neovim clone written in Rust.\n\nPress 'i' to enter Insert mode.\nPress Ctrl+Q to quit.\n"
         )
     };
+
+    // Handle --render flag (render to ANSI and exit)
+    if args.render {
+        let (width, height) = args.dimension.unwrap_or((80, 24));
+        match editor.render_to_ansi(width, height) {
+            Ok(ansi) => {
+                print!("{}", ansi);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Failed to render: {}", e);
+                return Err(e);
+            }
+        }
+    }
 
     // Set up API server if requested
     let api_rx = if args.headless {
@@ -183,6 +199,27 @@ fn handle_api_request(editor: &mut Editor, request: ApiRequest) {
         ApiRequest::ExecuteCommand(command, tx) => {
             let response = execute_command(editor, &command);
             let _ = tx.send(response);
+        }
+        ApiRequest::GetRender(tx) => {
+            // Default dimensions: 80x24
+            const DEFAULT_WIDTH: u16 = 80;
+            const DEFAULT_HEIGHT: u16 = 24;
+
+            match editor.render_to_ansi(DEFAULT_WIDTH, DEFAULT_HEIGHT) {
+                Ok(ansi) => {
+                    let render_info = RenderInfo {
+                        width: DEFAULT_WIDTH,
+                        height: DEFAULT_HEIGHT,
+                        ansi,
+                    };
+                    let _ = tx.send(ApiResponse::Render(render_info));
+                }
+                Err(e) => {
+                    let _ = tx.send(ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to render: {}", e),
+                    }));
+                }
+            }
         }
     }
 }
