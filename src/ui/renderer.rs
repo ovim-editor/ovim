@@ -1,5 +1,6 @@
 use crate::buffer::Buffer;
 use crate::editor::Editor;
+use crate::syntax::Theme;
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
 use ratatui::{
@@ -15,6 +16,7 @@ use std::io;
 /// Handles rendering the editor state to the terminal
 pub struct Renderer {
     terminal: RatatuiTerminal<CrosstermBackend<io::Stdout>>,
+    theme: Theme,
 }
 
 impl Renderer {
@@ -22,7 +24,76 @@ impl Renderer {
     pub fn new() -> Self {
         let backend = CrosstermBackend::new(io::stdout());
         let terminal = RatatuiTerminal::new(backend).expect("Failed to create terminal");
-        Self { terminal }
+        Self {
+            terminal,
+            theme: Theme::default(),
+        }
+    }
+
+    /// Renders editor to a frame (used by both TUI and headless rendering)
+    pub fn render_to_frame(frame: &mut Frame, editor: &Editor) {
+        let theme = Theme::default();
+        let cursor_pos = editor.buffer().cursor();
+        let cursor_line = cursor_pos.line();
+        let cursor_col = cursor_pos.col();
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+            .split(frame.area());
+
+        // Render the main text area
+        let viewport_start = Self::render_buffer(frame, editor, &theme, chunks[0]);
+
+        // Render the status line or command line or search line
+        if editor.mode() == crate::mode::Mode::Command {
+            Self::render_command_line(frame, editor, chunks[1]);
+        } else if editor.mode() == crate::mode::Mode::Search {
+            Self::render_search_line(frame, editor, chunks[1]);
+        } else {
+            Self::render_status_line(frame, editor, chunks[1]);
+        }
+
+        // Render picker overlay if in Picker mode
+        if editor.mode() == crate::mode::Mode::Picker {
+            Self::render_picker(frame, editor, frame.area());
+        }
+
+        // Set hardware cursor position
+        if editor.mode() == crate::mode::Mode::Picker {
+            // Position cursor in picker query line (after the query text)
+            if let Some(picker) = editor.picker() {
+                let query_len = picker.query().len();
+                let picker_area = Self::get_picker_area(frame.area());
+                frame.set_cursor_position((
+                    picker_area.x + 1 + 2 + query_len as u16, // +1 for border, +2 for "> " prefix
+                    picker_area.y + 1, // +1 for border
+                ));
+            }
+        } else if editor.mode() == crate::mode::Mode::Command {
+            // Position cursor in command line
+            let cmd_cursor_x = (editor.command_line().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
+            frame.set_cursor_position((
+                chunks[1].x + cmd_cursor_x as u16,
+                chunks[1].y,
+            ));
+        } else if editor.mode() == crate::mode::Mode::Search {
+            // Position cursor in search line
+            let search_cursor_x = (editor.search_buffer().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
+            frame.set_cursor_position((
+                chunks[1].x + search_cursor_x as u16,
+                chunks[1].y,
+            ));
+        } else {
+            // Position cursor in text buffer
+            let screen_line = cursor_line.saturating_sub(viewport_start);
+            let cursor_x = cursor_col.min(chunks[0].width.saturating_sub(1) as usize);
+            let cursor_y = screen_line.min(chunks[0].height.saturating_sub(1) as usize);
+            frame.set_cursor_position((
+                chunks[0].x + cursor_x as u16,
+                chunks[0].y + cursor_y as u16,
+            ));
+        }
     }
 
     /// Renders the editor state to the terminal
@@ -37,74 +108,14 @@ impl Renderer {
         };
         crossterm::execute!(io::stdout(), cursor_style)?;
 
-        let cursor_pos = editor.buffer().cursor();
-        let cursor_line = cursor_pos.line();
-        let cursor_col = cursor_pos.col();
-
         self.terminal.draw(|frame| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
-                .split(frame.area());
-
-            // Render the main text area
-            let viewport_start = Self::render_buffer(frame, editor, chunks[0]);
-
-            // Render the status line or command line or search line
-            if editor.mode() == crate::mode::Mode::Command {
-                Self::render_command_line(frame, editor, chunks[1]);
-            } else if editor.mode() == crate::mode::Mode::Search {
-                Self::render_search_line(frame, editor, chunks[1]);
-            } else {
-                Self::render_status_line(frame, editor, chunks[1]);
-            }
-
-            // Render picker overlay if in Picker mode
-            if editor.mode() == crate::mode::Mode::Picker {
-                Self::render_picker(frame, editor, frame.area());
-            }
-
-            // Set hardware cursor position
-            if editor.mode() == crate::mode::Mode::Picker {
-                // Position cursor in picker query line (after the query text)
-                if let Some(picker) = editor.picker() {
-                    let query_len = picker.query().len();
-                    let picker_area = Self::get_picker_area(frame.area());
-                    frame.set_cursor_position((
-                        picker_area.x + 1 + 2 + query_len as u16, // +1 for border, +2 for "> " prefix
-                        picker_area.y + 1, // +1 for border
-                    ));
-                }
-            } else if editor.mode() == crate::mode::Mode::Command {
-                // Position cursor in command line
-                let cmd_cursor_x = (editor.command_line().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
-                frame.set_cursor_position((
-                    chunks[1].x + cmd_cursor_x as u16,
-                    chunks[1].y,
-                ));
-            } else if editor.mode() == crate::mode::Mode::Search {
-                // Position cursor in search line
-                let search_cursor_x = (editor.search_buffer().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
-                frame.set_cursor_position((
-                    chunks[1].x + search_cursor_x as u16,
-                    chunks[1].y,
-                ));
-            } else {
-                // Position cursor in text buffer
-                let screen_line = cursor_line.saturating_sub(viewport_start);
-                let cursor_x = cursor_col.min(chunks[0].width.saturating_sub(1) as usize);
-                let cursor_y = screen_line.min(chunks[0].height.saturating_sub(1) as usize);
-                frame.set_cursor_position((
-                    chunks[0].x + cursor_x as u16,
-                    chunks[0].y + cursor_y as u16,
-                ));
-            }
+            Self::render_to_frame(frame, editor);
         })?;
         Ok(())
     }
 
     /// Renders the buffer content and returns the viewport start line
-    fn render_buffer(frame: &mut Frame, editor: &Editor, area: Rect) -> usize {
+    fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) -> usize {
         let buffer = editor.buffer();
         let rope = buffer.rope();
         let cursor = buffer.cursor();
@@ -124,13 +135,16 @@ impl Renderer {
         // Get current search if active
         let current_search = editor.current_search();
 
-        // Build the visible text
+        // Build the visible text with syntax highlighting
         let mut lines = Vec::new();
         for line_idx in start_line..end_line {
             if line_idx < rope.len_lines() {
                 let line_text = rope.line(line_idx).to_string();
                 // Remove trailing newline if present
                 let line_text = line_text.trim_end_matches('\n');
+
+                // Get syntax highlights for this line
+                let syntax_highlights = buffer.highlights_for_line(line_idx);
 
                 // Check if we need special highlighting (visual selection or search)
                 let has_visual_selection = visual_selection
@@ -143,47 +157,19 @@ impl Renderer {
                     Vec::new()
                 };
 
-                if has_visual_selection || !search_matches.is_empty() {
-                    // Need character-by-character rendering
-                    let chars: Vec<char> = line_text.chars().collect();
-                    let mut spans = Vec::new();
+                // Always use character-by-character rendering if we have any highlighting
+                let needs_detailed_rendering = has_visual_selection || !search_matches.is_empty() || !syntax_highlights.is_empty();
 
-                    for (col_idx, ch) in chars.iter().enumerate() {
-                        // Check if this character is in visual selection
-                        let is_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
-                            if line_idx == sel_start_line && line_idx == sel_end_line {
-                                col_idx >= sel_start_col && col_idx <= sel_end_col
-                            } else if line_idx == sel_start_line {
-                                col_idx >= sel_start_col
-                            } else if line_idx == sel_end_line {
-                                col_idx <= sel_end_col
-                            } else if line_idx > sel_start_line && line_idx < sel_end_line {
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        // Check if this character is in a search match
-                        let is_search_match = search_matches.iter().any(|(start, end)| {
-                            col_idx >= *start && col_idx < *end
-                        });
-
-                        // Apply styling based on priority: visual selection > search match > normal
-                        let style = if is_selected {
-                            Style::default().bg(Color::Blue).fg(Color::White)
-                        } else if is_search_match {
-                            Style::default().bg(Color::Yellow).fg(Color::Black)
-                        } else {
-                            Style::default()
-                        };
-
-                        spans.push(Span::styled(ch.to_string(), style));
-                    }
-
-                    lines.push(Line::from(spans));
+                if needs_detailed_rendering {
+                    let line = Self::render_line_with_highlights(
+                        theme,
+                        line_text,
+                        line_idx,
+                        visual_selection,
+                        &search_matches,
+                        &syntax_highlights,
+                    );
+                    lines.push(line);
                 } else {
                     lines.push(Line::from(line_text.to_string()));
                 }
@@ -418,6 +404,106 @@ impl Renderer {
         let results_paragraph = Paragraph::new(all_lines)
             .style(Style::default().bg(Color::Black));
         frame.render_widget(results_paragraph, chunks[1]);
+    }
+
+    /// Renders a single line with all highlighting (syntax, visual selection, search)
+    fn render_line_with_highlights(
+        theme: &Theme,
+        line_text: &str,
+        line_idx: usize,
+        visual_selection: Option<((usize, usize), (usize, usize))>,
+        search_matches: &[(usize, usize)],
+        syntax_highlights: &[(std::ops::Range<usize>, crate::syntax::HighlightGroup)],
+    ) -> Line<'static> {
+        let chars: Vec<char> = line_text.chars().collect();
+        let mut spans = Vec::new();
+
+        let mut col_idx = 0;
+        while col_idx < chars.len() {
+            // Check if this character is in visual selection
+            let is_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
+                if line_idx == sel_start_line && line_idx == sel_end_line {
+                    col_idx >= sel_start_col && col_idx <= sel_end_col
+                } else if line_idx == sel_start_line {
+                    col_idx >= sel_start_col
+                } else if line_idx == sel_end_line {
+                    col_idx <= sel_end_col
+                } else if line_idx > sel_start_line && line_idx < sel_end_line {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            // Check if this character is in a search match
+            let is_search_match = search_matches.iter().any(|(start, end)| {
+                col_idx >= *start && col_idx < *end
+            });
+
+            // Check if this character is in a syntax highlight
+            let syntax_group = syntax_highlights.iter()
+                .find(|(range, _)| range.contains(&col_idx))
+                .map(|(_, group)| *group);
+
+            // Determine how many characters share the same styling
+            let mut end_col = col_idx + 1;
+            while end_col < chars.len() {
+                let next_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
+                    if line_idx == sel_start_line && line_idx == sel_end_line {
+                        end_col >= sel_start_col && end_col <= sel_end_col
+                    } else if line_idx == sel_start_line {
+                        end_col >= sel_start_col
+                    } else if line_idx == sel_end_line {
+                        end_col <= sel_end_col
+                    } else if line_idx > sel_start_line && line_idx < sel_end_line {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                let next_search_match = search_matches.iter().any(|(start, end)| {
+                    end_col >= *start && end_col < *end
+                });
+
+                let next_syntax_group = syntax_highlights.iter()
+                    .find(|(range, _)| range.contains(&end_col))
+                    .map(|(_, group)| *group);
+
+                // If styling changes, break
+                if next_selected != is_selected
+                    || next_search_match != is_search_match
+                    || next_syntax_group != syntax_group {
+                    break;
+                }
+
+                end_col += 1;
+            }
+
+            // Build the span for this range
+            let text: String = chars[col_idx..end_col].iter().collect();
+
+            // Apply styling based on priority: visual selection > search match > syntax > normal
+            let style = if is_selected {
+                Style::default().bg(Color::Blue).fg(Color::White)
+            } else if is_search_match {
+                Style::default().bg(Color::Yellow).fg(Color::Black)
+            } else if let Some(group) = syntax_group {
+                let color = theme.get_color(group);
+                Style::default().fg(color)
+            } else {
+                Style::default()
+            };
+
+            spans.push(Span::styled(text, style));
+            col_idx = end_col;
+        }
+
+        Line::from(spans)
     }
 
     /// Clears the terminal

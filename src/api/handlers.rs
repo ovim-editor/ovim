@@ -142,6 +142,21 @@ pub async fn execute_command(
     }
 }
 
+/// Handler for GET /render
+/// Returns pixel-perfect ANSI representation of the editor
+pub async fn get_render(State(state): State<ApiState>) -> Response {
+    let (tx, rx) = oneshot::channel();
+
+    if state.tx.send(ApiRequest::GetRender(tx)).is_err() {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to render"),
+    }
+}
+
 /// Helper function to create error responses
 fn error_response(message: &str) -> Response {
     (

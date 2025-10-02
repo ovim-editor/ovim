@@ -569,6 +569,27 @@ impl Editor {
     pub fn pending_leader(&self) -> bool {
         self.pending_leader
     }
+
+    /// Renders the editor to an in-memory buffer and returns ANSI output
+    /// Used for headless mode to get pixel-perfect terminal representation
+    pub fn render_to_ansi(&self, width: u16, height: u16) -> Result<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        use crate::ui::buffer_to_ansi;
+
+        // Create a test backend with specified dimensions
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend)?;
+
+        // Render using the normal UI rendering code
+        terminal.draw(|f| {
+            crate::ui::Renderer::render_to_frame(f, self);
+        })?;
+
+        // Convert buffer to ANSI string
+        let buffer = terminal.backend().buffer();
+        Ok(buffer_to_ansi(buffer))
+    }
 }
 
 impl Default for Editor {

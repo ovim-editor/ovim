@@ -14,7 +14,25 @@
 - **`S`** - Substitute entire line(s)
 - **`~`** - Toggle case of character under cursor
 
-### Indent/Dedent Operators ⭐ NEW
+### Syntax Highlighting 🎨 NEW!
+- **Tree-sitter based** - Modern, fast, accurate parsing
+- **Auto-detection** - Enables automatically based on file extension
+- **Languages supported:**
+  - **Rust** (`.rs`) - Full highlighting for keywords, functions, types, macros, strings, numbers, comments
+  - **JavaScript** (`.js`, `.jsx`, `.mjs`) - Keywords, functions, strings, numbers, comments, operators
+  - **Python** (`.py`) - Keywords, functions, classes, strings, numbers, comments, decorators
+- **Color theme** - Beautiful default colors optimized for dark terminals
+  - Keywords: Magenta
+  - Functions: Blue
+  - Types: Yellow
+  - Strings: Green
+  - Numbers: Cyan
+  - Comments: Dark Gray
+  - Macros: Magenta
+- **Priority system** - Visual selection > Search matches > Syntax colors
+- **Incremental** - Updates efficiently as you edit
+
+### Indent/Dedent Operators ⭐
 - **`>`** - Indent operator (works with motions)
   - `>>` - Indent current line (with count: `3>>`)
   - `>j` / `>k` - Indent with j/k motions

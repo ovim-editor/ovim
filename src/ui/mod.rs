@@ -1,8 +1,10 @@
 mod terminal;
 mod renderer;
+mod ansi;
 
 pub use terminal::Terminal;
 pub use renderer::Renderer;
+pub use ansi::buffer_to_ansi;
 
 use anyhow::Result;
 

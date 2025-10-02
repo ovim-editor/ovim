@@ -13,6 +13,7 @@ pub enum ApiRequest {
     GetCursor(oneshot::Sender<ApiResponse>),
     GetMode(oneshot::Sender<ApiResponse>),
     ExecuteCommand(String, oneshot::Sender<ApiResponse>),
+    GetRender(oneshot::Sender<ApiResponse>),
 }
 
 /// Response types that can be returned from the editor
@@ -23,6 +24,7 @@ pub enum ApiResponse {
     Buffer(BufferInfo),
     Cursor(CursorPosition),
     Mode(ModeInfo),
+    Render(RenderInfo),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
@@ -77,6 +79,14 @@ pub struct CursorPosition {
 #[derive(Debug, Clone, Serialize)]
 pub struct ModeInfo {
     pub mode: String,
+}
+
+/// Rendered output with ANSI codes
+#[derive(Debug, Clone, Serialize)]
+pub struct RenderInfo {
+    pub width: u16,
+    pub height: u16,
+    pub ansi: String,
 }
 
 /// Visual selection range
