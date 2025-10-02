@@ -130,6 +130,9 @@ async fn run_event_loop(
             editor.process_pending_rehighlight().await;
         }
 
+        // Process any pending LSP actions
+        editor.process_pending_lsp_actions().await;
+
         // Render the editor
         ui.renderer_mut().render(editor)?;
 

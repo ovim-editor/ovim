@@ -37,21 +37,40 @@ impl Renderer {
         let cursor_line = cursor_pos.line();
         let cursor_col = cursor_pos.col();
 
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
-            .split(frame.area());
+        // Calculate layout based on whether we have hover info to display
+        let hover_height = if editor.hover_info().is_some() { 3 } else { 0 };
+        let chunks = if hover_height > 0 {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(hover_height as u16),
+                    Constraint::Length(1),
+                ].as_ref())
+                .split(frame.area())
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+                .split(frame.area())
+        };
 
         // Render the main text area
         let viewport_start = Self::render_buffer(frame, editor, &theme, chunks[0]);
 
-        // Render the status line or command line or search line
+        // Render hover info if present
+        if let Some(hover_text) = editor.hover_info() {
+            Self::render_hover_info(frame, hover_text, chunks[1]);
+        }
+
+        // Render the status line or command line or search line (last chunk)
+        let status_chunk = if hover_height > 0 { chunks[2] } else { chunks[1] };
         if editor.mode() == crate::mode::Mode::Command {
-            Self::render_command_line(frame, editor, chunks[1]);
+            Self::render_command_line(frame, editor, status_chunk);
         } else if editor.mode() == crate::mode::Mode::Search {
-            Self::render_search_line(frame, editor, chunks[1]);
+            Self::render_search_line(frame, editor, status_chunk);
         } else {
-            Self::render_status_line(frame, editor, chunks[1]);
+            Self::render_status_line(frame, editor, status_chunk);
         }
 
         // Render picker overlay if in Picker mode
@@ -246,6 +265,25 @@ impl Renderer {
 
         let paragraph = Paragraph::new(status_line)
             .style(Style::default().bg(Color::DarkGray));
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Renders hover information from LSP
+    fn render_hover_info(frame: &mut Frame, hover_text: &str, area: Rect) {
+        // Limit hover text to fit in the area (truncate if needed)
+        let max_lines = area.height.saturating_sub(2) as usize; // Leave room for borders
+        let lines: Vec<&str> = hover_text.lines().take(max_lines).collect();
+        let text = lines.join("\n");
+
+        let paragraph = Paragraph::new(text)
+            .style(Style::default().bg(Color::Black).fg(Color::White))
+            .block(
+                ratatui::widgets::Block::default()
+                    .borders(ratatui::widgets::Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(" Hover Info ")
+                    .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            );
         frame.render_widget(paragraph, area);
     }
 

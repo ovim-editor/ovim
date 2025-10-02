@@ -76,6 +76,16 @@ pub struct Editor {
     lsp_manager: Option<Arc<TokioMutex<LspManager>>>,
     /// Cached diagnostic count (errors, warnings, info, hints) for status line display
     diagnostic_count: (usize, usize, usize, usize),
+    /// Pending LSP action to execute in async context
+    pending_lsp_action: Option<LspAction>,
+    /// Hover information to display (from LSP)
+    hover_info: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspAction {
+    GoToDefinition,
+    ShowHover,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -118,6 +128,8 @@ impl Editor {
             pending_leader: false,
             lsp_manager: None,
             diagnostic_count: (0, 0, 0, 0),
+            pending_lsp_action: None,
+            hover_info: None,
         }
     }
 
@@ -148,6 +160,8 @@ impl Editor {
             pending_leader: false,
             lsp_manager: None,
             diagnostic_count: (0, 0, 0, 0),
+            pending_lsp_action: None,
+            hover_info: None,
         }
     }
 
@@ -660,6 +674,140 @@ impl Editor {
         if let Ok(Some(highlights)) = highlights {
             self.buffer.apply_highlights(highlights, version);
         }
+    }
+
+    /// Request go to definition (sets pending action)
+    pub fn request_goto_definition(&mut self) {
+        self.pending_lsp_action = Some(LspAction::GoToDefinition);
+    }
+
+    /// Requests hover information for current cursor position
+    pub fn request_hover(&mut self) {
+        self.pending_lsp_action = Some(LspAction::ShowHover);
+    }
+
+    /// Gets the current hover information (if any)
+    pub fn hover_info(&self) -> Option<&str> {
+        self.hover_info.as_deref()
+    }
+
+    /// Clears the hover information
+    pub fn clear_hover(&mut self) {
+        self.hover_info = None;
+    }
+
+    /// Process any pending LSP actions
+    pub async fn process_pending_lsp_actions(&mut self) {
+        if let Some(action) = self.pending_lsp_action.take() {
+            match action {
+                LspAction::GoToDefinition => {
+                    let _ = self.goto_definition_impl().await;
+                }
+                LspAction::ShowHover => {
+                    let _ = self.hover_impl().await;
+                }
+            }
+        }
+    }
+
+    /// Go to definition at current cursor position via LSP (implementation)
+    async fn goto_definition_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled
+        let Some(ref lsp) = self.lsp_manager else {
+            return Ok(false);
+        };
+
+        // Get current file URI
+        let Some(file_path) = self.buffer.file_path() else {
+            return Ok(false);
+        };
+
+        let uri = lsp_types::Url::from_file_path(file_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            return Ok(false);
+        };
+
+        // Request definition
+        let lsp_guard = lsp.lock().await;
+        let location = lsp_guard
+            .goto_definition(&uri, line, character, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Jump to definition if found
+        if let Some(location) = location {
+            // For now, only handle same-file definitions
+            if location.uri == uri {
+                let target_line = location.range.start.line as usize;
+                let target_col = location.range.start.character as usize;
+
+                // Update cursor position
+                self.buffer.cursor_mut().set_position(target_line, target_col);
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Gets hover information at current cursor position via LSP (implementation)
+    async fn hover_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled
+        let Some(ref lsp) = self.lsp_manager else {
+            return Ok(false);
+        };
+
+        // Get current file URI
+        let Some(file_path) = self.buffer.file_path() else {
+            return Ok(false);
+        };
+
+        let uri = lsp_types::Url::from_file_path(file_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            return Ok(false);
+        };
+
+        // Request hover information
+        let lsp_guard = lsp.lock().await;
+        let hover_text = lsp_guard
+            .hover(&uri, line, character, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Store hover information
+        self.hover_info = hover_text;
+
+        Ok(self.hover_info.is_some())
     }
 
     /// Renders the editor to an in-memory buffer and returns ANSI output

@@ -33,6 +33,11 @@ impl InputHandler {
 
     /// Handles input in Normal mode
     fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        // Clear hover info on any key except 'K' (which requests hover)
+        if !matches!(key_event.code, KeyCode::Char('K')) {
+            editor.clear_hover();
+        }
+
         // Handle pending leader key sequences (e.g., <Space>sf, <Space>sg)
         if editor.pending_leader() {
             editor.set_pending_leader(false);
@@ -687,6 +692,11 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                ('g', KeyCode::Char('d')) => {
+                    // gd - go to definition (LSP)
+                    editor.request_goto_definition();
+                    return Ok(());
+                }
                 ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
                     // m{a-z} - set mark
                     editor.set_mark(ch);
@@ -866,6 +876,10 @@ impl InputHandler {
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 Self::move_right(editor);
+            }
+            KeyCode::Char('K') => {
+                // K - show hover information (LSP)
+                editor.request_hover();
             }
             // Line motions
             KeyCode::Char('0') => {
@@ -1850,14 +1864,23 @@ impl InputHandler {
         let line_len = editor.buffer().rope().line(line_idx).len_chars();
         let insert_pos = line_start + line_len;
 
-        // Check if line already ends with newline
+        // Get indentation from current line
         let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+        let indent = line_text.chars()
+            .take_while(|c| c.is_whitespace() && *c != '\n')
+            .collect::<String>();
+
+        // Check if line already ends with newline
         if !line_text.ends_with('\n') {
             editor.buffer_mut().rope_mut().insert_char(insert_pos, '\n');
         }
-        editor.buffer_mut().rope_mut().insert_char(insert_pos + 1, '\n');
 
-        editor.buffer_mut().cursor_mut().set_position(line_idx + 1, 0);
+        // Insert newline with indentation
+        let text_to_insert = format!("{}\n", indent);
+        editor.buffer_mut().rope_mut().insert(insert_pos + 1, &text_to_insert);
+
+        // Position cursor at end of indentation on new line
+        editor.buffer_mut().cursor_mut().set_position(line_idx + 1, indent.len());
         Ok(())
     }
 
@@ -1865,9 +1888,18 @@ impl InputHandler {
         let line_idx = editor.buffer().cursor().line();
         let line_start = editor.buffer().rope().line_to_char(line_idx);
 
-        editor.buffer_mut().rope_mut().insert_char(line_start, '\n');
-        // Cursor stays at same line index since we inserted above
-        editor.buffer_mut().cursor_mut().set_col(0);
+        // Get indentation from current line
+        let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+        let indent = line_text.chars()
+            .take_while(|c| c.is_whitespace() && *c != '\n')
+            .collect::<String>();
+
+        // Insert indented line above
+        let text_to_insert = format!("{}\n", indent);
+        editor.buffer_mut().rope_mut().insert(line_start, &text_to_insert);
+
+        // Cursor stays at same line index, positioned at end of indentation
+        editor.buffer_mut().cursor_mut().set_col(indent.len());
         Ok(())
     }
 

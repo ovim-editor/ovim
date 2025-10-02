@@ -331,6 +331,111 @@ impl LspManager {
             });
         }
     }
+
+    /// Requests go-to-definition for a position in a document
+    pub async fn goto_definition(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::Location>> {
+        use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.lock().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/definition", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+
+        // Convert response to single location (take first if multiple)
+        Ok(response.and_then(|resp| match resp {
+            GotoDefinitionResponse::Scalar(location) => Some(location),
+            GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
+            GotoDefinitionResponse::Link(links) => {
+                links.into_iter().next().map(|link| lsp_types::Location {
+                    uri: link.target_uri,
+                    range: link.target_selection_range,
+                })
+            }
+        }))
+    }
+
+    /// Requests hover information for a position in a document
+    pub async fn hover(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<String>> {
+        use lsp_types::{HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.lock().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        let params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/hover", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<lsp_types::Hover> = serde_json::from_value(result).ok();
+
+        // Extract text from hover response
+        Ok(response.and_then(|hover| {
+            match hover.contents {
+                lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
+                lsp_types::HoverContents::Array(contents) => {
+                    let texts: Vec<String> = contents.into_iter()
+                        .map(marked_string_to_text)
+                        .collect();
+                    if texts.is_empty() {
+                        None
+                    } else {
+                        Some(texts.join("\n\n"))
+                    }
+                }
+                lsp_types::HoverContents::Markup(content) => {
+                    Some(content.value)
+                }
+            }
+        }))
+    }
+}
+
+/// Converts a MarkedString to plain text
+fn marked_string_to_text(marked: lsp_types::MarkedString) -> String {
+    match marked {
+        lsp_types::MarkedString::String(s) => s,
+        lsp_types::MarkedString::LanguageString(ls) => ls.value,
+    }
 }
 
 impl Default for LspManager {
