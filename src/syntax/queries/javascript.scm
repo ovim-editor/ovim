@@ -41,12 +41,11 @@
 
 ; Functions
 (function_declaration name: (identifier) @function)
-(function name: (identifier) @function)
 (method_definition name: (property_identifier) @function)
 (call_expression function: (identifier) @function)
 
-; Types (for TypeScript compatibility)
-(type_identifier) @type
+; Arrow functions and function expressions don't have names to capture directly,
+; but we can highlight them through their parent structures
 
 ; Strings
 (string) @string
