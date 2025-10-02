@@ -5,6 +5,7 @@ mod ui;
 mod mode;
 mod api;
 mod cli;
+mod lsp;
 
 use anyhow::Result;
 use crossterm::event::Event;
@@ -115,7 +116,20 @@ async fn run_event_loop(
     editor: &mut Editor,
     mut api_rx: Option<mpsc::UnboundedReceiver<ApiRequest>>,
 ) -> Result<()> {
+    use tokio::time::{Duration, Instant};
+
+    let mut last_edit = Instant::now();
+    let debounce_delay = Duration::from_millis(100);
+
     while !editor.should_quit() {
+        // Update diagnostic cache for UI display
+        editor.update_diagnostic_cache().await;
+
+        // Check if enough time has passed since last edit for re-highlighting
+        if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
+            editor.process_pending_rehighlight().await;
+        }
+
         // Render the editor
         ui.renderer_mut().render(editor)?;
 
@@ -130,6 +144,8 @@ async fn run_event_loop(
         if let Some(event) = InputHandler::poll_event()? {
             if let Event::Key(key_event) = event {
                 InputHandler::handle_key_event(editor, key_event)?;
+                // Reset debounce timer on any edit
+                last_edit = Instant::now();
             }
         }
     }

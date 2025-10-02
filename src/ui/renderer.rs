@@ -195,14 +195,23 @@ impl Renderer {
         let modified = if buffer.is_modified() { " [+] " } else { " " };
         let file = buffer.file_path().unwrap_or("[No Name]");
 
+        // Get diagnostic counts
+        let (errors, warnings, _info, _hints) = editor.cached_diagnostic_count();
+        let diagnostics = if errors > 0 || warnings > 0 {
+            format!(" E:{} W:{} ", errors, warnings)
+        } else {
+            String::new()
+        };
+
         let padding_len = (area.width as usize)
             .saturating_sub(mode_indicator.len())
             .saturating_sub(file.len())
             .saturating_sub(modified.len())
+            .saturating_sub(diagnostics.len())
             .saturating_sub(position.len())
             .saturating_sub(1);
 
-        let status_line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 &mode_indicator,
                 Style::default()
@@ -214,13 +223,26 @@ impl Renderer {
             Span::raw(file),
             Span::raw(modified),
             Span::raw(" ".repeat(padding_len)),
-            Span::styled(
-                position,
+        ];
+
+        // Add diagnostics indicator if present
+        if !diagnostics.is_empty() {
+            spans.push(Span::styled(
+                &diagnostics,
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Gray),
-            ),
-        ]);
+                    .bg(if errors > 0 { Color::Red } else { Color::Yellow }),
+            ));
+        }
+
+        spans.push(Span::styled(
+            position,
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Gray),
+        ));
+
+        let status_line = Line::from(spans);
 
         let paragraph = Paragraph::new(status_line)
             .style(Style::default().bg(Color::DarkGray));
