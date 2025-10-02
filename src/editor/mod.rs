@@ -23,8 +23,11 @@ pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
 
 use crate::buffer::Buffer;
+use crate::lsp::LspManager;
 use crate::mode::Mode;
 use anyhow::Result;
+use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
 
 /// The main editor state
 pub struct Editor {
@@ -69,6 +72,10 @@ pub struct Editor {
     leader_key: char,
     /// Waiting for leader sequence (e.g., after pressing space)
     pending_leader: bool,
+    /// LSP manager (optional, only if LSP is enabled)
+    lsp_manager: Option<Arc<TokioMutex<LspManager>>>,
+    /// Cached diagnostic count (errors, warnings, info, hints) for status line display
+    diagnostic_count: (usize, usize, usize, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,6 +116,8 @@ impl Editor {
             picker: None,
             leader_key: ' ',
             pending_leader: false,
+            lsp_manager: None,
+            diagnostic_count: (0, 0, 0, 0),
         }
     }
 
@@ -137,7 +146,19 @@ impl Editor {
             picker: None,
             leader_key: ' ',
             pending_leader: false,
+            lsp_manager: None,
+            diagnostic_count: (0, 0, 0, 0),
         }
+    }
+
+    /// Enables LSP support
+    pub fn enable_lsp(&mut self) {
+        self.lsp_manager = Some(Arc::new(TokioMutex::new(LspManager::new())));
+    }
+
+    /// Gets a reference to the LSP manager
+    pub fn lsp_manager(&self) -> Option<Arc<TokioMutex<LspManager>>> {
+        self.lsp_manager.clone()
     }
 
     /// Gets the command line buffer
@@ -568,6 +589,77 @@ impl Editor {
     /// Gets pending leader state
     pub fn pending_leader(&self) -> bool {
         self.pending_leader
+    }
+
+    /// Gets diagnostics for the current file (async helper for UI)
+    /// Returns None if LSP is not enabled or file has no URI
+    pub async fn get_current_file_diagnostics(&self) -> Option<Vec<lsp_types::Diagnostic>> {
+        let lsp = self.lsp_manager.as_ref()?;
+        let file_path = self.buffer.file_path()?;
+        let uri = lsp_types::Url::from_file_path(file_path).ok()?;
+
+        let lsp_guard = lsp.lock().await;
+        Some(lsp_guard.get_diagnostics(&uri).await)
+    }
+
+    /// Gets diagnostic count for the current file (errors, warnings, info, hints)
+    pub async fn get_diagnostic_count(&self) -> (usize, usize, usize, usize) {
+        if let Some(lsp) = &self.lsp_manager {
+            if let Some(file_path) = self.buffer.file_path() {
+                if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
+                    let lsp_guard = lsp.lock().await;
+                    return lsp_guard.count_diagnostics(&uri).await;
+                }
+            }
+        }
+        (0, 0, 0, 0)
+    }
+
+    /// Updates the cached diagnostic count (should be called when diagnostics change)
+    pub async fn update_diagnostic_cache(&mut self) {
+        self.diagnostic_count = self.get_diagnostic_count().await;
+    }
+
+    /// Gets the cached diagnostic count (sync, suitable for UI rendering)
+    pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
+        self.diagnostic_count
+    }
+
+    /// Triggers async re-highlighting if needed
+    pub async fn process_pending_rehighlight(&mut self) {
+        // Check if buffer needs re-highlighting
+        let Some((content, version, language)) = self.buffer.get_rehighlight_data() else {
+            return;
+        };
+
+        // Spawn blocking task for CPU-intensive parsing
+        let highlights = tokio::task::spawn_blocking(move || {
+            // Create a new highlighter for this language
+            let mut highlighter = match crate::syntax::SyntaxHighlighter::new(language) {
+                Ok(h) => h,
+                Err(_) => return None,
+            };
+
+            // Parse the content
+            highlighter.parse(&content);
+
+            // Build highlights for all lines
+            let lines: Vec<&str> = content.lines().collect();
+            let mut all_highlights = Vec::with_capacity(lines.len());
+
+            for line_idx in 0..lines.len() {
+                let line_highlights = highlighter.highlights_for_line(line_idx, &content);
+                all_highlights.push(line_highlights);
+            }
+
+            Some(all_highlights)
+        })
+        .await;
+
+        // Apply highlights if successful and version still matches
+        if let Ok(Some(highlights)) = highlights {
+            self.buffer.apply_highlights(highlights, version);
+        }
     }
 
     /// Renders the editor to an in-memory buffer and returns ANSI output
