@@ -235,6 +235,11 @@ impl Editor {
         self.current_search = Some(search);
     }
 
+    /// Clears the current search (stops highlighting)
+    pub fn clear_search_highlight(&mut self) {
+        self.current_search = None;
+    }
+
     /// Executes the current search and moves cursor to first match
     pub fn execute_search(&mut self) {
         if self.search_buffer.is_empty() {
@@ -728,6 +733,7 @@ impl Editor {
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.pending_lsp_action.take() {
+            eprintln!("Processing LSP action: {:?}", action);
             match action {
                 LspAction::GoToDefinition => {
                     let _ = self.goto_definition_impl().await;
@@ -743,11 +749,13 @@ impl Editor {
     async fn goto_definition_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled
         let Some(ref lsp) = self.lsp_manager else {
+            eprintln!("LSP not enabled");
             return Ok(false);
         };
 
         // Get current file URI
         let Some(file_path) = self.buffer.file_path() else {
+            eprintln!("No file path");
             return Ok(false);
         };
 
@@ -758,6 +766,7 @@ impl Editor {
         let cursor = self.buffer.cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
+        eprintln!("goto_definition: file={}, line={}, char={}", file_path, line, character);
 
         // Detect language from file extension
         let language_id = if file_path.ends_with(".rs") {
@@ -771,12 +780,14 @@ impl Editor {
         };
 
         // Request definition
+        eprintln!("Requesting definition from LSP for {}", language_id);
         let lsp_guard = lsp.lock().await;
         let location = lsp_guard
             .goto_definition(&uri, line, character, language_id)
             .await?;
 
         drop(lsp_guard);
+        eprintln!("LSP response: location={:?}", location);
 
         // Jump to definition if found
         if let Some(location) = location {

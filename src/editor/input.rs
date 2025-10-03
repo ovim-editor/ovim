@@ -1626,6 +1626,10 @@ impl InputHandler {
                 editor.mark_saved();
                 editor.quit();
             }
+            "noh" | "nohl" | "nohlsearch" => {
+                // Clear search highlighting
+                editor.clear_search_highlight();
+            }
             _ => {
                 // Unknown command - for now just ignore
             }
@@ -1902,13 +1906,19 @@ impl InputHandler {
             .collect::<String>();
 
         // Check if line already ends with newline
-        if !line_text.ends_with('\n') {
+        let added_newline = if !line_text.ends_with('\n') {
             editor.buffer_mut().rope_mut().insert_char(insert_pos, '\n');
-        }
+            true
+        } else {
+            false
+        };
 
         // Insert newline with indentation
+        // If we added a newline, insert_pos moved by 1, so insert at insert_pos + 1
+        // If line already had newline, insert_pos is at start of next line, so insert there
         let text_to_insert = format!("{}\n", indent);
-        editor.buffer_mut().rope_mut().insert(insert_pos + 1, &text_to_insert);
+        let final_insert_pos = if added_newline { insert_pos + 1 } else { insert_pos };
+        editor.buffer_mut().rope_mut().insert(final_insert_pos, &text_to_insert);
 
         // Position cursor at end of indentation on new line
         editor.buffer_mut().cursor_mut().set_position(line_idx + 1, indent.len());

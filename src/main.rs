@@ -51,6 +51,14 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Enable LSP support
+    editor.enable_lsp();
+
+    // Initialize LSP for the opened file if applicable
+    if let Some(file_path) = &args.file {
+        initialize_lsp_for_file(&mut editor, file_path).await;
+    }
+
     // Set up API server if requested
     let api_rx = if args.headless {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -91,21 +99,35 @@ async fn run_headless_loop(
     editor: &mut Editor,
     mut api_rx: mpsc::UnboundedReceiver<ApiRequest>,
 ) -> Result<()> {
+    use tokio::time::{Duration, sleep};
+
     loop {
-        // Wait for API requests (blocking)
-        match api_rx.recv().await {
-            Some(request) => {
+        // Process any pending LSP actions
+        editor.process_pending_lsp_actions().await;
+
+        // Update diagnostic cache
+        editor.update_diagnostic_cache().await;
+
+        // Check for API requests (non-blocking with timeout)
+        match tokio::time::timeout(Duration::from_millis(50), api_rx.recv()).await {
+            Ok(Some(request)) => {
                 handle_api_request(editor, request);
                 // Check if quit was requested
                 if editor.should_quit() {
                     break;
                 }
             }
-            None => {
+            Ok(None) => {
                 // Channel closed, exit
                 break;
             }
+            Err(_) => {
+                // Timeout - no request received, continue loop
+            }
         }
+
+        // Small sleep to avoid busy loop
+        sleep(Duration::from_millis(10)).await;
     }
 
     Ok(())
@@ -416,6 +438,70 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     error: format!("Not an editor command: {}", command),
                 })
             }
+        }
+    }
+}
+
+/// Initialize LSP for a file based on its extension
+async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
+    use std::path::Path;
+
+    let path = Path::new(file_path);
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Determine language and LSP server based on file extension
+    let (language_id, server_command, server_args) = match extension {
+        "rs" => ("rust", "rust-analyzer", vec![]),
+        "js" | "ts" | "jsx" | "tsx" => ("javascript", "typescript-language-server", vec!["--stdio".to_string()]),
+        "py" => ("python", "pylsp", vec![]),
+        _ => return, // No LSP support for this file type
+    };
+
+    // Find the project root (look for Cargo.toml for Rust projects)
+    let root_path = if extension == "rs" {
+        // Look for Cargo.toml in parent directories
+        let mut current = path.parent();
+        while let Some(dir) = current {
+            let cargo_toml = dir.join("Cargo.toml");
+            if cargo_toml.exists() {
+                eprintln!("Found Cargo.toml at: {:?}", dir);
+                break;
+            }
+            current = dir.parent();
+        }
+        current.unwrap_or_else(|| path.parent().unwrap_or_else(|| Path::new(".")))
+    } else {
+        path.parent().unwrap_or_else(|| Path::new("."))
+    };
+    eprintln!("Project root path: {:?}", root_path);
+
+    // Start the language server
+    if let Some(lsp_manager) = editor.lsp_manager() {
+        let lsp = lsp_manager.lock().await;
+
+        // Start the server (will skip if already running)
+        eprintln!("Starting {} language server: {}", language_id, server_command);
+        if let Err(e) = lsp.start_server(language_id, server_command, server_args, root_path).await {
+            eprintln!("Failed to start {} language server: {}", language_id, e);
+            return;
+        }
+        eprintln!("Successfully started {} language server", language_id);
+
+        // Send didOpen notification
+        let file_content = editor.buffer().rope().to_string();
+        let uri = match lsp_types::Url::from_file_path(path) {
+            Ok(uri) => uri,
+            Err(_) => {
+                eprintln!("Failed to create URI for file: {}", file_path);
+                return;
+            }
+        };
+
+        eprintln!("Sending didOpen: uri={}, lang={}, content_len={}", uri, language_id, file_content.len());
+        if let Err(e) = lsp.did_open(uri, language_id, 1, file_content).await {
+            eprintln!("Failed to send didOpen notification: {}", e);
+        } else {
+            eprintln!("didOpen sent successfully");
         }
     }
 }
