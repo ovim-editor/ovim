@@ -121,6 +121,37 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                (Operator::Delete, KeyCode::Char('G')) => {
+                    // dG - delete from current line to end of file
+                    editor.clear_pending_operator();
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = if let Some(cnt) = editor.count() {
+                        cnt.saturating_sub(1)
+                    } else {
+                        editor.buffer().line_count().saturating_sub(1)
+                    };
+
+                    // Delete from current line to end line (inclusive)
+                    let start_pos = (start_line, 0);
+                    let end_pos = (end_line + 1, 0);
+
+                    let deleted = editor.buffer_mut().delete_range(
+                        start_line, 0,
+                        end_line + 1, 0
+                    );
+
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+                    editor.add_change(change);
+                    editor.registers_mut().delete(deleted);
+
+                    // Clamp cursor to buffer bounds
+                    Self::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+                    return Ok(());
+                }
                 (Operator::Indent, KeyCode::Char('g')) => {
                     // >gg - indent from current line to first line
                     editor.set_pending_command('g');
@@ -1963,20 +1994,23 @@ impl InputHandler {
 
     fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
         let mode = editor.mode();
+        let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
 
         if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
             match mode {
                 Mode::VisualLine => {
                     // Delete entire lines
-                    let start_char = editor.buffer().rope().line_to_char(start_line);
-                    let end_char = if end_line + 1 < editor.buffer().line_count() {
-                        editor.buffer().rope().line_to_char(end_line + 1)
-                    } else {
-                        editor.buffer().rope().len_chars()
-                    };
+                    let start_pos = (start_line, 0);
+                    let end_pos = (end_line + 1, 0);
 
-                    let deleted = editor.buffer().rope().slice(start_char..end_char).to_string();
-                    editor.buffer_mut().rope_mut().remove(start_char..end_char);
+                    let deleted = editor.buffer_mut().delete_range(
+                        start_line, 0,
+                        end_line + 1, 0
+                    );
+
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+                    editor.add_change(change);
                     editor.registers_mut().delete(deleted);
 
                     // Position cursor at start of selection
@@ -1985,11 +2019,17 @@ impl InputHandler {
                 }
                 _ => {
                     // Character-wise visual mode
-                    let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
-                    let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
+                    let start_pos = (start_line, start_col);
+                    let end_pos = (end_line, end_col + 1);
 
-                    let deleted = editor.buffer().rope().slice(start_char..end_char).to_string();
-                    editor.buffer_mut().rope_mut().remove(start_char..end_char);
+                    let deleted = editor.buffer_mut().delete_range(
+                        start_line, start_col,
+                        end_line, end_col + 1
+                    );
+
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+                    editor.add_change(change);
                     editor.registers_mut().delete(deleted);
 
                     // Position cursor at start of selection

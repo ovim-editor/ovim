@@ -495,13 +495,42 @@ impl Editor {
     pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.visual_start.map(|start| {
             let cursor = self.buffer.cursor();
-            let end = (cursor.line(), cursor.col());
+            let mut end = (cursor.line(), cursor.col());
 
-            // Normalize so start is always before end
-            if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
-                (start, end)
+            // In Visual Line mode, extend selection to end of line
+            if self.mode == Mode::VisualLine {
+                // Get the length of the end line (excluding newline)
+                if let Some(line_text) = self.buffer.line(end.0) {
+                    let line_len = line_text.trim_end_matches('\n').chars().count();
+                    end.1 = if line_len > 0 { line_len - 1 } else { 0 };
+                }
+
+                // Also ensure start is at beginning of its line
+                let mut start = start;
+                start.1 = 0;
+
+                // Normalize so start is always before end
+                if start.0 <= end.0 {
+                    (start, end)
+                } else {
+                    // If cursor moved above start line, swap and adjust
+                    let mut new_start = end;
+                    new_start.1 = 0;
+                    let mut new_end = start;
+                    if let Some(line_text) = self.buffer.line(new_end.0) {
+                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                        new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
+                    }
+                    (new_start, new_end)
+                }
             } else {
-                (end, start)
+                // Normal visual mode behavior
+                // Normalize so start is always before end
+                if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
+                    (start, end)
+                } else {
+                    (end, start)
+                }
             }
         })
     }
