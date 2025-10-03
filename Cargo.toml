@@ -24,3 +24,4 @@ url = "2.5"
 
 [dev-dependencies]
 criterion = "0.5"
+insta = "1.34"

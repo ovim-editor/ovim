@@ -358,11 +358,22 @@ impl LspManager {
             partial_result_params: Default::default(),
         };
 
-        let result = server
+        eprintln!("Sending definition request to server...");
+        let result = match server
             .request("textDocument/definition", serde_json::to_value(params)?)
-            .await?;
+            .await {
+                Ok(r) => {
+                    eprintln!("Got response from server: {:?}", r);
+                    r
+                }
+                Err(e) => {
+                    eprintln!("LSP request failed: {}", e);
+                    return Err(e);
+                }
+            };
 
         let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+        eprintln!("Parsed response: {:?}", response);
 
         // Convert response to single location (take first if multiple)
         Ok(response.and_then(|resp| match resp {
