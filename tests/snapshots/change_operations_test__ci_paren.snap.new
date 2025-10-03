@@ -1,0 +1,11 @@
+---
+source: tests/change_operations_test.rs
+assertion_line: 399
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:0
+Lines: 1
+
+Buffer:
+[u]nc(arg1, arg2)

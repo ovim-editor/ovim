@@ -638,6 +638,10 @@ impl InputHandler {
                         // i{ or a{ or iB or aB - braces
                         TextObjects::paired_delimiters(editor.buffer(), '{', '}', text_obj_type == 'a')
                     }
+                    KeyCode::Char('<') | KeyCode::Char('>') => {
+                        // i< or a< or i> or a> - angle brackets
+                        TextObjects::paired_delimiters(editor.buffer(), '<', '>', text_obj_type == 'a')
+                    }
                     _ => {
                         // Unknown text object
                         return Ok(());
@@ -847,6 +851,12 @@ impl InputHandler {
                 cursor.set_line(new_line);
                 Self::clamp_cursor_to_line(editor);
                 editor.clear_count();
+            }
+            // Enter Visual Block mode (Ctrl-V)
+            KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let cursor = editor.buffer().cursor();
+                editor.set_visual_start(cursor.line(), cursor.col());
+                editor.set_mode(Mode::VisualBlock);
             }
             // Enter Insert mode
             KeyCode::Char('i') => {
@@ -1505,6 +1515,9 @@ impl InputHandler {
                 editor.set_mode(Mode::Insert);
             }
             // Switch to other visual modes
+            KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.set_mode(Mode::VisualBlock);
+            }
             KeyCode::Char('v') => {
                 editor.set_mode(Mode::Visual);
             }

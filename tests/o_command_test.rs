@@ -21,7 +21,7 @@ fn buffer_content(editor: &Editor) -> String {
     let mut content = String::new();
     for i in 0..editor.buffer().line_count() {
         if let Some(line) = editor.buffer().line(i) {
-            content.push_str(line);
+            content.push_str(&line);
         }
     }
     content
@@ -117,7 +117,7 @@ fn test_o_type_text() {
     press_char(&mut editor, 'w');
 
     // Exit insert mode
-    press(editor, KeyCode::Esc);
+    press(&mut editor, KeyCode::Esc);
 
     // Check content
     let content = buffer_content(&editor);
@@ -145,7 +145,7 @@ fn test_o_and_undo() {
     press_char(&mut editor, 't');
 
     // Exit insert mode
-    press(editor, KeyCode::Esc);
+    press(&mut editor, KeyCode::Esc);
 
     // Should have 4 lines with new content
     assert_eq!(editor.buffer().line_count(), 4);
@@ -211,13 +211,13 @@ fn test_o_multiple_times() {
     press_char(&mut editor, 'o');
     press_char(&mut editor, 'l');
     press_char(&mut editor, '1');
-    press(editor, KeyCode::Esc);
+    press(&mut editor, KeyCode::Esc);
 
     // Press 'o' again and add more text
     press_char(&mut editor, 'o');
     press_char(&mut editor, 'l');
     press_char(&mut editor, '2');
-    press(editor, KeyCode::Esc);
+    press(&mut editor, KeyCode::Esc);
 
     // Should have 3 lines
     assert_eq!(editor.buffer().line_count(), 3);

@@ -1,0 +1,11 @@
+---
+source: tests/change_operations_test.rs
+assertion_line: 17
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:6
+Lines: 1
+
+Buffer:
+goodby[e]world test

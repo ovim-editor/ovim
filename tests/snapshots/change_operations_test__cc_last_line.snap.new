@@ -1,0 +1,12 @@
+---
+source: tests/change_operations_test.rs
+assertion_line: 93
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:11
+Lines: 3
+
+Buffer:
+line 1
+changed las[t]

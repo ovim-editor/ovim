@@ -1,0 +1,11 @@
+---
+source: tests/change_operations_test.rs
+assertion_line: 104
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:7
+Lines: 2
+
+Buffer:
+replace[d]
