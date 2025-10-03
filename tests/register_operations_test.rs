@@ -1,0 +1,595 @@
+mod helpers;
+use helpers::EditorTest;
+use insta::assert_snapshot;
+
+// ============================================================================
+// Named registers - Lowercase letters (a-z)
+// ============================================================================
+
+#[test]
+fn test_yank_to_named_register() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"ayiw")   // Yank word to register 'a'
+        .keys("$")        // End of line
+        .keys("\"ap");    // Paste from register 'a'
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_delete_to_named_register() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("\"adw")    // Delete word to register 'a'
+        .keys("$")
+        .keys("\"ap");    // Paste from register 'a'
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_change_to_named_register() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"aciw")   // Change word to register 'a'
+        .type_text("goodbye")
+        .press_esc()
+        .keys("$")
+        .keys("\"ap");    // Paste original word
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_multiple_named_registers() {
+    let mut test = EditorTest::new("one two three four");
+
+    test.keys("\"ayiw")   // Yank "one" to register 'a'
+        .keys("w")
+        .keys("\"byiw")   // Yank "two" to register 'b'
+        .keys("w")
+        .keys("\"cyiw")   // Yank "three" to register 'c'
+        .keys("$")
+        .keys("\"ap")     // Paste from 'a'
+        .keys("\"bp")     // Paste from 'b'
+        .keys("\"cp");    // Paste from 'c'
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_overwrite_named_register() {
+    let mut test = EditorTest::new("first second third");
+
+    test.keys("\"ayiw")   // Yank "first" to 'a'
+        .keys("w")
+        .keys("\"ayiw")   // Overwrite with "second"
+        .keys("$")
+        .keys("\"ap");    // Should paste "second"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_all_lowercase_registers() {
+    let mut test = EditorTest::new("word");
+
+    // Test that we can use all lowercase letters
+    test.keys("\"ayiw")   // register a
+        .keys("\"zyiw");  // register z
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Uppercase registers - Append mode (A-Z)
+// ============================================================================
+
+#[test]
+fn test_append_to_register() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("\"ayiw")   // Yank "hello" to 'a'
+        .keys("w")
+        .keys("\"Ayiw")   // Append "world" to 'a'
+        .keys("$")
+        .keys("\"ap");    // Paste both
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_append_multiple_times() {
+    let mut test = EditorTest::new("one two three four");
+
+    test.keys("\"ayiw")   // "one"
+        .keys("w")
+        .keys("\"Ayiw")   // Append "two"
+        .keys("w")
+        .keys("\"Ayiw")   // Append "three"
+        .keys("$")
+        .keys("\"ap");    // Paste all
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_append_with_delete() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("\"adw")    // Delete "hello " to 'a'
+        .keys("\"Adw")    // Append delete "world " to 'a'
+        .keys("\"ap");    // Paste both
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Unnamed register ("")
+// ============================================================================
+
+#[test]
+fn test_unnamed_register_yank() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank to unnamed register
+        .keys("$")
+        .press('p');      // Paste from unnamed
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_unnamed_register_delete() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("dw")       // Delete to unnamed
+        .press('p');      // Paste from unnamed
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_unnamed_register_change() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("ciw")      // Change puts old text in unnamed
+        .type_text("X")
+        .press_esc()
+        .keys("$")
+        .press('p');      // Paste original word
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Numbered registers (0-9)
+// ============================================================================
+
+#[test]
+fn test_register_0_yank() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank "hello" (goes to "0)
+        .keys("dw")       // Delete word (goes to "1, doesn't affect "0)
+        .keys("\"0p");    // Paste from "0 (should be "hello")
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_numbered_delete_history() {
+    let mut test = EditorTest::new("one two three four five");
+
+    test.keys("dw")       // Delete "one " -> "1
+        .keys("dw")       // Delete "two " -> "1, "one " -> "2
+        .keys("dw")       // Delete "three " -> "1, "two " -> "2, "one " -> "3
+        .keys("\"1p")     // Paste most recent delete
+        .keys("\"2p")     // Paste second most recent
+        .keys("\"3p");    // Paste third most recent
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_register_0_only_yanks() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank to "0
+        .keys("x")        // Delete (doesn't affect "0)
+        .keys("x")        // Delete again
+        .keys("\"0p");    // Paste from "0 (should still be "hello")
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Small delete register (-)
+// ============================================================================
+
+#[test]
+fn test_small_delete_register() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('x')       // Delete single char (goes to "-)
+        .keys("\"-p");    // Paste from small delete register
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_small_delete_vs_numbered() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('x')       // Small delete (to "-)
+        .keys("dw")       // Line delete (to "1, not "-)
+        .keys("\"-p")     // Paste small delete
+        .keys("\"1p");    // Paste line delete
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Read-only registers
+// ============================================================================
+
+#[test]
+fn test_percent_register_filename() {
+    let mut test = EditorTest::new("test content");
+
+    test.set_file_path("test.txt".to_string())
+        .keys("\"%p");    // Paste filename
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_colon_register_last_command() {
+    let mut test = EditorTest::new("test");
+
+    test.press(':')
+        .type_text("w")
+        .press_esc()
+        .keys("\":p");    // Paste last command
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_dot_register_last_insert() {
+    let mut test = EditorTest::new("line");
+
+    test.press('i')
+        .type_text("INSERTED")
+        .press_esc()
+        .keys("$.p");     // Paste last inserted text
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Black hole register (_)
+// ============================================================================
+
+#[test]
+fn test_blackhole_register_delete() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank "hello"
+        .keys("w")
+        .keys("\"_dw")    // Delete to black hole
+        .press('p');      // Paste should still be "hello"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_blackhole_register_change() {
+    let mut test = EditorTest::new("one two three");
+
+    test.keys("yiw")      // Yank "one"
+        .keys("w")
+        .keys("\"_ciw")   // Change to black hole
+        .type_text("X")
+        .press_esc()
+        .keys("$")
+        .press('p');      // Should paste "one", not "two"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Last search pattern register (/)
+// ============================================================================
+
+#[test]
+fn test_slash_register_search_pattern() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('/')
+        .type_text("world")
+        .press_enter()
+        .keys("\"/p");    // Paste search pattern
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Expression register (=)
+// ============================================================================
+
+#[test]
+fn test_expression_register() {
+    let mut test = EditorTest::new("test");
+
+    test.keys("\"=")      // Expression register
+        .type_text("2+2")
+        .press_enter()
+        .press('p');      // Should paste "4"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Selection and clipboard registers (+, *)
+// ============================================================================
+
+#[test]
+fn test_clipboard_register_yank() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"+yiw")   // Yank to system clipboard
+        .keys("$")
+        .keys("\"+p");    // Paste from clipboard
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_selection_register() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"*yiw")   // Yank to selection
+        .keys("$")
+        .keys("\"*p");    // Paste from selection
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Register operations with visual mode
+// ============================================================================
+
+#[test]
+fn test_visual_yank_to_register() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.press('v')
+        .keys("e")        // Select "hello"
+        .keys("\"ay")     // Yank to register 'a'
+        .press_esc()
+        .keys("$")
+        .keys("\"ap");    // Paste
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_visual_delete_to_register() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('v')
+        .keys("e")
+        .keys("\"ad")     // Delete to register 'a'
+        .keys("$")
+        .keys("\"ap");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_visual_line_to_register() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+
+    test.press('V')       // Visual line
+        .press('j')       // Select 2 lines
+        .keys("\"ay")     // Yank to 'a'
+        .press_esc()
+        .keys("G")
+        .keys("\"ap");    // Paste
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Register persistence and edge cases
+// ============================================================================
+
+#[test]
+fn test_register_survives_undo() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"ayiw")   // Yank to 'a'
+        .keys("dw")       // Delete something
+        .press('u')       // Undo delete
+        .keys("\"ap");    // Register 'a' should still work
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_empty_register() {
+    let mut test = EditorTest::new("test");
+
+    test.keys("\"zp");    // Paste from unused register
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_register_with_newlines() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+
+    test.keys("\"ayy")    // Yank line to 'a' (includes newline)
+        .keys("G")
+        .keys("\"ap");    // Paste with newline
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_register_linewise_vs_charwise() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+
+    test.keys("\"ayy")    // Yank line (linewise)
+        .keys("w")
+        .keys("\"byiw")   // Yank word (charwise)
+        .keys("G")
+        .keys("\"ap")     // Paste line
+        .keys("\"bp");    // Paste word
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Register operations with counts
+// ============================================================================
+
+#[test]
+fn test_register_with_count_yank() {
+    let mut test = EditorTest::new("one two three four");
+
+    test.keys("\"a3yiw")  // Yank 3 words to 'a'
+        .keys("$")
+        .keys("\"ap");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_register_with_count_delete() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+
+    test.keys("\"a2dd")   // Delete 2 lines to 'a'
+        .keys("G")
+        .keys("\"ap");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_register_paste_with_count() {
+    let mut test = EditorTest::new("word");
+
+    test.keys("\"ayiw")   // Yank to 'a'
+        .keys("$")
+        .keys("3\"ap");   // Paste 3 times from 'a'
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Special register interactions
+// ============================================================================
+
+#[test]
+fn test_delete_updates_both_unnamed_and_numbered() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("dw")       // Delete word
+        .press('p')       // Paste from unnamed
+        .keys("\"1p");    // Paste from "1 (should be same)
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yank_updates_unnamed_and_0() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank word
+        .keys("$")
+        .press('p')       // Paste from unnamed
+        .keys("\"0p");    // Paste from "0 (should be same)
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_change_updates_unnamed_but_not_0() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank "hello" to "0
+        .keys("ciw")      // Change word (deleted text to unnamed, not "0)
+        .type_text("X")
+        .press_esc()
+        .keys("$")
+        .press('p')       // Paste from unnamed ("hello")
+        .keys("\"0p");    // Paste from "0 (should still be "hello")
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Register names validation
+// ============================================================================
+
+#[test]
+fn test_invalid_register_name() {
+    let mut test = EditorTest::new("test");
+
+    test.keys("\"!")      // Invalid register
+        .press('p');      // Should handle gracefully
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_register_case_sensitivity() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("\"ayiw")   // Lowercase 'a'
+        .keys("w")
+        .keys("\"Ayiw")   // Uppercase 'A' (append)
+        .keys("$")
+        .keys("\"ap");    // Should have both
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Complex register scenarios
+// ============================================================================
+
+#[test]
+fn test_register_chain_operations() {
+    let mut test = EditorTest::new("one two three four");
+
+    test.keys("\"ayiw")   // Yank "one" to a
+        .keys("w")
+        .keys("\"byiw")   // Yank "two" to b
+        .keys("\"ap")     // Paste "one"
+        .keys("\"bp")     // Paste "two"
+        .keys("\"ayiw")   // Yank "onetwo" to a
+        .keys("\"ap");    // Paste new a
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_swap_words_with_registers() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"ayiw")   // Yank "hello" to a
+        .keys("w")
+        .keys("\"byiw")   // Yank "world" to b
+        .keys("0")
+        .keys("diw")      // Delete "hello"
+        .keys("\"bp")     // Paste "world"
+        .keys("w")
+        .keys("diw")      // Delete "world"
+        .keys("\"ap");    // Paste "hello"
+
+    assert_snapshot!(test.snapshot_state());
+}
