@@ -752,7 +752,7 @@ fn test_undo_after_dot_repeat() {
 
 #[test]
 fn test_very_long_undo_history() {
-    let mut test = EditorTest::new("x".repeat(50));
+    let mut test = EditorTest::new(&"x".repeat(50));
 
     // Make 50 changes
     for _ in 0..50 {

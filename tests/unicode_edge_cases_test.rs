@@ -533,7 +533,7 @@ fn test_alternating_ascii_unicode() {
 
 #[test]
 fn test_long_unicode_line() {
-    let mut test = EditorTest::new("世".repeat(100));
+    let mut test = EditorTest::new(&"世".repeat(100));
 
     test.keys("50l");     // Move 50 chars right
 
@@ -542,7 +542,7 @@ fn test_long_unicode_line() {
 
 #[test]
 fn test_long_emoji_sequence() {
-    let mut test = EditorTest::new("😀".repeat(50));
+    let mut test = EditorTest::new(&"😀".repeat(50));
 
     test.keys("10w");
 

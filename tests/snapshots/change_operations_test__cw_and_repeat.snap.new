@@ -1,0 +1,11 @@
+---
+source: tests/change_operations_test.rs
+assertion_line: 508
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:6
+Lines: 1
+
+Buffer:
+1two 1[t]hree four

@@ -215,17 +215,16 @@ fn test_w_punctuation() {
 
 #[test]
 fn test_w_vs_W_punctuation() {
-    let mut test = EditorTest::new("hello.world test");
-
     // Test w (stops at punctuation)
-    let mut test_w = test.clone();
+    let mut test_w = EditorTest::new("hello.world test");
     test_w.press('w');
 
     // Test W (treats punctuation as part of WORD)
-    test.press('W');
+    let mut test_W = EditorTest::new("hello.world test");
+    test_W.press('W');
 
     assert_snapshot!("w_motion", test_w.snapshot_state());
-    assert_snapshot!("W_motion", test.snapshot_state());
+    assert_snapshot!("W_motion", test_W.snapshot_state());
 }
 
 #[test]

@@ -1,0 +1,13 @@
+---
+source: tests/change_operations_test.rs
+assertion_line: 310
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:3
+Lines: 3
+
+Buffer:
+line 1
+lin[e] 2
+line 3
