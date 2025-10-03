@@ -292,15 +292,14 @@ impl LspManager {
                                 self.set_diagnostics(diag_params.uri, diag_params.diagnostics)
                                     .await;
                             }
-                            Err(e) => {
-                                eprintln!("Error parsing publishDiagnostics: {}", e);
+                            Err(_e) => {
+                                // Silently ignore parsing errors
                             }
                         }
                     }
                 }
                 _ => {
-                    // Log unknown notifications
-                    eprintln!("Unhandled notification from {}: {}", language_id, method);
+                    // Silently ignore unknown notifications
                 }
             }
         }
@@ -318,11 +317,8 @@ impl LspManager {
                 loop {
                     if let Some(msg) = server.receive().await {
                         if msg.is_notification() {
-                            // For now, just log the notification
+                            // Silently handle notifications
                             // In a real implementation, we'd send this to the manager
-                            if let Some(method) = &msg.method {
-                                eprintln!("Received notification: {}", method);
-                            }
                         }
                     } else {
                         break; // Server closed
@@ -358,22 +354,11 @@ impl LspManager {
             partial_result_params: Default::default(),
         };
 
-        eprintln!("Sending definition request to server...");
-        let result = match server
+        let result = server
             .request("textDocument/definition", serde_json::to_value(params)?)
-            .await {
-                Ok(r) => {
-                    eprintln!("Got response from server: {:?}", r);
-                    r
-                }
-                Err(e) => {
-                    eprintln!("LSP request failed: {}", e);
-                    return Err(e);
-                }
-            };
+            .await?;
 
         let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
-        eprintln!("Parsed response: {:?}", response);
 
         // Convert response to single location (take first if multiple)
         Ok(response.and_then(|resp| match resp {

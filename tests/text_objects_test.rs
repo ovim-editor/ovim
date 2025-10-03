@@ -1,0 +1,706 @@
+mod helpers;
+use helpers::EditorTest;
+use insta::assert_snapshot;
+
+// ============================================================================
+// 'iw' - Inner word text object
+// ============================================================================
+
+#[test]
+fn test_diw_delete_inner_word() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("w")        // Move to "world"
+        .keys("diw");     // Delete inner word
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_diw_from_middle() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("lll")      // Middle of "hello"
+        .keys("diw");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_diw_single_letter() {
+    let mut test = EditorTest::new("a b c");
+
+    test.keys("diw");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yiw_yank_inner_word() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("yiw")      // Yank "hello"
+        .keys("$")        // End of line
+        .press('p');      // Paste
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ciw_change_inner_word() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("w")
+        .keys("ciw")
+        .type_text("earth")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_viw_visual_inner_word() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("w")
+        .keys("viw");     // Visual select word
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'aw' - Around word text object
+// ============================================================================
+
+#[test]
+fn test_daw_delete_around_word() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("w")
+        .keys("daw");     // Delete word and surrounding space
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_daw_first_word() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("daw");     // Delete "hello "
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_daw_last_word() {
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("w")
+        .keys("daw");     // Delete " world" or "world"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yaw_yank_around_word() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("yaw")
+        .keys("$")
+        .press('p');
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_caw_change_around_word() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("w")
+        .keys("caw")
+        .type_text("earth")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'iW' and 'aW' - WORD text objects (including punctuation)
+// ============================================================================
+
+#[test]
+fn test_diW_delete_inner_WORD() {
+    let mut test = EditorTest::new("hello-world test");
+
+    test.keys("diW");     // Delete "hello-world" as one WORD
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_daW_delete_around_WORD() {
+    let mut test = EditorTest::new("hello-world test.case");
+
+    test.keys("daW");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yiW_with_punctuation() {
+    let mut test = EditorTest::new("func(args) next");
+
+    test.keys("yiW")      // Yank "func(args)"
+        .keys("$")
+        .press('p');
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'i"' and 'a"' - Double quote text objects
+// ============================================================================
+
+#[test]
+fn test_di_double_quote() {
+    let mut test = EditorTest::new(r#"hello "world" test"#);
+
+    test.keys("f\"")      // Move to quote
+        .keys("di\"");    // Delete inside quotes
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_da_double_quote() {
+    let mut test = EditorTest::new(r#"hello "world" test"#);
+
+    test.keys("f\"")
+        .keys("da\"");    // Delete including quotes
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_double_quote() {
+    let mut test = EditorTest::new(r#"hello "world" test"#);
+
+    test.keys("f\"")
+        .keys("ci\"")
+        .type_text("universe")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yi_double_quote() {
+    let mut test = EditorTest::new(r#"copy "this text" here"#);
+
+    test.keys("f\"")
+        .keys("yi\"")
+        .keys("$")
+        .press('p');
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_di_quote_from_inside() {
+    let mut test = EditorTest::new(r#""hello world""#);
+
+    test.keys("lll")      // Move inside quotes
+        .keys("di\"");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// "i'" and "a'" - Single quote text objects
+// ============================================================================
+
+#[test]
+fn test_di_single_quote() {
+    let mut test = EditorTest::new("hello 'world' test");
+
+    test.keys("f'")
+        .keys("di'");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_da_single_quote() {
+    let mut test = EditorTest::new("hello 'world' test");
+
+    test.keys("f'")
+        .keys("da'");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_single_quote() {
+    let mut test = EditorTest::new("hello 'world' test");
+
+    test.keys("f'")
+        .keys("ci'")
+        .type_text("universe")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'i`' and 'a`' - Backtick text objects
+// ============================================================================
+
+#[test]
+fn test_di_backtick() {
+    let mut test = EditorTest::new("code `example` here");
+
+    test.keys("f`")
+        .keys("di`");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_backtick() {
+    let mut test = EditorTest::new("code `example` here");
+
+    test.keys("f`")
+        .keys("ci`")
+        .type_text("test")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'i(' / 'i)' / 'ib' and 'a(' / 'a)' / 'ab' - Parenthesis text objects
+// ============================================================================
+
+#[test]
+fn test_di_paren() {
+    let mut test = EditorTest::new("func(arg1, arg2)");
+
+    test.keys("f(")
+        .keys("di(");     // Delete inside parens
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_da_paren() {
+    let mut test = EditorTest::new("func(arg1, arg2) next");
+
+    test.keys("f(")
+        .keys("da(");     // Delete including parens
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_paren() {
+    let mut test = EditorTest::new("func(old)");
+
+    test.keys("f(")
+        .keys("ci(")
+        .type_text("new")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yi_paren() {
+    let mut test = EditorTest::new("func(args) end");
+
+    test.keys("f(")
+        .keys("yi(")
+        .keys("$")
+        .press('p');
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_dib_delete_block() {
+    let mut test = EditorTest::new("func(a, b, c)");
+
+    test.keys("f(")
+        .keys("dib");     // 'ib' is alias for 'i('
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'i[' / 'i]' and 'a[' / 'a]' - Bracket text objects
+// ============================================================================
+
+#[test]
+fn test_di_bracket() {
+    let mut test = EditorTest::new("array[index]");
+
+    test.keys("f[")
+        .keys("di[");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_da_bracket() {
+    let mut test = EditorTest::new("array[index] next");
+
+    test.keys("f[")
+        .keys("da[");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_bracket() {
+    let mut test = EditorTest::new("arr[old]");
+
+    test.keys("f[")
+        .keys("ci[")
+        .type_text("0")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'i{' / 'i}' / 'iB' and 'a{' / 'a}' / 'aB' - Curly brace text objects
+// ============================================================================
+
+#[test]
+fn test_di_curly() {
+    let mut test = EditorTest::new("obj { key: value }");
+
+    test.keys("f{")
+        .keys("di{");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_da_curly() {
+    let mut test = EditorTest::new("obj { key: value } next");
+
+    test.keys("f{")
+        .keys("da{");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_curly() {
+    let mut test = EditorTest::new("obj { old }");
+
+    test.keys("f{")
+        .keys("ci{")
+        .type_text(" new ")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_diB_curly_block() {
+    let mut test = EditorTest::new("{ code block }");
+
+    test.keys("f{")
+        .keys("diB");     // 'iB' is alias for 'i{'
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'i<' / 'i>' and 'a<' / 'a>' - Angle bracket text objects
+// ============================================================================
+
+#[test]
+fn test_di_angle() {
+    let mut test = EditorTest::new("tag <content> end");
+
+    test.keys("f<")
+        .keys("di<");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_da_angle() {
+    let mut test = EditorTest::new("tag <content> end");
+
+    test.keys("f<")
+        .keys("da<");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_ci_angle() {
+    let mut test = EditorTest::new("<old>");
+
+    test.keys("f<")
+        .keys("ci<")
+        .type_text("new")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'ip' and 'ap' - Paragraph text objects
+// ============================================================================
+
+#[test]
+fn test_dip_delete_paragraph() {
+    let mut test = EditorTest::new("line 1\nline 2\n\nnext para");
+
+    test.keys("dip");     // Delete inner paragraph
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_dap_delete_around_paragraph() {
+    let mut test = EditorTest::new("para 1\n\npara 2\n\npara 3");
+
+    test.keys("dap");     // Delete paragraph including blank lines
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_yip_yank_paragraph() {
+    let mut test = EditorTest::new("para 1\nline 2\n\npara 2");
+
+    test.keys("yip")
+        .keys("G")
+        .press('p');
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_cip_change_paragraph() {
+    let mut test = EditorTest::new("old para\nline 2\n\nnext");
+
+    test.keys("cip")
+        .type_text("new content")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'is' and 'as' - Sentence text objects
+// ============================================================================
+
+#[test]
+fn test_dis_delete_sentence() {
+    let mut test = EditorTest::new("First sentence. Second sentence. Third.");
+
+    test.keys("dis");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_das_delete_around_sentence() {
+    let mut test = EditorTest::new("First. Second. Third.");
+
+    test.keys("das");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_cis_change_sentence() {
+    let mut test = EditorTest::new("Old sentence. Next one.");
+
+    test.keys("cis")
+        .type_text("New sentence.")
+        .press_esc();
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Nested text objects
+// ============================================================================
+
+#[test]
+fn test_nested_parens() {
+    let mut test = EditorTest::new("outer(inner(deep))");
+
+    test.keys("f(")       // First paren
+        .keys("di(");     // Should delete "inner(deep)"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_nested_quotes() {
+    let mut test = EditorTest::new(r#"outer "inner 'deep' text" end"#);
+
+    test.keys("f\"")
+        .keys("di\"");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_nested_brackets() {
+    let mut test = EditorTest::new("arr[nested[index]]");
+
+    test.keys("f[")
+        .keys("di[");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Text objects with count
+// ============================================================================
+
+#[test]
+fn test_d2iw_delete_two_words() {
+    let mut test = EditorTest::new("one two three four");
+
+    test.keys("d2iw");    // Delete 2 words
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_y3aw_yank_three_words() {
+    let mut test = EditorTest::new("one two three four five");
+
+    test.keys("y3aw")
+        .keys("$")
+        .press('p');
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Text objects in visual mode
+// ============================================================================
+
+#[test]
+fn test_visual_iw() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.keys("w")
+        .press('v')
+        .keys("iw");      // Visual select word
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_visual_aw() {
+    let mut test = EditorTest::new("hello world test");
+
+    test.press('v')
+        .keys("aw");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_visual_i_quote() {
+    let mut test = EditorTest::new(r#"text "quoted" more"#);
+
+    test.keys("f\"")
+        .press('v')
+        .keys("i\"");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Edge cases
+// ============================================================================
+
+#[test]
+fn test_diw_whitespace_only() {
+    let mut test = EditorTest::new("   ");
+
+    test.keys("diw");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_di_quote_empty() {
+    let mut test = EditorTest::new(r#""""#);
+
+    test.keys("f\"")
+        .keys("di\"");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_di_paren_empty() {
+    let mut test = EditorTest::new("func()");
+
+    test.keys("f(")
+        .keys("di(");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_text_object_at_eol() {
+    let mut test = EditorTest::new("word");
+
+    test.keys("$")        // Last char
+        .keys("diw");
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_di_quote_unclosed() {
+    let mut test = EditorTest::new(r#"hello "world"#);
+
+    test.keys("f\"")
+        .keys("di\"");    // Should handle unclosed quote
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// Multiple text objects on same line
+// ============================================================================
+
+#[test]
+fn test_multiple_quoted_strings() {
+    let mut test = EditorTest::new(r#""first" and "second" and "third""#);
+
+    test.keys("f\"")
+        .keys("di\"")     // Delete "first"
+        .keys("f\"")      // Find next quote
+        .keys("di\"");    // Delete "second"
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_multiple_parens() {
+    let mut test = EditorTest::new("func(a) and func(b)");
+
+    test.keys("f(")
+        .keys("di(")
+        .keys("f(")
+        .keys("di(");
+
+    assert_snapshot!(test.snapshot_state());
+}

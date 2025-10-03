@@ -13,7 +13,8 @@ This directory contains comprehensive tests for ovim's editor functionality usin
 - **`delete_operations_test.rs`** - Tests for delete operations (x, X, dd, dw, d$, etc.)
 - **`o_command_test.rs`** - Traditional assertion-based tests for `o` command
 - **`paste_undo_test.rs`** - Traditional tests for paste/undo interactions
-- Other test files for specific features (cursor, syntax, LSP, etc.)
+- **`lsp_operations_test.rs`** - Tests for LSP features (goto definition, hover, keybindings)
+- Other test files for specific features (cursor, syntax, etc.)
 
 ## Running Tests
 
@@ -29,6 +30,7 @@ cargo test
 cargo test --test insert_operations_test
 cargo test --test paste_operations_test
 cargo test --test delete_operations_test
+cargo test --test lsp_operations_test
 ```
 
 ### Run Specific Test
@@ -186,6 +188,7 @@ Our test suite aims to cover:
 - [x] Indentation preservation
 - [x] Undo/redo interactions
 - [x] Count prefixes (e.g., 3dd, 5p)
+- [x] LSP keybindings (gd for goto definition, K for hover)
 
 ### 🔄 To Add
 

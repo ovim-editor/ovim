@@ -464,7 +464,6 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         while let Some(dir) = current {
             let cargo_toml = dir.join("Cargo.toml");
             if cargo_toml.exists() {
-                eprintln!("Found Cargo.toml at: {:?}", dir);
                 break;
             }
             current = dir.parent();
@@ -473,35 +472,25 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     } else {
         path.parent().unwrap_or_else(|| Path::new("."))
     };
-    eprintln!("Project root path: {:?}", root_path);
 
     // Start the language server
     if let Some(lsp_manager) = editor.lsp_manager() {
         let lsp = lsp_manager.lock().await;
 
         // Start the server (will skip if already running)
-        eprintln!("Starting {} language server: {}", language_id, server_command);
-        if let Err(e) = lsp.start_server(language_id, server_command, server_args, root_path).await {
-            eprintln!("Failed to start {} language server: {}", language_id, e);
+        if let Err(_e) = lsp.start_server(language_id, server_command, server_args, root_path).await {
             return;
         }
-        eprintln!("Successfully started {} language server", language_id);
 
         // Send didOpen notification
         let file_content = editor.buffer().rope().to_string();
         let uri = match lsp_types::Url::from_file_path(path) {
             Ok(uri) => uri,
             Err(_) => {
-                eprintln!("Failed to create URI for file: {}", file_path);
                 return;
             }
         };
 
-        eprintln!("Sending didOpen: uri={}, lang={}, content_len={}", uri, language_id, file_content.len());
-        if let Err(e) = lsp.did_open(uri, language_id, 1, file_content).await {
-            eprintln!("Failed to send didOpen notification: {}", e);
-        } else {
-            eprintln!("didOpen sent successfully");
-        }
+        let _ = lsp.did_open(uri, language_id, 1, file_content).await;
     }
 }
