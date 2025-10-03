@@ -1,0 +1,17 @@
+---
+source: tests/lsp_operations_test.rs
+expression: test.snapshot_buffer_and_cursor()
+---
+Cursor: 10:0
+
+fn helper() -> i32 {
+    42
+}
+
+fn process() -> i32 {
+    helper()
+}
+
+fn main() {
+    let x = process();
+}

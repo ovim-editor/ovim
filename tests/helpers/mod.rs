@@ -79,7 +79,7 @@ impl EditorTest {
         let mut content = String::new();
         for i in 0..self.editor.buffer().line_count() {
             if let Some(line) = self.editor.buffer().line(i) {
-                content.push_str(line);
+                content.push_str(&line);
             }
         }
         content
@@ -200,6 +200,18 @@ impl EditorTest {
     pub fn cursor(&self) -> (usize, usize) {
         let c = self.editor.buffer().cursor();
         (c.line(), c.col())
+    }
+
+    /// Load a file into the editor
+    pub fn load_file(&mut self, path: &str) -> &mut Self {
+        let _ = self.editor.load_file(path);
+        self
+    }
+
+    /// Set file path without loading
+    pub fn set_file_path(&mut self, path: String) -> &mut Self {
+        self.editor.buffer_mut().set_file_path(path);
+        self
     }
 }
 

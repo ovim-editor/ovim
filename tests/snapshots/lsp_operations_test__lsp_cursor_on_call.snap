@@ -1,0 +1,30 @@
+---
+source: tests/lsp_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 18:12
+Lines: 22
+
+Buffer:
+// Rust code with various identifiers for LSP
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+impl Point {
+    fn new(x: i32, y: i32) -> Self {
+        Point { x, y }
+    }
+
+    fn distance(&self) -> f64 {
+        ((self.x.pow(2) + self.y.pow(2)) as f64).sqrt()
+    }
+}
+
+fn main() {
+    let p = [P]oint::new(3, 4);
+    println!("Distance: {}", p.distance());
+}
