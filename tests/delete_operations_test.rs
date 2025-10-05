@@ -1,5 +1,6 @@
 mod helpers;
 use helpers::EditorTest;
+use insta::assert_snapshot;
 
 // ============================================================================
 // 'x' command - Delete character under cursor

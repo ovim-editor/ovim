@@ -1913,6 +1913,14 @@ impl InputHandler {
                     cursor.move_left(1);
                 }
             }
+            // Ctrl-W - Delete word backward
+            KeyCode::Char('w') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                Self::delete_word_backward_insert(editor)?;
+            }
+            // Ctrl-U - Delete to start of line
+            KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                Self::delete_to_line_start_insert(editor)?;
+            }
             KeyCode::Char(c) => {
                 Self::insert_char(editor, c)?;
             }
@@ -2496,6 +2504,99 @@ impl InputHandler {
         let range = Range::new(start_pos, end_pos);
         let change = Change::delete(range, deleted_text, cursor_before);
         change.apply(editor.buffer_mut());
+        editor.add_change(change);
+
+        Ok(())
+    }
+
+    fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if col == 0 && line_idx == 0 {
+            // At start of buffer, nothing to delete
+            return Ok(());
+        }
+
+        // If at start of line, delete the newline character
+        if col == 0 {
+            let prev_line_len = editor.buffer().line(line_idx - 1)
+                .map(|s| s.trim_end_matches('\n').chars().count())
+                .unwrap_or(0);
+            let start_pos = (line_idx - 1, prev_line_len);
+            let end_pos = (line_idx, 0);
+            let range = Range::new(start_pos, end_pos);
+            let change = Change::delete(range, "\n".to_string(), cursor_before);
+            change.apply(editor.buffer_mut());
+            editor.add_change(change);
+            return Ok(());
+        }
+
+        // Get the line text
+        let line = editor.buffer().line(line_idx).unwrap_or_default();
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        // Find the start of the word to delete
+        let mut start_col = col;
+
+        // Skip trailing whitespace
+        while start_col > 0 && chars.get(start_col - 1).map_or(false, |c| c.is_whitespace()) {
+            start_col -= 1;
+        }
+
+        // If we only found whitespace, we're done
+        if start_col == col {
+            // No whitespace found, delete the word
+            // Determine if we're in a word (alphanumeric/underscore) or punctuation
+            if start_col > 0 {
+                let char_at_cursor = chars.get(start_col - 1);
+                let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+
+                if let Some(&ch) = char_at_cursor {
+                    if is_word_char(ch) {
+                        // Delete word characters
+                        while start_col > 0 && chars.get(start_col - 1).map_or(false, |&c| is_word_char(c)) {
+                            start_col -= 1;
+                        }
+                    } else {
+                        // Delete punctuation/special characters
+                        while start_col > 0 && chars.get(start_col - 1).map_or(false, |&c| !is_word_char(c) && !c.is_whitespace()) {
+                            start_col -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Delete the range
+        if start_col < col {
+            let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, col);
+            let range = Range::new((line_idx, start_col), (line_idx, col));
+            let change = Change::delete(range, deleted, cursor_before);
+            editor.add_change(change);
+        }
+
+        Ok(())
+    }
+
+    fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // If already at start of line, do nothing
+        if col == 0 {
+            return Ok(());
+        }
+
+        // Delete from start of line to cursor
+        let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, col);
+        let range = Range::new((line_idx, 0), (line_idx, col));
+        let change = Change::delete(range, deleted, cursor_before);
         editor.add_change(change);
 
         Ok(())

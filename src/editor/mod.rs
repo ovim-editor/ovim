@@ -744,6 +744,11 @@ impl Editor {
         self.buffer_modified_this_iteration = true;
     }
 
+    /// Marks that the buffer was saved (for LSP notification)
+    pub fn mark_buffer_saved(&mut self) {
+        self.buffer_saved_this_iteration = true;
+    }
+
     /// Sends didChange notification if buffer was modified, then resets the flag
     pub async fn send_lsp_changes_if_modified(&mut self) {
         if !self.buffer_modified_this_iteration {
@@ -785,6 +790,43 @@ impl Editor {
 
         let lsp_guard = lsp.lock().await;
         let _ = lsp_guard.did_change(uri, language_id, vec![change]).await;
+    }
+
+    /// Sends didSave notification if buffer was saved, then resets the flag
+    pub async fn send_lsp_save_if_needed(&mut self) {
+        if !self.buffer_saved_this_iteration {
+            return;
+        }
+
+        self.buffer_saved_this_iteration = false;
+
+        let Some(ref lsp) = self.lsp_manager else {
+            return;
+        };
+
+        let Some(file_path) = self.buffer.file_path() else {
+            return;
+        };
+
+        let Ok(uri) = lsp_types::Url::from_file_path(file_path) else {
+            return;
+        };
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            return;
+        };
+
+        let text = Some(self.buffer.rope().to_string());
+
+        let lsp_guard = lsp.lock().await;
+        let _ = lsp_guard.did_save(uri, language_id, text).await;
     }
 
     /// Process any pending LSP actions

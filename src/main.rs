@@ -132,8 +132,9 @@ async fn run_headless_loop(
             }
         }
 
-        // Send didChange notification to LSP if buffer was modified
+        // Send LSP notifications if needed
         editor.send_lsp_changes_if_modified().await;
+        editor.send_lsp_save_if_needed().await;
 
         // Small sleep to avoid busy loop
         sleep(Duration::from_millis(10)).await;
@@ -189,8 +190,9 @@ async fn run_event_loop(
             }
         }
 
-        // Send didChange notification to LSP if buffer was modified
+        // Send LSP notifications if needed
         editor.send_lsp_changes_if_modified().await;
+        editor.send_lsp_save_if_needed().await;
     }
 
     Ok(())
@@ -392,6 +394,7 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
                         editor.mark_saved();
+                        editor.mark_buffer_saved(); // Mark for LSP didSave notification
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
                         ApiResponse::Success(SuccessResponse {
@@ -415,6 +418,7 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
                         editor.mark_saved();
+                        editor.mark_buffer_saved(); // Mark for LSP didSave notification
                         editor.quit();
                         ApiResponse::Success(SuccessResponse {
                             success: true,
@@ -439,6 +443,7 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 match editor.buffer_mut().save_as(filename) {
                     Ok(_) => {
                         editor.mark_saved();
+                        editor.mark_buffer_saved(); // Mark for LSP didSave notification
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
                         ApiResponse::Success(SuccessResponse {
