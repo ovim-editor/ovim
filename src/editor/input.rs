@@ -1247,6 +1247,25 @@ impl InputHandler {
                     editor.set_pending_operator(Operator::ToggleCase);
                     return Ok(());
                 }
+                ('g', KeyCode::Char('i')) => {
+                    // gi - go to last insert position and enter insert mode
+                    if let Some((line, col)) = editor.last_insert_position {
+                        editor.buffer_mut().cursor_mut().set_position(line, col);
+                    }
+                    // Enter insert mode regardless of whether position was saved
+                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    editor.start_change_building(cursor_before);
+                    editor.set_mode(Mode::Insert);
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('I')) => {
+                    // gI - insert at column 0 (before any indentation)
+                    editor.buffer_mut().cursor_mut().set_col(0);
+                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    editor.start_change_building(cursor_before);
+                    editor.set_mode(Mode::Insert);
+                    return Ok(());
+                }
                 ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
                     // m{a-z} - set mark
                     editor.set_mark(ch);
@@ -1452,9 +1471,8 @@ impl InputHandler {
                 let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
-                // Move to start of line
-                let cursor = editor.buffer_mut().cursor_mut();
-                cursor.set_col(0);
+                // Move to first non-blank character
+                Motions::first_non_blank(editor.buffer_mut());
             }
             KeyCode::Char('A') => {
                 let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -2047,6 +2065,10 @@ impl InputHandler {
     fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         match key_event.code {
             KeyCode::Esc => {
+                // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
+                let cursor = editor.buffer().cursor();
+                editor.last_insert_position = Some((cursor.line(), cursor.col()));
+
                 editor.finalize_change_building();
                 editor.mark_buffer_modified(); // Mark for LSP didChange notification
                 editor.set_mode(Mode::Normal);
@@ -2152,6 +2174,37 @@ impl InputHandler {
                     cursor.set_col(col);
                     // Set desired_col to usize::MAX to indicate "always end of line"
                     cursor.update_desired_col(usize::MAX);
+                }
+            }
+            KeyCode::Char('G') => {
+                // G - go to last line (or line specified by count)
+                let target_line = if let Some(count) = editor.count() {
+                    count.saturating_sub(1)
+                } else {
+                    let line_count = editor.buffer().line_count();
+                    let mut last_line = line_count.saturating_sub(1);
+                    // Check if last line is empty (just a newline)
+                    // If so, go to the previous line (Neovim behavior)
+                    if let Some(line) = editor.buffer().line(last_line) {
+                        if line == "\n" || line.is_empty() {
+                            last_line = last_line.saturating_sub(1);
+                        }
+                    }
+                    last_line
+                };
+                editor.buffer_mut().cursor_mut().set_line(target_line);
+                editor.buffer_mut().cursor_mut().set_col(0);
+                editor.clear_count();
+            }
+            KeyCode::Char('g') => {
+                // Handle gg motion in visual mode
+                if editor.pending_command() == Some('g') {
+                    // gg - go to first line
+                    editor.buffer_mut().cursor_mut().set_line(0);
+                    editor.buffer_mut().cursor_mut().set_col(0);
+                    editor.clear_pending_command();
+                } else {
+                    editor.set_pending_command('g');
                 }
             }
             // Delete selection
@@ -2552,6 +2605,19 @@ impl InputHandler {
             }
             "q!" | "quit!" => {
                 // Force quit without saving
+                editor.quit();
+            }
+            "qa" | "qall" => {
+                // Quit all - for now same as quit since we only have one buffer
+                // In the future, this would check all buffers for modifications
+                if editor.is_modified() {
+                    // Don't quit if modified
+                    return Ok(());
+                }
+                editor.quit();
+            }
+            "qa!" | "qall!" => {
+                // Force quit all without saving
                 editor.quit();
             }
             "w" | "write" => {

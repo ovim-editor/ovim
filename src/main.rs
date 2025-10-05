@@ -418,6 +418,30 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 line_count: None,
             })
         }
+        "qa" | "qall" => {
+            // Quit all - same as quit for single buffer
+            if editor.is_modified() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "No write since last change (add ! to override)".to_string(),
+                })
+            } else {
+                editor.quit();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Quitting all".to_string()),
+                    line_count: None,
+                })
+            }
+        }
+        "qa!" | "qall!" => {
+            // Force quit all without saving
+            editor.quit();
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("Quitting all (forced)".to_string()),
+                line_count: None,
+            })
+        }
         "w" | "write" => {
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
                 match editor.buffer_mut().save_as(&path) {
