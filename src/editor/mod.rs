@@ -222,9 +222,10 @@ impl Editor {
     #[cfg(feature = "lua")]
     fn sync_lua_bridge(&self, bridge: &crate::lua::EditorBridge) {
         // Update cursor position
-        bridge.update_cursor(self.cursor.line, self.cursor.column);
+        let cursor = self.buffer.cursor();
+        bridge.update_cursor(cursor.line(), cursor.col());
         // Update buffer content
-        bridge.update_buffer(self.buffer.to_string());
+        bridge.update_buffer(self.buffer.rope().to_string());
         // Update mode
         bridge.update_mode(format!("{:?}", self.mode));
     }

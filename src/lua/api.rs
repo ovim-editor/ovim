@@ -4,21 +4,18 @@ use crate::lua::EditorBridge;
 
 /// Sets up the vim global table with API namespaces
 pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
-    // Store the bridge in the Lua registry for access from functions
-    lua.set_named_registry_value("__ovim_bridge", bridge.clone())?;
-
     let vim = lua.create_table()?;
 
     // Create vim.api namespace
-    let api = create_api_table(lua)?;
+    let api = create_api_table(lua, bridge.clone())?;
     vim.set("api", api)?;
 
     // Create vim.fn namespace
-    let fn_table = create_fn_table(lua)?;
+    let fn_table = create_fn_table(lua, bridge.clone())?;
     vim.set("fn", fn_table)?;
 
     // Create vim.cmd function
-    let cmd = create_cmd_function(lua)?;
+    let cmd = create_cmd_function(lua, bridge)?;
     vim.set("cmd", cmd)?;
 
     // Create vim.g (global variables) namespace
@@ -36,24 +33,24 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
 }
 
 /// Creates the vim.api table with editor API functions
-fn create_api_table(lua: &Lua) -> Result<Table> {
+fn create_api_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
     let api = lua.create_table()?;
 
     // vim.api.nvim_command(cmd)
-    let nvim_command = lua.create_function(|lua, cmd: String| {
-        let bridge: EditorBridge = lua.named_registry_value("__ovim_bridge")?;
-        bridge.execute_command(cmd).map_err(mlua::Error::external)?;
+    let bridge_clone = bridge.clone();
+    let nvim_command = lua.create_function(move |_lua, cmd: String| {
+        bridge_clone.execute_command(cmd).map_err(mlua::Error::external)?;
         Ok(())
     })?;
     api.set("nvim_command", nvim_command)?;
 
     // vim.api.nvim_exec(src, output)
-    let nvim_exec = lua.create_function(|lua, (src, output): (String, bool)| {
-        let bridge: EditorBridge = lua.named_registry_value("__ovim_bridge")?;
+    let bridge_clone = bridge.clone();
+    let nvim_exec = lua.create_function(move |_lua, (src, output): (String, bool)| {
         // Execute each line as a command
         for line in src.lines() {
             if !line.trim().is_empty() {
-                bridge.execute_command(line.to_string()).map_err(mlua::Error::external)?;
+                bridge_clone.execute_command(line.to_string()).map_err(mlua::Error::external)?;
             }
         }
         if output {
@@ -65,10 +62,10 @@ fn create_api_table(lua: &Lua) -> Result<Table> {
     api.set("nvim_exec", nvim_exec)?;
 
     // vim.api.nvim_get_current_line()
-    let nvim_get_current_line = lua.create_function(|lua, ()| {
-        let bridge: EditorBridge = lua.named_registry_value("__ovim_bridge")?;
-        if let Some((line, _)) = bridge.get_cursor() {
-            Ok(bridge.get_line(line).unwrap_or_default())
+    let bridge_clone = bridge.clone();
+    let nvim_get_current_line = lua.create_function(move |_lua, ()| {
+        if let Some((line, _)) = bridge_clone.get_cursor() {
+            Ok(bridge_clone.get_line(line).unwrap_or_default())
         } else {
             Ok("".to_string())
         }
@@ -79,22 +76,22 @@ fn create_api_table(lua: &Lua) -> Result<Table> {
 }
 
 /// Creates the vim.fn table with vim functions
-fn create_fn_table(lua: &Lua) -> Result<Table> {
+fn create_fn_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
     let fn_table = lua.create_table()?;
 
     // vim.fn.line('.')
-    let line = lua.create_function(|lua, expr: String| {
-        let bridge: EditorBridge = lua.named_registry_value("__ovim_bridge")?;
+    let bridge_clone = bridge.clone();
+    let line = lua.create_function(move |_lua, expr: String| {
         if expr == "." {
             // Current line (1-indexed)
-            if let Some((line, _)) = bridge.get_cursor() {
+            if let Some((line, _)) = bridge_clone.get_cursor() {
                 Ok(line + 1)
             } else {
                 Ok(1)
             }
         } else if expr == "$" {
             // Last line
-            Ok(bridge.get_line_count())
+            Ok(bridge_clone.get_line_count())
         } else {
             // Default to 1
             Ok(1)
@@ -103,11 +100,11 @@ fn create_fn_table(lua: &Lua) -> Result<Table> {
     fn_table.set("line", line)?;
 
     // vim.fn.col('.')
-    let col = lua.create_function(|lua, expr: String| {
-        let bridge: EditorBridge = lua.named_registry_value("__ovim_bridge")?;
+    let bridge_clone = bridge.clone();
+    let col = lua.create_function(move |_lua, expr: String| {
         if expr == "." {
             // Current column (1-indexed)
-            if let Some((_, col)) = bridge.get_cursor() {
+            if let Some((_, col)) = bridge_clone.get_cursor() {
                 Ok(col + 1)
             } else {
                 Ok(1)
@@ -122,9 +119,8 @@ fn create_fn_table(lua: &Lua) -> Result<Table> {
 }
 
 /// Creates the vim.cmd function for executing ex commands
-fn create_cmd_function(lua: &Lua) -> Result<mlua::Function> {
-    let cmd = lua.create_function(|lua, command: String| {
-        let bridge: EditorBridge = lua.named_registry_value("__ovim_bridge")?;
+fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function> {
+    let cmd = lua.create_function(move |_lua, command: String| {
         bridge.execute_command(command).map_err(mlua::Error::external)?;
         Ok(())
     })?;

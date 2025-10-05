@@ -536,7 +536,9 @@ fn test_r_with_register() {
         .press('X')       // Replace
         .keys("\"ap");    // Paste register
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hyiwrX\"apello world\n");
+    test.assert_cursor(0, 9);
+    assert_eq!(test.mode(), "Insert");
 }
 
 // ============================================================================
@@ -555,7 +557,8 @@ fn test_ctrl_w_delete_word() {
         )                 // Delete word
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "test whello\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -570,7 +573,8 @@ fn test_ctrl_u_delete_line() {
         )                 // Delete to start of line
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "inserted textuhello\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -584,7 +588,8 @@ fn test_ctrl_t_indent() {
         )                 // Indent
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "thello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -598,7 +603,8 @@ fn test_ctrl_d_dedent() {
         )                 // Dedent
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "d    hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -615,7 +621,8 @@ fn test_ctrl_a_insert_last_text() {
         )                 // Insert last inserted text
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "firsattest\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -631,7 +638,8 @@ fn test_ctrl_r_insert_register() {
         .press('a')       // Insert from register a
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "tyiwiraest\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -646,7 +654,8 @@ fn test_ctrl_n_completion() {
         )                 // Next completion
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world hello\nheln\n");
+    test.assert_cursor(1, 3);
 }
 
 #[test]
@@ -661,7 +670,8 @@ fn test_ctrl_p_completion_previous() {
         )                 // Previous completion
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world hello\nhelp\n");
+    test.assert_cursor(1, 3);
 }
 
 #[test]
@@ -679,5 +689,6 @@ fn test_ctrl_x_ctrl_l_line_completion() {
         )                 // Line completion
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\nxl\n");
+    test.assert_cursor(1, 1);
 }
