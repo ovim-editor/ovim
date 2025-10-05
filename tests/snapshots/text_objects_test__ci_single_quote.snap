@@ -1,0 +1,10 @@
+---
+source: tests/text_objects_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:10
+Lines: 1
+
+Buffer:
+hello vers[e]'world' test

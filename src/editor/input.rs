@@ -1,7 +1,15 @@
+use crate::buffer::Buffer;
 use crate::editor::{Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, Search, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+
+/// Type of case change operation
+enum CaseChange {
+    Lowercase,
+    Uppercase,
+    Toggle,
+}
 
 /// Handles input events for the editor
 pub struct InputHandler;
@@ -439,6 +447,67 @@ impl InputHandler {
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                // Case change operations
+                (Operator::Lowercase, KeyCode::Char('u')) => {
+                    // gugu - lowercase line
+                    Self::change_case_line(editor, count, CaseChange::Lowercase)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Uppercase, KeyCode::Char('U')) => {
+                    // gUgU - uppercase line
+                    Self::change_case_line(editor, count, CaseChange::Uppercase)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::ToggleCase, KeyCode::Char('~')) => {
+                    // g~g~ - toggle case line
+                    Self::change_case_line(editor, count, CaseChange::Toggle)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Lowercase, KeyCode::Char('w')) => {
+                    // guw - lowercase word
+                    Self::change_case_motion(editor, count, CaseChange::Lowercase, |buf, cnt| {
+                        Motions::word_forward(buf, cnt);
+                    })?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Uppercase, KeyCode::Char('w')) => {
+                    // gUw - uppercase word
+                    Self::change_case_motion(editor, count, CaseChange::Uppercase, |buf, cnt| {
+                        Motions::word_forward(buf, cnt);
+                    })?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::ToggleCase, KeyCode::Char('w')) => {
+                    // g~w - toggle case word
+                    Self::change_case_motion(editor, count, CaseChange::Toggle, |buf, cnt| {
+                        Motions::word_forward(buf, cnt);
+                    })?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Lowercase, KeyCode::Char('$')) => {
+                    // gu$ - lowercase to end of line
+                    Self::change_case_to_end_of_line(editor, CaseChange::Lowercase)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Uppercase, KeyCode::Char('$')) => {
+                    // gU$ - uppercase to end of line
+                    Self::change_case_to_end_of_line(editor, CaseChange::Uppercase)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::ToggleCase, KeyCode::Char('$')) => {
+                    // g~$ - toggle case to end of line
+                    Self::change_case_to_end_of_line(editor, CaseChange::Toggle)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
                 // Text objects with 'i' (inner)
                 (_, KeyCode::Char('i')) => {
                     // Restore operator and set pending command to 'i'
@@ -515,6 +584,229 @@ impl InputHandler {
                         }
                     }
                     editor.registers_mut().yank(yanked);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                // Paragraph motions with operators
+                (Operator::Delete, KeyCode::Char('}')) => {
+                    // d} - delete to next paragraph
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let start_col = cursor.col();
+
+                    // Move to next paragraph
+                    Motions::paragraph_forward(editor.buffer_mut(), count);
+                    let end_line = editor.buffer().cursor().line();
+                    let end_col = 0;
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let range = Range::new((start_line, start_col), (end_line, end_col));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+                    Self::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Delete, KeyCode::Char('{')) => {
+                    // d{ - delete to previous paragraph
+                    let start_cursor = editor.buffer().cursor();
+                    let cursor_before = (start_cursor.line(), start_cursor.col());
+                    let end_line = start_cursor.line();
+                    let end_col = start_cursor.col();
+
+                    // Move to previous paragraph
+                    Motions::paragraph_backward(editor.buffer_mut(), count);
+                    let start_line = editor.buffer().cursor().line();
+                    let start_col = 0;
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let range = Range::new((start_line, start_col), (end_line, end_col));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+                    Self::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Delete, KeyCode::Char('%')) => {
+                    // d% - delete to matching bracket
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let start_col = cursor.col();
+
+                    // Find matching bracket position
+                    let rope = editor.buffer().rope();
+                    let text = rope.to_string();
+                    let chars: Vec<char> = text.chars().collect();
+
+                    // Convert line+col to absolute position
+                    let mut abs_start = 0;
+                    for i in 0..start_line {
+                        if i < rope.len_lines() {
+                            abs_start += rope.line(i).len_chars();
+                        }
+                    }
+                    abs_start += start_col;
+
+                    if abs_start >= chars.len() {
+                        editor.clear_count();
+                        return Ok(());
+                    }
+
+                    let current_char = chars[abs_start];
+
+                    // Determine if we're on a bracket
+                    let (is_opening, matching_char) = match current_char {
+                        '(' => (true, ')'),
+                        ')' => (false, '('),
+                        '[' => (true, ']'),
+                        ']' => (false, '['),
+                        '{' => (true, '}'),
+                        '}' => (false, '{'),
+                        '<' => (true, '>'),
+                        '>' => (false, '<'),
+                        _ => {
+                            // Not on a bracket, do nothing
+                            editor.clear_count();
+                            return Ok(());
+                        }
+                    };
+
+                    // Find matching bracket
+                    let match_abs_pos = if is_opening {
+                        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
+                    } else {
+                        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
+                    };
+
+                    if let Some(abs_end) = match_abs_pos {
+                        // Determine delete range (from min to max, inclusive)
+                        let (delete_start, delete_end) = if abs_start < abs_end {
+                            (abs_start, abs_end + 1)
+                        } else {
+                            (abs_end, abs_start + 1)
+                        };
+
+                        // Convert absolute positions to (line, col)
+                        let (start_line, start_col) = Motions::abs_pos_to_line_col(&rope, delete_start);
+                        let (end_line, end_col) = Motions::abs_pos_to_line_col(&rope, delete_end);
+
+                        // Delete the range
+                        let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                        let range = Range::new((start_line, start_col), (end_line, end_col));
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        editor.registers_mut().delete(deleted);
+                        editor.add_change(change);
+                        Self::clamp_cursor_to_buffer(editor);
+                    }
+
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Yank, KeyCode::Char('}')) => {
+                    // y} - yank to next paragraph
+                    let start_line = editor.buffer().cursor().line();
+                    let start_col = editor.buffer().cursor().col();
+
+                    Motions::paragraph_forward(editor.buffer_mut(), count);
+                    let end_line = editor.buffer().cursor().line();
+
+                    let mut yanked = String::new();
+                    if start_line == end_line {
+                        if let Some(line) = editor.buffer().line(start_line) {
+                            let chars: Vec<char> = line.chars().collect();
+                            yanked = chars[start_col..].iter().collect();
+                        }
+                    } else {
+                        for line_idx in start_line..=end_line {
+                            if let Some(line) = editor.buffer().line(line_idx) {
+                                if line_idx == start_line {
+                                    let chars: Vec<char> = line.chars().collect();
+                                    yanked.push_str(&chars[start_col..].iter().collect::<String>());
+                                } else {
+                                    yanked.push_str(&line);
+                                }
+                            }
+                        }
+                    }
+
+                    editor.registers_mut().yank(yanked);
+                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Yank, KeyCode::Char('{')) => {
+                    // y{ - yank to previous paragraph
+                    let end_line = editor.buffer().cursor().line();
+                    let end_col = editor.buffer().cursor().col();
+
+                    Motions::paragraph_backward(editor.buffer_mut(), count);
+                    let start_line = editor.buffer().cursor().line();
+
+                    let mut yanked = String::new();
+                    for line_idx in start_line..=end_line {
+                        if let Some(line) = editor.buffer().line(line_idx) {
+                            if line_idx == end_line {
+                                let chars: Vec<char> = line.chars().collect();
+                                yanked.push_str(&chars[..=end_col.min(chars.len().saturating_sub(1))].iter().collect::<String>());
+                            } else {
+                                yanked.push_str(&line);
+                            }
+                        }
+                    }
+
+                    editor.registers_mut().yank(yanked);
+                    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Change, KeyCode::Char('}')) => {
+                    // c} - change to next paragraph
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let start_col = cursor.col();
+
+                    Motions::paragraph_forward(editor.buffer_mut(), count);
+                    let end_line = editor.buffer().cursor().line();
+                    let end_col = 0;
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let range = Range::new((start_line, start_col), (end_line, end_col));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+                    editor.set_mode(Mode::Insert);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Change, KeyCode::Char('{')) => {
+                    // c{ - change to previous paragraph
+                    let end_line = editor.buffer().cursor().line();
+                    let end_col = editor.buffer().cursor().col();
+                    let cursor_before = (end_line, end_col);
+
+                    Motions::paragraph_backward(editor.buffer_mut(), count);
+                    let start_line = editor.buffer().cursor().line();
+                    let start_col = 0;
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let range = Range::new((start_line, start_col), (end_line, end_col));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.registers_mut().delete(deleted);
+                    editor.add_change(change);
+                    editor.set_mode(Mode::Insert);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -707,6 +999,111 @@ impl InputHandler {
 
                             editor.set_mode(Mode::Insert);
                         }
+                        Operator::Lowercase => {
+                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+                            // Get the text in the range
+                            let text = TextObjects::yank_range(editor.buffer(), range)?;
+
+                            // Transform to lowercase
+                            let transformed = text.to_lowercase();
+
+                            if transformed != text {
+                                // Delete the old text
+                                let deleted = editor.buffer_mut().delete_range(
+                                    range.start_line, range.start_col,
+                                    range.end_line, range.end_col + 1
+                                );
+                                let delete_range = Range::new(
+                                    (range.start_line, range.start_col),
+                                    (range.end_line, range.end_col + 1)
+                                );
+                                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                                // Insert the transformed text
+                                let insert_change = Change::insert(
+                                    (range.start_line, range.start_col),
+                                    transformed,
+                                    cursor_before
+                                );
+                                insert_change.apply(editor.buffer_mut());
+
+                                editor.add_change(delete_change);
+                                editor.add_change(insert_change);
+                            }
+                        }
+                        Operator::Uppercase => {
+                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+                            // Get the text in the range
+                            let text = TextObjects::yank_range(editor.buffer(), range)?;
+
+                            // Transform to uppercase
+                            let transformed = text.to_uppercase();
+
+                            if transformed != text {
+                                // Delete the old text
+                                let deleted = editor.buffer_mut().delete_range(
+                                    range.start_line, range.start_col,
+                                    range.end_line, range.end_col + 1
+                                );
+                                let delete_range = Range::new(
+                                    (range.start_line, range.start_col),
+                                    (range.end_line, range.end_col + 1)
+                                );
+                                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                                // Insert the transformed text
+                                let insert_change = Change::insert(
+                                    (range.start_line, range.start_col),
+                                    transformed,
+                                    cursor_before
+                                );
+                                insert_change.apply(editor.buffer_mut());
+
+                                editor.add_change(delete_change);
+                                editor.add_change(insert_change);
+                            }
+                        }
+                        Operator::ToggleCase => {
+                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+                            // Get the text in the range
+                            let text = TextObjects::yank_range(editor.buffer(), range)?;
+
+                            // Toggle case
+                            let transformed: String = text.chars().map(|ch| {
+                                if ch.is_lowercase() {
+                                    ch.to_uppercase().to_string()
+                                } else {
+                                    ch.to_lowercase().to_string()
+                                }
+                            }).collect();
+
+                            if transformed != text {
+                                // Delete the old text
+                                let deleted = editor.buffer_mut().delete_range(
+                                    range.start_line, range.start_col,
+                                    range.end_line, range.end_col + 1
+                                );
+                                let delete_range = Range::new(
+                                    (range.start_line, range.start_col),
+                                    (range.end_line, range.end_col + 1)
+                                );
+                                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                                // Insert the transformed text
+                                let insert_change = Change::insert(
+                                    (range.start_line, range.start_col),
+                                    transformed,
+                                    cursor_before
+                                );
+                                insert_change.apply(editor.buffer_mut());
+
+                                editor.add_change(delete_change);
+                                editor.add_change(insert_change);
+                            }
+                        }
                         // Indent/dedent don't make sense with text objects, just ignore
                         Operator::Indent | Operator::Dedent => {}
                     }
@@ -730,6 +1127,42 @@ impl InputHandler {
                 ('g', KeyCode::Char('d')) => {
                     // gd - go to definition (LSP)
                     editor.request_goto_definition();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('J')) => {
+                    // gJ - join lines without space
+                    let count = editor.effective_count();
+                    Self::join_lines_no_space(editor, count)?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('e')) => {
+                    // ge - backward to end of word
+                    let count = editor.effective_count();
+                    Motions::word_end_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('E')) => {
+                    // gE - backward to end of WORD
+                    let count = editor.effective_count();
+                    Motions::word_end_backward_big(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('u')) => {
+                    // gu{motion} - lowercase text
+                    editor.set_pending_operator(Operator::Lowercase);
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('U')) => {
+                    // gU{motion} - uppercase text
+                    editor.set_pending_operator(Operator::Uppercase);
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('~')) => {
+                    // g~{motion} - toggle case
+                    editor.set_pending_operator(Operator::ToggleCase);
                     return Ok(());
                 }
                 ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
@@ -858,6 +1291,18 @@ impl InputHandler {
                 editor.set_visual_start(cursor.line(), cursor.col());
                 editor.set_mode(Mode::VisualBlock);
             }
+            // Increment number (Ctrl-A)
+            KeyCode::Char('a') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let count = editor.effective_count();
+                Self::increment_number(editor, count)?;
+                editor.clear_count();
+            }
+            // Decrement number (Ctrl-X)
+            KeyCode::Char('x') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let count = editor.effective_count();
+                Self::decrement_number(editor, count)?;
+                editor.clear_count();
+            }
             // Enter Insert mode
             KeyCode::Char('i') => {
                 let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -944,6 +1389,18 @@ impl InputHandler {
             KeyCode::Char('_') => {
                 // _ - move to first non-blank character (same as ^)
                 Motions::first_non_blank_underscore(editor.buffer_mut());
+                editor.clear_count();
+            }
+            KeyCode::Char('+') => {
+                // + - move to first non-blank of next line
+                let count = editor.effective_count();
+                Motions::plus_motion(editor.buffer_mut(), count);
+                editor.clear_count();
+            }
+            KeyCode::Char('-') => {
+                // - - move to first non-blank of previous line
+                let count = editor.effective_count();
+                Motions::minus_motion(editor.buffer_mut(), count);
                 editor.clear_count();
             }
             // Count prefix
@@ -1250,6 +1707,40 @@ impl InputHandler {
                 }
                 editor.clear_count();
             }
+            KeyCode::Char('X') => {
+                // X - delete character before cursor
+                let count = editor.effective_count();
+                let cursor = editor.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let line_idx = cursor.line();
+                let col = cursor.col();
+
+                if col > 0 {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let chars_count = line_text.chars().count();
+
+                        // Calculate start column (delete count chars before cursor)
+                        let start_col = col.saturating_sub(count);
+                        let start_pos = (line_idx, start_col);
+                        let end_pos = (line_idx, col);
+
+                        let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, col);
+                        let range = Range::new(start_pos, end_pos);
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.registers_mut().delete(deleted);
+                        editor.add_change(change);
+
+                        // Move cursor to the start of deletion
+                        editor.buffer_mut().cursor_mut().set_col(start_col);
+
+                        // Clamp cursor to buffer bounds
+                        Self::clamp_cursor_to_buffer(editor);
+                    }
+                }
+                editor.clear_count();
+            }
             KeyCode::Char('D') => {
                 // D - delete to end of line
                 let cursor = editor.buffer().cursor();
@@ -1414,6 +1905,7 @@ impl InputHandler {
         match key_event.code {
             KeyCode::Esc => {
                 editor.finalize_change_building();
+                editor.mark_buffer_modified(); // Mark for LSP didChange notification
                 editor.set_mode(Mode::Normal);
                 // Move cursor left when exiting insert mode (unless at column 0)
                 let cursor = editor.buffer_mut().cursor_mut();
@@ -1581,9 +2073,105 @@ impl InputHandler {
         Ok(())
     }
 
+    /// Handles substitute command (:s/pattern/replacement/flags)
+    fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
+        // Parse the command to extract range, pattern, replacement, and flags
+        // Supported formats:
+        // :s/pattern/replacement/[flags]
+        // :%s/pattern/replacement/[flags]
+        // :'<,'>s/pattern/replacement/[flags]
+        // :1,5s/pattern/replacement/[flags]
+
+        let (range_str, substitute_part) = if let Some(s_idx) = command.rfind('s') {
+            (&command[..s_idx], &command[s_idx+1..])
+        } else {
+            return Ok(()); // No 's' found
+        };
+
+        // Parse substitute pattern: /pattern/replacement/flags
+        if !substitute_part.starts_with('/') {
+            return Ok(()); // Invalid format
+        }
+
+        let parts: Vec<&str> = substitute_part.splitn(4, '/').collect();
+        if parts.len() < 3 {
+            return Ok(()); // Invalid format - need at least /pattern/replacement/
+        }
+
+        let pattern = parts[1];
+        let replacement = parts[2];
+        let flags = if parts.len() >= 4 { parts[3] } else { "" };
+
+        // Parse flags
+        let global = flags.contains('g');
+        let _ignore_case = flags.contains('i');
+
+        // Determine the range
+        let (start_line, end_line) = if range_str.is_empty() {
+            // :s - current line only
+            let cursor_line = editor.buffer().cursor().line();
+            (cursor_line, cursor_line + 1)
+        } else if range_str == "%" {
+            // :%s - all lines
+            (0, editor.buffer().line_count())
+        } else if range_str == "'<,'>" || range_str.contains("'<") {
+            // :'<,'>s - visual selection
+            if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
+                (start_line, end_line + 1)
+            } else {
+                return Ok(());
+            }
+        } else {
+            // Try to parse line range like 1,5 or 1,$
+            return Ok(()); // For now, skip complex range parsing
+        };
+
+        // Perform substitution with change tracking
+        let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+        for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+
+                // Perform the substitution
+                let new_text = if global {
+                    // Replace all occurrences
+                    line_text.replace(pattern, replacement)
+                } else {
+                    // Replace first occurrence
+                    if let Some(pos) = line_text.find(pattern) {
+                        let mut result = String::new();
+                        result.push_str(&line_text[..pos]);
+                        result.push_str(replacement);
+                        result.push_str(&line_text[pos + pattern.len()..]);
+                        result
+                    } else {
+                        line_text.to_string()
+                    }
+                };
+
+                if new_text != line_text {
+                    // Delete old line content and insert new
+                    let line_len = line_text.chars().count();
+                    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                    let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
+                    let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                    let insert_change = Change::insert((line_idx, 0), new_text, cursor_before);
+                    insert_change.apply(editor.buffer_mut());
+
+                    editor.add_change(delete_change);
+                    editor.add_change(insert_change);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Executes a command from the command line
     fn execute_command(editor: &mut Editor) -> Result<()> {
-        let command = editor.command_line().trim();
+        let command = editor.command_line().trim().to_string();
 
         // Handle commands with arguments
         if command.starts_with("e ") || command.starts_with("edit ") {
@@ -1607,8 +2195,15 @@ impl InputHandler {
             return Ok(());
         }
 
+        // Handle substitute command (:s, :%s, :'<,'>s)
+        // Check if it's a substitute command (contains 's/' pattern)
+        if command.ends_with("s/") || command.contains("s/") {
+            Self::handle_substitute_command(editor, &command)?;
+            return Ok(());
+        }
+
         // Handle commands without arguments
-        match command {
+        match command.as_str() {
             "q" | "quit" => {
                 // Quit without checking for modifications
                 if editor.is_modified() {
@@ -2096,6 +2691,14 @@ impl InputHandler {
     }
 
     fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
+        Self::join_lines_impl(editor, count, true)
+    }
+
+    fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
+        Self::join_lines_impl(editor, count, false)
+    }
+
+    fn join_lines_impl(editor: &mut Editor, count: usize, add_space: bool) -> Result<()> {
         let cursor = editor.buffer().cursor();
         let cursor_before = (cursor.line(), cursor.col());
         let start_line = cursor.line();
@@ -2121,9 +2724,10 @@ impl InputHandler {
 
                 let deleted = editor.buffer_mut().delete_range(line_idx, line_len, line_idx + 1, 0);
 
-                // Insert a space where the newline was
-                let insert_pos = (line_idx, line_len);
-                editor.buffer_mut().insert_text_at(line_idx, line_len, " ");
+                // Insert a space where the newline was (if requested)
+                if add_space {
+                    editor.buffer_mut().insert_text_at(line_idx, line_len, " ");
+                }
 
                 // Record the change
                 let range = Range::new(start_pos, end_pos);
@@ -2221,6 +2825,312 @@ impl InputHandler {
         }
 
         Ok(())
+    }
+
+    /// Changes case of entire line(s)
+    fn change_case_line(editor: &mut Editor, count: usize, case_change: CaseChange) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let start_line = cursor.line();
+        let end_line = (start_line + count).min(editor.buffer().line_count());
+
+        for line_idx in start_line..end_line {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let transformed = Self::apply_case_change(line_text, &case_change);
+
+                if transformed != line_text {
+                    let line_len = line_text.chars().count();
+                    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                    let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
+                    let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                    let insert_change = Change::insert((line_idx, 0), transformed, cursor_before);
+                    insert_change.apply(editor.buffer_mut());
+
+                    editor.add_change(delete_change);
+                    editor.add_change(insert_change);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Changes case using a motion
+    fn change_case_motion<F>(editor: &mut Editor, count: usize, case_change: CaseChange, motion: F) -> Result<()>
+    where
+        F: FnOnce(&mut Buffer, usize)
+    {
+        let start_cursor = editor.buffer().cursor().clone();
+        let cursor_before = (start_cursor.line(), start_cursor.col());
+        let start_line = start_cursor.line();
+        let start_col = start_cursor.col();
+
+        // Apply the motion to find the end position
+        motion(editor.buffer_mut(), count);
+
+        let end_cursor = editor.buffer().cursor();
+        let end_line = end_cursor.line();
+        let end_col = end_cursor.col();
+
+        // Get the text in the range
+        let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
+        let end_char = editor.buffer().rope().line_to_char(end_line) + end_col;
+        let text = editor.buffer().rope().slice(start_char..end_char).to_string();
+
+        // Transform the case
+        let transformed = Self::apply_case_change(&text, &case_change);
+
+        if transformed != text {
+            // Delete the old text
+            let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+            let delete_range = Range::new((start_line, start_col), (end_line, end_col));
+            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+            // Insert the transformed text
+            let insert_change = Change::insert((start_line, start_col), transformed, cursor_before);
+            insert_change.apply(editor.buffer_mut());
+
+            editor.add_change(delete_change);
+            editor.add_change(insert_change);
+        }
+
+        // Reset cursor to start position
+        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+
+        Ok(())
+    }
+
+    /// Changes case from cursor to end of line
+    fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if let Some(line) = editor.buffer().line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            let line_len = line_text.chars().count();
+
+            if col < line_len {
+                let text_to_end: String = line_text.chars().skip(col).collect();
+                let transformed = Self::apply_case_change(&text_to_end, &case_change);
+
+                if transformed != text_to_end {
+                    let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                    let delete_range = Range::new((line_idx, col), (line_idx, line_len));
+                    let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                    let insert_change = Change::insert((line_idx, col), transformed, cursor_before);
+                    insert_change.apply(editor.buffer_mut());
+
+                    editor.add_change(delete_change);
+                    editor.add_change(insert_change);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Applies case change transformation to a string
+    fn apply_case_change(text: &str, case_change: &CaseChange) -> String {
+        match case_change {
+            CaseChange::Lowercase => text.to_lowercase(),
+            CaseChange::Uppercase => text.to_uppercase(),
+            CaseChange::Toggle => {
+                text.chars().map(|ch| {
+                    if ch.is_lowercase() {
+                        ch.to_uppercase().to_string()
+                    } else {
+                        ch.to_lowercase().to_string()
+                    }
+                }).collect()
+            }
+        }
+    }
+
+    /// Increments the number under/after the cursor
+    fn increment_number(editor: &mut Editor, count: usize) -> Result<()> {
+        Self::modify_number(editor, count as i64)
+    }
+
+    /// Decrements the number under/after the cursor
+    fn decrement_number(editor: &mut Editor, count: usize) -> Result<()> {
+        Self::modify_number(editor, -(count as i64))
+    }
+
+    /// Modifies (increments or decrements) the number under/after the cursor
+    fn modify_number(editor: &mut Editor, delta: i64) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if let Some(line) = editor.buffer().line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+
+            // Find number at or after cursor position
+            if let Some((start_col, end_col, number_str)) = Self::find_number_at_or_after(line_text, col) {
+                // Parse the number with base detection
+                let (value, base, prefix_len) = Self::parse_number(&number_str)?;
+
+                // Apply the delta
+                let new_value = value.wrapping_add(delta);
+
+                // Format the new number with the same base
+                let new_number_str = Self::format_number(new_value, base, prefix_len);
+
+                // Replace the number in the buffer
+                let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
+                let delete_range = Range::new((line_idx, start_col), (line_idx, end_col));
+                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                let insert_change = Change::insert((line_idx, start_col), new_number_str.clone(), cursor_before);
+                insert_change.apply(editor.buffer_mut());
+
+                editor.add_change(delete_change);
+                editor.add_change(insert_change);
+
+                // Position cursor on the first digit of the number
+                editor.buffer_mut().cursor_mut().set_col(start_col);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Finds a number at or after the given column position
+    /// Returns (start_col, end_col, number_string)
+    fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, String)> {
+        let chars: Vec<char> = line.chars().collect();
+
+        // Start searching from cursor position
+        let mut search_col = col;
+
+        // Skip non-digit/non-hex characters to find start of number
+        while search_col < chars.len() {
+            let ch = chars[search_col];
+            // Check if this could be the start of a number
+            if ch.is_ascii_digit() || (search_col + 1 < chars.len() && ch == '0' &&
+                (chars[search_col + 1] == 'x' || chars[search_col + 1] == 'X' ||
+                 chars[search_col + 1] == 'b' || chars[search_col + 1] == 'B' ||
+                 chars[search_col + 1] == 'o' || chars[search_col + 1] == 'O')) {
+                break;
+            }
+            search_col += 1;
+        }
+
+        if search_col >= chars.len() {
+            return None;
+        }
+
+        let start_col = search_col;
+        let mut end_col = start_col;
+
+        // Check for hex (0x), binary (0b), or octal (0o) prefix
+        if chars[end_col] == '0' && end_col + 1 < chars.len() {
+            let next = chars[end_col + 1];
+            if next == 'x' || next == 'X' || next == 'b' || next == 'B' || next == 'o' || next == 'O' {
+                end_col += 2;
+
+                // Collect hex/binary/octal digits
+                let is_hex = next == 'x' || next == 'X';
+                let is_binary = next == 'b' || next == 'B';
+
+                while end_col < chars.len() {
+                    let ch = chars[end_col];
+                    if is_hex && ch.is_ascii_hexdigit() {
+                        end_col += 1;
+                    } else if is_binary && (ch == '0' || ch == '1') {
+                        end_col += 1;
+                    } else if !is_hex && !is_binary && ch.is_ascii_digit() {
+                        end_col += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                if end_col > start_col + 2 {
+                    let number_str: String = chars[start_col..end_col].iter().collect();
+                    return Some((start_col, end_col, number_str));
+                }
+            }
+        }
+
+        // Regular decimal number
+        end_col = start_col;
+        while end_col < chars.len() && chars[end_col].is_ascii_digit() {
+            end_col += 1;
+        }
+
+        if end_col > start_col {
+            let number_str: String = chars[start_col..end_col].iter().collect();
+            Some((start_col, end_col, number_str))
+        } else {
+            None
+        }
+    }
+
+    /// Parses a number string, detecting the base from prefix
+    /// Returns (value, base, prefix_length)
+    fn parse_number(s: &str) -> Result<(i64, u32, usize)> {
+        if s.len() >= 3 {
+            let prefix = &s[0..2];
+            let digits = &s[2..];
+
+            match prefix {
+                "0x" | "0X" => {
+                    let value = i64::from_str_radix(digits, 16)
+                        .unwrap_or(0);
+                    return Ok((value, 16, 2));
+                }
+                "0b" | "0B" => {
+                    let value = i64::from_str_radix(digits, 2)
+                        .unwrap_or(0);
+                    return Ok((value, 2, 2));
+                }
+                "0o" | "0O" => {
+                    let value = i64::from_str_radix(digits, 8)
+                        .unwrap_or(0);
+                    return Ok((value, 8, 2));
+                }
+                _ => {}
+            }
+        }
+
+        // Regular decimal
+        let value = s.parse::<i64>().unwrap_or(0);
+        Ok((value, 10, 0))
+    }
+
+    /// Formats a number with the given base
+    fn format_number(value: i64, base: u32, prefix_len: usize) -> String {
+        match base {
+            16 => {
+                if prefix_len > 0 {
+                    format!("0x{:x}", value)
+                } else {
+                    format!("{:x}", value)
+                }
+            }
+            2 => {
+                if prefix_len > 0 {
+                    format!("0b{:b}", value)
+                } else {
+                    format!("{:b}", value)
+                }
+            }
+            8 => {
+                if prefix_len > 0 {
+                    format!("0o{:o}", value)
+                } else {
+                    format!("{:o}", value)
+                }
+            }
+            _ => format!("{}", value),
+        }
     }
 
     /// Clamps cursor to valid buffer bounds (line and column)

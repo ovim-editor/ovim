@@ -1,0 +1,10 @@
+---
+source: tests/paste_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:18
+Lines: 1
+
+Buffer:
+hello world hello [t]est

@@ -1,0 +1,10 @@
+---
+source: tests/dot_repeat_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:6
+Lines: 1
+
+Buffer:
+Xtwo X[t]hree

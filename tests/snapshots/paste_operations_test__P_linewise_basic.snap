@@ -1,0 +1,13 @@
+---
+source: tests/paste_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 2:0
+Lines: 4
+
+Buffer:
+line 1
+line 1
+[l]ine 2
+line 3

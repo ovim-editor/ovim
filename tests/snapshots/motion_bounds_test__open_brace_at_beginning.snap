@@ -1,0 +1,12 @@
+---
+source: tests/motion_bounds_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:0
+Lines: 3
+
+Buffer:
+[p]ara 1
+
+para 2

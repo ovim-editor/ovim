@@ -33,7 +33,14 @@ use lsp_types::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+
+/// Notification message from a language server
+#[derive(Clone)]
+pub struct LspNotification {
+    pub language_id: String,
+    pub message: JsonRpcMessage,
+}
 
 /// Central LSP manager coordinating all language servers
 pub struct LspManager {
@@ -48,16 +55,23 @@ pub struct LspManager {
 
     /// Document versions for change tracking
     document_versions: Mutex<HashMap<Url, i32>>,
+
+    /// Channel for receiving notifications from language servers
+    notification_tx: mpsc::UnboundedSender<LspNotification>,
+    notification_rx: Mutex<mpsc::UnboundedReceiver<LspNotification>>,
 }
 
 impl LspManager {
     /// Creates a new LSP manager
     pub fn new() -> Self {
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
         Self {
             servers: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             document_versions: Mutex::new(HashMap::new()),
+            notification_tx,
+            notification_rx: Mutex::new(notification_rx),
         }
     }
 
@@ -305,6 +319,17 @@ impl LspManager {
         }
     }
 
+    /// Processes pending notifications from language servers
+    /// Should be called regularly from the main event loop
+    pub async fn process_notifications(&self) {
+        let mut rx = self.notification_rx.lock().await;
+
+        // Process all pending notifications (non-blocking)
+        while let Ok(notification) = rx.try_recv() {
+            self.handle_notification(&notification.language_id, notification.message).await;
+        }
+    }
+
     /// Starts a background task to listen for notifications from a language server
     pub async fn start_notification_listener(&self, language_id: String) {
         let server = {
@@ -313,12 +338,22 @@ impl LspManager {
         };
 
         if let Some(server) = server {
+            let tx = self.notification_tx.clone();
+            let lang_id = language_id.clone();
+
             tokio::spawn(async move {
                 loop {
                     if let Some(msg) = server.receive().await {
                         if msg.is_notification() {
-                            // Silently handle notifications
-                            // In a real implementation, we'd send this to the manager
+                            // Send notification to manager for processing
+                            let notification = LspNotification {
+                                language_id: lang_id.clone(),
+                                message: msg,
+                            };
+
+                            if tx.send(notification).is_err() {
+                                break; // Manager dropped, stop listening
+                            }
                         }
                     } else {
                         break; // Server closed

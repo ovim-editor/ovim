@@ -1,0 +1,12 @@
+---
+source: tests/change_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:0
+Lines: 3
+
+Buffer:
+[l]ine 1
+line 2
+line 3

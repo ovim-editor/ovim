@@ -1,0 +1,10 @@
+---
+source: tests/macro_test.rs
+expression: test.snapshot_state()
+---
+Mode: Insert
+Cursor: 0:3
+Lines: 1
+
+Buffer:
+txq[e]st

@@ -263,6 +263,122 @@ impl Motions {
         buffer.cursor_mut().set_col((new_col - 1).min(chars.len().saturating_sub(1)));
     }
 
+    /// Moves cursor backward to the end of the previous word
+    /// ge - moves to end of previous word
+    pub fn word_end_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            Self::word_end_backward_once(buffer, false);
+        }
+    }
+
+    /// Moves cursor backward to the end of the previous WORD
+    /// gE - moves to end of previous WORD
+    pub fn word_end_backward_big(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            Self::word_end_backward_once(buffer, true);
+        }
+    }
+
+    fn word_end_backward_once(buffer: &mut Buffer, big_word: bool) {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= rope.len_lines() {
+            return;
+        }
+
+        let line = rope.line(line_idx).to_string();
+        let line = line.trim_end_matches('\n');
+        let chars: Vec<char> = line.chars().collect();
+
+        if col == 0 {
+            // At start of line, move to previous line
+            if line_idx > 0 {
+                let prev_line = rope.line(line_idx - 1).to_string();
+                let prev_line = prev_line.trim_end_matches('\n');
+                let prev_chars: Vec<char> = prev_line.chars().collect();
+
+                // Find the end of the last word on previous line
+                let mut new_col = prev_chars.len();
+
+                // Skip trailing whitespace
+                while new_col > 0 && Self::is_whitespace(prev_chars[new_col - 1]) {
+                    new_col -= 1;
+                }
+
+                if new_col > 0 {
+                    buffer.cursor_mut().set_position(line_idx - 1, new_col - 1);
+                } else {
+                    buffer.cursor_mut().set_position(line_idx - 1, 0);
+                }
+            }
+            return;
+        }
+
+        let mut new_col = col;
+
+        // Move back at least one position
+        if new_col > 0 {
+            new_col -= 1;
+        }
+
+        // Skip backward over whitespace
+        while new_col > 0 && Self::is_whitespace(chars[new_col]) {
+            new_col -= 1;
+        }
+
+        // If we're at position 0 and it's whitespace, stay there
+        if new_col == 0 && Self::is_whitespace(chars[0]) {
+            buffer.cursor_mut().set_col(0);
+            return;
+        }
+
+        // Now we're on a non-whitespace character - find the start of this word
+        let target_char = chars[new_col];
+
+        if big_word {
+            // Move back through WORD (any non-whitespace)
+            while new_col > 0 && !Self::is_whitespace(chars[new_col - 1]) {
+                new_col -= 1;
+            }
+            // Now find the end of this WORD
+            while new_col < chars.len() && !Self::is_whitespace(chars[new_col]) {
+                new_col += 1;
+            }
+            new_col = new_col.saturating_sub(1);
+        } else {
+            if Self::is_word_char(target_char) {
+                // Move back through word characters
+                while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
+                    new_col -= 1;
+                }
+                // Now find the end of this word
+                while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
+                    new_col += 1;
+                }
+                new_col = new_col.saturating_sub(1);
+            } else {
+                // Move back through punctuation
+                while new_col > 0
+                    && !Self::is_word_char(chars[new_col - 1])
+                    && !Self::is_whitespace(chars[new_col - 1]) {
+                    new_col -= 1;
+                }
+                // Now find the end of this punctuation sequence
+                while new_col < chars.len()
+                    && !Self::is_word_char(chars[new_col])
+                    && !Self::is_whitespace(chars[new_col]) {
+                    new_col += 1;
+                }
+                new_col = new_col.saturating_sub(1);
+            }
+        }
+
+        buffer.cursor_mut().set_col(new_col);
+    }
+
     fn skip_whitespace_forward(buffer: &mut Buffer) {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
@@ -477,7 +593,7 @@ impl Motions {
     }
 
     /// Find matching closing bracket searching forward
-    fn find_matching_bracket_forward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+    pub fn find_matching_bracket_forward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
         let mut depth = 1;
         for (i, &ch) in chars.iter().enumerate().skip(start_pos + 1) {
             if ch == open {
@@ -493,7 +609,7 @@ impl Motions {
     }
 
     /// Find matching opening bracket searching backward
-    fn find_matching_bracket_backward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+    pub fn find_matching_bracket_backward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
         let mut depth = 1;
         for i in (0..start_pos).rev() {
             let ch = chars[i];
@@ -510,7 +626,7 @@ impl Motions {
     }
 
     /// Convert absolute character position to (line, col)
-    fn abs_pos_to_line_col(rope: &ropey::Rope, abs_pos: usize) -> (usize, usize) {
+    pub fn abs_pos_to_line_col(rope: &ropey::Rope, abs_pos: usize) -> (usize, usize) {
         let line = rope.char_to_line(abs_pos.min(rope.len_chars().saturating_sub(1)));
         let line_start = rope.line_to_char(line);
         let col = abs_pos.saturating_sub(line_start);
@@ -537,6 +653,27 @@ impl Motions {
 
     /// Move to first non-blank character on line (_ motion, same as ^)
     pub fn first_non_blank_underscore(buffer: &mut Buffer) {
+        Self::first_non_blank(buffer);
+    }
+
+    /// Move to first non-blank of next line (+ motion)
+    pub fn plus_motion(buffer: &mut Buffer, count: usize) {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let current_line = cursor.line();
+        let target_line = (current_line + count).min(rope.len_lines().saturating_sub(1));
+
+        buffer.cursor_mut().set_position(target_line, 0);
+        Self::first_non_blank(buffer);
+    }
+
+    /// Move to first non-blank of previous line (- motion)
+    pub fn minus_motion(buffer: &mut Buffer, count: usize) {
+        let cursor = buffer.cursor();
+        let current_line = cursor.line();
+        let target_line = current_line.saturating_sub(count);
+
+        buffer.cursor_mut().set_position(target_line, 0);
         Self::first_non_blank(buffer);
     }
 

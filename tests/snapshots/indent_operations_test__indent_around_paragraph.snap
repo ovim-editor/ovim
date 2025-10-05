@@ -1,0 +1,13 @@
+---
+source: tests/indent_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:0
+Lines: 4
+
+Buffer:
+[p]ara 1
+para 1 cont
+
+para 2

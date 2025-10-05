@@ -1,0 +1,15 @@
+---
+source: tests/indent_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 4:0
+Lines: 6
+
+Buffer:
+a
+b
+c
+d
+[e]
+f

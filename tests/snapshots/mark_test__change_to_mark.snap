@@ -1,0 +1,12 @@
+---
+source: tests/mark_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:5
+Lines: 3
+
+Buffer:
+line 1
+HANGE[D]
+line 3

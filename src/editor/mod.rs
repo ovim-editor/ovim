@@ -80,6 +80,10 @@ pub struct Editor {
     pending_lsp_action: Option<LspAction>,
     /// Hover information to display (from LSP)
     hover_info: Option<String>,
+    /// Flag to track if buffer was modified this iteration (for LSP didChange)
+    buffer_modified_this_iteration: bool,
+    /// Flag to track if buffer was saved this iteration (for LSP didSave)
+    buffer_saved_this_iteration: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +134,8 @@ impl Editor {
             diagnostic_count: (0, 0, 0, 0),
             pending_lsp_action: None,
             hover_info: None,
+            buffer_modified_this_iteration: false,
+            buffer_saved_this_iteration: false,
         }
     }
 
@@ -162,6 +168,8 @@ impl Editor {
             diagnostic_count: (0, 0, 0, 0),
             pending_lsp_action: None,
             hover_info: None,
+            buffer_modified_this_iteration: false,
+            buffer_saved_this_iteration: false,
         }
     }
 
@@ -555,6 +563,7 @@ impl Editor {
     /// Adds a change to the change manager
     pub fn add_change(&mut self, change: Change) {
         self.change_manager.add_change(change);
+        self.mark_buffer_modified(); // Mark for LSP didChange notification
     }
 
     /// Finalizes the current composite change
@@ -728,6 +737,54 @@ impl Editor {
     /// Clears the hover information
     pub fn clear_hover(&mut self) {
         self.hover_info = None;
+    }
+
+    /// Marks that the buffer was modified (for LSP notification)
+    pub fn mark_buffer_modified(&mut self) {
+        self.buffer_modified_this_iteration = true;
+    }
+
+    /// Sends didChange notification if buffer was modified, then resets the flag
+    pub async fn send_lsp_changes_if_modified(&mut self) {
+        if !self.buffer_modified_this_iteration {
+            return;
+        }
+
+        self.buffer_modified_this_iteration = false;
+
+        let Some(ref lsp) = self.lsp_manager else {
+            return;
+        };
+
+        let Some(file_path) = self.buffer.file_path() else {
+            return;
+        };
+
+        let Ok(uri) = lsp_types::Url::from_file_path(file_path) else {
+            return;
+        };
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            return;
+        };
+
+        // Send full document sync for now (simpler than incremental)
+        let content = self.buffer.rope().to_string();
+        let change = lsp_types::TextDocumentContentChangeEvent {
+            range: None, // Full document sync
+            range_length: None,
+            text: content,
+        };
+
+        let lsp_guard = lsp.lock().await;
+        let _ = lsp_guard.did_change(uri, language_id, vec![change]).await;
     }
 
     /// Process any pending LSP actions

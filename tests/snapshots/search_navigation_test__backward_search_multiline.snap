@@ -1,0 +1,13 @@
+---
+source: tests/search_navigation_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:0
+Lines: 4
+
+Buffer:
+[t]arget here
+line 2
+line 3
+line 4
