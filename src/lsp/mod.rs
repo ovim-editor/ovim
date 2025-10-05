@@ -753,6 +753,59 @@ impl LspManager {
 
         Ok(edits.unwrap_or_default())
     }
+
+    /// Requests code actions for a position in a document
+    pub async fn code_actions(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
+        use lsp_types::{
+            CodeActionContext, CodeActionParams, Position, Range, TextDocumentIdentifier,
+        };
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports code actions
+        if !server.supports_code_actions().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        // Create a range at the cursor position (zero-width range)
+        let range = Range {
+            start: Position { line, character },
+            end: Position { line, character },
+        };
+
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            range,
+            context: CodeActionContext {
+                diagnostics,
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/codeAction", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::CodeActionOrCommand>> =
+            serde_json::from_value(result).ok();
+
+        Ok(response.unwrap_or_default())
+    }
 }
 
 /// Converts a MarkedString to plain text

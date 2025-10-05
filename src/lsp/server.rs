@@ -380,7 +380,8 @@ impl LanguageServer {
                                     if let Some(result) = msg.result {
                                         let _ = req.sender.send(Ok(result));
                                     } else if let Some(error) = msg.error {
-                                        eprintln!("[LSP] Request error: {:?}", error);
+                                        // Don't print to stderr - propagate error to caller
+                                        // Errors will be shown in status line by the editor
                                         let _ = req.sender.send(Err(anyhow!("LSP error: {:?}", error)));
                                     } else {
                                         // Neither result nor error - protocol violation
@@ -390,23 +391,24 @@ impl LanguageServer {
                             }
                         } else {
                             // Handle notification or request
-                            if let Err(e) = incoming_tx.send(msg).await {
-                                eprintln!("[LSP Reader] Failed to send notification: {}", e);
+                            if let Err(_e) = incoming_tx.send(msg).await {
+                                // Channel closed, exit silently
                                 break;
                             }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("[LSP Reader] Error parsing LSP message: {}", e);
-                        eprintln!("[LSP Reader] Raw content: {}", String::from_utf8_lossy(&content));
+                    Err(_e) => {
+                        // Parse error - silently skip malformed messages
+                        // Debug info available via OVIM_LSP_DEBUG env var
                     }
                 }
             }
-            eprintln!("[LSP Reader] Reader task exiting");
+            // Reader task exiting silently
         });
 
-        // Spawn task to capture stderr
+        // Spawn task to capture stderr (silently consume it to prevent terminal spam)
         // Note: Not supervised because stderr is unique to the process
+        // TODO: Optionally log to file or send to status line for debugging
         tokio::spawn(async move {
             let mut stderr_reader = BufReader::new(stderr);
             let mut line = String::new();
@@ -414,10 +416,14 @@ impl LanguageServer {
                 if n == 0 {
                     break; // EOF
                 }
-                eprint!("[LSP stderr] {}", line);
+                // Silently consume stderr - LSP servers can be very verbose
+                // Debug output can be enabled via environment variable if needed
+                if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                    eprint!("[LSP stderr] {}", line);
+                }
                 line.clear();
             }
-            eprintln!("[LSP stderr] Stderr reader exiting");
+            // Silently exit
         });
 
         Ok(server)
@@ -868,6 +874,15 @@ impl LanguageServer {
     pub async fn supports_formatting(&self) -> bool {
         if let Some(caps) = self.capabilities().await {
             caps.document_formatting_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports code actions
+    pub async fn supports_code_actions(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.code_action_provider.is_some()
         } else {
             false
         }

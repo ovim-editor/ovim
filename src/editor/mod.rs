@@ -101,6 +101,10 @@ pub struct Editor {
     /// Bridge for Lua-Editor communication (optional)
     #[cfg(feature = "lua")]
     editor_bridge: Option<crate::lua::EditorBridge>,
+    /// Last insert position (line, col) for gi command
+    last_insert_position: Option<(usize, usize)>,
+    /// Available code actions at current cursor position
+    available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +113,7 @@ pub enum LspAction {
     ShowHover,
     Completion,
     FormatDocument,
+    CodeActions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,6 +167,7 @@ impl Editor {
             lua_context: None,
             #[cfg(feature = "lua")]
             editor_bridge: None,
+            last_insert_position: None,
         }
     }
 
@@ -203,6 +209,7 @@ impl Editor {
             lua_context: None,
             #[cfg(feature = "lua")]
             editor_bridge: None,
+            last_insert_position: None,
         }
     }
 
@@ -937,6 +944,11 @@ impl Editor {
         self.pending_lsp_action = Some(LspAction::FormatDocument);
     }
 
+    /// Requests code actions for current cursor position
+    pub fn request_code_actions(&mut self) {
+        self.pending_lsp_action = Some(LspAction::CodeActions);
+    }
+
     /// Gets the current hover information (if any)
     pub fn hover_info(&self) -> Option<&str> {
         self.hover_info.as_deref()
@@ -1047,6 +1059,9 @@ impl Editor {
                 }
                 LspAction::FormatDocument => {
                     let _ = self.format_document_impl().await;
+                }
+                LspAction::CodeActions => {
+                    let _ = self.code_actions_impl().await;
                 }
             }
         }
@@ -1367,6 +1382,29 @@ impl Editor {
             self.set_lsp_status("No formatting changes".to_string());
             Ok(false)
         }
+    }
+
+    /// Gets code actions at current cursor position via LSP (implementation)
+    async fn code_actions_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use code actions".to_string());
+            return Ok(false);
+        };
+
+        // For now, just set status that code actions are requested
+        // Full implementation would show a menu of available actions
+        self.set_lsp_status("Code actions not yet implemented".to_string());
+        Ok(false)
     }
 
     /// Applies LSP text edits to the buffer
