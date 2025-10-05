@@ -80,12 +80,12 @@ impl Renderer {
 
         // Set hardware cursor position
         if editor.mode() == crate::mode::Mode::Picker {
-            // Position cursor in picker query line (after the query text)
+            // Position cursor in picker query line at the cursor position
             if let Some(picker) = editor.picker() {
-                let query_len = picker.query().len();
+                let cursor_pos = picker.query_cursor();
                 let picker_area = Self::get_picker_area(frame.area());
                 frame.set_cursor_position((
-                    picker_area.x + 1 + 2 + query_len as u16, // +1 for border, +2 for "> " prefix
+                    picker_area.x + 1 + 2 + cursor_pos as u16, // +1 for border, +2 for "> " prefix
                     picker_area.y + 1, // +1 for border
                 ));
             }
@@ -185,6 +185,7 @@ impl Renderer {
                         line_text,
                         line_idx,
                         visual_selection,
+                        editor.mode(),
                         &search_matches,
                         &syntax_highlights,
                     );
@@ -499,6 +500,7 @@ impl Renderer {
         line_text: &str,
         line_idx: usize,
         visual_selection: Option<((usize, usize), (usize, usize))>,
+        mode: crate::mode::Mode,
         search_matches: &[(usize, usize)],
         syntax_highlights: &[(std::ops::Range<usize>, crate::syntax::HighlightGroup)],
     ) -> Line<'static> {
@@ -509,16 +511,26 @@ impl Renderer {
         while col_idx < chars.len() {
             // Check if this character is in visual selection
             let is_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
-                if line_idx == sel_start_line && line_idx == sel_end_line {
-                    col_idx >= sel_start_col && col_idx <= sel_end_col
-                } else if line_idx == sel_start_line {
-                    col_idx >= sel_start_col
-                } else if line_idx == sel_end_line {
-                    col_idx <= sel_end_col
-                } else if line_idx > sel_start_line && line_idx < sel_end_line {
-                    true
-                } else {
-                    false
+                match mode {
+                    crate::mode::Mode::VisualBlock => {
+                        // Block mode: check if within the rectangular region
+                        line_idx >= sel_start_line && line_idx <= sel_end_line &&
+                        col_idx >= sel_start_col && col_idx <= sel_end_col
+                    }
+                    _ => {
+                        // Character-wise or line-wise visual mode
+                        if line_idx == sel_start_line && line_idx == sel_end_line {
+                            col_idx >= sel_start_col && col_idx <= sel_end_col
+                        } else if line_idx == sel_start_line {
+                            col_idx >= sel_start_col
+                        } else if line_idx == sel_end_line {
+                            col_idx <= sel_end_col
+                        } else if line_idx > sel_start_line && line_idx < sel_end_line {
+                            true
+                        } else {
+                            false
+                        }
+                    }
                 }
             } else {
                 false
@@ -538,16 +550,26 @@ impl Renderer {
             let mut end_col = col_idx + 1;
             while end_col < chars.len() {
                 let next_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
-                    if line_idx == sel_start_line && line_idx == sel_end_line {
-                        end_col >= sel_start_col && end_col <= sel_end_col
-                    } else if line_idx == sel_start_line {
-                        end_col >= sel_start_col
-                    } else if line_idx == sel_end_line {
-                        end_col <= sel_end_col
-                    } else if line_idx > sel_start_line && line_idx < sel_end_line {
-                        true
-                    } else {
-                        false
+                    match mode {
+                        crate::mode::Mode::VisualBlock => {
+                            // Block mode: check if within the rectangular region
+                            line_idx >= sel_start_line && line_idx <= sel_end_line &&
+                            end_col >= sel_start_col && end_col <= sel_end_col
+                        }
+                        _ => {
+                            // Character-wise or line-wise visual mode
+                            if line_idx == sel_start_line && line_idx == sel_end_line {
+                                end_col >= sel_start_col && end_col <= sel_end_col
+                            } else if line_idx == sel_start_line {
+                                end_col >= sel_start_col
+                            } else if line_idx == sel_end_line {
+                                end_col <= sel_end_col
+                            } else if line_idx > sel_start_line && line_idx < sel_end_line {
+                                true
+                            } else {
+                                false
+                            }
+                        }
                     }
                 } else {
                     false

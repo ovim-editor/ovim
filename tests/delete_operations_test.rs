@@ -63,7 +63,7 @@ fn test_x_empty_line() {
     test.press('j') // Move to empty line
         .press('x'); // Should do nothing or delete newline
 
-    assert_eq!(test.buffer_content(), "hello\nworld\n");
+    assert_eq!(test.buffer_content(), "hello\n\nworld\n");
     test.assert_cursor(1, 0);
 }
 
@@ -99,8 +99,8 @@ fn test_X_with_count() {
     test.press('$') // Move to end
         .keys("3X"); // Delete 3 chars before
 
-    assert_eq!(test.buffer_content(), "hello wo\n");
-    test.assert_cursor(0, 8);
+    assert_eq!(test.buffer_content(), "hello wd\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -145,7 +145,7 @@ fn test_dd_single_line() {
 
     test.keys("dd"); // Delete only line
 
-    assert_eq!(test.buffer_content(), " \n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -165,7 +165,7 @@ fn test_dd_count_exceeds_buffer() {
 
     test.keys("5dd"); // Try to delete 5 lines (only 2 exist)
 
-    assert_eq!(test.buffer_content(), " \n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -246,7 +246,7 @@ fn test_d_dollar_from_beginning() {
 
     test.keys("d$"); // Delete entire line content
 
-    assert_eq!(test.buffer_content(), " \n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -257,7 +257,7 @@ fn test_d_dollar_empty_line() {
     test.press('j') // Move to empty line
         .keys("d$"); // Delete to end (nothing)
 
-    assert_eq!(test.buffer_content(), "hello\n \nworld\n");
+    assert_eq!(test.buffer_content(), "hello\n\nworld\n");
     test.assert_cursor(1, 0);
 }
 
@@ -296,7 +296,7 @@ fn test_dG_from_beginning() {
 
     test.keys("dG"); // Delete entire file
 
-    assert_eq!(test.buffer_content(), " \n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -359,7 +359,7 @@ fn test_diw_basic() {
     test.keys("w") // Move to "world"
         .keys("diw"); // Delete inner word
 
-    assert_eq!(test.buffer_content(), "hello  test\n");
+    assert_eq!(test.buffer_content(), "hello test\n");
     test.assert_cursor(0, 6);
 }
 
@@ -370,7 +370,7 @@ fn test_daw_basic() {
     test.keys("w") // Move to "world"
         .keys("daw"); // Delete a word (including surrounding space)
 
-    assert_eq!(test.buffer_content(), "hello  test\n");
+    assert_eq!(test.buffer_content(), "hello test\n");
     test.assert_cursor(0, 6);
 }
 
@@ -380,7 +380,7 @@ fn test_diw_single_char() {
 
     test.keys("diw"); // Delete "a"
 
-    assert_eq!(test.buffer_content(), " b c\n");
+    assert_eq!(test.buffer_content(), "b c\n");
     test.assert_cursor(0, 0);
 }
 
@@ -561,7 +561,7 @@ fn test_d_percent_multiline() {
     test.keys("15l") // Move to opening brace
         .keys("d%"); // Delete from { to }
 
-    assert_eq!(test.buffer_content(), "if (condition)  \n");
+    assert_eq!(test.buffer_content(), "if (condition) \n");
     test.assert_cursor(0, 14);
 }
 

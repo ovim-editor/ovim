@@ -386,7 +386,8 @@ impl Editor {
         let mut search = Search::new(self.search_buffer.clone(), self.search_forward);
         let cursor = self.buffer.cursor();
 
-        if let Some((line, col, _)) = search.find_next(&self.buffer, cursor.line(), cursor.col() + 1) {
+        // Start search from current cursor position (inclusive)
+        if let Some((line, col, _)) = search.find_next(&self.buffer, cursor.line(), cursor.col()) {
             self.buffer.cursor_mut().set_position(line, col);
             self.current_search = Some(search);
         }
@@ -634,44 +635,64 @@ impl Editor {
 
     /// Gets the visual selection range (start and end positions)
     /// Returns ((start_line, start_col), (end_line, end_col))
+    /// Note: For VisualBlock, this returns the corners of the rectangle
     pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.visual_start.map(|start| {
             let cursor = self.buffer.cursor();
             let mut end = (cursor.line(), cursor.col());
 
-            // In Visual Line mode, extend selection to end of line
-            if self.mode == Mode::VisualLine {
-                // Get the length of the end line (excluding newline)
-                if let Some(line_text) = self.buffer.line(end.0) {
-                    let line_len = line_text.trim_end_matches('\n').chars().count();
-                    end.1 = if line_len > 0 { line_len - 1 } else { 0 };
-                }
-
-                // Also ensure start is at beginning of its line
-                let mut start = start;
-                start.1 = 0;
-
-                // Normalize so start is always before end
-                if start.0 <= end.0 {
-                    (start, end)
-                } else {
-                    // If cursor moved above start line, swap and adjust
-                    let mut new_start = end;
-                    new_start.1 = 0;
-                    let mut new_end = start;
-                    if let Some(line_text) = self.buffer.line(new_end.0) {
+            match self.mode {
+                Mode::VisualLine => {
+                    // Get the length of the end line (excluding newline)
+                    if let Some(line_text) = self.buffer.line(end.0) {
                         let line_len = line_text.trim_end_matches('\n').chars().count();
-                        new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
+                        end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                     }
-                    (new_start, new_end)
+
+                    // Also ensure start is at beginning of its line
+                    let mut start = start;
+                    start.1 = 0;
+
+                    // Normalize so start is always before end
+                    if start.0 <= end.0 {
+                        (start, end)
+                    } else {
+                        // If cursor moved above start line, swap and adjust
+                        let mut new_start = end;
+                        new_start.1 = 0;
+                        let mut new_end = start;
+                        if let Some(line_text) = self.buffer.line(new_end.0) {
+                            let line_len = line_text.trim_end_matches('\n').chars().count();
+                            new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
+                        }
+                        (new_start, new_end)
+                    }
                 }
-            } else {
-                // Normal visual mode behavior
-                // Normalize so start is always before end
-                if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
-                    (start, end)
-                } else {
-                    (end, start)
+                Mode::VisualBlock => {
+                    // Block mode: return corners of rectangle
+                    // Normalize so start_line <= end_line and start_col <= end_col
+                    let (min_line, max_line) = if start.0 <= end.0 {
+                        (start.0, end.0)
+                    } else {
+                        (end.0, start.0)
+                    };
+
+                    let (min_col, max_col) = if start.1 <= end.1 {
+                        (start.1, end.1)
+                    } else {
+                        (end.1, start.1)
+                    };
+
+                    ((min_line, min_col), (max_line, max_col))
+                }
+                _ => {
+                    // Normal visual mode behavior
+                    // Normalize so start is always before end
+                    if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
+                        (start, end)
+                    } else {
+                        (end, start)
+                    }
                 }
             }
         })
@@ -953,16 +974,11 @@ impl Editor {
             return;
         };
 
-        // Send full document sync for now (simpler than incremental)
+        // Send full document sync with debouncing
         let content = self.buffer.rope().to_string();
-        let change = lsp_types::TextDocumentContentChangeEvent {
-            range: None, // Full document sync
-            range_length: None,
-            text: content,
-        };
 
         let lsp_guard = lsp.lock().await;
-        let _ = lsp_guard.did_change(uri, language_id, vec![change]).await;
+        let _ = lsp_guard.did_change(uri, language_id, content).await;
     }
 
     /// Sends didSave notification if buffer was saved, then resets the flag
@@ -1018,31 +1034,33 @@ impl Editor {
 
     /// Go to definition at current cursor position via LSP (implementation)
     async fn goto_definition_impl(&mut self) -> Result<bool> {
-        eprintln!("[LSP] goto_definition_impl called");
-
         // Check if LSP is enabled
         let Some(ref lsp) = self.lsp_manager else {
-            eprintln!("[LSP] No LSP manager");
             return Ok(false);
         };
 
-        // Get current file URI
+        // Get current file URI - must be absolute path
         let Some(file_path) = self.buffer.file_path() else {
-            eprintln!("[LSP] No file path");
             return Ok(false);
         };
 
-        eprintln!("[LSP] File path: {}", file_path);
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => return Ok(false),
+            }
+        };
 
-        let uri = lsp_types::Url::from_file_path(file_path)
+        let uri = lsp_types::Url::from_file_path(&abs_path)
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer.cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
-
-        eprintln!("[LSP] Cursor position: line={}, col={}", line, character);
 
         // Detect language from file extension
         let language_id = if file_path.ends_with(".rs") {
@@ -1052,47 +1070,28 @@ impl Editor {
         } else if file_path.ends_with(".py") {
             "python"
         } else {
-            eprintln!("[LSP] Unsupported file type");
             return Ok(false);
         };
 
-        eprintln!("[LSP] Language: {}", language_id);
-
         // Request definition
-        eprintln!("[LSP] Sending goto_definition request...");
         let lsp_guard = lsp.lock().await;
-        let location = match lsp_guard
+        let location = lsp_guard
             .goto_definition(&uri, line, character, language_id)
-            .await {
-                Ok(loc) => {
-                    eprintln!("[LSP] Request successful: {:?}", loc);
-                    loc
-                }
-                Err(e) => {
-                    eprintln!("[LSP] Request failed: {}", e);
-                    return Err(e);
-                }
-            };
+            .await?;
 
         drop(lsp_guard);
 
         // Jump to definition if found
         if let Some(location) = location {
-            eprintln!("[LSP] Definition found at {:?}", location);
             // For now, only handle same-file definitions
             if location.uri == uri {
                 let target_line = location.range.start.line as usize;
                 let target_col = location.range.start.character as usize;
 
-                eprintln!("[LSP] Jumping to line={}, col={}", target_line, target_col);
                 // Update cursor position
                 self.buffer.cursor_mut().set_position(target_line, target_col);
                 return Ok(true);
-            } else {
-                eprintln!("[LSP] Definition in different file, not supported yet");
             }
-        } else {
-            eprintln!("[LSP] No definition found");
         }
 
         Ok(false)
@@ -1105,12 +1104,22 @@ impl Editor {
             return Ok(false);
         };
 
-        // Get current file URI
+        // Get current file URI - must be absolute path
         let Some(file_path) = self.buffer.file_path() else {
             return Ok(false);
         };
 
-        let uri = lsp_types::Url::from_file_path(file_path)
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => return Ok(false),
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position

@@ -24,6 +24,8 @@ pub struct Picker {
     mode: PickerMode,
     /// Current search query
     query: String,
+    /// Cursor position in the query (byte offset)
+    query_cursor: usize,
     /// All available results (unfiltered)
     all_results: Vec<PickerResult>,
     /// Filtered results based on query
@@ -40,6 +42,7 @@ impl Picker {
         let mut picker = Self {
             mode: PickerMode::FindFiles,
             query: String::new(),
+            query_cursor: 0,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
             selected_index: 0,
@@ -58,6 +61,7 @@ impl Picker {
         Self {
             mode: PickerMode::LiveGrep,
             query: String::new(),
+            query_cursor: 0,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
             selected_index: 0,
@@ -183,16 +187,73 @@ impl Picker {
         self.selected_index = 0;
     }
 
-    /// Appends a character to the query
-    pub fn append_query(&mut self, ch: char) {
-        self.query.push(ch);
+    /// Inserts a character at the cursor position
+    pub fn insert_char(&mut self, ch: char) {
+        // Insert character at cursor position
+        let byte_pos = self.char_pos_to_byte_pos(self.query_cursor);
+        self.query.insert(byte_pos, ch);
+        // Move cursor forward
+        self.query_cursor += 1;
         self.set_query(self.query.clone());
     }
 
-    /// Removes the last character from the query
+    /// Appends a character to the query (legacy method, inserts at cursor)
+    pub fn append_query(&mut self, ch: char) {
+        self.insert_char(ch);
+    }
+
+    /// Removes the character before the cursor
     pub fn backspace_query(&mut self) {
-        self.query.pop();
-        self.set_query(self.query.clone());
+        if self.query_cursor > 0 {
+            let byte_pos = self.char_pos_to_byte_pos(self.query_cursor - 1);
+            self.query.remove(byte_pos);
+            self.query_cursor -= 1;
+            self.set_query(self.query.clone());
+        }
+    }
+
+    /// Removes the character at the cursor (delete key)
+    pub fn delete_char(&mut self) {
+        let char_len = self.query.chars().count();
+        if self.query_cursor < char_len {
+            let byte_pos = self.char_pos_to_byte_pos(self.query_cursor);
+            self.query.remove(byte_pos);
+            self.set_query(self.query.clone());
+        }
+    }
+
+    /// Moves cursor left in the query
+    pub fn move_cursor_left(&mut self) {
+        if self.query_cursor > 0 {
+            self.query_cursor -= 1;
+        }
+    }
+
+    /// Moves cursor right in the query
+    pub fn move_cursor_right(&mut self) {
+        let char_len = self.query.chars().count();
+        if self.query_cursor < char_len {
+            self.query_cursor += 1;
+        }
+    }
+
+    /// Moves cursor to the beginning of the query
+    pub fn move_cursor_home(&mut self) {
+        self.query_cursor = 0;
+    }
+
+    /// Moves cursor to the end of the query
+    pub fn move_cursor_end(&mut self) {
+        self.query_cursor = self.query.chars().count();
+    }
+
+    /// Converts character position to byte position
+    fn char_pos_to_byte_pos(&self, char_pos: usize) -> usize {
+        self.query
+            .char_indices()
+            .nth(char_pos)
+            .map(|(byte_pos, _)| byte_pos)
+            .unwrap_or(self.query.len())
     }
 
     /// Moves selection down
@@ -217,6 +278,11 @@ impl Picker {
     /// Gets the current query
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// Gets the query cursor position (in characters, not bytes)
+    pub fn query_cursor(&self) -> usize {
+        self.query_cursor
     }
 
     /// Gets filtered results

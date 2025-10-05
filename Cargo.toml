@@ -21,7 +21,10 @@ tree-sitter-python = "0.20"
 tree-sitter-highlight = "0.20"
 lsp-types = "0.95"
 url = "2.5"
-mlua = { version = "0.9", features = ["luajit", "vendored", "async", "serialize"], optional = true }
+mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal", "process"] }
 
 [features]
 default = []

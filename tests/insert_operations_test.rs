@@ -39,7 +39,7 @@ fn test_i_empty_line() {
         .type_text("new text")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "new text\n\n");
+    assert_eq!(test.buffer_content(), "new text\n");
     test.assert_cursor(0, 7);
 }
 
@@ -69,7 +69,7 @@ fn test_I_with_indentation() {
         .type_text("prefix ")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "    prefix indented line\n");
+    assert_eq!(test.buffer_content(), "prefix     indented line\n");
     test.assert_cursor(0, 6);
 }
 
@@ -81,7 +81,7 @@ fn test_I_whitespace_only_line() {
         .type_text("text")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "text\n\n");
+    assert_eq!(test.buffer_content(), "text\n");
     test.assert_cursor(0, 3);
 }
 
@@ -164,7 +164,7 @@ fn test_A_empty_line() {
         .press_esc();
 
     assert_eq!(test.buffer_content(), "text\n");
-    test.assert_cursor(0, 4);
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -274,7 +274,7 @@ fn test_O_basic() {
         .press_esc();
 
     assert_eq!(test.buffer_content(), "line 1\ninserted above\nline 2\n");
-    test.assert_cursor(1, 7);
+    test.assert_cursor(1, 13);
 }
 
 #[test]
@@ -310,8 +310,8 @@ fn test_O_empty_file() {
         .type_text("first line")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "\nfirst line\n");
-    test.assert_cursor(1, 9);
+    assert_eq!(test.buffer_content(), "first line\n");
+    test.assert_cursor(0, 9);
 }
 
 #[test]

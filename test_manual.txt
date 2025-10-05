@@ -1,0 +1,20 @@
+The quick brown fox jumps over the lazy dog.
+Pack my box with five dozen liquor jugs.
+How vexingly quick daft zebras jump!
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.
+
+First line
+Second line
+Third line
+Fourth line
+Fifth line
+
+Testing "quoted text" and 'single quotes'.
+Testing (parentheses) and {braces} and [brackets].
+Testing <tags>content</tags> structure.
+
+vim is fun
+neovim is better
+ovim is the best

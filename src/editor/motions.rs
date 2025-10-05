@@ -710,22 +710,11 @@ impl Motions {
         let cursor = buffer.cursor();
         let mut line_idx = cursor.line();
 
-        // Skip current paragraph (non-blank lines)
+        // Skip current paragraph (non-blank lines) and stop at the first blank line
         while line_idx < rope.len_lines() {
             if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
-                    break;
-                }
-            }
-            line_idx += 1;
-        }
-
-        // Skip blank lines
-        while line_idx < rope.len_lines() {
-            if let Some(line) = buffer.line(line_idx) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
                     break;
                 }
             }
@@ -754,7 +743,7 @@ impl Motions {
 
         line_idx = line_idx.saturating_sub(1);
 
-        // Skip blank lines
+        // Skip blank lines backward
         while line_idx > 0 {
             if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
@@ -765,12 +754,12 @@ impl Motions {
             line_idx = line_idx.saturating_sub(1);
         }
 
-        // Skip current paragraph (non-blank lines)
+        // Skip non-blank lines backward until we find a blank line
         while line_idx > 0 {
-            if let Some(line) = buffer.line(line_idx.saturating_sub(1)) {
+            if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
-                    break;
+                    break; // Stop at the blank line
                 }
             }
             line_idx = line_idx.saturating_sub(1);
