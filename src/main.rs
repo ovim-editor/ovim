@@ -133,7 +133,7 @@ async fn run_headless_loop(
         // Check for API requests (non-blocking with timeout)
         match tokio::time::timeout(Duration::from_millis(50), api_rx.recv()).await {
             Ok(Some(request)) => {
-                handle_api_request(editor, request);
+                handle_api_request(editor, request).await;
                 // Check if quit was requested
                 if editor.should_quit() {
                     break;
@@ -203,7 +203,7 @@ async fn run_event_loop(
         // Check for API requests (non-blocking)
         if let Some(ref mut rx) = api_rx {
             while let Ok(request) = rx.try_recv() {
-                handle_api_request(editor, request);
+                handle_api_request(editor, request).await;
             }
         }
 
@@ -224,7 +224,7 @@ async fn run_event_loop(
     Ok(())
 }
 
-fn handle_api_request(editor: &mut Editor, request: ApiRequest) {
+async fn handle_api_request(editor: &mut Editor, request: ApiRequest) {
     match request {
         ApiRequest::GetSnapshot(tx) => {
             let snapshot = create_snapshot(editor);
@@ -240,6 +240,9 @@ fn handle_api_request(editor: &mut Editor, request: ApiRequest) {
                     break;
                 }
             }
+
+            // Process any LSP actions that were triggered by the keys
+            editor.process_pending_lsp_actions().await;
 
             let response = if success {
                 ApiResponse::Success(SuccessResponse {

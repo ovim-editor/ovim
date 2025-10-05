@@ -668,6 +668,91 @@ impl LspManager {
             }
         }))
     }
+
+    /// Requests code completion for a position in a document
+    pub async fn completion(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{CompletionParams, CompletionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports completion
+        if !server.supports_completion().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        let result = server
+            .request("textDocument/completion", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<CompletionResponse> = serde_json::from_value(result).ok();
+
+        Ok(response.map(|resp| match resp {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        }).unwrap_or_default())
+    }
+
+    /// Requests document formatting
+    pub async fn format_document(
+        &self,
+        uri: &Url,
+        language_id: &str,
+        tab_size: u32,
+        insert_spaces: bool,
+    ) -> Result<Vec<lsp_types::TextEdit>> {
+        use lsp_types::{DocumentFormattingParams, FormattingOptions, TextDocumentIdentifier};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports formatting
+        if !server.supports_formatting().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = DocumentFormattingParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            options: FormattingOptions {
+                tab_size,
+                insert_spaces,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/formatting", serde_json::to_value(params)?)
+            .await?;
+
+        let edits: Option<Vec<lsp_types::TextEdit>> = serde_json::from_value(result).ok();
+
+        Ok(edits.unwrap_or_default())
+    }
 }
 
 /// Converts a MarkedString to plain text

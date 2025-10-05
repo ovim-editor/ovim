@@ -1200,6 +1200,11 @@ impl InputHandler {
                     editor.request_goto_definition();
                     return Ok(());
                 }
+                ('g', KeyCode::Char('q')) => {
+                    // gq - format document (LSP)
+                    editor.request_format_document();
+                    return Ok(());
+                }
                 ('g', KeyCode::Char('J')) => {
                     // gJ - join lines without space
                     let count = editor.effective_count();
@@ -1331,6 +1336,10 @@ impl InputHandler {
             KeyCode::Char('o') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 editor.jump_back();
             }
+            // Jump back (Ctrl-T) - tag stack equivalent
+            KeyCode::Char('t') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.jump_back();
+            }
             // Scroll down half page (Ctrl-D)
             KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 let half_page = 10; // TODO: calculate based on viewport height
@@ -1378,6 +1387,51 @@ impl InputHandler {
             KeyCode::Char('x') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 let count = editor.effective_count();
                 Self::decrement_number(editor, count)?;
+                editor.clear_count();
+            }
+            // Scrolling commands
+            // Ctrl-E: Scroll down one line (move cursor down)
+            KeyCode::Char('e') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let count = editor.effective_count();
+                // TODO: Integrate with viewport scrolling once Window management is connected
+                // For now, just move cursor down
+                editor.buffer_mut().cursor_mut().move_down(count);
+                editor.clear_count();
+            }
+            // Ctrl-Y: Scroll up one line (move cursor up)
+            KeyCode::Char('y') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let count = editor.effective_count();
+                // TODO: Integrate with viewport scrolling once Window management is connected
+                // For now, just move cursor up
+                editor.buffer_mut().cursor_mut().move_up(count);
+                editor.clear_count();
+            }
+            // Ctrl-D: Scroll down half page
+            KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
+                // For now, move down 10 lines as approximation
+                editor.buffer_mut().cursor_mut().move_down(10);
+                editor.clear_count();
+            }
+            // Ctrl-U: Scroll up half page
+            KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
+                // For now, move up 10 lines as approximation
+                editor.buffer_mut().cursor_mut().move_up(10);
+                editor.clear_count();
+            }
+            // Ctrl-F: Scroll forward (down) one page
+            KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
+                // For now, move down 20 lines as approximation
+                editor.buffer_mut().cursor_mut().move_down(20);
+                editor.clear_count();
+            }
+            // Ctrl-B: Scroll backward (up) one page
+            KeyCode::Char('b') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
+                // For now, move up 20 lines as approximation
+                editor.buffer_mut().cursor_mut().move_up(20);
                 editor.clear_count();
             }
             // Enter Insert mode
@@ -1454,7 +1508,10 @@ impl InputHandler {
                 if let Some(line) = editor.buffer().line(line_idx) {
                     let line_len = line.trim_end_matches('\n').chars().count();
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
-                    editor.buffer_mut().cursor_mut().set_col(col);
+                    let cursor = editor.buffer_mut().cursor_mut();
+                    cursor.set_col(col);
+                    // Set desired_col to usize::MAX to indicate "always end of line"
+                    cursor.update_desired_col(usize::MAX);
                 }
                 editor.clear_count();
             }
@@ -2007,6 +2064,18 @@ impl InputHandler {
             KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 Self::delete_to_line_start_insert(editor)?;
             }
+            // Ctrl-T - Indent current line in insert mode
+            KeyCode::Char('t') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                Self::indent_line_insert(editor)?;
+            }
+            // Ctrl-D - Dedent current line in insert mode
+            KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                Self::dedent_line_insert(editor)?;
+            }
+            // Ctrl-Space - Request code completion
+            KeyCode::Char(' ') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.request_completion();
+            }
             KeyCode::Char(c) => {
                 Self::insert_char(editor, c)?;
             }
@@ -2079,7 +2148,10 @@ impl InputHandler {
                 if let Some(line) = editor.buffer().line(line_idx) {
                     let line_len = line.trim_end_matches('\n').chars().count();
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
-                    editor.buffer_mut().cursor_mut().set_col(col);
+                    let cursor = editor.buffer_mut().cursor_mut();
+                    cursor.set_col(col);
+                    // Set desired_col to usize::MAX to indicate "always end of line"
+                    cursor.update_desired_col(usize::MAX);
                 }
             }
             // Delete selection
@@ -2688,7 +2760,7 @@ impl InputHandler {
         let count = editor.effective_count();
         let cursor = editor.buffer_mut().cursor_mut();
         cursor.move_up(count);
-        Self::clamp_cursor_to_line(editor);
+        Self::clamp_cursor_with_goal_column(editor);
         editor.clear_count();
     }
 
@@ -2710,7 +2782,7 @@ impl InputHandler {
         let cursor = editor.buffer_mut().cursor_mut();
         let new_line = (cursor.line() + count).min(max_line);
         cursor.set_line(new_line);
-        Self::clamp_cursor_to_line(editor);
+        Self::clamp_cursor_with_goal_column(editor);
         editor.clear_count();
     }
 
@@ -2723,6 +2795,25 @@ impl InputHandler {
                 let new_col = if line_len > 0 { line_len - 1 } else { 0 };
                 cursor.set_col(new_col);
             }
+        }
+    }
+
+    fn clamp_cursor_with_goal_column(editor: &mut Editor) {
+        let line_idx = editor.buffer().cursor().line();
+        if let Some(line) = editor.buffer().line(line_idx) {
+            let line_len = line.trim_end_matches('\n').chars().count();
+            let max_col = if line_len > 0 { line_len - 1 } else { 0 };
+            let cursor = editor.buffer_mut().cursor_mut();
+            let desired = cursor.desired_col();
+
+            // usize::MAX is a sentinel value meaning "always end of line"
+            let target_col = if desired == usize::MAX {
+                max_col
+            } else {
+                desired.min(max_col)
+            };
+
+            cursor.set_col_preserve_desired(target_col);
         }
     }
 
@@ -2883,6 +2974,83 @@ impl InputHandler {
         // Delete from start of line to cursor
         let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, col);
         let range = Range::new((line_idx, 0), (line_idx, col));
+        let change = Change::delete(range, deleted, cursor_before);
+        editor.add_change(change);
+
+        Ok(())
+    }
+
+    fn indent_line_insert(editor: &mut Editor) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Get tab width from config or use default
+        let tab_width = 4; // TODO: get from config
+
+        // Create indent string
+        let indent_str = " ".repeat(tab_width);
+
+        // Insert indent at beginning of line
+        editor.buffer_mut().insert_text_at(line_idx, 0, &indent_str);
+
+        // Update cursor position - move column right by tab_width
+        let new_col = col + tab_width;
+        editor.buffer_mut().cursor_mut().set_col(new_col);
+
+        // Create change for undo
+        let change = Change::insert((line_idx, 0), indent_str, cursor_before);
+        editor.add_change(change);
+
+        Ok(())
+    }
+
+    fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
+        let cursor = editor.buffer().cursor();
+        let cursor_before = (cursor.line(), cursor.col());
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Get tab width from config or use default
+        let tab_width = 4; // TODO: get from config
+
+        // Get current line
+        let line = match editor.buffer().line(line_idx) {
+            Some(l) => l,
+            None => return Ok(()),
+        };
+        let line_text = line.trim_end_matches('\n');
+
+        // Count leading whitespace to remove (up to tab_width)
+        let chars: Vec<char> = line_text.chars().collect();
+        let mut spaces_to_remove = 0;
+
+        for &ch in chars.iter().take(tab_width) {
+            if ch == ' ' {
+                spaces_to_remove += 1;
+            } else if ch == '\t' {
+                spaces_to_remove = tab_width;
+                break;
+            } else {
+                break;
+            }
+        }
+
+        // If no leading whitespace, do nothing
+        if spaces_to_remove == 0 {
+            return Ok(());
+        }
+
+        // Delete the leading whitespace
+        let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, spaces_to_remove);
+
+        // Update cursor position - move column left by spaces_to_remove
+        let new_col = col.saturating_sub(spaces_to_remove);
+        editor.buffer_mut().cursor_mut().set_col(new_col);
+
+        // Create change for undo
+        let range = Range::new((line_idx, 0), (line_idx, spaces_to_remove));
         let change = Change::delete(range, deleted, cursor_before);
         editor.add_change(change);
 
@@ -3136,58 +3304,11 @@ impl InputHandler {
     }
 
     fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
-        Self::join_lines_impl(editor, count, true)
+        Operators::join_lines(editor.buffer_mut(), count)
     }
 
     fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
-        Self::join_lines_impl(editor, count, false)
-    }
-
-    fn join_lines_impl(editor: &mut Editor, count: usize, add_space: bool) -> Result<()> {
-        let cursor = editor.buffer().cursor();
-        let cursor_before = (cursor.line(), cursor.col());
-        let start_line = cursor.line();
-
-        // Join count lines (minimum 1, which joins current with next)
-        let lines_to_join = count.max(1);
-
-        for _ in 0..lines_to_join {
-            let line_idx = start_line;
-
-            // Don't join if we're on the last line
-            if line_idx >= editor.buffer().line_count().saturating_sub(1) {
-                break;
-            }
-
-            if let Some(line) = editor.buffer().line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
-                let line_len = line_text.chars().count();
-
-                // Delete the newline at the end of the current line
-                let start_pos = (line_idx, line_len);
-                let end_pos = (line_idx + 1, 0);
-
-                let deleted = editor.buffer_mut().delete_range(line_idx, line_len, line_idx + 1, 0);
-
-                // Insert a space where the newline was (if requested)
-                if add_space {
-                    editor.buffer_mut().insert_text_at(line_idx, line_len, " ");
-                }
-
-                // Record the change
-                let range = Range::new(start_pos, end_pos);
-                let change = Change::delete(range, deleted, cursor_before);
-                editor.add_change(change);
-            }
-        }
-
-        // Position cursor at the join point
-        if let Some(line) = editor.buffer().line(start_line) {
-            let line_len = line.trim_end_matches('\n').chars().count();
-            editor.buffer_mut().cursor_mut().set_position(start_line, line_len.saturating_sub(1).max(0));
-        }
-
-        Ok(())
+        Operators::join_lines_no_space(editor.buffer_mut(), count)
     }
 
     fn indent_lines_with_tracking(editor: &mut Editor, start_line: usize, end_line: usize, tab_width: usize, cursor_before: (usize, usize)) -> Result<()> {
