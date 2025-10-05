@@ -1,7 +1,7 @@
 mod helpers;
 
 use helpers::EditorTest;
-use insta::assert_snapshot;
+// use insta::assert_snapshot;
 
 /// Test that 'gd' command requests goto definition
 #[test]

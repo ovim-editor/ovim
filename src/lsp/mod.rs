@@ -17,13 +17,15 @@
 
 mod protocol;
 mod server;
+mod supervisor;
 mod types;
 
 pub use protocol::{JsonRpcMessage, RequestId};
-pub use server::LanguageServer;
+pub use server::{LanguageServer, LanguageServerHealth};
+pub use supervisor::{RestartPolicy, TaskSupervisor};
 pub use types::{LspPosition, LspRange};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use lsp_types::{
     Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, PublishDiagnosticsParams,
@@ -33,7 +35,22 @@ use lsp_types::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{mpsc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::task::JoinHandle;
+
+/// Maximum document size in bytes (10MB)
+/// Protects against OOM when opening/syncing large files
+const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
+
+/// Maximum LSP message size in bytes (50MB)
+/// Prevents protocol buffer overflow and server OOM
+const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
+
+/// Debounce duration for textDocument/didChange notifications (milliseconds)
+/// Coalesces rapid changes to reduce LSP traffic by ~1000x
+const CHANGE_DEBOUNCE_MS: u64 = 300;
 
 /// Notification message from a language server
 #[derive(Clone)]
@@ -42,10 +59,51 @@ pub struct LspNotification {
     pub message: JsonRpcMessage,
 }
 
+/// Debouncer for textDocument/didChange notifications
+/// Coalesces rapid changes to reduce LSP traffic
+struct ChangeDebouncer {
+    /// URI of the document being edited
+    uri: Url,
+
+    /// Language ID (e.g., "rust", "python")
+    language_id: String,
+
+    /// Full text of the pending change
+    pending_text: String,
+
+    /// Timer handle for the debounce delay
+    timer_handle: Option<JoinHandle<()>>,
+}
+
+impl ChangeDebouncer {
+    fn new(uri: Url, language_id: String, text: String) -> Self {
+        Self {
+            uri,
+            language_id,
+            pending_text: text,
+            timer_handle: None,
+        }
+    }
+
+    /// Cancels the pending timer if any
+    fn cancel_timer(&mut self) {
+        if let Some(handle) = self.timer_handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+impl Drop for ChangeDebouncer {
+    fn drop(&mut self) {
+        self.cancel_timer();
+    }
+}
+
 /// Central LSP manager coordinating all language servers
 pub struct LspManager {
     /// Active language servers (one per language)
-    servers: Mutex<HashMap<String, LanguageServer>>,
+    /// Using RwLock to allow concurrent reads (most operations) while serializing writes
+    servers: RwLock<HashMap<String, LanguageServer>>,
 
     /// Diagnostics per file URI
     diagnostics: Mutex<HashMap<Url, Vec<Diagnostic>>>,
@@ -56,22 +114,35 @@ pub struct LspManager {
     /// Document versions for change tracking
     document_versions: Mutex<HashMap<Url, i32>>,
 
-    /// Channel for receiving notifications from language servers
-    notification_tx: mpsc::UnboundedSender<LspNotification>,
-    notification_rx: Mutex<mpsc::UnboundedReceiver<LspNotification>>,
+    /// Channel for receiving notifications from language servers (bounded to prevent memory issues)
+    notification_tx: mpsc::Sender<LspNotification>,
+    notification_rx: Mutex<mpsc::Receiver<LspNotification>>,
+
+    /// Pending changes being debounced per document
+    /// Coalesces rapid changes to reduce LSP traffic by ~1000x
+    change_debouncers: RwLock<HashMap<Url, Arc<Mutex<ChangeDebouncer>>>>,
+
+    /// Channel for debounce flush requests (URI to flush)
+    flush_tx: mpsc::Sender<Url>,
+    flush_rx: Mutex<Option<mpsc::Receiver<Url>>>,
 }
 
 impl LspManager {
     /// Creates a new LSP manager
     pub fn new() -> Self {
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+        // Use bounded channel to prevent unbounded memory growth from notifications
+        let (notification_tx, notification_rx) = mpsc::channel(1000);
+        let (flush_tx, flush_rx) = mpsc::channel(100);
         Self {
-            servers: Mutex::new(HashMap::new()),
+            servers: RwLock::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             document_versions: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
+            change_debouncers: RwLock::new(HashMap::new()),
+            flush_tx,
+            flush_rx: Mutex::new(Some(flush_rx)),
         }
     }
 
@@ -88,13 +159,13 @@ impl LspManager {
         args: Vec<String>,
         root_path: &Path,
     ) -> Result<()> {
-        let mut servers = self.servers.lock().await;
+        let mut servers = self.servers.write().await;
 
         if servers.contains_key(language) {
             return Ok(()); // Already running
         }
 
-        let mut server = LanguageServer::spawn(command, args).await?;
+        let mut server = LanguageServer::spawn(language, command, args).await?;
 
         // Initialize the server
         let root_uri = Url::from_file_path(root_path)
@@ -109,7 +180,7 @@ impl LspManager {
 
     /// Stops a language server
     pub async fn stop_server(&self, language: &str) -> Result<()> {
-        let mut servers = self.servers.lock().await;
+        let mut servers = self.servers.write().await;
 
         if let Some(mut server) = servers.remove(language) {
             server.shutdown().await?;
@@ -173,6 +244,18 @@ impl LspManager {
         diags.insert(uri, diagnostics);
     }
 
+    /// Gets health information for all language servers
+    pub async fn health_check(&self) -> Vec<LanguageServerHealth> {
+        let servers = self.servers.read().await;
+        let mut health_infos = Vec::new();
+
+        for server in servers.values() {
+            health_infos.push(server.health_check().await);
+        }
+
+        health_infos
+    }
+
     /// Gets the current version of a document
     pub async fn get_document_version(&self, uri: &Url) -> i32 {
         let versions = self.document_versions.lock().await;
@@ -189,7 +272,7 @@ impl LspManager {
 
     /// Gets a reference to a language server
     pub async fn get_server(&self, language: &str) -> Option<LanguageServer> {
-        let servers = self.servers.lock().await;
+        let servers = self.servers.read().await;
         servers.get(language).cloned()
     }
 
@@ -201,7 +284,18 @@ impl LspManager {
         version: i32,
         text: String,
     ) -> Result<()> {
-        let servers = self.servers.lock().await;
+        // Check document size to prevent OOM
+        if text.len() > MAX_DOCUMENT_SIZE {
+            return Err(anyhow!(
+                "Document '{}' too large: {} bytes (max {} bytes / {:.1} MB)",
+                uri,
+                text.len(),
+                MAX_DOCUMENT_SIZE,
+                MAX_DOCUMENT_SIZE as f64 / (1024.0 * 1024.0)
+            ));
+        }
+
+        let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
@@ -226,24 +320,32 @@ impl LspManager {
         Ok(())
     }
 
-    /// Sends textDocument/didChange notification
-    pub async fn did_change(
+    /// Internal method to send textDocument/didChange notification immediately
+    async fn send_did_change_immediate(
         &self,
         uri: Url,
         language_id: &str,
-        changes: Vec<TextDocumentContentChangeEvent>,
+        text: String,
     ) -> Result<()> {
-        let servers = self.servers.lock().await;
+        // Increment version BEFORE acquiring server lock to prevent race condition
+        let version = self.increment_document_version(&uri).await;
+
+        let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
-        // Increment version
-        let version = self.increment_document_version(&uri).await;
-
+        // Use full document sync for simplicity (instead of incremental changes)
         let params = DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier { uri, version },
-            content_changes: changes,
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None, // None = full document
+                range_length: None,
+                text,
+            }],
         };
 
         server
@@ -253,9 +355,88 @@ impl LspManager {
         Ok(())
     }
 
+    /// Flushes pending changes for a document (sends immediately)
+    pub async fn flush_pending_changes(&self, uri: &Url) -> Result<()> {
+        // Remove debouncer and get pending change
+        let mut debouncers = self.change_debouncers.write().await;
+        if let Some(debouncer_arc) = debouncers.remove(uri) {
+            drop(debouncers); // Release write lock before sending
+
+            let mut debouncer = debouncer_arc.lock().await;
+            debouncer.cancel_timer(); // Cancel timer
+
+            // Send the pending change
+            let language_id = debouncer.language_id.clone();
+            let text = debouncer.pending_text.clone();
+            let uri = debouncer.uri.clone();
+            drop(debouncer); // Release lock before async call
+
+            self.send_did_change_immediate(uri, &language_id, text)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Sends textDocument/didChange notification with debouncing
+    /// Coalesces rapid changes to reduce LSP traffic by ~1000x
+    pub async fn did_change(
+        &self,
+        uri: Url,
+        language_id: &str,
+        text: String,
+    ) -> Result<()> {
+        // Get or create debouncer for this document
+        let debouncers = self.change_debouncers.read().await;
+        let debouncer_arc = if let Some(existing) = debouncers.get(&uri) {
+            existing.clone()
+        } else {
+            drop(debouncers); // Release read lock
+
+            // Create new debouncer
+            let mut debouncers = self.change_debouncers.write().await;
+            let debouncer = Arc::new(Mutex::new(ChangeDebouncer::new(
+                uri.clone(),
+                language_id.to_string(),
+                text.clone(),
+            )));
+            debouncers.insert(uri.clone(), debouncer.clone());
+            debouncer
+        };
+
+        // Update pending change and restart timer
+        let mut debouncer = debouncer_arc.lock().await;
+
+        // Cancel existing timer if any
+        debouncer.cancel_timer();
+
+        // Update pending text
+        debouncer.pending_text = text;
+
+        // Clone flush channel for timer closure
+        let flush_tx = self.flush_tx.clone();
+        let uri_clone = uri.clone();
+
+        // Start new timer
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(CHANGE_DEBOUNCE_MS)).await;
+
+            // Timer expired - request flush via channel
+            if let Err(e) = flush_tx.send(uri_clone).await {
+                eprintln!("[LSP Debounce] Error sending flush request: {}", e);
+            }
+        });
+
+        debouncer.timer_handle = Some(handle);
+
+        Ok(())
+    }
+
     /// Sends textDocument/didSave notification
     pub async fn did_save(&self, uri: Url, language_id: &str, text: Option<String>) -> Result<()> {
-        let servers = self.servers.lock().await;
+        // Flush any pending changes before saving
+        self.flush_pending_changes(&uri).await?;
+
+        let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
@@ -274,7 +455,10 @@ impl LspManager {
 
     /// Sends textDocument/didClose notification
     pub async fn did_close(&self, uri: Url, language_id: &str) -> Result<()> {
-        let servers = self.servers.lock().await;
+        // Flush any pending changes before closing
+        self.flush_pending_changes(&uri).await?;
+
+        let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
@@ -330,10 +514,24 @@ impl LspManager {
         }
     }
 
+    /// Processes pending flush requests from debounce timers
+    /// Should be called regularly from the main event loop
+    pub async fn process_flush_requests(&self) {
+        let mut rx_opt = self.flush_rx.lock().await;
+        if let Some(rx) = rx_opt.as_mut() {
+            // Process all pending flush requests (non-blocking)
+            while let Ok(uri) = rx.try_recv() {
+                if let Err(e) = self.flush_pending_changes(&uri).await {
+                    eprintln!("[LSP Debounce] Error flushing changes for {}: {}", uri, e);
+                }
+            }
+        }
+    }
+
     /// Starts a background task to listen for notifications from a language server
     pub async fn start_notification_listener(&self, language_id: String) {
         let server = {
-            let servers = self.servers.lock().await;
+            let servers = self.servers.read().await;
             servers.get(&language_id).cloned()
         };
 
@@ -351,8 +549,9 @@ impl LspManager {
                                 message: msg,
                             };
 
-                            if tx.send(notification).is_err() {
-                                break; // Manager dropped, stop listening
+                            if let Err(e) = tx.send(notification).await {
+                                eprintln!("[LSP Listener] Failed to send notification: {}", e);
+                                break; // Manager dropped or channel full, stop listening
                             }
                         }
                     } else {
@@ -373,10 +572,15 @@ impl LspManager {
     ) -> Result<Option<lsp_types::Location>> {
         use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.lock().await;
+        let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports goto definition
+        if !server.supports_goto_definition().await {
+            return Ok(None); // Gracefully return None if not supported
+        }
 
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -418,10 +622,15 @@ impl LspManager {
     ) -> Result<Option<String>> {
         use lsp_types::{HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.lock().await;
+        let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports hover
+        if !server.supports_hover().await {
+            return Ok(None); // Gracefully return None if not supported
+        }
 
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {

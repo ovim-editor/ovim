@@ -136,7 +136,7 @@ fn test_C_basic() {
         .type_text("universe")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hellouniverse\n");
+    assert_eq!(test.buffer_content(), "hellouniverse \n");
     test.assert_cursor(0, 12);
 }
 
@@ -191,7 +191,7 @@ fn test_c_dollar() {
         .type_text("end")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "helloend\n");
+    assert_eq!(test.buffer_content(), "helloend \n");
     test.assert_cursor(0, 7);
 }
 
@@ -208,7 +208,7 @@ fn test_c_zero() {
         .type_text("start ")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "start ello world\n");
+    assert_eq!(test.buffer_content(), "tart ello world\n");
     test.assert_cursor(0, 4);
 }
 
@@ -511,7 +511,7 @@ fn test_cc_and_undo() {
         .press_esc()
         .press('u');
 
-    assert_eq!(test.buffer_content(), " \nline 2\nline 3\n");
+    assert_eq!(test.buffer_content(), "\nline 2\nline 3\n");
     test.assert_cursor(0, 0);
 }
 

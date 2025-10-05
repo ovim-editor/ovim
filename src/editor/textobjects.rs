@@ -2,12 +2,15 @@ use crate::buffer::Buffer;
 use anyhow::Result;
 
 /// Represents a text object selection range
+/// NOTE: Uses half-open range semantics: [start_col, end_col)
+/// The end_col is EXCLUSIVE (one past the last character to include)
+/// This matches Rust's range semantics and buffer delete_range expectations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextObjectRange {
     pub start_line: usize,
     pub start_col: usize,
     pub end_line: usize,
-    pub end_col: usize,
+    pub end_col: usize, // EXCLUSIVE - one past the last character
 }
 
 /// Handles text object operations
@@ -46,7 +49,7 @@ impl TextObjects {
             start_col -= 1;
         }
 
-        // Find end of word
+        // Find end of word (exclusive - one past the last word character)
         let mut end_col = col;
         while end_col < chars.len() && is_word_char(chars[end_col]) {
             end_col += 1;
@@ -56,7 +59,7 @@ impl TextObjects {
             start_line: line_idx,
             start_col,
             end_line: line_idx,
-            end_col: end_col.saturating_sub(1),
+            end_col, // Already exclusive
         })
     }
 
@@ -96,7 +99,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col,
                 end_line: line_idx,
-                end_col: end_col.saturating_sub(1),
+                end_col, // Already exclusive
             });
         }
 
@@ -128,7 +131,7 @@ impl TextObjects {
             start_line: line_idx,
             start_col,
             end_line: line_idx,
-            end_col: end_col.saturating_sub(1),
+            end_col, // Already exclusive
         })
     }
 
@@ -283,9 +286,10 @@ impl TextObjects {
     }
 
     /// Deletes text within a text object range
+    /// Note: range.end_col is exclusive (one past the last character)
     pub fn delete_range(buffer: &mut Buffer, range: TextObjectRange) -> Result<String> {
         let start_char = buffer.rope().line_to_char(range.start_line) + range.start_col;
-        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col + 1;
+        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col;
 
         let deleted = buffer.rope().slice(start_char..end_char).to_string();
         buffer.rope_mut().remove(start_char..end_char);
@@ -297,10 +301,381 @@ impl TextObjects {
     }
 
     /// Yanks text within a text object range
+    /// Note: range.end_col is exclusive (one past the last character)
     pub fn yank_range(buffer: &Buffer, range: TextObjectRange) -> Result<String> {
         let start_char = buffer.rope().line_to_char(range.start_line) + range.start_col;
-        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col + 1;
+        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col;
 
         Ok(buffer.rope().slice(start_char..end_char).to_string())
+    }
+
+    /// Gets the range for an HTML/XML tag (inner or around)
+    /// include_tags: true for "around" (includes opening and closing tags), false for "inner" (content only)
+    pub fn tag(buffer: &Buffer, include_tags: bool) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= buffer.line_count() {
+            return None;
+        }
+
+        // Get the full text from the buffer to search across multiple lines
+        let text = buffer.rope().to_string();
+        let cursor_offset = buffer.rope().line_to_char(line_idx) + col;
+
+        // Find the opening tag before or at cursor
+        let mut tag_start = None;
+        let mut tag_name = None;
+        let chars: Vec<char> = text.chars().collect();
+
+        // Search backward for opening tag
+        let mut i = cursor_offset.min(chars.len().saturating_sub(1));
+        while i > 0 {
+            if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] != '/' {
+                // Found potential opening tag
+                let mut name_end = i + 1;
+                while name_end < chars.len() && chars[name_end] != '>' && !chars[name_end].is_whitespace() {
+                    name_end += 1;
+                }
+                if name_end < chars.len() {
+                    let name: String = chars[(i + 1)..name_end].iter().collect();
+                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':') {
+                        tag_start = Some(i);
+                        tag_name = Some(name);
+                        break;
+                    }
+                }
+            }
+            i = i.saturating_sub(1);
+        }
+
+        let tag_start = tag_start?;
+        let tag_name = tag_name?;
+
+        // Find the end of the opening tag
+        let mut opening_tag_end = tag_start;
+        while opening_tag_end < chars.len() && chars[opening_tag_end] != '>' {
+            opening_tag_end += 1;
+        }
+        if opening_tag_end >= chars.len() {
+            return None;
+        }
+
+        // Check for self-closing tag
+        if opening_tag_end > 0 && chars[opening_tag_end - 1] == '/' {
+            // Self-closing tag like <br/> - no content
+            return None;
+        }
+
+        // Find the closing tag
+        let closing_tag_pattern = format!("</{}>", tag_name);
+        let mut depth = 1;
+        let mut search_pos = opening_tag_end + 1;
+
+        while search_pos < chars.len() && depth > 0 {
+            if chars[search_pos] == '<' {
+                // Check if this is an opening or closing tag
+                if search_pos + 1 < chars.len() && chars[search_pos + 1] == '/' {
+                    // Potential closing tag
+                    let mut name_end = search_pos + 2;
+                    while name_end < chars.len() && chars[name_end] != '>' {
+                        name_end += 1;
+                    }
+                    let found_name: String = chars[(search_pos + 2)..name_end].iter().collect();
+                    if found_name == tag_name {
+                        depth -= 1;
+                        if depth == 0 {
+                            // Found matching closing tag
+                            let content_start = opening_tag_end + 1;
+                            let content_end = search_pos.saturating_sub(1);
+                            let closing_tag_end = name_end;
+
+                            // Convert char offsets to line/col positions
+                            let (start_line, start_col, end_line, end_col) = if include_tags {
+                                // Include opening and closing tags
+                                Self::char_offset_to_position(buffer, tag_start, closing_tag_end)
+                            } else {
+                                // Inner - just the content between tags
+                                if content_start > content_end {
+                                    return None; // Empty tag
+                                }
+                                Self::char_offset_to_position(buffer, content_start, content_end)
+                            };
+
+                            return Some(TextObjectRange {
+                                start_line,
+                                start_col,
+                                end_line,
+                                end_col,
+                            });
+                        }
+                    }
+                } else if search_pos + 1 < chars.len() && chars[search_pos + 1] != '!' && chars[search_pos + 1] != '?' {
+                    // Potential opening tag (not a comment or processing instruction)
+                    let mut name_end = search_pos + 1;
+                    while name_end < chars.len() && chars[name_end] != '>' && !chars[name_end].is_whitespace() {
+                        name_end += 1;
+                    }
+                    let found_name: String = chars[(search_pos + 1)..name_end].iter().collect();
+                    if found_name == tag_name {
+                        // Check if it's not self-closing
+                        let mut tag_end = name_end;
+                        while tag_end < chars.len() && chars[tag_end] != '>' {
+                            tag_end += 1;
+                        }
+                        if tag_end > 0 && chars[tag_end - 1] != '/' {
+                            depth += 1;
+                        }
+                    }
+                }
+            }
+            search_pos += 1;
+        }
+
+        None
+    }
+
+    /// Helper to convert character offsets to line/col positions
+    fn char_offset_to_position(buffer: &Buffer, start_offset: usize, end_offset: usize) -> (usize, usize, usize, usize) {
+        let rope = buffer.rope();
+
+        let start_line = rope.char_to_line(start_offset);
+        let start_line_offset = rope.line_to_char(start_line);
+        let start_col = start_offset.saturating_sub(start_line_offset);
+
+        let end_line = rope.char_to_line(end_offset);
+        let end_line_offset = rope.line_to_char(end_line);
+        let end_col = end_offset.saturating_sub(end_line_offset);
+
+        (start_line, start_col, end_line, end_col)
+    }
+
+    /// Gets the range for "inner paragraph" (ip)
+    /// A paragraph is a sequence of non-blank lines separated by blank lines
+    pub fn inner_paragraph(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let current_line = cursor.line();
+        let line_count = buffer.line_count();
+
+        if current_line >= line_count {
+            return None;
+        }
+
+        // Helper to check if a line is blank
+        let is_blank = |line_idx: usize| -> bool {
+            if line_idx >= line_count {
+                return true;
+            }
+            let line = buffer.rope().line(line_idx).to_string();
+            line.trim().is_empty()
+        };
+
+        // If we're on a blank line, return None for inner paragraph
+        if is_blank(current_line) {
+            return None;
+        }
+
+        // Find start of paragraph (first non-blank line in sequence)
+        let mut start_line = current_line;
+        while start_line > 0 && !is_blank(start_line - 1) {
+            start_line -= 1;
+        }
+
+        // Find end of paragraph (last non-blank line in sequence)
+        let mut end_line = current_line;
+        while end_line + 1 < line_count && !is_blank(end_line + 1) {
+            end_line += 1;
+        }
+
+        // Get the end column of the last line (exclusive - one past the last char)
+        let end_line_text = buffer.rope().line(end_line).to_string();
+        let end_col = end_line_text.chars().count();
+
+        Some(TextObjectRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around paragraph" (ap)
+    /// Includes the paragraph and surrounding blank lines
+    pub fn around_paragraph(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let current_line = cursor.line();
+        let line_count = buffer.line_count();
+
+        if current_line >= line_count {
+            return None;
+        }
+
+        // Helper to check if a line is blank
+        let is_blank = |line_idx: usize| -> bool {
+            if line_idx >= line_count {
+                return true;
+            }
+            let line = buffer.rope().line(line_idx).to_string();
+            line.trim().is_empty()
+        };
+
+        let mut start_line = current_line;
+        let mut end_line = current_line;
+
+        // If we're on a blank line, select blank lines
+        if is_blank(current_line) {
+            // Find start of blank sequence
+            while start_line > 0 && is_blank(start_line - 1) {
+                start_line -= 1;
+            }
+            // Find end of blank sequence
+            while end_line + 1 < line_count && is_blank(end_line + 1) {
+                end_line += 1;
+            }
+        } else {
+            // Find start of paragraph
+            while start_line > 0 && !is_blank(start_line - 1) {
+                start_line -= 1;
+            }
+            // Find end of paragraph
+            while end_line + 1 < line_count && !is_blank(end_line + 1) {
+                end_line += 1;
+            }
+
+            // Include trailing blank lines
+            while end_line + 1 < line_count && is_blank(end_line + 1) {
+                end_line += 1;
+            }
+
+            // If no trailing blank lines, include leading blank lines
+            if end_line + 1 >= line_count || !is_blank(end_line) {
+                while start_line > 0 && is_blank(start_line - 1) {
+                    start_line -= 1;
+                }
+            }
+        }
+
+        // Get the end column of the last line (exclusive - one past the last char)
+        let end_line_text = buffer.rope().line(end_line).to_string();
+        let end_col = end_line_text.chars().count();
+
+        Some(TextObjectRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "inner sentence" (is)
+    /// A sentence ends with '.', '!', or '?' followed by whitespace or end of line
+    pub fn inner_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= buffer.line_count() {
+            return None;
+        }
+
+        let line = buffer.rope().line(line_idx).to_string();
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        if chars.is_empty() {
+            return None;
+        }
+
+        let is_sentence_end = |c: char| c == '.' || c == '!' || c == '?';
+
+        // Find start of sentence (after previous sentence end + whitespace)
+        let mut start_col = 0;
+        for i in (0..col).rev() {
+            if is_sentence_end(chars[i]) {
+                // Skip whitespace after sentence end
+                start_col = i + 1;
+                while start_col < chars.len() && chars[start_col].is_whitespace() {
+                    start_col += 1;
+                }
+                break;
+            }
+        }
+
+        // Find end of sentence (next sentence end)
+        let mut end_col = col;
+        while end_col < chars.len() && !is_sentence_end(chars[end_col]) {
+            end_col += 1;
+        }
+
+        // For inner sentence, don't include the punctuation (exclusive end handles this)
+        // end_col now points to the punctuation or past the end
+        // With exclusive semantics, this is correct - we want up to but not including this position
+
+        Some(TextObjectRange {
+            start_line: line_idx,
+            start_col,
+            end_line: line_idx,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around sentence" (as)
+    /// Includes the sentence and trailing whitespace
+    pub fn around_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= buffer.line_count() {
+            return None;
+        }
+
+        let line = buffer.rope().line(line_idx).to_string();
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        if chars.is_empty() {
+            return None;
+        }
+
+        let is_sentence_end = |c: char| c == '.' || c == '!' || c == '?';
+
+        // Find start of sentence
+        let mut start_col = 0;
+        for i in (0..col).rev() {
+            if is_sentence_end(chars[i]) {
+                start_col = i + 1;
+                while start_col < chars.len() && chars[start_col].is_whitespace() {
+                    start_col += 1;
+                }
+                break;
+            }
+        }
+
+        // Find end of sentence
+        let mut end_col = col;
+        while end_col < chars.len() && !is_sentence_end(chars[end_col]) {
+            end_col += 1;
+        }
+
+        // Include punctuation and trailing whitespace
+        if end_col < chars.len() {
+            end_col += 1; // Move past the punctuation
+            while end_col < chars.len() && chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            // end_col is now exclusive - points one past the last character to include
+        } else {
+            // At end of line - use chars.len() as exclusive end
+            end_col = chars.len();
+        }
+
+        Some(TextObjectRange {
+            start_line: line_idx,
+            start_col,
+            end_line: line_idx,
+            end_col,
+        })
     }
 }

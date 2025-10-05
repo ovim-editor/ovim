@@ -1,6 +1,6 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
+// use insta::assert_snapshot;
 
 #[test]
 fn test_o_command_snapshot() {

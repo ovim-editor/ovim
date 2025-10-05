@@ -1,5 +1,6 @@
 mod helpers;
 use helpers::EditorTest;
+use ovim::mode::Mode;
 
 // ============================================================================
 // 'r' command - Replace single character
@@ -345,7 +346,7 @@ fn test_visual_replace() {
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 4);
-    assert_eq!(test.mode(), "Visual");
+    assert_eq!(test.mode(), Mode::Visual);
 }
 
 #[test]
@@ -359,7 +360,7 @@ fn test_visual_line_replace() {
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
     test.assert_cursor(1, 0);
-    assert_eq!(test.mode(), "VisualLine");
+    assert_eq!(test.mode(), Mode::VisualLine);
 }
 
 // ============================================================================
@@ -538,7 +539,7 @@ fn test_r_with_register() {
 
     assert_eq!(test.buffer_content(), "hyiwrX\"apello world\n");
     test.assert_cursor(0, 9);
-    assert_eq!(test.mode(), "Insert");
+    assert_eq!(test.mode(), Mode::Insert);
 }
 
 // ============================================================================
