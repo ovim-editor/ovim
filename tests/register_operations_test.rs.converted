@@ -25,7 +25,8 @@ fn test_delete_to_named_register() {
         .keys("$")
         .keys("\"ap");    // Paste from register 'a'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "world testhello \n");
+    test.assert_cursor(0, 16);
 }
 
 #[test]
@@ -38,7 +39,8 @@ fn test_change_to_named_register() {
         .keys("$")
         .keys("\"ap");    // Paste original word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "goodbye worldhello \n");
+    test.assert_cursor(0, 18);
 }
 
 #[test]
@@ -55,7 +57,8 @@ fn test_multiple_named_registers() {
         .keys("\"bp")     // Paste from 'b'
         .keys("\"cp");    // Paste from 'c'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three fourone two three \n");
+    test.assert_cursor(0, 31);
 }
 
 #[test]
@@ -68,7 +71,8 @@ fn test_overwrite_named_register() {
         .keys("$")
         .keys("\"ap");    // Should paste "second"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "first second thirdsecond \n");
+    test.assert_cursor(0, 25);
 }
 
 #[test]
@@ -79,7 +83,8 @@ fn test_all_lowercase_registers() {
     test.keys("\"ayiw")   // register a
         .keys("\"zyiw");  // register z
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -96,7 +101,8 @@ fn test_append_to_register() {
         .keys("$")
         .keys("\"ap");    // Paste both
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world testhelloworld \n");
+    test.assert_cursor(0, 26);
 }
 
 #[test]
@@ -111,7 +117,8 @@ fn test_append_multiple_times() {
         .keys("$")
         .keys("\"ap");    // Paste all
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three fouronetwo three \n");
+    test.assert_cursor(0, 31);
 }
 
 #[test]
@@ -122,7 +129,8 @@ fn test_append_with_delete() {
         .keys("\"Adw")    // Append delete "world " to 'a'
         .keys("\"ap");    // Paste both
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "testhello world \n");
+    test.assert_cursor(0, 16);
 }
 
 // ============================================================================
@@ -137,7 +145,8 @@ fn test_unnamed_register_yank() {
         .keys("$")
         .press('p');      // Paste from unnamed
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -147,7 +156,8 @@ fn test_unnamed_register_delete() {
     test.keys("dw")       // Delete to unnamed
         .press('p');      // Paste from unnamed
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "worldhello \n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -160,7 +170,8 @@ fn test_unnamed_register_change() {
         .keys("$")
         .press('p');      // Paste original word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "X worldhello \n");
+    test.assert_cursor(0, 13);
 }
 
 // ============================================================================
@@ -175,7 +186,8 @@ fn test_register_0_yank() {
         .keys("dw")       // Delete word (goes to "1, doesn't affect "0)
         .keys("\"0p");    // Paste from "0 (should be "hello")
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "worldhello \n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -189,7 +201,8 @@ fn test_numbered_delete_history() {
         .keys("\"2p")     // Paste second most recent
         .keys("\"3p");    // Paste third most recent
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "four fivethree two one \n");
+    test.assert_cursor(0, 23);
 }
 
 #[test]
@@ -201,7 +214,8 @@ fn test_register_0_only_yanks() {
         .keys("x")        // Delete again
         .keys("\"0p");    // Paste from "0 (should still be "hello")
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "llhello o world\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -215,7 +229,8 @@ fn test_small_delete_register() {
     test.press('x')       // Delete single char (goes to "-)
         .keys("\"-p");    // Paste from small delete register
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ehllo world\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -227,7 +242,8 @@ fn test_small_delete_vs_numbered() {
         .keys("\"-p")     // Paste small delete
         .keys("\"1p");    // Paste line delete
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "whorldello \n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -241,7 +257,8 @@ fn test_percent_register_filename() {
     test.set_file_path("test.txt".to_string())
         .keys("\"%p");    // Paste filename
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ttest.txtest content\n");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -253,7 +270,8 @@ fn test_colon_register_last_command() {
         .press_esc()
         .keys("\":p");    // Paste last command
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "twest\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -265,7 +283,8 @@ fn test_dot_register_last_insert() {
         .press_esc()
         .keys("$.p");     // Paste last inserted text
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "INSERTEDlineINSERTED\n");
+    test.assert_cursor(0, 20);
 }
 
 // ============================================================================
@@ -281,7 +300,8 @@ fn test_blackhole_register_delete() {
         .keys("\"_dw")    // Delete to black hole
         .press('p');      // Paste should still be "hello"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello hello \n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -296,7 +316,8 @@ fn test_blackhole_register_change() {
         .keys("$")
         .press('p');      // Should paste "one", not "two"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one X threeone \n");
+    test.assert_cursor(0, 15);
 }
 
 // ============================================================================
@@ -312,7 +333,8 @@ fn test_slash_register_search_pattern() {
         .press_enter()
         .keys("\"/p");    // Paste search pattern
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello wworlorld\n");
+    test.assert_cursor(0, 11);
 }
 
 // ============================================================================
@@ -328,7 +350,8 @@ fn test_expression_register() {
         .press_enter()
         .press('p');      // Should paste "4"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "t4est\n");
+    test.assert_cursor(0, 1);
 }
 
 // ============================================================================
@@ -343,7 +366,8 @@ fn test_clipboard_register_yank() {
         .keys("$")
         .keys("\"+p");    // Paste from clipboard
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -354,7 +378,8 @@ fn test_selection_register() {
         .keys("$")
         .keys("\"*p");    // Paste from selection
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 // ============================================================================
@@ -372,7 +397,8 @@ fn test_visual_yank_to_register() {
         .keys("$")
         .keys("\"ap");    // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world testhello\n");
+    test.assert_cursor(0, 21);
 }
 
 #[test]
@@ -385,7 +411,8 @@ fn test_visual_delete_to_register() {
         .keys("$")
         .keys("\"ap");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " worldhello\n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -399,7 +426,8 @@ fn test_visual_line_to_register() {
         .keys("G")
         .keys("\"ap");    // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\nline 2\n");
+    test.assert_cursor(3, 0);
 }
 
 // ============================================================================
@@ -415,7 +443,8 @@ fn test_register_survives_undo() {
         .press('u')       // Undo delete
         .keys("\"ap");    // Register 'a' should still work
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -424,7 +453,8 @@ fn test_empty_register() {
 
     test.keys("\"zp");    // Paste from unused register
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -435,7 +465,8 @@ fn test_register_with_newlines() {
         .keys("G")
         .keys("\"ap");    // Paste with newline
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -449,7 +480,8 @@ fn test_register_linewise_vs_charwise() {
         .keys("\"ap")     // Paste line
         .keys("\"bp");    // Paste word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\n1\n");
+    test.assert_cursor(4, 1);
 }
 
 // ============================================================================
@@ -464,7 +496,8 @@ fn test_register_with_count_yank() {
         .keys("$")
         .keys("\"ap");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three fourone two three \n");
+    test.assert_cursor(0, 31);
 }
 
 #[test]
@@ -475,7 +508,8 @@ fn test_register_with_count_delete() {
         .keys("G")
         .keys("\"ap");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 3\nline 4\nline 1\nline 2\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -486,7 +520,8 @@ fn test_register_paste_with_count() {
         .keys("$")
         .keys("3\"ap");   // Paste 3 times from 'a'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "wordword word word \n");
+    test.assert_cursor(0, 19);
 }
 
 // ============================================================================
@@ -501,7 +536,8 @@ fn test_delete_updates_both_unnamed_and_numbered() {
         .press('p')       // Paste from unnamed
         .keys("\"1p");    // Paste from "1 (should be same)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "worldhello hello \n");
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -513,7 +549,8 @@ fn test_yank_updates_unnamed_and_0() {
         .press('p')       // Paste from unnamed
         .keys("\"0p");    // Paste from "0 (should be same)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello hello \n");
+    test.assert_cursor(0, 23);
 }
 
 #[test]
@@ -528,7 +565,8 @@ fn test_change_updates_unnamed_but_not_0() {
         .press('p')       // Paste from unnamed ("hello")
         .keys("\"0p");    // Paste from "0 (should still be "hello")
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "X worldhello hello \n");
+    test.assert_cursor(0, 19);
 }
 
 // ============================================================================
@@ -542,7 +580,8 @@ fn test_invalid_register_name() {
     test.keys("\"!")      // Invalid register
         .press('p');      // Should handle gracefully
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -555,7 +594,8 @@ fn test_register_case_sensitivity() {
         .keys("$")
         .keys("\"ap");    // Should have both
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world testhelloworld \n");
+    test.assert_cursor(0, 26);
 }
 
 // ============================================================================
@@ -574,7 +614,8 @@ fn test_register_chain_operations() {
         .keys("\"ayiw")   // Yank "onetwo" to a
         .keys("\"ap");    // Paste new a
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one tonetwo two three four\n");
+    test.assert_cursor(0, 7);
 }
 
 #[test]
@@ -591,5 +632,6 @@ fn test_swap_words_with_registers() {
         .keys("diw")      // Delete "world"
         .keys("\"ap");    // Paste "hello"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "world hello\n");
+    test.assert_cursor(0, 11);
 }

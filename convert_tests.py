@@ -57,54 +57,72 @@ def convert_test_file(test_file_path, snapshot_dir):
     # Remove the insta import
     content = re.sub(r'use insta::assert_snapshot;\n', '', content)
 
-    # Find all test functions with assert_snapshot
-    test_pattern = r'#\[test\]\s+fn\s+(\w+)\([^)]*\)\s*\{(.*?)^\}'
-    matches = list(re.finditer(test_pattern, content, re.MULTILINE | re.DOTALL))
+    # Find all test functions
+    test_functions = re.finditer(r'#\[test\]\s+fn\s+(\w+)\([^)]*\)\s*\{', content)
 
-    # Process matches in reverse order to preserve positions
-    for match in reversed(matches):
+    test_ranges = []
+    for match in test_functions:
         test_name = match.group(1)
-        test_body = match.group(2)
+        start_pos = match.start()
 
-        # Check if it has assert_snapshot
-        if 'assert_snapshot!' in test_body:
-            # Find the snapshot file
-            snapshot_name = f"{test_file_path.stem}__{test_name}.snap"
-            snapshot_path = snapshot_dir / snapshot_name
+        # Find the end of this test function (next #[test] or end of file)
+        next_test = re.search(r'#\[test\]', content[match.end():])
+        if next_test:
+            end_pos = match.end() + next_test.start()
+        else:
+            end_pos = len(content)
 
-            snapshot_data = parse_snapshot(snapshot_path)
+        test_ranges.append((test_name, start_pos, end_pos))
 
-            if snapshot_data:
-                # Replace assert_snapshot with direct assertions
-                buffer_escaped = escape_string(snapshot_data['buffer'])
-                new_assertions = f'\n    assert_eq!(test.buffer_content(), "{buffer_escaped}");\n    test.assert_cursor({snapshot_data["cursor_line"]}, {snapshot_data["cursor_col"]});'
+    # Process in reverse order to preserve positions
+    for test_name, start_pos, end_pos in reversed(test_ranges):
+        test_body = content[start_pos:end_pos]
 
-                # Replace the assert_snapshot line
-                new_body = re.sub(
-                    r'\n\s*assert_snapshot!\(test\.snapshot_state\(\)\);',
-                    new_assertions,
-                    test_body
-                )
+        # Find assert_snapshot in this test
+        assert_match = re.search(r'(\s*)assert_snapshot!\(test\.snapshot_state\(\)\);', test_body)
+        if not assert_match:
+            continue
 
-                # Replace in content
-                content = content[:match.start(2)] + new_body + content[match.end(2):]
+        # Remove 'test_' prefix for snapshot name
+        snapshot_name = test_name
+        if snapshot_name.startswith('test_'):
+            snapshot_name = snapshot_name[5:]
+
+        # Find the snapshot file
+        snapshot_file_name = f"{test_file_path.stem}__{snapshot_name}.snap"
+        snapshot_path = snapshot_dir / snapshot_file_name
+
+        snapshot_data = parse_snapshot(snapshot_path)
+        if not snapshot_data:
+            print(f"  Warning: Could not parse snapshot for {test_name}")
+            continue
+
+        # Build replacement
+        indent = assert_match.group(1)
+        buffer_escaped = escape_string(snapshot_data['buffer'])
+        new_assertions = f'{indent}assert_eq!(test.buffer_content(), "{buffer_escaped}");\n{indent}test.assert_cursor({snapshot_data["cursor_line"]}, {snapshot_data["cursor_col"]});'
+
+        # Replace in test body
+        new_test_body = test_body[:assert_match.start()] + new_assertions + test_body[assert_match.end():]
+
+        # Replace in content
+        content = content[:start_pos] + new_test_body + content[end_pos:]
 
     return content
 
 # Main execution
 test_files = [
-    Path('/workspace/tests/register_operations_test.rs'),
-    Path('/workspace/tests/mark_test.rs')
+    Path('/workspace/tests/motion_edge_cases_test.rs'),
+    Path('/workspace/tests/motion_bounds_test.rs')
 ]
 snapshot_dir = Path('/workspace/tests/snapshots')
 
 for test_file in test_files:
     print(f"Processing {test_file.name}...")
     converted = convert_test_file(test_file, snapshot_dir)
-    # Write to a .converted file first for review
-    output_path = test_file.with_suffix('.rs.converted')
-    with open(output_path, 'w') as f:
+    # Write directly to the test file
+    with open(test_file, 'w') as f:
         f.write(converted)
-    print(f"  Wrote to {output_path}")
+    print(f"  Converted {test_file.name}")
 
 print("Done!")

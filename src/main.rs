@@ -114,8 +114,18 @@ async fn run_headless_loop(
             lsp.process_notifications().await;
         }
 
+        // Initialize LSP for newly loaded files
+        if let Some(file_path) = editor.needs_lsp_init() {
+            initialize_lsp_for_file(editor, &file_path).await;
+            editor.clear_lsp_init_flag();
+        }
+
         // Process any pending LSP actions
         editor.process_pending_lsp_actions().await;
+
+        // Process any pending Lua commands
+        #[cfg(feature = "lua")]
+        let _ = editor.process_lua_commands();
 
         // Update diagnostic cache
         editor.update_diagnostic_cache().await;
@@ -166,6 +176,12 @@ async fn run_event_loop(
             lsp.process_notifications().await;
         }
 
+        // Initialize LSP for newly loaded files
+        if let Some(file_path) = editor.needs_lsp_init() {
+            initialize_lsp_for_file(editor, &file_path).await;
+            editor.clear_lsp_init_flag();
+        }
+
         // Update diagnostic cache for UI display
         editor.update_diagnostic_cache().await;
 
@@ -176,6 +192,10 @@ async fn run_event_loop(
 
         // Process any pending LSP actions
         editor.process_pending_lsp_actions().await;
+
+        // Process any pending Lua commands
+        #[cfg(feature = "lua")]
+        let _ = editor.process_lua_commands();
 
         // Render the editor
         ui.renderer_mut().render(editor)?;
@@ -442,6 +462,42 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "LspInfo" => {
+            // Show LSP status information
+            let mut info = String::new();
+
+            if editor.lsp_manager().is_none() {
+                info.push_str("LSP is not enabled\n");
+            } else if editor.active_lsp_servers().is_empty() {
+                info.push_str("No active LSP servers\n");
+                if !editor.lsp_status().is_empty() {
+                    info.push_str(&format!("Status: {}\n", editor.lsp_status()));
+                }
+            } else {
+                info.push_str("Active LSP servers:\n");
+                for (lang_id, server_name) in editor.active_lsp_servers() {
+                    info.push_str(&format!("  {} -> {}\n", lang_id, server_name));
+                }
+
+                let (errors, warnings, info_count, hints) = editor.cached_diagnostic_count();
+                info.push_str(&format!("\nDiagnostics: {} errors, {} warnings, {} info, {} hints\n",
+                    errors, warnings, info_count, hints));
+
+                if !editor.lsp_status().is_empty() {
+                    info.push_str(&format!("Status: {}\n", editor.lsp_status()));
+                }
+
+                if let Some(file_path) = editor.buffer().file_path() {
+                    info.push_str(&format!("Current file: {}\n", file_path));
+                }
+            }
+
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(info),
+                line_count: None,
+            })
+        }
         _ => {
             // Handle :w <filename>
             if let Some(filename) = command.strip_prefix("w ").or_else(|| command.strip_prefix("write ")) {
@@ -518,7 +574,21 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     use std::path::Path;
 
     let path = Path::new(file_path);
-    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // Convert to absolute path first
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => {
+                editor.set_lsp_status("LSP: Failed to get current directory".to_string());
+                return;
+            }
+        }
+    };
+
+    let extension = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Determine language and LSP server based on file extension
     let (language_id, server_command, server_args) = match extension {
@@ -531,7 +601,7 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     // Find the project root (look for Cargo.toml for Rust projects)
     let root_path = if extension == "rs" {
         // Look for Cargo.toml in parent directories
-        let mut current = path.parent();
+        let mut current = abs_path.parent();
         while let Some(dir) = current {
             let cargo_toml = dir.join("Cargo.toml");
             if cargo_toml.exists() {
@@ -539,9 +609,9 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             }
             current = dir.parent();
         }
-        current.unwrap_or_else(|| path.parent().unwrap_or_else(|| Path::new(".")))
+        current.unwrap_or_else(|| abs_path.parent().unwrap_or_else(|| Path::new("/")))
     } else {
-        path.parent().unwrap_or_else(|| Path::new("."))
+        abs_path.parent().unwrap_or_else(|| Path::new("/"))
     };
 
     // Start the language server
@@ -549,22 +619,44 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         let lsp = lsp_manager.lock().await;
 
         // Start the server (will skip if already running)
-        if let Err(_e) = lsp.start_server(language_id, server_command, server_args, root_path).await {
-            return;
-        }
+        match lsp.start_server(language_id, server_command, server_args, root_path).await {
+            Ok(_) => {
+                drop(lsp); // Release lock before calling editor methods
+                editor.register_lsp_server(language_id.to_string(), server_command.to_string());
 
-        // Start notification listener to receive diagnostics
-        lsp.start_notification_listener(language_id.to_string()).await;
+                // Re-acquire lock for remaining operations
+                let lsp = lsp_manager.lock().await;
 
-        // Send didOpen notification
-        let file_content = editor.buffer().rope().to_string();
-        let uri = match lsp_types::Url::from_file_path(path) {
-            Ok(uri) => uri,
-            Err(_) => {
-                return;
+                // Start notification listener to receive diagnostics
+                lsp.start_notification_listener(language_id.to_string()).await;
+
+                // Send didOpen notification
+                let file_content = editor.buffer().rope().to_string();
+                let uri = match lsp_types::Url::from_file_path(&abs_path) {
+                    Ok(uri) => uri,
+                    Err(_) => {
+                        drop(lsp);
+                        editor.set_lsp_status("LSP: Invalid file path".to_string());
+                        return;
+                    }
+                };
+
+                match lsp.did_open(uri, language_id, 1, file_content).await {
+                    Ok(_) => {
+                        drop(lsp);
+                        editor.set_lsp_status(format!("LSP: {} ready", server_command));
+                    }
+                    Err(e) => {
+                        drop(lsp);
+                        editor.set_lsp_status(format!("LSP: didOpen failed: {}", e));
+                    }
+                }
             }
-        };
-
-        let _ = lsp.did_open(uri, language_id, 1, file_content).await;
+            Err(e) => {
+                drop(lsp);
+                editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
+                eprintln!("Warning: Failed to start LSP server '{}': {}", server_command, e);
+            }
+        }
     }
 }

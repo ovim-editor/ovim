@@ -222,11 +222,21 @@ impl Renderer {
             String::new()
         };
 
+        // Get LSP status
+        let lsp_status = if !editor.lsp_status().is_empty() {
+            format!(" {} ", editor.lsp_status())
+        } else if !editor.active_lsp_servers().is_empty() {
+            " LSP ".to_string()
+        } else {
+            String::new()
+        };
+
         let padding_len = (area.width as usize)
             .saturating_sub(mode_indicator.len())
             .saturating_sub(file.len())
             .saturating_sub(modified.len())
             .saturating_sub(diagnostics.len())
+            .saturating_sub(lsp_status.len())
             .saturating_sub(position.len())
             .saturating_sub(1);
 
@@ -251,6 +261,23 @@ impl Renderer {
                 Style::default()
                     .fg(Color::Black)
                     .bg(if errors > 0 { Color::Red } else { Color::Yellow }),
+            ));
+        }
+
+        // Add LSP status if present
+        if !lsp_status.is_empty() {
+            let lsp_color = if editor.lsp_status().contains("Failed") || editor.lsp_status().contains("Error") {
+                Color::Red
+            } else if editor.lsp_status().contains("ready") {
+                Color::Green
+            } else {
+                Color::Blue
+            };
+            spans.push(Span::styled(
+                &lsp_status,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(lsp_color),
             ));
         }
 
