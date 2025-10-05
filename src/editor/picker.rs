@@ -1,5 +1,5 @@
-use std::fs;
 use std::path::{Path, PathBuf};
+use ignore::WalkBuilder;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerMode {
@@ -69,40 +69,34 @@ impl Picker {
         }
     }
 
-    /// Recursively finds all files in a directory
+    /// Recursively finds all files in a directory, respecting .gitignore
     fn find_files_recursive(dir: &Path) -> Vec<PickerResult> {
         let mut results = Vec::new();
 
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
+        // Check if directory exists first
+        if !dir.exists() || !dir.is_dir() {
+            return results;
+        }
 
-                // Skip hidden files and directories
-                if let Some(name) = path.file_name() {
-                    if name.to_string_lossy().starts_with('.') {
-                        continue;
-                    }
-                }
+        // Use ignore crate's WalkBuilder which respects .gitignore, .ignore, and other ignore files
+        let walker = WalkBuilder::new(dir)
+            .hidden(false)  // Don't automatically skip hidden files (let gitignore handle it)
+            .git_ignore(true)  // Respect .gitignore files
+            .git_global(true)  // Respect global gitignore
+            .git_exclude(true)  // Respect .git/info/exclude
+            .build();
 
-                // Skip common ignore patterns
-                if let Some(name) = path.file_name() {
-                    let name_str = name.to_string_lossy();
-                    if name_str == "target" || name_str == "node_modules" || name_str == ".git" {
-                        continue;
-                    }
-                }
+        for entry in walker.filter_map(|e| e.ok()) {
+            let path = entry.path();
 
-                if path.is_file() {
-                    if let Ok(relative_path) = path.strip_prefix(dir) {
-                        results.push(PickerResult {
-                            display: relative_path.to_string_lossy().to_string(),
-                            location: path.to_string_lossy().to_string(),
-                            line: 0,
-                            col: 0,
-                        });
-                    }
-                } else if path.is_dir() {
-                    results.extend(Self::find_files_recursive(&path));
+            if path.is_file() {
+                if let Ok(relative_path) = path.strip_prefix(dir) {
+                    results.push(PickerResult {
+                        display: relative_path.to_string_lossy().to_string(),
+                        location: path.to_string_lossy().to_string(),
+                        line: 0,
+                        col: 0,
+                    });
                 }
             }
         }

@@ -476,13 +476,13 @@ impl LanguageServer {
         let old_state = state.clone();
         let prefix = self.log_prefix();
 
-        eprintln!("{} State: {:?} → {:?}", prefix, old_state, new_state);
+        // Removed verbose logging: State: {:?} → {:?}
 
         // Handle transition-specific logic
         match (&*state, &new_state) {
             // Transitioning from Initializing to Ready: replay pending operations
             (ServerState::Initializing { pending_operations, .. }, ServerState::Ready { .. }) => {
-                eprintln!("{} Replaying {} pending operations", prefix, pending_operations.len());
+                // Removed verbose logging: Replaying {} pending operations
 
                 for op in pending_operations {
                     if let Err(e) = self.replay_operation(op).await {
@@ -576,7 +576,7 @@ impl LanguageServer {
                 execute().await
             }
             ServerState::Initializing { pending_operations, .. } => {
-                eprintln!("{} Queuing operation (server initializing): {:?}", prefix, op);
+                // Queuing operation while server initializes
                 pending_operations.push(op);
                 Ok(())
             }
@@ -695,8 +695,6 @@ impl LanguageServer {
         // Transition to ShuttingDown state
         self.transition_to(ServerState::ShuttingDown).await;
 
-        eprintln!("{} Shutdown: Starting graceful shutdown sequence", prefix);
-
         // Step 1: Send LSP shutdown request
         let shutdown_result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -704,8 +702,6 @@ impl LanguageServer {
         ).await;
 
         if shutdown_result.is_ok() {
-            eprintln!("{} Shutdown: Request acknowledged", prefix);
-
             // Step 2: Send exit notification
             let _ = self.notify("exit", Value::Null).await;
 
@@ -716,22 +712,19 @@ impl LanguageServer {
                     std::time::Duration::from_secs(5),
                     child.wait()
                 ).await {
-                    Ok(Ok(status)) => {
-                        eprintln!("{} Shutdown: Server exited gracefully: {:?}", prefix, status);
+                    Ok(Ok(_status)) => {
                         return Ok(());
                     }
                     Ok(Err(e)) => {
                         eprintln!("{} Shutdown: Error waiting for exit: {}", prefix, e);
                     }
                     Err(_) => {
-                        eprintln!("{} Shutdown: Graceful exit timeout, trying SIGTERM", prefix);
+                        // Graceful exit timeout, trying SIGTERM
                     }
                 }
             } else {
                 return Ok(()); // No process to shutdown
             }
-        } else {
-            eprintln!("{} Shutdown: Request timed out", prefix);
         }
 
         // Step 4: Try SIGTERM (Unix only)
@@ -743,22 +736,20 @@ impl LanguageServer {
             let mut process = self.inner.process.lock().await;
             if let Some(ref mut child) = *process {
                 if let Some(pid) = child.id() {
-                    eprintln!("{} Shutdown: Sending SIGTERM to PID {}", prefix, pid);
                     if let Ok(()) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
                         // Wait 3 seconds for SIGTERM to take effect
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(3),
                             child.wait()
                         ).await {
-                            Ok(Ok(status)) => {
-                                eprintln!("{} Shutdown: Server exited after SIGTERM: {:?}", prefix, status);
+                            Ok(Ok(_status)) => {
                                 return Ok(());
                             }
                             Ok(Err(e)) => {
                                 eprintln!("{} Shutdown: Error after SIGTERM: {}", prefix, e);
                             }
                             Err(_) => {
-                                eprintln!("{} Shutdown: SIGTERM timeout, using SIGKILL", prefix);
+                                // SIGTERM timeout, using SIGKILL
                             }
                         }
                     }
@@ -769,24 +760,17 @@ impl LanguageServer {
         // Step 5: Last resort - SIGKILL
         let mut process = self.inner.process.lock().await;
         if let Some(ref mut child) = *process {
-            eprintln!("{} Shutdown: Sending SIGKILL", prefix);
             if let Err(e) = child.kill().await {
                 eprintln!("{} Shutdown: SIGKILL failed: {}", prefix, e);
             }
 
             // Wait to reap zombie
-            match child.wait().await {
-                Ok(status) => {
-                    eprintln!("{} Shutdown: Server killed: {:?}", prefix, status);
-                }
-                Err(e) => {
-                    eprintln!("{} Shutdown: Error reaping process: {}", prefix, e);
-                }
+            if let Err(e) = child.wait().await {
+                eprintln!("{} Shutdown: Error reaping process: {}", prefix, e);
             }
         }
 
         // Shutdown all supervised tasks
-        eprintln!("{} Shutdown: Shutting down supervised tasks", prefix);
         if let Err(e) = self.inner.supervisor.shutdown_all().await {
             eprintln!("{} Shutdown: Error shutting down tasks: {}", prefix, e);
         }

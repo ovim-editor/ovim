@@ -9,6 +9,7 @@ mod register;
 mod search;
 mod textobjects;
 mod undo;
+mod window;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range};
 pub use input::InputHandler;
@@ -21,6 +22,7 @@ pub use register::RegisterManager;
 pub use search::Search;
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
+pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 
 use crate::buffer::Buffer;
 use crate::lsp::LspManager;
@@ -105,6 +107,8 @@ pub struct Editor {
 pub enum LspAction {
     GoToDefinition,
     ShowHover,
+    Completion,
+    FormatDocument,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -923,6 +927,16 @@ impl Editor {
         self.pending_lsp_action = Some(LspAction::ShowHover);
     }
 
+    /// Requests code completion for current cursor position
+    pub fn request_completion(&mut self) {
+        self.pending_lsp_action = Some(LspAction::Completion);
+    }
+
+    /// Requests document formatting
+    pub fn request_format_document(&mut self) {
+        self.pending_lsp_action = Some(LspAction::FormatDocument);
+    }
+
     /// Gets the current hover information (if any)
     pub fn hover_info(&self) -> Option<&str> {
         self.hover_info.as_deref()
@@ -1028,19 +1042,30 @@ impl Editor {
                 LspAction::ShowHover => {
                     let _ = self.hover_impl().await;
                 }
+                LspAction::Completion => {
+                    let _ = self.completion_impl().await;
+                }
+                LspAction::FormatDocument => {
+                    let _ = self.format_document_impl().await;
+                }
             }
         }
     }
 
     /// Go to definition at current cursor position via LSP (implementation)
     async fn goto_definition_impl(&mut self) -> Result<bool> {
-        // Check if LSP is enabled
-        let Some(ref lsp) = self.lsp_manager else {
-            return Ok(false);
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
         };
 
         // Get current file URI - must be absolute path
         let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use goto-definition".to_string());
             return Ok(false);
         };
 
@@ -1050,7 +1075,10 @@ impl Editor {
         } else {
             match std::env::current_dir() {
                 Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => return Ok(false),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
             }
         };
 
@@ -1070,10 +1098,13 @@ impl Editor {
         } else if file_path.ends_with(".py") {
             "python"
         } else {
+            self.set_lsp_status("Language not supported for LSP".to_string());
             return Ok(false);
         };
 
         // Request definition
+        self.set_lsp_status("Searching for definition...".to_string());
+
         let lsp_guard = lsp.lock().await;
         let location = lsp_guard
             .goto_definition(&uri, line, character, language_id)
@@ -1083,29 +1114,67 @@ impl Editor {
 
         // Jump to definition if found
         if let Some(location) = location {
-            // For now, only handle same-file definitions
-            if location.uri == uri {
-                let target_line = location.range.start.line as usize;
-                let target_col = location.range.start.character as usize;
+            let target_line = location.range.start.line as usize;
+            let target_col = location.range.start.character as usize;
 
-                // Update cursor position
+            // Save current position to jump list before jumping
+            let current_line = self.buffer.cursor().line();
+            let current_col = self.buffer.cursor().col();
+            self.jump_list.add_jump(current_line, current_col);
+
+            // Check if definition is in the same file
+            if location.uri == uri {
+                // Same file - jump directly
                 self.buffer.cursor_mut().set_position(target_line, target_col);
+                self.set_lsp_status(format!("Definition found at line {}", target_line + 1));
                 return Ok(true);
+            } else {
+                // Different file - open it and jump
+                match location.uri.to_file_path() {
+                    Ok(target_path) => {
+                        // Try to open the target file
+                        match self.load_file(&target_path) {
+                            Ok(_) => {
+                                self.buffer.cursor_mut().set_position(target_line, target_col);
+                                let file_name = target_path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("file");
+                                self.set_lsp_status(format!("Opened {} at line {}", file_name, target_line + 1));
+                                return Ok(true);
+                            }
+                            Err(e) => {
+                                self.set_lsp_status(format!("Failed to open file: {}", e));
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.set_lsp_status("Definition in invalid file path".to_string());
+                        return Ok(false);
+                    }
+                }
             }
         }
 
+        // No definition found
+        self.set_lsp_status("No definition found".to_string());
         Ok(false)
     }
 
     /// Gets hover information at current cursor position via LSP (implementation)
     async fn hover_impl(&mut self) -> Result<bool> {
-        // Check if LSP is enabled
-        let Some(ref lsp) = self.lsp_manager else {
-            return Ok(false);
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
         };
 
         // Get current file URI - must be absolute path
         let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use hover".to_string());
             return Ok(false);
         };
 
@@ -1115,7 +1184,10 @@ impl Editor {
         } else {
             match std::env::current_dir() {
                 Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => return Ok(false),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
             }
         };
 
@@ -1135,10 +1207,13 @@ impl Editor {
         } else if file_path.ends_with(".py") {
             "python"
         } else {
+            self.set_lsp_status("Language not supported for LSP".to_string());
             return Ok(false);
         };
 
         // Request hover information
+        self.set_lsp_status("Requesting hover information...".to_string());
+
         let lsp_guard = lsp.lock().await;
         let hover_text = lsp_guard
             .hover(&uri, line, character, language_id)
@@ -1146,10 +1221,179 @@ impl Editor {
 
         drop(lsp_guard);
 
-        // Store hover information
+        // Store hover information and provide feedback
         self.hover_info = hover_text;
 
-        Ok(self.hover_info.is_some())
+        if self.hover_info.is_some() {
+            self.set_lsp_status("Hover information available".to_string());
+            Ok(true)
+        } else {
+            self.set_lsp_status("No hover information found".to_string());
+            Ok(false)
+        }
+    }
+
+    /// Requests code completion at current cursor position via LSP (implementation)
+    async fn completion_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use completion".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            self.set_lsp_status("Language not supported for LSP".to_string());
+            return Ok(false);
+        };
+
+        // Request completion
+        self.set_lsp_status("Requesting completion...".to_string());
+
+        let lsp_guard = lsp.lock().await;
+        let items = lsp_guard
+            .completion(&uri, line, character, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        if !items.is_empty() {
+            self.set_lsp_status(format!("Found {} completion items", items.len()));
+            // TODO: Display completion items in picker/popup
+            Ok(true)
+        } else {
+            self.set_lsp_status("No completion items found".to_string());
+            Ok(false)
+        }
+    }
+
+    /// Formats the current document via LSP (implementation)
+    async fn format_document_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use formatting".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            self.set_lsp_status("Language not supported for LSP".to_string());
+            return Ok(false);
+        };
+
+        // Request formatting
+        self.set_lsp_status("Formatting document...".to_string());
+
+        let lsp_guard = lsp.lock().await;
+        let edits = lsp_guard
+            .format_document(&uri, language_id, 4, true) // 4 spaces, insert spaces
+            .await?;
+
+        drop(lsp_guard);
+
+        if !edits.is_empty() {
+            // Apply text edits to buffer
+            self.apply_lsp_edits(edits);
+            self.set_lsp_status("Document formatted".to_string());
+            Ok(true)
+        } else {
+            self.set_lsp_status("No formatting changes".to_string());
+            Ok(false)
+        }
+    }
+
+    /// Applies LSP text edits to the buffer
+    fn apply_lsp_edits(&mut self, edits: Vec<lsp_types::TextEdit>) {
+        // Sort edits in reverse order (bottom to top) to avoid position invalidation
+        let mut sorted_edits = edits;
+        sorted_edits.sort_by(|a, b| {
+            b.range.start.line.cmp(&a.range.start.line)
+                .then(b.range.start.character.cmp(&a.range.start.character))
+        });
+
+        for edit in sorted_edits {
+            let start_line = edit.range.start.line as usize;
+            let start_col = edit.range.start.character as usize;
+            let end_line = edit.range.end.line as usize;
+            let end_col = edit.range.end.character as usize;
+
+            // Delete the range
+            if start_line != end_line || start_col != end_col {
+                self.buffer.delete_range(start_line, start_col, end_line, end_col);
+            }
+
+            // Insert new text
+            if !edit.new_text.is_empty() {
+                self.buffer.insert_text_at(start_line, start_col, &edit.new_text);
+            }
+        }
     }
 
     /// Renders the editor to an in-memory buffer and returns ANSI output

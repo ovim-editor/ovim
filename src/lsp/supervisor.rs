@@ -124,7 +124,6 @@ impl TaskSupervisor {
 
             loop {
                 let start = Instant::now();
-                eprintln!("[Supervisor] Starting task '{}'", name_clone);
 
                 // Run the task
                 let result = factory().await;
@@ -132,23 +131,18 @@ impl TaskSupervisor {
 
                 match result {
                     Ok(()) => {
-                        eprintln!(
-                            "[Supervisor] Task '{}' completed successfully after {:?}",
-                            name_clone, uptime
-                        );
-
                         // Check if we should restart on success
                         match policy {
                             RestartPolicy::Always { .. } => {
-                                eprintln!("[Supervisor] Restarting '{}' (policy: Always)", name_clone);
+                                // Restart on success
                             }
                             _ => {
-                                eprintln!("[Supervisor] Task '{}' finished", name_clone);
                                 break; // Normal completion, don't restart
                             }
                         }
                     }
                     Err(e) => {
+                        // Only log actual errors
                         eprintln!(
                             "[Supervisor] Task '{}' failed after {:?}: {}",
                             name_clone, uptime, e
@@ -157,7 +151,6 @@ impl TaskSupervisor {
                         // Check restart policy
                         let (max_retries, initial_backoff) = match policy {
                             RestartPolicy::Never => {
-                                eprintln!("[Supervisor] Not restarting '{}' (policy: Never)", name_clone);
                                 break;
                             }
                             RestartPolicy::Always { max_retries, initial_backoff } |
@@ -184,10 +177,6 @@ impl TaskSupervisor {
                         // Calculate exponential backoff
                         restarts += 1;
                         let backoff = initial_backoff * restarts;
-                        eprintln!(
-                            "[Supervisor] Restarting '{}' in {:?} (attempt {}/{})",
-                            name_clone, backoff, restarts, max_retries
-                        );
 
                         // Update status to Restarting
                         {
@@ -211,8 +200,6 @@ impl TaskSupervisor {
                     }
                 }
             }
-
-            eprintln!("[Supervisor] Task '{}' supervisor exiting", name_clone);
         });
 
         // Register the task
@@ -228,7 +215,6 @@ impl TaskSupervisor {
             },
         );
 
-        eprintln!("[Supervisor] Registered task '{}'", name);
         Ok(())
     }
 
@@ -274,17 +260,12 @@ impl TaskSupervisor {
 
     /// Shuts down all supervised tasks gracefully
     pub async fn shutdown_all(&self) -> Result<()> {
-        eprintln!("[Supervisor] Shutting down all tasks...");
-
         let mut tasks = self.tasks.lock().await;
-        let count = tasks.len();
 
-        for (name, task) in tasks.drain() {
-            eprintln!("[Supervisor] Aborting task '{}'", name);
+        for (_name, task) in tasks.drain() {
             task.handle.abort();
         }
 
-        eprintln!("[Supervisor] Shut down {} tasks", count);
         Ok(())
     }
 
@@ -293,20 +274,11 @@ impl TaskSupervisor {
         let mut tasks = self.tasks.lock().await;
         let before = tasks.len();
 
-        tasks.retain(|name, task| {
-            if task.handle.is_finished() {
-                eprintln!("[Supervisor] Removing finished task '{}'", name);
-                false
-            } else {
-                true
-            }
+        tasks.retain(|_name, task| {
+            !task.handle.is_finished()
         });
 
-        let removed = before - tasks.len();
-        if removed > 0 {
-            eprintln!("[Supervisor] Cleaned up {} finished tasks", removed);
-        }
-        removed
+        before - tasks.len()
     }
 }
 
@@ -318,12 +290,6 @@ pub struct TaskHealth {
     pub uptime: Duration,
     pub restarts: u32,
     pub is_alive: bool,
-}
-
-impl Drop for TaskSupervisor {
-    fn drop(&mut self) {
-        eprintln!("[Supervisor] TaskSupervisor dropped - tasks may continue running");
-    }
 }
 
 #[cfg(test)]

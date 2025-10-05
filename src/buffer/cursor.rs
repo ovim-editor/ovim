@@ -54,6 +54,12 @@ impl Cursor {
         self.desired_col = col;
     }
 
+    /// Sets the column number without updating desired_col (for vertical movement)
+    pub fn set_col_preserve_desired(&mut self, col: usize) {
+        self.col = col;
+        self.visual_col = col;
+    }
+
     /// Sets both line and column
     pub fn set_position(&mut self, line: usize, col: usize) {
         self.line = line;

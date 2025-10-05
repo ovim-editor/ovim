@@ -285,4 +285,77 @@ impl Operators {
 
         Ok(lines_dedented)
     }
+
+    /// Joins the current line with the next line (J command)
+    /// Adds a space between the lines unless the current line already ends with whitespace
+    pub fn join_lines(buffer: &mut Buffer, count: usize) -> Result<()> {
+        Self::join_lines_impl(buffer, count, true)
+    }
+
+    /// Joins lines without adding a space (gJ command)
+    pub fn join_lines_no_space(buffer: &mut Buffer, count: usize) -> Result<()> {
+        Self::join_lines_impl(buffer, count, false)
+    }
+
+    /// Internal implementation for joining lines
+    fn join_lines_impl(buffer: &mut Buffer, count: usize, add_space: bool) -> Result<()> {
+        let start_line = buffer.cursor().line();
+        let cursor_col = buffer.cursor().col();
+
+        // Join 'count' times (count = 1 means join current with next)
+        let lines_to_join = count.max(1);
+
+        for _ in 0..lines_to_join {
+            if start_line >= buffer.line_count().saturating_sub(1) {
+                // Already at the last line, nothing to join
+                break;
+            }
+
+            // Get the current line and next line
+            let current_line_text = match buffer.line(start_line) {
+                Some(text) => text.trim_end_matches('\n').to_string(),
+                None => break,
+            };
+
+            let next_line_text = match buffer.line(start_line + 1) {
+                Some(text) => text.trim_end_matches('\n').to_string(),
+                None => break,
+            };
+
+            // Determine if we need to add a space
+            let separator = if add_space {
+                // Add space unless current line ends with whitespace
+                if current_line_text.ends_with(|c: char| c.is_whitespace()) {
+                    ""
+                } else {
+                    " "
+                }
+            } else {
+                ""
+            };
+
+            // Trim leading whitespace from next line
+            let next_trimmed = next_line_text.trim_start();
+
+            // Build the joined line
+            let joined = if next_trimmed.is_empty() {
+                // Next line is all whitespace, just use current line
+                current_line_text.clone()
+            } else {
+                format!("{}{}{}", current_line_text, separator, next_trimmed)
+            };
+
+            // Delete both lines (from start_line to start_line+2)
+            buffer.delete_range(start_line, 0, start_line + 2, 0);
+
+            // Insert the joined line with newline
+            buffer.insert_text_at(start_line, 0, &format!("{}\n", joined));
+
+            // Keep cursor at the original line, but clamp column
+            let new_col = cursor_col.min(joined.len().saturating_sub(1).max(0));
+            buffer.cursor_mut().set_position(start_line, new_col);
+        }
+
+        Ok(())
+    }
 }
