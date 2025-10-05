@@ -9,6 +9,9 @@ pub enum Operator {
     Yank,
     Indent,
     Dedent,
+    Lowercase,
+    Uppercase,
+    ToggleCase,
 }
 
 /// Handles operator commands (delete, change, yank)

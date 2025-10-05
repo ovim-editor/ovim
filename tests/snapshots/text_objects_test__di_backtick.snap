@@ -1,0 +1,10 @@
+---
+source: tests/text_objects_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:5
+Lines: 1
+
+Buffer:
+code [`]example` here

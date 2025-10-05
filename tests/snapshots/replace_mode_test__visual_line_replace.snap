@@ -1,0 +1,12 @@
+---
+source: tests/replace_mode_test.rs
+expression: test.snapshot_state()
+---
+Mode: VisualLine
+Cursor: 1:0
+Lines: 3
+
+Buffer:
+line 1
+[l]ine 2
+line 3

@@ -1,0 +1,10 @@
+---
+source: tests/search_navigation_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:14
+Lines: 1
+
+Buffer:
+test123 hello [t]est456

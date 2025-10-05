@@ -102,6 +102,12 @@ async fn run_headless_loop(
     use tokio::time::{Duration, sleep};
 
     loop {
+        // Process LSP notifications (diagnostics, etc.)
+        if let Some(lsp_manager) = editor.lsp_manager() {
+            let lsp = lsp_manager.lock().await;
+            lsp.process_notifications().await;
+        }
+
         // Process any pending LSP actions
         editor.process_pending_lsp_actions().await;
 
@@ -126,6 +132,9 @@ async fn run_headless_loop(
             }
         }
 
+        // Send didChange notification to LSP if buffer was modified
+        editor.send_lsp_changes_if_modified().await;
+
         // Small sleep to avoid busy loop
         sleep(Duration::from_millis(10)).await;
     }
@@ -144,6 +153,12 @@ async fn run_event_loop(
     let debounce_delay = Duration::from_millis(100);
 
     while !editor.should_quit() {
+        // Process LSP notifications (diagnostics, etc.)
+        if let Some(lsp_manager) = editor.lsp_manager() {
+            let lsp = lsp_manager.lock().await;
+            lsp.process_notifications().await;
+        }
+
         // Update diagnostic cache for UI display
         editor.update_diagnostic_cache().await;
 
@@ -173,6 +188,9 @@ async fn run_event_loop(
                 last_edit = Instant::now();
             }
         }
+
+        // Send didChange notification to LSP if buffer was modified
+        editor.send_lsp_changes_if_modified().await;
     }
 
     Ok(())
@@ -481,6 +499,9 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         if let Err(_e) = lsp.start_server(language_id, server_command, server_args, root_path).await {
             return;
         }
+
+        // Start notification listener to receive diagnostics
+        lsp.start_notification_listener(language_id.to_string()).await;
 
         // Send didOpen notification
         let file_content = editor.buffer().rope().to_string();

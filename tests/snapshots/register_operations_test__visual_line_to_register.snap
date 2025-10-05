@@ -1,0 +1,12 @@
+---
+source: tests/register_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Insert
+Cursor: 2:2
+Lines: 3
+
+Buffer:
+line 1
+line 2
+lp[i]ne 3

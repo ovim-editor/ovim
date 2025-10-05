@@ -1,0 +1,12 @@
+---
+source: tests/macro_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 2:0
+Lines: 3
+
+Buffer:
+two
+four
+[s]ix

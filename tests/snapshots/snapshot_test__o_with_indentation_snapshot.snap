@@ -1,0 +1,13 @@
+---
+source: tests/snapshot_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 2:14
+Lines: 4
+
+Buffer:
+start
+    indented line
+    same inden[t]
+end

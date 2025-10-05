@@ -1,0 +1,10 @@
+---
+source: tests/paste_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:2
+Lines: 1
+
+Buffer:
+ab[c]

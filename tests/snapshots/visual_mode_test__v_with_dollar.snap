@@ -1,0 +1,10 @@
+---
+source: tests/visual_mode_test.rs
+expression: test.snapshot_state()
+---
+Mode: Visual
+Cursor: 0:10
+Lines: 1
+
+Buffer:
+hello worl[d]

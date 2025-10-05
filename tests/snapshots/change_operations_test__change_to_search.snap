@@ -1,0 +1,10 @@
+---
+source: tests/change_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:5
+Lines: 1
+
+Buffer:
+hello[w]orld hello

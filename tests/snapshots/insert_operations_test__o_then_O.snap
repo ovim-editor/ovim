@@ -1,0 +1,12 @@
+---
+source: tests/insert_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:4
+Lines: 4
+
+Buffer:
+middle
+abov[e]
+below

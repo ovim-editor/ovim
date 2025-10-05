@@ -1,0 +1,11 @@
+---
+source: tests/dot_repeat_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:12
+Lines: 2
+
+Buffer:
+PREFIX:line 1
+line PREFIX:[2]

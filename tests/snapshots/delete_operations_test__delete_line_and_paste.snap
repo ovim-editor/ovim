@@ -1,0 +1,12 @@
+---
+source: tests/delete_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:0
+Lines: 3
+
+Buffer:
+line 2
+[l]ine 1
+line 3

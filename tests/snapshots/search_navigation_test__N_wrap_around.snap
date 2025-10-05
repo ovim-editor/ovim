@@ -1,0 +1,10 @@
+---
+source: tests/search_navigation_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:0
+Lines: 1
+
+Buffer:
+[h]ello world hello

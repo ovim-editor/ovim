@@ -1,0 +1,7 @@
+---
+source: tests/snapshot_test.rs
+expression: test.snapshot_buffer_and_cursor()
+---
+Cursor: 0:0
+
+world test

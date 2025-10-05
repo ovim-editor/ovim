@@ -1,0 +1,10 @@
+---
+source: tests/insert_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:11
+Lines: 1
+
+Buffer:
+hello world[!]

@@ -1,0 +1,10 @@
+---
+source: tests/motion_edge_cases_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:5
+Lines: 1
+
+Buffer:
+word [w]ord word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word

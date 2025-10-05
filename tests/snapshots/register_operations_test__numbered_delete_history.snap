@@ -1,0 +1,10 @@
+---
+source: tests/register_operations_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:21
+Lines: 1
+
+Buffer:
+fthree othree uthree [r] five

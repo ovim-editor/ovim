@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'x' command - Delete character under cursor
@@ -12,7 +11,8 @@ fn test_x_basic() {
 
     test.press('x'); // Delete 'h'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -21,7 +21,8 @@ fn test_x_multiple() {
 
     test.keys("xxx"); // Delete 'h', 'e', 'l'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "lo\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -30,7 +31,8 @@ fn test_x_with_count() {
 
     test.keys("3x"); // Delete 3 chars
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "lo world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -40,7 +42,8 @@ fn test_x_at_end_of_line() {
     test.press('$') // Move to last char
         .press('x'); // Delete last char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hell\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -49,7 +52,8 @@ fn test_x_single_char_line() {
 
     test.press('x'); // Delete only char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -59,7 +63,8 @@ fn test_x_empty_line() {
     test.press('j') // Move to empty line
         .press('x'); // Should do nothing or delete newline
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\nworld\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -73,7 +78,8 @@ fn test_X_basic() {
     test.press('l') // Move to 'e'
         .press('X'); // Delete 'h'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -82,7 +88,8 @@ fn test_X_at_beginning() {
 
     test.press('X'); // At beginning, should do nothing
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -92,7 +99,8 @@ fn test_X_with_count() {
     test.press('$') // Move to end
         .keys("3X"); // Delete 3 chars before
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello wo\n");
+    test.assert_cursor(0, 8);
 }
 
 // ============================================================================
@@ -105,7 +113,8 @@ fn test_dd_basic() {
 
     test.keys("dd"); // Delete first line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -115,7 +124,8 @@ fn test_dd_middle_line() {
     test.press('j') // Move to line 2
         .keys("dd"); // Delete line 2
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 3\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -125,7 +135,8 @@ fn test_dd_last_line() {
     test.press('G') // Go to last line
         .keys("dd"); // Delete last line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -134,7 +145,8 @@ fn test_dd_single_line() {
 
     test.keys("dd"); // Delete only line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -143,7 +155,8 @@ fn test_dd_with_count() {
 
     test.keys("3dd"); // Delete 3 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 4\nline 5\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -152,7 +165,8 @@ fn test_dd_count_exceeds_buffer() {
 
     test.keys("5dd"); // Try to delete 5 lines (only 2 exist)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -165,7 +179,8 @@ fn test_dw_basic() {
 
     test.keys("dw"); // Delete "hello "
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "world test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -175,7 +190,8 @@ fn test_dw_multiple() {
     test.keys("dw") // Delete "hello "
         .keys("dw"); // Delete "world "
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -184,7 +200,8 @@ fn test_dw_with_count() {
 
     test.keys("2dw"); // Delete 2 words
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "three four\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -194,7 +211,8 @@ fn test_dw_at_end_of_line() {
     test.keys("w") // Move to "world"
         .keys("dw"); // Delete "world"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello d\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -203,7 +221,8 @@ fn test_dw_last_word_no_newline() {
 
     test.keys("dw"); // Delete only word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "o\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -450,6 +469,89 @@ fn test_multiple_delete_undo() {
         .keys("dw") // Delete "two "
         .press('u') // Undo delete "two "
         .press('u'); // Undo delete "one "
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+// ============================================================================
+// 'd%' command - Delete to matching bracket
+// ============================================================================
+
+#[test]
+fn test_d_percent_parens_basic() {
+    let mut test = EditorTest::new("function(arg1, arg2)");
+
+    test.keys("8l") // Move to opening paren
+        .keys("d%"); // Delete from ( to )
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_curly_braces() {
+    let mut test = EditorTest::new("fn test() {\n    code here\n}");
+
+    test.keys("10l") // Move to opening brace
+        .keys("d%"); // Delete from { to }
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_square_brackets() {
+    let mut test = EditorTest::new("array[0, 1, 2]");
+
+    test.keys("5l") // Move to opening bracket
+        .keys("d%"); // Delete from [ to ]
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_nested_parens() {
+    let mut test = EditorTest::new("func(outer(inner))");
+
+    test.keys("4l") // Move to outer opening paren
+        .keys("d%"); // Delete from outer ( to outer )
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_from_closing_bracket() {
+    let mut test = EditorTest::new("test(abc)");
+
+    test.keys("$") // Move to closing paren
+        .keys("d%"); // Delete from ) to (
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_multiline() {
+    let mut test = EditorTest::new("if (condition) {\n    statement1;\n    statement2;\n}");
+
+    test.keys("15l") // Move to opening brace
+        .keys("d%"); // Delete from { to }
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_no_match() {
+    let mut test = EditorTest::new("no brackets here");
+
+    test.keys("d%"); // Should do nothing
+
+    assert_snapshot!(test.snapshot_state());
+}
+
+#[test]
+fn test_d_percent_angle_brackets() {
+    let mut test = EditorTest::new("Vec<String>");
+
+    test.keys("3l") // Move to <
+        .keys("d%"); // Delete from < to >
 
     assert_snapshot!(test.snapshot_state());
 }

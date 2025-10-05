@@ -1,0 +1,10 @@
+---
+source: tests/unicode_edge_cases_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 0:3
+Lines: 1
+
+Buffer:
+h 世[界]ello
