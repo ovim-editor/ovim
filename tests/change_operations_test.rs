@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'c' command - Change operator (delete and enter insert mode)
@@ -238,7 +237,8 @@ fn test_ciw_inner_word() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello earthtest\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -250,7 +250,8 @@ fn test_ciw_from_middle() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "helgoodbyeworld\n");
+    test.assert_cursor(0, 9);
 }
 
 #[test]
@@ -262,7 +263,8 @@ fn test_caw_around_word() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello earthtest\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -273,7 +275,8 @@ fn test_caw_first_word() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "goodbyeworld\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -285,7 +288,8 @@ fn test_caw_last_word() {
         .type_text("universe")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello universed\n");
+    test.assert_cursor(0, 13);
 }
 
 // ============================================================================
@@ -300,7 +304,8 @@ fn test_ce_change_to_end_of_word() {
         .type_text("i")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -312,7 +317,8 @@ fn test_cb_change_backward() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldrth\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]
@@ -323,7 +329,8 @@ fn test_cj_change_line_and_below() {
         .type_text("merged")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -335,7 +342,8 @@ fn test_ck_change_line_and_above() {
         .type_text("merged")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -350,7 +358,8 @@ fn test_c2w_change_two_words() {
         .type_text("first")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three four\n");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -361,7 +370,8 @@ fn test_c3l_change_3_chars() {
         .type_text("XYZ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "helo world\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -372,7 +382,8 @@ fn test_2cw_change_word_twice() {
         .type_text("first")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "firstthree four\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -388,7 +399,8 @@ fn test_ci_double_quote() {
         .type_text("universe")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello verse\"world\" test\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -400,7 +412,8 @@ fn test_ca_double_quote() {
         .type_text("'universe'")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello verse'\"world\" test\n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -412,7 +425,8 @@ fn test_ci_paren() {
         .type_text("x")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "unc(arg1, arg2)\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -424,7 +438,8 @@ fn test_ci_bracket() {
         .type_text("0")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "array[index]\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -436,7 +451,8 @@ fn test_ci_curly_brace() {
         .type_text(" empty ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{ ke empty y: value }\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -452,7 +468,8 @@ fn test_cG_change_to_end_of_file() {
         .type_text("rest of file")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nlint of file 4\n");
+    test.assert_cursor(3, 11);
 }
 
 #[test]
@@ -464,7 +481,8 @@ fn test_cgg_change_to_beginning_of_file() {
         .type_text("entire file")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line le1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(0, 6);
 }
 
 // ============================================================================
@@ -480,7 +498,8 @@ fn test_cw_and_undo() {
         .press_esc()
         .press('u');      // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -492,7 +511,8 @@ fn test_cc_and_undo() {
         .press_esc()
         .press('u');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -504,7 +524,8 @@ fn test_ciw_and_undo() {
         .press_esc()
         .press('u');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "world\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -521,7 +542,8 @@ fn test_cw_and_repeat() {
         .keys("w")        // Move to next word
         .press('.');      // Repeat change
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "1two 1three four\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -534,7 +556,8 @@ fn test_ciw_and_repeat() {
         .keys("w")
         .press('.');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xworld Xtest\n");
+    test.assert_cursor(0, 8);
 }
 
 // ============================================================================
@@ -550,7 +573,8 @@ fn test_cw_at_last_char() {
         .type_text("X")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hellXo\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -562,7 +586,8 @@ fn test_cc_empty_line() {
         .type_text("inserted")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\ninserted\nworld\n");
+    test.assert_cursor(1, 7);
 }
 
 #[test]
@@ -573,7 +598,8 @@ fn test_ciw_single_char() {
         .type_text("alpha")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "alphab c\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -585,7 +611,8 @@ fn test_change_empty_selection() {
         .type_text("!")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hel!l\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -602,7 +629,8 @@ fn test_visual_change() {
         .type_text("X")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xo world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -615,7 +643,8 @@ fn test_visual_line_change() {
         .type_text("replaced")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "replacedline 3\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -630,7 +659,8 @@ fn test_cc_preserves_indentation() {
         .type_text("new content")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    new content\n    another\n");
+    test.assert_cursor(0, 14);
 }
 
 #[test]
@@ -642,7 +672,8 @@ fn test_change_in_indented_context() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    earthworld\n");
+    test.assert_cursor(0, 8);
 }
 
 // ============================================================================
@@ -658,5 +689,6 @@ fn test_change_to_search() {
         .type_text("X")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "helloworld hello\n");
+    test.assert_cursor(0, 5);
 }

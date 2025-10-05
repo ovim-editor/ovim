@@ -82,6 +82,10 @@ impl EditorTest {
                 content.push_str(&line);
             }
         }
+        // Ensure content always ends with a newline (Vim behavior)
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
         content
     }
 

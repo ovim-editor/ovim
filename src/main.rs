@@ -54,6 +54,12 @@ async fn main() -> Result<()> {
     // Enable LSP support
     editor.enable_lsp();
 
+    // Enable Lua support
+    #[cfg(feature = "lua")]
+    if let Err(e) = editor.enable_lua() {
+        eprintln!("Warning: Failed to enable Lua support: {}", e);
+    }
+
     // Initialize LSP for the opened file if applicable
     if let Some(file_path) = &args.file {
         initialize_lsp_for_file(&mut editor, file_path).await;
@@ -455,6 +461,48 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     Err(e) => ApiResponse::Error(ErrorResponse {
                         error: format!("Failed to save: {}", e),
                     }),
+                }
+            // Handle :lua <code>
+            } else if let Some(code) = command.strip_prefix("lua ") {
+                #[cfg(feature = "lua")]
+                {
+                    match editor.execute_lua(code) {
+                        Ok(result) => ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(result),
+                            line_count: None,
+                        }),
+                        Err(e) => ApiResponse::Error(ErrorResponse {
+                            error: format!("Lua error: {}", e),
+                        }),
+                    }
+                }
+                #[cfg(not(feature = "lua"))]
+                {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "Lua support not enabled".to_string(),
+                    })
+                }
+            // Handle :luafile <path>
+            } else if let Some(path) = command.strip_prefix("luafile ") {
+                #[cfg(feature = "lua")]
+                {
+                    match editor.execute_lua_file(path) {
+                        Ok(_) => ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("Executed {}", path)),
+                            line_count: None,
+                        }),
+                        Err(e) => ApiResponse::Error(ErrorResponse {
+                            error: format!("Lua error: {}", e),
+                        }),
+                    }
+                }
+                #[cfg(not(feature = "lua"))]
+                {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "Lua support not enabled".to_string(),
+                    })
                 }
             } else {
                 ApiResponse::Error(ErrorResponse {

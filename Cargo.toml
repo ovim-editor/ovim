@@ -21,6 +21,11 @@ tree-sitter-python = "0.20"
 tree-sitter-highlight = "0.20"
 lsp-types = "0.95"
 url = "2.5"
+mlua = { version = "0.9", features = ["luajit", "vendored", "async", "serialize"], optional = true }
+
+[features]
+default = []
+lua = ["mlua"]
 
 [dev-dependencies]
 criterion = "0.5"

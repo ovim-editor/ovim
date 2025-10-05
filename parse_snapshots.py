@@ -1,72 +1,67 @@
 #!/usr/bin/env python3
-"""Parse snapshot files and extract expected buffer content and cursor position."""
-
-import os
+"""
+Parse insta snapshot files and extract buffer content and cursor position.
+"""
 import re
+import sys
 from pathlib import Path
 
-def parse_snapshot(content):
-    """Parse a snapshot file and extract cursor position and buffer content."""
-    lines = content.strip().split('\n')
-
-    # Extract cursor position from "Cursor: LINE:COL"
-    cursor_line = None
-    for line in lines:
-        if line.startswith('Cursor:'):
-            match = re.match(r'Cursor:\s*(\d+):(\d+)', line)
-            if match:
-                cursor_line = (int(match.group(1)), int(match.group(2)))
-                break
-
-    # Extract buffer content (after "Buffer:" line)
-    buffer_start = None
-    for i, line in enumerate(lines):
-        if line.startswith('Buffer:'):
-            buffer_start = i + 1
-            break
-
-    if buffer_start is None or cursor_line is None:
-        return None, None
-
-    # Get buffer lines (everything after "Buffer:")
-    buffer_lines = lines[buffer_start:]
-
-    # Remove cursor markers [c] from buffer
-    cleaned_lines = []
-    for line in buffer_lines:
-        # Remove [X] pattern (cursor marker)
-        cleaned = re.sub(r'\[(.)\]', r'\1', line)
-        # Remove [ ] pattern (space cursor marker)
-        cleaned = re.sub(r'\[ \]', ' ', cleaned)
-        cleaned_lines.append(cleaned)
-
-    # Join with newlines and add final newline
-    buffer_content = '\n'.join(cleaned_lines) + '\n'
-
-    return buffer_content, cursor_line
-
-# Directory containing snapshots
-snapshot_dir = Path('tests/snapshots')
-
-# Parse all change_operations_test snapshots
-test_data = {}
-for snapshot_file in sorted(snapshot_dir.glob('change_operations_test__*.snap')):
-    # Extract test name from filename
-    test_name = snapshot_file.stem  # Remove .snap extension
-
-    with open(snapshot_file, 'r') as f:
+def parse_snapshot(snapshot_path):
+    """Parse a snapshot file and return (buffer_content, cursor_line, cursor_col, mode)"""
+    with open(snapshot_path, 'r') as f:
         content = f.read()
 
-    buffer, cursor = parse_snapshot(content)
-    if buffer and cursor:
-        test_data[test_name] = (buffer, cursor[0], cursor[1])
-        print(f"{test_name}: cursor={cursor}, len={len(buffer)}")
+    # Extract cursor line from "Cursor: LINE:COL"
+    cursor_match = re.search(r'Cursor: (\d+):(\d+)', content)
+    if not cursor_match:
+        return None
 
-# Generate Python code
-print("\n\n# Test data dictionary:")
-print("test_data = {")
-for test_name, (buffer, line, col) in test_data.items():
-    # Escape the buffer content for Python string
-    escaped = repr(buffer)
-    print(f'    "{test_name}": ({escaped}, {line}, {col}),')
-print("}")
+    cursor_line = int(cursor_match.group(1))
+    cursor_col = int(cursor_match.group(2))
+
+    # Extract mode
+    mode_match = re.search(r'Mode: (\w+)', content)
+    mode = mode_match.group(1) if mode_match else "Normal"
+
+    # Extract buffer section
+    buffer_match = re.search(r'Buffer:\n(.+?)(?:\n\n|\Z)', content, re.DOTALL)
+    if not buffer_match:
+        return None
+
+    buffer_lines = buffer_match.group(1).strip().split('\n')
+
+    # Process each line to remove cursor markers [c]
+    processed_lines = []
+    for line in buffer_lines:
+        # Remove cursor markers like [c] or [ ]
+        cleaned = re.sub(r'\[(.?)\]', r'\1', line)
+        processed_lines.append(cleaned)
+
+    # Join with newlines and add final newline
+    buffer_content = '\n'.join(processed_lines) + '\n'
+
+    return {
+        'buffer': buffer_content,
+        'cursor_line': cursor_line,
+        'cursor_col': cursor_col,
+        'mode': mode
+    }
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: parse_snapshots.py <snapshot_file>")
+        sys.exit(1)
+
+    snapshot_path = sys.argv[1]
+    result = parse_snapshot(snapshot_path)
+
+    if result:
+        print(f"Buffer: {repr(result['buffer'])}")
+        print(f"Cursor: {result['cursor_line']}:{result['cursor_col']}")
+        print(f"Mode: {result['mode']}")
+    else:
+        print("Failed to parse snapshot")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

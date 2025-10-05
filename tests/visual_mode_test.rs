@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'v' command - Character-wise visual mode
@@ -13,7 +12,8 @@ fn test_v_basic_selection() {
     test.press('v')       // Enter visual mode
         .keys("lll");     // Select 4 chars (h, e, l, l)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -24,7 +24,8 @@ fn test_v_delete_selection() {
         .keys("lll")      // Select "hell"
         .press('d');      // Delete selection
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "o world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -38,7 +39,8 @@ fn test_v_yank_selection() {
         .keys("$")        // Move to end
         .press('p');      // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 16);
 }
 
 #[test]
@@ -48,7 +50,8 @@ fn test_v_select_word() {
     test.press('v')
         .keys("e");       // Select to end of word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -58,7 +61,8 @@ fn test_v_across_lines() {
     test.press('v')
         .keys("jjj");     // Select across multiple lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -69,7 +73,8 @@ fn test_v_backward_selection() {
         .press('v')
         .keys("hhh");     // Select backward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 7);
 }
 
 #[test]
@@ -82,7 +87,8 @@ fn test_v_change_selection() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "goodbye world\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -93,7 +99,8 @@ fn test_v_escape_cancels() {
         .keys("lll")      // Make selection
         .press_esc();     // Cancel
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -106,7 +113,8 @@ fn test_V_basic_selection() {
 
     test.press('V');      // Enter visual line mode
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -116,7 +124,8 @@ fn test_V_multiple_lines() {
     test.press('V')
         .keys("jj");      // Select 3 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -127,7 +136,8 @@ fn test_V_delete_lines() {
         .keys("jj")       // Select 3 lines
         .press('d');      // Delete
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 4\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -141,7 +151,8 @@ fn test_V_yank_paste_lines() {
         .press('G')       // Go to last line
         .press('p');      // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3line 1\nline 2\n \n");
+    test.assert_cursor(4, 0);
 }
 
 #[test]
@@ -151,7 +162,8 @@ fn test_V_from_middle_of_line() {
     test.keys("w")        // Move to "world"
         .press('V');      // Should select entire line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\ntest line\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -161,7 +173,8 @@ fn test_V_select_all() {
     test.press('V')
         .keys("G");       // Select to last line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -172,7 +185,8 @@ fn test_V_indent() {
         .press('j')       // Select 2 lines
         .press('>');      // Indent (if implemented)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\n    line 2\nline 3\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -183,7 +197,8 @@ fn test_V_backward_selection() {
         .press('V')
         .keys("kk");      // Select upward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -198,7 +213,8 @@ fn test_v_delete_word() {
         .keys("e")        // Select word
         .press('d');      // Delete
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " world test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -211,7 +227,8 @@ fn test_v_change_word() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "goodbye world\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -223,7 +240,8 @@ fn test_V_delete_and_undo() {
         .press('d')       // Delete
         .press('u');      // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -239,7 +257,8 @@ fn test_v_yank_and_replace() {
         .keys("llll")     // Select "world"
         .press('p');      // Paste (should replace selection)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -254,7 +273,8 @@ fn test_v_empty_line() {
         .press('v')
         .press('j');      // Select to next line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n\nworld\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -263,7 +283,8 @@ fn test_v_single_char() {
 
     test.press('v');      // Select single char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "x\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -273,7 +294,8 @@ fn test_v_end_of_line() {
     test.keys("$")        // Move to end
         .press('v');      // Select last char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -282,7 +304,8 @@ fn test_V_single_line() {
 
     test.press('V');      // Select only line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "only line\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -293,7 +316,8 @@ fn test_v_select_entire_file() {
         .press('v')
         .keys("G");       // Select to end
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -307,7 +331,8 @@ fn test_v_with_w_motion() {
     test.press('v')
         .press('w');      // Select word forward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -317,7 +342,8 @@ fn test_v_with_dollar() {
     test.press('v')
         .keys("$");       // Select to end of line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -328,7 +354,8 @@ fn test_v_with_zero() {
         .press('v')
         .keys("0");       // Select to beginning
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -339,7 +366,8 @@ fn test_V_with_gg() {
         .press('V')
         .keys("gg");      // Select to first line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(3, 0);
 }
 
 // ============================================================================
@@ -353,7 +381,8 @@ fn test_v_to_V_switch() {
     test.press('v')       // Character visual
         .press('V');      // Switch to line visual
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -363,7 +392,8 @@ fn test_V_to_v_switch() {
     test.press('V')       // Line visual
         .press('v');      // Switch to character visual
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -377,7 +407,8 @@ fn test_v_with_count() {
     test.press('v')
         .keys("3l");      // Select 4 chars (including current)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -387,7 +418,8 @@ fn test_V_with_count() {
     test.press('V')
         .keys("3j");      // Select 4 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(3, 0);
 }
 
 // ============================================================================
@@ -401,7 +433,8 @@ fn test_v_to_search_result() {
     test.press('v')
         .press('/');      // Start search in visual mode
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world hello\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -417,7 +450,8 @@ fn test_gv_reselect() {
         .press_esc()      // Exit visual mode
         .keys("gv");      // Reselect last selection
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -428,7 +462,8 @@ fn test_gv_after_delete() {
         .press('d')       // Delete line
         .keys("gv");      // Reselect (might not work after delete)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -443,7 +478,8 @@ fn test_V_indented_lines() {
         .press('j')       // Select 2 indented lines
         .press('d');      // Delete
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -453,5 +489,6 @@ fn test_v_select_indentation() {
     test.press('v')
         .keys("lll");     // Select spaces
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    indented line\n");
+    test.assert_cursor(0, 3);
 }

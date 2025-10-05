@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'iw' - Inner word text object
@@ -13,7 +12,8 @@ fn test_diw_delete_inner_word() {
     test.keys("w")        // Move to "world"
         .keys("diw");     // Delete inner word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello  test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -23,7 +23,8 @@ fn test_diw_from_middle() {
     test.keys("lll")      // Middle of "hello"
         .keys("diw");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "helworld\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -32,7 +33,8 @@ fn test_diw_single_letter() {
 
     test.keys("diw");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " b c\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -43,7 +45,8 @@ fn test_yiw_yank_inner_word() {
         .keys("$")        // End of line
         .press('p');      // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -55,7 +58,8 @@ fn test_ciw_change_inner_word() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello earthtest\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -65,7 +69,8 @@ fn test_viw_visual_inner_word() {
     test.keys("w")
         .keys("viw");     // Visual select word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test\n");
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -79,7 +84,8 @@ fn test_daw_delete_around_word() {
     test.keys("w")
         .keys("daw");     // Delete word and surrounding space
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -88,7 +94,8 @@ fn test_daw_first_word() {
 
     test.keys("daw");     // Delete "hello "
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -98,7 +105,8 @@ fn test_daw_last_word() {
     test.keys("w")
         .keys("daw");     // Delete " world" or "world"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello \n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -109,7 +117,8 @@ fn test_yaw_yank_around_word() {
         .keys("$")
         .press('p');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world testhello \n");
+    test.assert_cursor(0, 22);
 }
 
 #[test]
@@ -121,7 +130,8 @@ fn test_caw_change_around_word() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello earthtest\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -134,7 +144,8 @@ fn test_diW_delete_inner_WORD() {
 
     test.keys("diW");     // Delete "hello-world" as one WORD
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello-world test\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -143,7 +154,8 @@ fn test_daW_delete_around_WORD() {
 
     test.keys("daW");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello-world test.case\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -154,7 +166,8 @@ fn test_yiW_with_punctuation() {
         .keys("$")
         .press('p');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(args) next\n");
+    test.assert_cursor(0, 14);
 }
 
 // ============================================================================
@@ -168,7 +181,8 @@ fn test_di_double_quote() {
     test.keys("f\"")      // Move to quote
         .keys("di\"");    // Delete inside quotes
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello \"\"world\" test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -178,7 +192,8 @@ fn test_da_double_quote() {
     test.keys("f\"")
         .keys("da\"");    // Delete including quotes
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello \"\"world\" test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -190,7 +205,8 @@ fn test_ci_double_quote() {
         .type_text("universe")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello verse\"world\" test\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -202,7 +218,8 @@ fn test_yi_double_quote() {
         .keys("$")
         .press('p');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "copy \"this text\" here\n");
+    test.assert_cursor(0, 20);
 }
 
 #[test]
@@ -212,7 +229,8 @@ fn test_di_quote_from_inside() {
     test.keys("lll")      // Move inside quotes
         .keys("di\"");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\"hello world\"\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -226,7 +244,8 @@ fn test_di_single_quote() {
     test.keys("f'")
         .keys("di'");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello ''world' test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -236,7 +255,8 @@ fn test_da_single_quote() {
     test.keys("f'")
         .keys("da'");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello ''world' test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -248,7 +268,8 @@ fn test_ci_single_quote() {
         .type_text("universe")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello verse'world' test\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -262,7 +283,8 @@ fn test_di_backtick() {
     test.keys("f`")
         .keys("di`");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "code ``example` here\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -274,7 +296,8 @@ fn test_ci_backtick() {
         .type_text("test")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "code `examplt` here\n");
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -288,7 +311,8 @@ fn test_di_paren() {
     test.keys("f(")
         .keys("di(");     // Delete inside parens
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(arg1, arg2)\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -298,7 +322,8 @@ fn test_da_paren() {
     test.keys("f(")
         .keys("da(");     // Delete including parens
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(arg1, arg2) next\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -310,7 +335,8 @@ fn test_ci_paren() {
         .type_text("new")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(old)\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -322,7 +348,8 @@ fn test_yi_paren() {
         .keys("$")
         .press('p');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(args) end\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]
@@ -332,7 +359,8 @@ fn test_dib_delete_block() {
     test.keys("f(")
         .keys("dib");     // 'ib' is alias for 'i('
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(a, b, c)\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -346,7 +374,8 @@ fn test_di_bracket() {
     test.keys("f[")
         .keys("di[");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "array[]index]\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -356,7 +385,8 @@ fn test_da_bracket() {
     test.keys("f[")
         .keys("da[");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "array[]index] next\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -368,7 +398,8 @@ fn test_ci_bracket() {
         .type_text("0")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "arr[old]\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -382,7 +413,8 @@ fn test_di_curly() {
     test.keys("f{")
         .keys("di{");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{ key: value }\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -392,7 +424,8 @@ fn test_da_curly() {
     test.keys("f{")
         .keys("da{");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{ key: value } next\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -404,7 +437,8 @@ fn test_ci_curly() {
         .type_text(" new ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{ ol new d }\n");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -414,7 +448,8 @@ fn test_diB_curly_block() {
     test.keys("f{")
         .keys("diB");     // 'iB' is alias for 'i{'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{ code block }\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -428,7 +463,8 @@ fn test_di_angle() {
     test.keys("f<")
         .keys("di<");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "tag <>content> end\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -438,7 +474,8 @@ fn test_da_angle() {
     test.keys("f<")
         .keys("da<");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "tag <>content> end\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -450,7 +487,8 @@ fn test_ci_angle() {
         .type_text("new")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "<old>\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -463,7 +501,8 @@ fn test_dip_delete_paragraph() {
 
     test.keys("dip");     // Delete inner paragraph
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n\nnext para\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -472,7 +511,8 @@ fn test_dap_delete_around_paragraph() {
 
     test.keys("dap");     // Delete paragraph including blank lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "para 1\n\npara 2\n\npara 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -483,7 +523,8 @@ fn test_yip_yank_paragraph() {
         .keys("G")
         .press('p');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "para 1\nline 2\n\npara 2\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -494,7 +535,8 @@ fn test_cip_change_paragraph() {
         .type_text("new content")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "old para\nntentnext\n");
+    test.assert_cursor(1, 4);
 }
 
 // ============================================================================
@@ -507,7 +549,8 @@ fn test_dis_delete_sentence() {
 
     test.keys("dis");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "irst sentence. Second sentence. Third.\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -516,7 +559,8 @@ fn test_das_delete_around_sentence() {
 
     test.keys("das");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "irst. Second. Third.\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -527,7 +571,8 @@ fn test_cis_change_sentence() {
         .type_text("New sentence.")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "New sentence.ld sentence. Next one.\n");
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -541,7 +586,8 @@ fn test_nested_parens() {
     test.keys("f(")       // First paren
         .keys("di(");     // Should delete "inner(deep)"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "outer(inner(deep))\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -551,7 +597,8 @@ fn test_nested_quotes() {
     test.keys("f\"")
         .keys("di\"");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "outer \"\"inner 'deep' text\" end\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -561,7 +608,8 @@ fn test_nested_brackets() {
     test.keys("f[")
         .keys("di[");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "arr[]nested[index]]\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -574,7 +622,8 @@ fn test_d2iw_delete_two_words() {
 
     test.keys("d2iw");    // Delete 2 words
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "wone two three four\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -585,7 +634,8 @@ fn test_y3aw_yank_three_words() {
         .keys("$")
         .press('p');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ow$pne two three four five\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -600,7 +650,8 @@ fn test_visual_iw() {
         .press('v')
         .keys("iw");      // Visual select word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -610,7 +661,8 @@ fn test_visual_aw() {
     test.press('v')
         .keys("aw");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -621,7 +673,8 @@ fn test_visual_i_quote() {
         .press('v')
         .keys("i\"");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "text \"quoted\" more\n");
+    test.assert_cursor(0, 5);
 }
 
 // ============================================================================
@@ -634,7 +687,8 @@ fn test_diw_whitespace_only() {
 
     test.keys("diw");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -644,7 +698,8 @@ fn test_di_quote_empty() {
     test.keys("f\"")
         .keys("di\"");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\"\"\"\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -654,7 +709,8 @@ fn test_di_paren_empty() {
     test.keys("f(")
         .keys("di(");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func()\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -664,7 +720,8 @@ fn test_text_object_at_eol() {
     test.keys("$")        // Last char
         .keys("diw");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -674,7 +731,8 @@ fn test_di_quote_unclosed() {
     test.keys("f\"")
         .keys("di\"");    // Should handle unclosed quote
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello \"\"world\n");
+    test.assert_cursor(0, 6);
 }
 
 // ============================================================================
@@ -690,7 +748,8 @@ fn test_multiple_quoted_strings() {
         .keys("f\"")      // Find next quote
         .keys("di\"");    // Delete "second"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\"first\" and \"\"second\" and \"third\"\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -702,5 +761,6 @@ fn test_multiple_parens() {
         .keys("f(")
         .keys("di(");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(a) and func(b)\n");
+    test.assert_cursor(0, 0);
 }
