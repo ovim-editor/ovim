@@ -1150,6 +1150,12 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                ('g', KeyCode::Char('_')) => {
+                    // g_ - move to last non-blank character
+                    Motions::last_non_blank(editor.buffer_mut());
+                    editor.clear_count();
+                    return Ok(());
+                }
                 ('g', KeyCode::Char('u')) => {
                     // gu{motion} - lowercase text
                     editor.set_pending_operator(Operator::Lowercase);
@@ -2013,6 +2019,17 @@ impl InputHandler {
                 Self::delete_visual_selection(editor)?;
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Insert);
+            }
+            // Move to other end of selection
+            KeyCode::Char('o') => {
+                if let Some(visual_start) = editor.visual_start() {
+                    let cursor = editor.buffer().cursor();
+                    let cursor_pos = (cursor.line(), cursor.col());
+
+                    // Swap cursor and visual_start
+                    editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
+                    editor.set_visual_start(cursor_pos.0, cursor_pos.1);
+                }
             }
             // Switch to other visual modes
             KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {

@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // Dot (.) command - Repeat last change
@@ -13,7 +12,8 @@ fn test_dot_repeat_delete_char() {
     test.press('x')       // Delete 'h'
         .press('.');      // Repeat (delete 'e')
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "llo\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -23,7 +23,8 @@ fn test_dot_repeat_delete_word() {
     test.keys("dw")       // Delete "one "
         .press('.');      // Repeat (delete "two ")
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "three four\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -33,7 +34,8 @@ fn test_dot_repeat_delete_line() {
     test.keys("dd")       // Delete line 1
         .press('.');      // Repeat (delete line 2)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 3\nline 4\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -46,7 +48,8 @@ fn test_dot_repeat_insert() {
         .press('j')       // Next line
         .press('.');      // Repeat insert
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "PREFIX:line 1\nline PREFIX:2\n");
+    test.assert_cursor(1, 12);
 }
 
 #[test]
@@ -59,7 +62,8 @@ fn test_dot_repeat_append() {
         .press('j')       // Next line
         .press('.');      // Repeat append
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "h!ello\nw!orld\n");
+    test.assert_cursor(1, 2);
 }
 
 #[test]
@@ -72,7 +76,8 @@ fn test_dot_repeat_change_word() {
         .keys("w")        // Move to "two"
         .press('.');      // Repeat change
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xtwo Xthree\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -85,7 +90,8 @@ fn test_dot_repeat_substitute() {
         .keys("w")        // Move to 'w'
         .press('.');      // Repeat substitute
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Hello Hworld\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -99,7 +105,8 @@ fn test_dot_with_count() {
     test.press('x')       // Delete one char
         .keys("3.");      // Repeat 3 times
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "cdefgh\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -109,7 +116,8 @@ fn test_original_count_vs_repeat_count() {
     test.keys("2dw")      // Delete 2 words
         .press('.');      // Repeat (should delete 2 more words)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ur five six\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -119,7 +127,8 @@ fn test_dot_override_original_count() {
     test.keys("2dw")      // Delete 2 words
         .keys("3.");      // Repeat with different count
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ur five six\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -131,7 +140,8 @@ fn test_dot_repeat_counted_insert() {
         .press_esc()
         .keys("3.");      // Repeat 3 times
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "XXline\n");
+    test.assert_cursor(0, 1);
 }
 
 // ============================================================================
@@ -149,7 +159,8 @@ fn test_dot_repeat_yank_then_change() {
         .keys("w")
         .press('.');      // Should repeat change, not yank
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xtwo Xthree\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -160,7 +171,8 @@ fn test_dot_repeat_d_dollar() {
         .press('j')       // Next line
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -173,7 +185,8 @@ fn test_dot_repeat_c_dollar() {
         .press('j')
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "NEW\nteNEWst case\n");
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -184,7 +197,8 @@ fn test_dot_repeat_upper_case_X() {
         .press('X')       // Delete char before
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -194,7 +208,8 @@ fn test_dot_repeat_J_join() {
     test.press('J')       // Join line 1 and 2
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1 line line 3\nline 4\n");
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -209,7 +224,8 @@ fn test_dot_repeat_diw() {
         .press('w')       // Move to next word
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "two e four\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -219,7 +235,8 @@ fn test_dot_repeat_daw() {
     test.keys("daw")
         .press('.');      // Repeat on next word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "three four\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -233,7 +250,8 @@ fn test_dot_repeat_ci_quote() {
         .keys("f\"")      // Find next quote
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\"hello\" and \"world\"\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -245,7 +263,8 @@ fn test_dot_repeat_di_paren() {
         .keys("f(")       // Next parens
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "func(arg1) and func(arg2)\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -262,7 +281,8 @@ fn test_dot_after_visual_delete() {
         .press('w')       // Move to next word
         .press('.');      // Repeat (should work?)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " test\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -277,7 +297,8 @@ fn test_dot_after_visual_change() {
         .press('w')
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "X Xtwo three\n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -288,7 +309,8 @@ fn test_dot_after_visual_line_delete() {
         .press('d')       // Delete
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 3\nline 4\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -303,7 +325,8 @@ fn test_dot_repeat_dw_different_positions() {
         .keys("w")        // Move to "three"
         .press('.');      // Delete "three "
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "two e four five\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -316,7 +339,8 @@ fn test_dot_repeat_cw_at_different_word_lengths() {
         .keys("w")        // Move to "really" (longer word)
         .press('.');      // Repeat (should change "really")
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xreally Xlong short\n");
+    test.assert_cursor(0, 9);
 }
 
 // ============================================================================
@@ -329,7 +353,8 @@ fn test_dot_without_previous_change() {
 
     test.press('.');      // No previous change
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -339,7 +364,8 @@ fn test_dot_after_movement_only() {
     test.keys("w")        // Just move
         .press('.');      // No change to repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -352,7 +378,8 @@ fn test_dot_across_lines() {
         .press('j')       // Next line
         .press('.');      // Repeat again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ello\norld\nest\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -363,7 +390,8 @@ fn test_dot_at_end_of_line() {
         .press('x')       // Delete last char
         .press('.');      // Repeat (nothing to delete)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hel \n");
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -373,7 +401,8 @@ fn test_dot_after_failed_operation() {
     test.press('x')       // Delete 'x'
         .press('.');      // Try to repeat (nothing to delete)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -390,7 +419,8 @@ fn test_dot_repeat_o_command() {
         .press('j')       // Move down
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "new\nlinewne 1\nline 2\n");
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -403,7 +433,8 @@ fn test_dot_repeat_O_command() {
         .press('j')
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "new\nlinewne 1\nline 2\n");
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -416,7 +447,8 @@ fn test_dot_repeat_A_command() {
         .press('j')
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello!\nworl!d\n");
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -429,7 +461,8 @@ fn test_dot_repeat_I_command() {
         .press('j')
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "START:hello\nworlSTART:d\n");
+    test.assert_cursor(1, 10);
 }
 
 // ============================================================================
@@ -445,7 +478,8 @@ fn test_dot_repeat_r_command() {
         .press('l')       // Move right
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\nworld\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -458,7 +492,8 @@ fn test_dot_repeat_R_command() {
         .press('j')       // Next line
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\nworld\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -475,7 +510,8 @@ fn test_dot_repeat_multiple_times() {
         .press('.')       // Delete 'd'
         .press('.');      // Delete 'e'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "fghijkl\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -486,7 +522,8 @@ fn test_dot_changes_after_different_operation() {
         .keys("dw")       // Delete word (new change)
         .press('.');      // Should repeat dw, not x
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " three four\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -497,7 +534,8 @@ fn test_dot_with_undo() {
         .press('u')       // Undo
         .press('.');      // Repeat (should work)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -512,7 +550,8 @@ fn test_dot_after_undo_redo() {
         )                 // Redo
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "llo\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -527,7 +566,8 @@ fn test_dot_with_search_motion() {
         .press_enter()
         .press('.');      // Repeat (delete to next match?)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world hello test\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -537,7 +577,8 @@ fn test_dot_with_f_motion() {
     test.keys("dfc")      // Delete to 'c'
         .press('.');      // Repeat (delete to next 'c'?)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a b c d e f\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -551,7 +592,8 @@ fn test_dot_preserves_original_count() {
     test.keys("2dd")      // Delete 2 lines
         .press('.');      // Should delete 2 more lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 5\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -564,7 +606,8 @@ fn test_dot_with_multichar_insert() {
         .press('j')
         .press('.');      // Should insert same text
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "LONG TEXT line 1\nline LONG TEXT 2\n");
+    test.assert_cursor(1, 15);
 }
 
 #[test]
@@ -578,5 +621,6 @@ fn test_dot_repeat_complex_change() {
         .press('w')       // Second word
         .press('.');      // Repeat change
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "REPLACEDtwo\nthree four\nREPLACEDfive six\n");
+    test.assert_cursor(2, 8);
 }

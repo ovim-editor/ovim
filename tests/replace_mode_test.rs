@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'r' command - Replace single character
@@ -13,7 +12,8 @@ fn test_r_basic() {
     test.press('r')
         .press('X');      // Replace 'h' with 'X'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -26,7 +26,8 @@ fn test_r_multiple_positions() {
         .press('r')
         .press('3');      // Replace 'e' with '3'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "H3llo\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -37,7 +38,8 @@ fn test_r_at_end_of_line() {
         .press('r')
         .press('!');      // Replace last char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hell!\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -47,7 +49,8 @@ fn test_r_with_space() {
     test.press('r')
         .press(' ');      // Replace with space
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " ello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -57,7 +60,8 @@ fn test_r_with_tab() {
     test.press('r')
         .press('\t');     // Replace with tab
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\tello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -68,7 +72,8 @@ fn test_r_with_newline() {
         .press('r')
         .press_enter();   // Replace space with newline (should split line?)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\nworld\n");
+    test.assert_cursor(0, 5);
 }
 
 // ============================================================================
@@ -82,7 +87,8 @@ fn test_3r() {
     test.keys("3r")
         .press('X');      // Replace 3 chars with 'X'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "XXXlo\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -92,7 +98,8 @@ fn test_r_count_exceeds_line() {
     test.keys("99r")
         .press('X');      // Try to replace 99 chars
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "XXXXX\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -103,7 +110,8 @@ fn test_5r_middle_of_line() {
         .keys("5r")
         .press('=');      // Replace 5 chars
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello ===== test\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -118,7 +126,8 @@ fn test_R_basic() {
         .type_text("HI")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -129,7 +138,8 @@ fn test_R_replace_entire_word() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\nodbye\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -140,7 +150,8 @@ fn test_R_longer_than_original() {
         .type_text("hello world")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hi\n world\n");
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -152,7 +163,8 @@ fn test_R_at_end_of_line() {
         .type_text(" world")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -164,7 +176,8 @@ fn test_R_empty_line() {
         .type_text("new line")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n\nworlned\n");
+    test.assert_cursor(2, 5);
 }
 
 // ============================================================================
@@ -180,7 +193,8 @@ fn test_R_with_backspace() {
         .press_backspace()
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -194,7 +208,8 @@ fn test_R_backspace_restores_original() {
         .press_backspace()
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -211,7 +226,8 @@ fn test_R_with_arrow_keys() {
         .type_text("X")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hXello world\n");
+    test.assert_cursor(0, 1);
 }
 
 // ============================================================================
@@ -226,7 +242,8 @@ fn test_R_stays_on_line() {
         .type_text("HELLO")  // Replace entire first line
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\nhello\nworld\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -238,7 +255,8 @@ fn test_R_at_end_extends_line() {
         .type_text(" extended text")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hel\n");
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -254,7 +272,8 @@ fn test_R_with_tab() {
         .type_text("test")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "tello world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -265,7 +284,8 @@ fn test_R_replace_tab() {
         .type_text("HELLO")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\nhello\tworld\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -279,7 +299,8 @@ fn test_gr_basic() {
     test.keys("gr")
         .press('X');      // Virtual replace
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -289,7 +310,8 @@ fn test_gr_with_tab() {
     test.keys("gr")
         .press('X');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\tworld\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -304,7 +326,8 @@ fn test_gR_basic() {
         .type_text("HI")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -320,7 +343,9 @@ fn test_visual_replace() {
         .press('r')
         .press('X');      // Replace all with 'X'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 4);
+    assert_eq!(test.mode(), "Visual");
 }
 
 #[test]
@@ -332,7 +357,9 @@ fn test_visual_line_replace() {
         .press('r')
         .press('=');      // Replace all chars
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(1, 0);
+    assert_eq!(test.mode(), "VisualLine");
 }
 
 // ============================================================================
@@ -346,7 +373,8 @@ fn test_r_with_unicode() {
     test.press('r')
         .type_text("世");  // Replace with Chinese char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "世ello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -356,7 +384,8 @@ fn test_r_unicode_char() {
     test.press('r')
         .press('x');      // Replace Chinese with ASCII
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "界\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -367,7 +396,8 @@ fn test_R_with_unicode() {
         .type_text("世界")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -383,7 +413,8 @@ fn test_R_and_undo() {
         .press_esc()
         .press('u');      // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -394,7 +425,8 @@ fn test_r_and_undo() {
         .press('X')
         .press('u');      // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -410,7 +442,8 @@ fn test_r_dot_repeat() {
         .press('l')
         .press('.');      // Repeat (replace 'e')
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "XXllo\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -423,7 +456,8 @@ fn test_R_dot_repeat() {
         .press('j')       // Next line
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "HIllo\nHIrld\n");
+    test.assert_cursor(1, 1);
 }
 
 #[test]
@@ -434,7 +468,8 @@ fn test_3r_dot_repeat() {
         .press('X')       // Replace 3 chars
         .press('.');      // Repeat
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "abcdefgh\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -449,7 +484,8 @@ fn test_r_on_empty_line() {
         .press('r')
         .press('X');      // Should not work?
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n\nworld\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -460,7 +496,8 @@ fn test_r_last_char_of_buffer() {
         .press('r')
         .press('!');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hell!\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -471,7 +508,8 @@ fn test_R_on_single_char() {
         .type_text("hello")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "x\n \n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -481,7 +519,8 @@ fn test_R_cancel_with_esc() {
     test.press('R')
         .press_esc();     // Cancel immediately
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

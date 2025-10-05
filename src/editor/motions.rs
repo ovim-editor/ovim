@@ -677,6 +677,27 @@ impl Motions {
         Self::first_non_blank(buffer);
     }
 
+    /// Move to last non-blank character on line (g_ motion)
+    pub fn last_non_blank(buffer: &mut Buffer) {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+
+        if let Some(line) = buffer.line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            let chars: Vec<char> = line_text.chars().collect();
+
+            // Find last non-whitespace character
+            let mut last_non_blank = 0;
+            for (i, &c) in chars.iter().enumerate() {
+                if !c.is_whitespace() {
+                    last_non_blank = i;
+                }
+            }
+
+            buffer.cursor_mut().set_col(last_non_blank);
+        }
+    }
+
     /// Move forward to start of next paragraph ({ and } motions)
     pub fn paragraph_forward(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {

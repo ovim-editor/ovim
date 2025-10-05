@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 use ovim::mode::Mode;
 
 // ============================================================================
@@ -15,7 +14,8 @@ fn test_i_basic() {
         .type_text("start ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "start hello\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -27,7 +27,8 @@ fn test_i_middle_of_line() {
         .type_text("big ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello big world\n");
+    test.assert_cursor(0, 9);
 }
 
 #[test]
@@ -38,7 +39,8 @@ fn test_i_empty_line() {
         .type_text("new text")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "new text\n\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -54,7 +56,8 @@ fn test_I_basic() {
         .type_text("start ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "start hello\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -66,7 +69,8 @@ fn test_I_with_indentation() {
         .type_text("prefix ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    prefix indented line\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -77,7 +81,8 @@ fn test_I_whitespace_only_line() {
         .type_text("text")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "text\n\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -92,7 +97,8 @@ fn test_a_basic() {
         .type_text("X")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hXello\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -104,7 +110,8 @@ fn test_a_end_of_line() {
         .type_text(" world")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -115,7 +122,8 @@ fn test_a_empty_line() {
         .type_text("text")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "text\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -130,7 +138,8 @@ fn test_A_basic() {
         .type_text(" world")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -142,7 +151,8 @@ fn test_A_from_middle() {
         .type_text("!")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world!\n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -153,7 +163,8 @@ fn test_A_empty_line() {
         .type_text("text")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "text\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -168,7 +179,8 @@ fn test_o_basic() {
         .type_text("new line")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nnew line\nline 2\n");
+    test.assert_cursor(1, 7);
 }
 
 #[test]
@@ -180,7 +192,8 @@ fn test_o_last_line_no_newline() {
         .type_text("line 3")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 5);
 }
 
 #[test]
@@ -192,7 +205,8 @@ fn test_o_with_spaces_indentation() {
         .type_text("same indent")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "start\n    indented\n    same indent\nend\n");
+    test.assert_cursor(2, 14);
 }
 
 #[test]
@@ -204,7 +218,8 @@ fn test_o_with_tabs_indentation() {
         .type_text("same indent")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "start\n\t\tindented\n\t\tsame indent\nend\n");
+    test.assert_cursor(2, 12);
 }
 
 #[test]
@@ -215,7 +230,8 @@ fn test_o_empty_file() {
         .type_text("first line")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\nfirst line\n");
+    test.assert_cursor(1, 9);
 }
 
 #[test]
@@ -226,7 +242,8 @@ fn test_o_single_line_no_newline() {
         .type_text("world")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\nworld\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -239,7 +256,8 @@ fn test_o_preserves_position_in_line() {
 
     // After 'o', we should be on new line with proper indentation
     // Position in original line shouldn't matter
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n\nnext line\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -255,7 +273,8 @@ fn test_O_basic() {
         .type_text("inserted above")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\ninserted above\nline 2\n");
+    test.assert_cursor(1, 7);
 }
 
 #[test]
@@ -266,7 +285,8 @@ fn test_O_first_line() {
         .type_text("new first")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "new first\nfirst line\nsecond line\n");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -278,7 +298,8 @@ fn test_O_with_indentation() {
         .type_text("same indent")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "start\n    same indent\n    indented\nend\n");
+    test.assert_cursor(1, 14);
 }
 
 #[test]
@@ -289,7 +310,8 @@ fn test_O_empty_file() {
         .type_text("first line")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\nfirst line\n");
+    test.assert_cursor(1, 9);
 }
 
 #[test]
@@ -300,7 +322,8 @@ fn test_O_single_line() {
         .type_text("new first")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "new first\nonly line\n");
+    test.assert_cursor(0, 8);
 }
 
 // ============================================================================
@@ -318,7 +341,8 @@ fn test_multiple_o_commands() {
         .type_text("line 2")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "start\nline 1\nline 2\n");
+    test.assert_cursor(2, 5);
 }
 
 #[test]
@@ -332,7 +356,8 @@ fn test_o_then_O() {
         .type_text("above")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "middle\nabove\nbelow\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -346,7 +371,8 @@ fn test_i_then_enter() {
         .type_text("very ")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello big\nvery world\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -358,7 +384,8 @@ fn test_A_then_enter() {
         .type_text("line 2")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+    test.assert_cursor(1, 5);
 }
 
 // ============================================================================
@@ -374,7 +401,8 @@ fn test_o_and_undo() {
         .press_esc()
         .press('u'); // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\n\nline 2\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -387,7 +415,8 @@ fn test_i_and_undo() {
         .press_esc()
         .press('u'); // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -399,5 +428,6 @@ fn test_A_and_undo() {
         .press_esc()
         .press('u'); // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }

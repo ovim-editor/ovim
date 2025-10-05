@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // '>' command - Indent operator
@@ -12,7 +11,8 @@ fn test_shift_right_line() {
 
     test.keys(">>");      // Indent current line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -21,7 +21,8 @@ fn test_shift_right_with_count() {
 
     test.keys("3>>");     // Indent 3 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\n    line 2\n    line 3\nline 4\n");
+    test.assert_cursor(2, 4);
 }
 
 #[test]
@@ -30,7 +31,8 @@ fn test_shift_right_already_indented() {
 
     test.keys(">>");      // Indent more
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "        already indented\nplain line\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -43,7 +45,8 @@ fn test_shift_right_j() {
 
     test.keys(">j");      // Indent current and next line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\n    line 2\nline 3\nline 4\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -52,7 +55,8 @@ fn test_shift_right_4j() {
 
     test.keys(">4j");     // Indent 5 lines (current + 4 down)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\nf\n");
+    test.assert_cursor(4, 0);
 }
 
 #[test]
@@ -62,7 +66,8 @@ fn test_shift_right_k() {
     test.keys("jj")       // Move to line 2
         .keys(">k");      // Indent line 2 and line 1
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\n    line 2\n    line 3\nline 4\n");
+    test.assert_cursor(2, 4);
 }
 
 #[test]
@@ -72,7 +77,8 @@ fn test_shift_right_2k() {
     test.keys("G")        // Go to last line
         .keys(">2k");     // Indent 3 lines (current + 2 up)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -82,7 +88,8 @@ fn test_shift_right_G() {
     test.keys("jj")       // Line 2
         .keys(">G");      // Indent from line 2 to end
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n    line 3\n    line 4\n    line 5\n");
+    test.assert_cursor(4, 4);
 }
 
 #[test]
@@ -92,7 +99,8 @@ fn test_shift_right_gg() {
     test.keys("G")        // Last line
         .keys(">gg");     // Indent from last to first
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(3, 0);
 }
 
 // ============================================================================
@@ -105,7 +113,8 @@ fn test_shift_left_line() {
 
     test.keys("<<");      // Dedent current line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "indented line\n    another\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -114,7 +123,8 @@ fn test_shift_left_with_count() {
 
     test.keys("3<<");     // Dedent 3 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -123,7 +133,8 @@ fn test_shift_left_no_indent() {
 
     test.keys("<<");      // Should do nothing
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "no indent\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -132,7 +143,8 @@ fn test_shift_left_partial_indent() {
 
     test.keys("<<");      // Remove indent (might go to 0 or stay at some minimum)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "two spaces\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -145,7 +157,8 @@ fn test_shift_left_j() {
 
     test.keys("<j");      // Dedent current and next
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n    line 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -154,7 +167,8 @@ fn test_shift_left_3j() {
 
     test.keys("<3j");     // Dedent 4 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -164,7 +178,8 @@ fn test_shift_left_k() {
     test.keys("j")
         .keys("<k");      // Dedent current and previous
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n    line 3\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -174,7 +189,8 @@ fn test_shift_left_G() {
     test.keys("j")
         .keys("<G");      // Dedent from line 1 to end
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    a\nb\nc\nd\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -189,7 +205,8 @@ fn test_visual_line_indent() {
         .keys("jj")       // Select 3 lines
         .press('>');      // Indent
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\n    line 2\n    line 3\n");
+    test.assert_cursor(2, 4);
 }
 
 #[test]
@@ -200,7 +217,8 @@ fn test_visual_line_dedent() {
         .keys("j")
         .press('<');      // Dedent
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n    line 3\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -211,7 +229,8 @@ fn test_visual_char_indent() {
         .keys("jj")
         .press('>');      // Should indent affected lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    hello\n    world\n    test\n");
+    test.assert_cursor(2, 4);
 }
 
 #[test]
@@ -224,7 +243,8 @@ fn test_visual_reselect_indent() {
         .keys("gv")       // Reselect
         .press('>');      // Indent again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\n        line 2\nline 3\n");
+    test.assert_cursor(1, 4);
 }
 
 // ============================================================================
@@ -239,7 +259,8 @@ fn test_multiple_indent() {
         .keys(">>")       // Indent again
         .keys(">>");      // And again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "            line 1\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -249,7 +270,8 @@ fn test_indent_then_dedent() {
     test.keys(">>")       // Indent
         .keys("<<");      // Dedent
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -261,7 +283,8 @@ fn test_indent_dedent_cycle() {
         .keys(">>")       // Indent more
         .keys("<<");      // Dedent
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    indented\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -274,7 +297,8 @@ fn test_indent_paragraph() {
 
     test.keys(">ip");     // Indent inner paragraph
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "para line 1\npara line 2\n\nnext para\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -283,7 +307,8 @@ fn test_indent_around_paragraph() {
 
     test.keys(">ap");     // Indent around paragraph
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "para 1\npara 1 cont\n\npara 2\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -297,7 +322,8 @@ fn test_indent_and_undo() {
     test.keys(">>")       // Indent
         .press('u');      // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -311,7 +337,8 @@ fn test_multiple_indent_undo() {
         .press('u')       // Undo another
         .press('u');      // Undo first
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -325,7 +352,8 @@ fn test_indent_undo_redo() {
             crossterm::event::KeyModifiers::CONTROL
         );                // Redo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -338,7 +366,8 @@ fn test_indent_mixed_content() {
 
     test.keys(">G");      // Indent all
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "        indented\n    no indent\n            more indent\n");
+    test.assert_cursor(2, 4);
 }
 
 #[test]
@@ -348,7 +377,8 @@ fn test_indent_empty_line() {
     test.keys("j")        // Move to empty line
         .keys(">>");      // Indent empty line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\n    \nline 3\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -357,7 +387,8 @@ fn test_indent_whitespace_only() {
 
     test.keys(">>");      // Indent whitespace
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "        \n");
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -370,7 +401,8 @@ fn test_indent_single_line_file() {
 
     test.keys(">>");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    only line\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -381,7 +413,8 @@ fn test_indent_at_eof() {
         .keys(">>")
         .keys(">j");      // Try to indent beyond EOF
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\n        line 2\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -392,7 +425,8 @@ fn test_dedent_beyond_zero() {
         .keys("<<")       // Dedent again (should stay at 0)
         .keys("<<");      // And again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "no indent\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -405,7 +439,8 @@ fn test_2_shift_right_3j() {
 
     test.keys("2>3j");    // Count 2, indent, motion 3j
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\nf\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -415,7 +450,8 @@ fn test_3_shift_right_2k() {
     test.keys("G")
         .keys("3>2k");    // Count 3, indent, motion 2k
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -429,7 +465,8 @@ fn test_equal_equal_auto_indent() {
     test.keys("j")        // Move to "code"
         .keys("==");      // Auto-indent line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "if true {\ncode\n}\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -439,7 +476,8 @@ fn test_equal_motion() {
     test.keys("j")
         .keys("=j");      // Auto-indent current and next
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{\nline1\nline2\n}\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -449,7 +487,8 @@ fn test_equal_G() {
     test.keys("j")
         .keys("=G");      // Auto-indent to end
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "{\nline1\nline2\nline3\n}\n");
+    test.assert_cursor(4, 0);
 }
 
 // ============================================================================
@@ -462,7 +501,8 @@ fn test_indent_creates_spaces() {
 
     test.keys(">>");      // Should create spaces (or tabs based on settings)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -471,7 +511,8 @@ fn test_indent_with_existing_tabs() {
 
     test.keys(">>");      // Indent tabbed line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    \tline\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -480,7 +521,8 @@ fn test_dedent_tabs() {
 
     test.keys("<<");      // Dedent tabs
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "ne\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -497,7 +539,8 @@ fn test_indent_dot_repeat() {
         .keys("j")
         .press('.');      // Repeat again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    line 1\nline     2\nline     3\n");
+    test.assert_cursor(2, 9);
 }
 
 #[test]
@@ -510,7 +553,8 @@ fn test_dedent_dot_repeat() {
         .keys("j")
         .press('.');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -528,7 +572,8 @@ fn test_ctrl_t_indent_in_insert() {
         )                 // Indent in insert mode
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "tline\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -542,5 +587,6 @@ fn test_ctrl_d_dedent_in_insert() {
         )                 // Dedent in insert mode
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "d    line\n");
+    test.assert_cursor(0, 0);
 }

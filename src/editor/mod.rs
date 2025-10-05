@@ -24,6 +24,8 @@ pub use undo::UndoManager;
 
 use crate::buffer::Buffer;
 use crate::lsp::LspManager;
+#[cfg(feature = "lua")]
+use crate::lua::LuaContext;
 use crate::mode::Mode;
 use anyhow::Result;
 use std::sync::Arc;
@@ -84,6 +86,12 @@ pub struct Editor {
     buffer_modified_this_iteration: bool,
     /// Flag to track if buffer was saved this iteration (for LSP didSave)
     buffer_saved_this_iteration: bool,
+    /// Lua context for configuration and plugins (optional)
+    #[cfg(feature = "lua")]
+    lua_context: Option<LuaContext>,
+    /// Bridge for Lua-Editor communication (optional)
+    #[cfg(feature = "lua")]
+    editor_bridge: Option<crate::lua::EditorBridge>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +144,10 @@ impl Editor {
             hover_info: None,
             buffer_modified_this_iteration: false,
             buffer_saved_this_iteration: false,
+            #[cfg(feature = "lua")]
+            lua_context: None,
+            #[cfg(feature = "lua")]
+            editor_bridge: None,
         }
     }
 
@@ -170,6 +182,10 @@ impl Editor {
             hover_info: None,
             buffer_modified_this_iteration: false,
             buffer_saved_this_iteration: false,
+            #[cfg(feature = "lua")]
+            lua_context: None,
+            #[cfg(feature = "lua")]
+            editor_bridge: None,
         }
     }
 
@@ -181,6 +197,94 @@ impl Editor {
     /// Gets a reference to the LSP manager
     pub fn lsp_manager(&self) -> Option<Arc<TokioMutex<LspManager>>> {
         self.lsp_manager.clone()
+    }
+
+    /// Enables Lua support
+    #[cfg(feature = "lua")]
+    pub fn enable_lua(&mut self) -> Result<()> {
+        if self.lua_context.is_none() {
+            let mut context = LuaContext::new()?;
+            // Create EditorBridge for Lua-Editor communication
+            let bridge = crate::lua::EditorBridge::new();
+            // Sync initial state to bridge
+            self.sync_lua_bridge(&bridge);
+            // Set up vim API with bridge
+            crate::lua::setup_vim_api(context.lua(), bridge.clone())?;
+            // Try to load config
+            let _ = context.load_config();
+            self.lua_context = Some(context);
+            self.editor_bridge = Some(bridge);
+        }
+        Ok(())
+    }
+
+    /// Syncs the current editor state to the Lua bridge
+    #[cfg(feature = "lua")]
+    fn sync_lua_bridge(&self, bridge: &crate::lua::EditorBridge) {
+        // Update cursor position
+        bridge.update_cursor(self.cursor.line, self.cursor.column);
+        // Update buffer content
+        bridge.update_buffer(self.buffer.to_string());
+        // Update mode
+        bridge.update_mode(format!("{:?}", self.mode));
+    }
+
+    /// Sync editor state to Lua bridge and get pending commands
+    #[cfg(feature = "lua")]
+    pub fn get_lua_commands(&self) -> Vec<String> {
+        if let Some(ref bridge) = self.editor_bridge {
+            // Sync state before getting commands
+            self.sync_lua_bridge(bridge);
+            // Get and return pending commands
+            bridge.drain_commands()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Update Lua bridge after editor state changes
+    #[cfg(feature = "lua")]
+    pub fn update_lua_state(&self) {
+        if let Some(ref bridge) = self.editor_bridge {
+            self.sync_lua_bridge(bridge);
+        }
+    }
+
+    /// Gets a reference to the Lua context
+    #[cfg(feature = "lua")]
+    pub fn lua_context(&self) -> Option<&LuaContext> {
+        self.lua_context.as_ref()
+    }
+
+    /// Gets a mutable reference to the Lua context
+    #[cfg(feature = "lua")]
+    pub fn lua_context_mut(&mut self) -> Option<&mut LuaContext> {
+        self.lua_context.as_mut()
+    }
+
+    /// Executes Lua code
+    #[cfg(feature = "lua")]
+    pub fn execute_lua(&mut self, code: &str) -> Result<String> {
+        if let Some(ref context) = self.lua_context {
+            // Sync state to bridge before execution
+            self.update_lua_state();
+            // Execute Lua code
+            let result = context.execute(code)?;
+            Ok(crate::lua::lua_value_to_string(&result))
+        } else {
+            anyhow::bail!("Lua support not enabled")
+        }
+    }
+
+    /// Executes a Lua file
+    #[cfg(feature = "lua")]
+    pub fn execute_lua_file(&mut self, path: &str) -> Result<()> {
+        if let Some(ref mut context) = self.lua_context {
+            context.execute_file(path)?;
+            Ok(())
+        } else {
+            anyhow::bail!("Lua support not enabled")
+        }
     }
 
     /// Gets the command line buffer

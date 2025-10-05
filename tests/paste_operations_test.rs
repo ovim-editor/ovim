@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'p' command - Paste after cursor
@@ -13,7 +12,8 @@ fn test_p_linewise_basic() {
     test.keys("yy") // Yank line 1
         .keys("p"); // Paste after
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -25,7 +25,8 @@ fn test_p_linewise_last_line() {
         .keys("G") // Go to last line
         .keys("p"); // Paste after
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3line 1\n\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -36,7 +37,8 @@ fn test_p_linewise_middle() {
         .keys("yy") // Yank line 2
         .keys("p"); // Paste after
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -47,7 +49,8 @@ fn test_p_characterwise_middle_of_word() {
         .keys("w") // Move to "world"
         .keys("p"); // Paste after 'w'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello whello orld\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]
@@ -58,7 +61,8 @@ fn test_p_characterwise_end_of_line() {
         .keys("$") // Move to end
         .keys("p"); // Paste after last char
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -69,7 +73,8 @@ fn test_p_characterwise_empty_line() {
         .keys("j") // Move to empty line
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n\nhello\nworld\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -81,7 +86,8 @@ fn test_p_multiple_times() {
         .keys("p") // Paste again
         .keys("p"); // And again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "x\nx\nx\nx\ny\n");
+    test.assert_cursor(4, 0);
 }
 
 // ============================================================================
@@ -96,7 +102,8 @@ fn test_P_linewise_basic() {
         .keys("j") // Move to line 2
         .keys("P"); // Paste before
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -108,7 +115,8 @@ fn test_P_linewise_first_line() {
         .keys("gg") // Go to first line
         .keys("P"); // Paste before
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 2\nline 1\nline 2\nline 3\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -119,7 +127,8 @@ fn test_P_characterwise_beginning() {
         .keys("0") // Go to beginning
         .keys("P"); // Paste before
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "worlworld\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -131,7 +140,8 @@ fn test_P_characterwise_middle() {
         .keys("w") // Move to "test"
         .keys("P"); // Paste before 't'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world hello test\n");
+    test.assert_cursor(0, 18);
 }
 
 #[test]
@@ -144,7 +154,8 @@ fn test_P_multiple_times() {
         .keys("P") // Paste again
         .keys("P"); // And again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\na\na\na\nb\n");
+    test.assert_cursor(4, 0);
 }
 
 // ============================================================================
@@ -159,7 +170,8 @@ fn test_p_then_P() {
         .keys("p") // Paste after
         .keys("P"); // Paste before
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -171,7 +183,8 @@ fn test_yank_delete_paste() {
         .keys("dw") // Delete "world"
         .keys("p"); // Paste "hello"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello tworld est\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]
@@ -183,7 +196,8 @@ fn test_delete_overrides_yank_register() {
         .keys("dd") // Delete "second" (goes to default register)
         .keys("p"); // Should paste "second", not "first"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "first\nthirdsecond\n\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -197,7 +211,8 @@ fn test_p_with_count_linewise() {
     test.keys("yy") // Yank line 1
         .keys("3p"); // Paste 3 times
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -208,7 +223,8 @@ fn test_p_with_count_characterwise() {
         .keys("$") // Move to end
         .keys("3p"); // Paste 3 times
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello worldhello \n");
+    test.assert_cursor(0, 17);
 }
 
 // ============================================================================
@@ -223,7 +239,8 @@ fn test_paste_at_end_of_file_no_newline() {
         .keys("G") // Go to last line
         .keys("p"); // Paste after
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2line 1\n\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -234,7 +251,8 @@ fn test_paste_empty_buffer() {
         .keys("dd") // Delete entire buffer
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -245,7 +263,8 @@ fn test_yank_and_paste_single_char() {
         .keys("l") // Move right
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "abac\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -256,7 +275,8 @@ fn test_paste_with_visual_selection() {
         .keys("j") // Move to "world"
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\nworld\nhello\ntest\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -271,7 +291,8 @@ fn test_paste_and_undo() {
         .keys("p") // Paste
         .keys("u"); // Undo
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -283,7 +304,8 @@ fn test_paste_undo_redo() {
         .keys("u") // Undo
         .press('\x12'); // Ctrl-R (redo)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -296,7 +318,8 @@ fn test_multiple_paste_undo() {
         .keys("u") // Undo paste 2
         .keys("u"); // Undo paste 1
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "x\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -311,7 +334,8 @@ fn test_paste_line_with_newline() {
         .keys("G") // Go to last line
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3line 1\n\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -324,7 +348,8 @@ fn test_paste_multiple_lines() {
         .keys("G") // Go to last line
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\nea\nb\nc\n\n");
+    test.assert_cursor(7, 0);
 }
 
 // ============================================================================
@@ -339,7 +364,8 @@ fn test_paste_indented_line() {
         .keys("j") // Move to plain line
         .keys("p"); // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "    indented\nplain    indented\n\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -350,5 +376,6 @@ fn test_paste_into_indented_context() {
         .keys("j") // Move to indented line
         .keys("p"); // Paste (should preserve original indentation)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "plain\n    indentedplain\n\n");
+    test.assert_cursor(2, 0);
 }
