@@ -13,7 +13,8 @@ fn test_m_set_mark() {
         .press('m')       // Set mark
         .press('a');      // Mark 'a'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -29,7 +30,8 @@ fn test_m_set_multiple_marks() {
         .press('m')
         .press('c');      // Mark 'c' at line 3
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -42,7 +44,8 @@ fn test_m_overwrite_mark() {
         .press('m')
         .press('a');      // Overwrite mark 'a'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -60,7 +63,11 @@ fn test_backtick_jump_to_mark() {
         .press('`')       // Jump to mark
         .press('a');      // Mark 'a'
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -74,7 +81,9 @@ fn test_backtick_exact_position() {
         .press('`')
         .press('a');      // Should return to "test"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world test
+");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -91,7 +100,12 @@ fn test_backtick_multiple_marks() {
         .press('`').press('c')  // To mark c
         .press('`').press('b'); // To mark b
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+");
+    test.assert_cursor(1, 5);
 }
 
 // ============================================================================
@@ -109,7 +123,11 @@ fn test_quote_jump_to_line() {
         .press('\'')      // Jump to line of mark
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -123,7 +141,10 @@ fn test_quote_vs_backtick() {
         .press('\'')      // ' jumps to first non-blank
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world
+test line
+");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -139,7 +160,12 @@ fn test_backtick_backtick_previous_position() {
         .press('`')
         .press('`');      // Jump to previous position (line 4)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -151,7 +177,11 @@ fn test_quote_quote_previous_line() {
         .press('\'')
         .press('\'');     // Jump to previous line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -165,7 +195,11 @@ fn test_backtick_dot_last_change() {
         .press('`')
         .press('.');      // Jump to last change position
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "CHANGED line 1
+line 2
+line 3
+");
+    test.assert_cursor(0, 7);
 }
 
 #[test]
@@ -177,7 +211,11 @@ fn test_backtick_bracket_last_yank() {
         .press('`')
         .press('[');      // Jump to start of last yank
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -191,7 +229,10 @@ fn test_backtick_caret_insert_exit() {
         .press('`')
         .press('^');      // Jump to last insert position
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "textline 1
+line 2
+");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -208,7 +249,10 @@ fn test_delete_to_mark() {
         .keys("gg")       // Go to top
         .keys("d`a");     // Delete to mark
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 3
+line 4
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -223,7 +267,13 @@ fn test_yank_to_mark() {
         .keys("G")
         .press('p');      // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 1
+line 2
+");
+    test.assert_cursor(4, 0);
 }
 
 #[test]
@@ -238,7 +288,9 @@ fn test_change_to_mark() {
         .type_text("CHANGED")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "CHANGED
+");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -253,7 +305,12 @@ fn test_visual_to_mark() {
         .press('`')
         .press('a');      // Select to mark
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -272,7 +329,12 @@ fn test_ctrl_o_jump_back() {
             crossterm::event::KeyModifiers::CONTROL
         );                // Jump back
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -290,7 +352,12 @@ fn test_ctrl_i_jump_forward() {
             crossterm::event::KeyModifiers::CONTROL
         );                // Forward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -313,7 +380,13 @@ fn test_jump_list_multiple() {
         crossterm::event::KeyModifiers::CONTROL
     );
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+line 5
+");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -333,7 +406,9 @@ fn test_mark_after_insert() {
         .press('`')
         .press('a');      // Jump back
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "INSERTED line 1
+");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -347,7 +422,10 @@ fn test_mark_after_delete() {
         .press('`')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 2
+line 3
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -359,7 +437,11 @@ fn test_mark_in_visual_mode() {
         .press('m')       // Try to set mark in visual mode
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -373,7 +455,10 @@ fn test_jump_to_nonexistent_mark() {
     test.press('`')
         .press('z');      // Jump to mark that doesn't exist
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -387,7 +472,11 @@ fn test_mark_on_empty_line() {
         .press('`')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+
+line 3
+");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -401,7 +490,10 @@ fn test_mark_at_eof() {
         .press('`')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+");
+    test.assert_cursor(1, 6);
 }
 
 #[test]
@@ -419,7 +511,11 @@ fn test_all_lowercase_marks() {
         .press('`').press('z')
         .press('`').press('b');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -439,7 +535,10 @@ fn test_mark_survives_undo() {
         .press('`')
         .press('a');      // Jump to mark (should still exist)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -454,7 +553,11 @@ fn test_mark_after_line_delete() {
         .press('`')
         .press('a');      // Mark should adjust?
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 2
+line 3
+line 4
+");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -472,7 +575,11 @@ fn test_marks_command() {
         .type_text("marks")
         .press_enter();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -490,7 +597,10 @@ fn test_delmarks() {
         .press('`')
         .press('a');      // Should fail - mark deleted
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -507,7 +617,11 @@ fn test_global_mark() {
         .press('`')
         .press('A');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -528,7 +642,12 @@ fn test_mark_line_number_changes() {
         .press('`')
         .press('a');      // Mark should have moved down
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+new
+line 2
+line 3
+");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -550,5 +669,11 @@ fn test_complex_mark_navigation() {
         .press('`').press('b')
         .press('`').press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1
+line 2
+line 3
+line 4
+line 5
+");
+    test.assert_cursor(0, 0);
 }

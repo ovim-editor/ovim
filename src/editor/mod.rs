@@ -28,6 +28,7 @@ use crate::lsp::LspManager;
 use crate::lua::LuaContext;
 use crate::mode::Mode;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -86,6 +87,12 @@ pub struct Editor {
     buffer_modified_this_iteration: bool,
     /// Flag to track if buffer was saved this iteration (for LSP didSave)
     buffer_saved_this_iteration: bool,
+    /// LSP status message (errors, warnings, or info)
+    lsp_status: String,
+    /// Active LSP servers (language_id -> server_name)
+    active_lsp_servers: HashMap<String, String>,
+    /// Flag to indicate LSP needs initialization for current file
+    needs_lsp_init: bool,
     /// Lua context for configuration and plugins (optional)
     #[cfg(feature = "lua")]
     lua_context: Option<LuaContext>,
@@ -144,6 +151,9 @@ impl Editor {
             hover_info: None,
             buffer_modified_this_iteration: false,
             buffer_saved_this_iteration: false,
+            lsp_status: String::new(),
+            active_lsp_servers: HashMap::new(),
+            needs_lsp_init: false,
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
@@ -182,6 +192,9 @@ impl Editor {
             hover_info: None,
             buffer_modified_this_iteration: false,
             buffer_saved_this_iteration: false,
+            lsp_status: String::new(),
+            active_lsp_servers: HashMap::new(),
+            needs_lsp_init: false,
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
@@ -249,6 +262,17 @@ impl Editor {
         if let Some(ref bridge) = self.editor_bridge {
             self.sync_lua_bridge(bridge);
         }
+    }
+
+    /// Process pending Lua commands and execute them
+    #[cfg(feature = "lua")]
+    pub fn process_lua_commands(&mut self) -> Result<()> {
+        let commands = self.get_lua_commands();
+        for cmd in commands {
+            // Execute each command using InputHandler
+            InputHandler::execute_command_string(self, &cmd)?;
+        }
+        Ok(())
     }
 
     /// Gets a reference to the Lua context
@@ -657,7 +681,22 @@ impl Editor {
     pub fn load_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
         self.buffer = Buffer::load_file(path)?;
         self.change_manager = ChangeManager::new();
+        self.needs_lsp_init = true; // Flag that LSP needs initialization
         Ok(())
+    }
+
+    /// Checks if LSP initialization is needed and returns the file path
+    pub fn needs_lsp_init(&self) -> Option<String> {
+        if self.needs_lsp_init {
+            self.buffer.file_path().map(|s| s.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Clears the LSP init flag (should be called after initializing LSP)
+    pub fn clear_lsp_init_flag(&mut self) {
+        self.needs_lsp_init = false;
     }
 
     /// Starts building a composite change (e.g., when entering insert mode)
@@ -785,6 +824,35 @@ impl Editor {
     /// Gets the cached diagnostic count (sync, suitable for UI rendering)
     pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
         self.diagnostic_count
+    }
+
+    /// Sets the LSP status message
+    pub fn set_lsp_status(&mut self, status: String) {
+        self.lsp_status = status;
+    }
+
+    /// Gets the LSP status message
+    pub fn lsp_status(&self) -> &str {
+        &self.lsp_status
+    }
+
+    /// Registers an active LSP server
+    pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
+        self.lsp_status = format!("LSP: {} ready", server_name);
+        self.active_lsp_servers.insert(language_id, server_name);
+    }
+
+    /// Unregisters an LSP server
+    pub fn unregister_lsp_server(&mut self, language_id: &str) {
+        self.active_lsp_servers.remove(language_id);
+        if self.active_lsp_servers.is_empty() {
+            self.lsp_status.clear();
+        }
+    }
+
+    /// Gets active LSP servers
+    pub fn active_lsp_servers(&self) -> &HashMap<String, String> {
+        &self.active_lsp_servers
     }
 
     /// Triggers async re-highlighting if needed
@@ -950,15 +1018,21 @@ impl Editor {
 
     /// Go to definition at current cursor position via LSP (implementation)
     async fn goto_definition_impl(&mut self) -> Result<bool> {
+        eprintln!("[LSP] goto_definition_impl called");
+
         // Check if LSP is enabled
         let Some(ref lsp) = self.lsp_manager else {
+            eprintln!("[LSP] No LSP manager");
             return Ok(false);
         };
 
         // Get current file URI
         let Some(file_path) = self.buffer.file_path() else {
+            eprintln!("[LSP] No file path");
             return Ok(false);
         };
+
+        eprintln!("[LSP] File path: {}", file_path);
 
         let uri = lsp_types::Url::from_file_path(file_path)
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
@@ -968,6 +1042,8 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
+        eprintln!("[LSP] Cursor position: line={}, col={}", line, character);
+
         // Detect language from file extension
         let language_id = if file_path.ends_with(".rs") {
             "rust"
@@ -976,28 +1052,47 @@ impl Editor {
         } else if file_path.ends_with(".py") {
             "python"
         } else {
+            eprintln!("[LSP] Unsupported file type");
             return Ok(false);
         };
 
+        eprintln!("[LSP] Language: {}", language_id);
+
         // Request definition
+        eprintln!("[LSP] Sending goto_definition request...");
         let lsp_guard = lsp.lock().await;
-        let location = lsp_guard
+        let location = match lsp_guard
             .goto_definition(&uri, line, character, language_id)
-            .await?;
+            .await {
+                Ok(loc) => {
+                    eprintln!("[LSP] Request successful: {:?}", loc);
+                    loc
+                }
+                Err(e) => {
+                    eprintln!("[LSP] Request failed: {}", e);
+                    return Err(e);
+                }
+            };
 
         drop(lsp_guard);
 
         // Jump to definition if found
         if let Some(location) = location {
+            eprintln!("[LSP] Definition found at {:?}", location);
             // For now, only handle same-file definitions
             if location.uri == uri {
                 let target_line = location.range.start.line as usize;
                 let target_col = location.range.start.character as usize;
 
+                eprintln!("[LSP] Jumping to line={}, col={}", target_line, target_col);
                 // Update cursor position
                 self.buffer.cursor_mut().set_position(target_line, target_col);
                 return Ok(true);
+            } else {
+                eprintln!("[LSP] Definition in different file, not supported yet");
             }
+        } else {
+            eprintln!("[LSP] No definition found");
         }
 
         Ok(false)

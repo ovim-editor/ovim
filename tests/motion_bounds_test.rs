@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'w' command - Word forward motion with bounds checking
@@ -13,7 +12,10 @@ fn test_w_at_last_word() {
     test.keys("w")        // Move to "world"
         .press('w');      // Try to move past last word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -23,7 +25,10 @@ fn test_w_multiple_at_end() {
     test.keys("www")      // Move to "three"
         .keys("www");     // Try to move beyond
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three\n");
+
+
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -33,7 +38,10 @@ fn test_w_single_word() {
     test.press('w')       // Should not move or stay at last char
         .press('w');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+
+
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -43,7 +51,10 @@ fn test_w_at_eof_no_newline() {
     test.keys("G$")       // Go to end of last line
         .press('w');      // Try to move forward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+
+
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -52,7 +63,10 @@ fn test_w_with_count_beyond_buffer() {
 
     test.keys("10w");     // Try to move 10 words (only 3 exist)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three\n");
+
+
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -62,7 +76,10 @@ fn test_w_on_empty_line() {
     test.press('j')       // Move to empty line
         .press('w');      // Should move to "world"
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -71,7 +88,10 @@ fn test_w_on_whitespace_only() {
 
     test.press('w');      // Should handle whitespace-only line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "     \n");
+
+
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -85,7 +105,10 @@ fn test_W_at_last_WORD() {
     test.press('W')       // Move to "test"
         .press('W');      // Try to move past
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -94,7 +117,10 @@ fn test_W_beyond_buffer() {
 
     test.keys("5W");      // Try to move 5 WORDs
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one\n");
+
+
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -108,7 +134,10 @@ fn test_b_at_first_word() {
     test.press('b')       // At beginning, try to move back
         .press('b');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -117,7 +146,10 @@ fn test_b_multiple_at_start() {
 
     test.keys("bbb");     // Try to move back 3 times from start
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -127,7 +159,10 @@ fn test_b_with_count_beyond_buffer() {
     test.keys("$")        // End of line
         .keys("10b");     // Try to move back 10 words
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -138,7 +173,10 @@ fn test_b_single_word() {
         .press('b')       // Should move to start
         .press('b');      // Should stay at start
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -151,7 +189,10 @@ fn test_B_at_beginning() {
 
     test.press('B');      // At start, try to move back
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello-world\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -161,7 +202,10 @@ fn test_B_beyond_buffer() {
     test.keys("$")
         .keys("10B");     // Move back 10 WORDs (only 2 exist)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one-two three-four\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -176,7 +220,10 @@ fn test_e_at_last_word() {
         .press('e')       // End of "world"
         .press('e');      // Try to move past
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -186,7 +233,10 @@ fn test_e_single_word() {
     test.press('e')       // End of word
         .press('e');      // Try to move past
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+
+
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -195,7 +245,10 @@ fn test_e_with_count_beyond() {
 
     test.keys("5e");      // Try to move to end of 5th word
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two\n");
+
+
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -205,7 +258,10 @@ fn test_e_at_eof() {
     test.keys("G$")       // End of file
         .press('e');      // Try to move forward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+
+
+    test.assert_cursor(1, 5);
 }
 
 // ============================================================================
@@ -220,7 +276,10 @@ fn test_E_at_last_WORD() {
         .press('E')       // End of "test-case"
         .press('E');      // Try to move past
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -229,7 +288,10 @@ fn test_E_beyond_buffer() {
 
     test.keys("10E");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one\n");
+
+
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -243,7 +305,10 @@ fn test_ge_at_beginning() {
     test.keys("ge")       // Try to move backward from start
         .keys("ge");
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello-world test\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -254,7 +319,10 @@ fn test_ge_single_word() {
         .keys("ge")       // Should move to start
         .keys("ge");      // Try to move back more
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+
+
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -267,7 +335,10 @@ fn test_gE_at_beginning() {
 
     test.keys("gE");      // At start, try to move back
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello-world test\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -282,7 +353,10 @@ fn test_j_at_last_line() {
         .press('j')       // Try to move down
         .press('j');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -291,7 +365,10 @@ fn test_j_with_count_beyond() {
 
     test.keys("10j");     // Try to move down 10 lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -301,7 +378,10 @@ fn test_k_at_first_line() {
     test.press('k')       // At top, try to move up
         .press('k');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -310,7 +390,10 @@ fn test_k_with_count_beyond() {
 
     test.keys("10k");     // Try to move up 10 lines from top
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -320,7 +403,10 @@ fn test_j_single_line() {
     test.press('j')       // No line below
         .press('j');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "only line\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -330,7 +416,10 @@ fn test_k_single_line() {
     test.press('k')       // No line above
         .press('k');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "only line\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -345,7 +434,10 @@ fn test_l_at_end_of_line() {
         .press('l')       // Try to move right
         .press('l');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -354,7 +446,10 @@ fn test_l_with_count_beyond() {
 
     test.keys("20l");     // Try to move right 20 chars
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -364,7 +459,10 @@ fn test_h_at_beginning() {
     test.press('h')       // At start, try to move left
         .press('h');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -374,7 +472,10 @@ fn test_h_with_count_beyond() {
     test.keys("$")
         .keys("20h");     // Try to move left 20 chars
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -383,7 +484,10 @@ fn test_l_empty_line() {
 
     test.press('l');      // Can't move right on empty line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -392,7 +496,10 @@ fn test_h_empty_line() {
 
     test.press('h');      // Can't move left on empty line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " \n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -408,7 +515,10 @@ fn test_w_then_b_at_boundary() {
         .press('w')       // Forward again
         .press('b');      // Back again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -419,7 +529,10 @@ fn test_e_then_ge_at_boundary() {
         .keys("ge")       // Try backward
         .press('e');      // Forward
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "word\n");
+
+
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -434,7 +547,10 @@ fn test_close_brace_at_eof() {
         .press('}')       // Try to move to next paragraph
         .press('}');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "para 1\n");
+
+
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -444,7 +560,10 @@ fn test_open_brace_at_beginning() {
     test.press('{')       // At start, try to move to prev paragraph
         .press('{');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "para 1\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -454,7 +573,10 @@ fn test_close_brace_no_blank_lines() {
     test.press('}')       // No paragraphs, should go to end?
         .press('}');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -469,7 +591,10 @@ fn test_close_paren_at_eof() {
         .press(')')       // Try to move to next sentence
         .press(')');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "First. Second.\n");
+
+
+    test.assert_cursor(0, 7);
 }
 
 #[test]
@@ -479,7 +604,10 @@ fn test_open_paren_at_beginning() {
     test.press('(')       // At start
         .press('(');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "First. Second.\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -492,7 +620,10 @@ fn test_G_beyond_buffer() {
 
     test.keys("999G");    // Try to go to line 999
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(998, 0);
 }
 
 #[test]
@@ -502,7 +633,10 @@ fn test_gg_already_at_top() {
     test.keys("gg")       // Go to top
         .keys("gg");      // Already there
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -512,7 +646,10 @@ fn test_G_already_at_bottom() {
     test.keys("G")        // Go to bottom
         .keys("G");       // Already there
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
+
+
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -521,7 +658,10 @@ fn test_percent_beyond_100() {
 
     test.keys("150%");    // Try to go to 150% of file
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -535,7 +675,10 @@ fn test_f_char_not_found() {
     test.press('f')
         .press('z');      // Character not in line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -546,7 +689,10 @@ fn test_f_at_end_of_line() {
         .press('f')
         .press('x');      // Try to find past end
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -556,7 +702,10 @@ fn test_F_at_beginning() {
     test.press('F')       // At start, try backward find
         .press('h');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -565,7 +714,10 @@ fn test_semicolon_no_previous_find() {
 
     test.press(';');      // No previous f/F/t/T
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -574,7 +726,10 @@ fn test_comma_no_previous_find() {
 
     test.press(',');      // No previous f/F/t/T
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+
+
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -588,7 +743,10 @@ fn test_dw_at_last_word() {
     test.keys("w")        // Move to "world"
         .keys("dw");      // Delete (should delete to end)
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello d\n");
+
+
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -597,7 +755,10 @@ fn test_d10w_beyond_buffer() {
 
     test.keys("d10w");    // Try to delete 10 words
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "one two three\n");
+
+
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -609,7 +770,10 @@ fn test_cw_at_last_word() {
         .type_text("earth")
         .press_esc();
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello earthd\n");
+
+
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -619,5 +783,8 @@ fn test_yw_at_eof() {
     test.keys("yw")       // Yank word at end
         .press('p');      // Paste
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "llasast\n");
+
+
+    test.assert_cursor(0, 4);
 }

@@ -2194,9 +2194,20 @@ impl InputHandler {
         Ok(())
     }
 
+    /// Executes a command string directly (used for API/Lua commands)
+    pub fn execute_command_string(editor: &mut Editor, command: &str) -> Result<()> {
+        Self::execute_command_impl(editor, command)
+    }
+
     /// Executes a command from the command line
     fn execute_command(editor: &mut Editor) -> Result<()> {
         let command = editor.command_line().trim().to_string();
+        Self::execute_command_impl(editor, &command)
+    }
+
+    /// Internal command execution implementation
+    fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
+        let command = command.trim();
 
         // Handle commands with arguments
         if command.starts_with("e ") || command.starts_with("edit ") {
@@ -2228,7 +2239,7 @@ impl InputHandler {
         }
 
         // Handle commands without arguments
-        match command.as_str() {
+        match command {
             "q" | "quit" => {
                 // Quit without checking for modifications
                 if editor.is_modified() {

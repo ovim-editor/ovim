@@ -1,6 +1,0 @@
----
-source: tests/lsp_operations_test.rs
-expression: test.snapshot_buffer()
----
-hello
-new world

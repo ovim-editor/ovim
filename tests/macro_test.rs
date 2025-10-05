@@ -1,6 +1,5 @@
 mod helpers;
 use helpers::EditorTest;
-use insta::assert_snapshot;
 
 // ============================================================================
 // 'q' command - Record macro
@@ -15,7 +14,8 @@ fn test_q_basic_record() {
         .keys("dd")       // Delete line
         .press('q');      // Stop recording
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 2\nline 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -29,7 +29,8 @@ fn test_q_record_and_playback() {
         .press('@')       // Playback
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -46,7 +47,8 @@ fn test_q_record_multiple_commands() {
         .press('@')
         .press('a');      // Replay on second line
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "PREFIX: hello world\ntest liPREFIX: ne\n");
+    test.assert_cursor(1, 14);
 }
 
 #[test]
@@ -63,7 +65,8 @@ fn test_q_record_change_operation() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "Xtwo\nXe\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -84,7 +87,8 @@ fn test_at_playback_simple() {
         .press('@')
         .press('a');      // Play again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n\n\nd\n");
+    test.assert_cursor(3, 0);
 }
 
 #[test]
@@ -98,7 +102,8 @@ fn test_at_with_count() {
         .press('q')
         .keys("3@a");     // Play 3 times
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n\nc\nd\ne\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -115,7 +120,8 @@ fn test_at_at_repeat_last() {
         .press('@')
         .press('@');      // Repeat last macro with @@
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n\nc\nd\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -150,7 +156,8 @@ fn test_multiple_registers() {
         .press('@')
         .press('b');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "A: A: line 1\nline 2 [END] [END]\nline 3\n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -175,7 +182,8 @@ fn test_overwrite_macro_register() {
     test.press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "NEWNEW  est\n");
+    test.assert_cursor(0, 6);
 }
 
 // ============================================================================
@@ -196,7 +204,8 @@ fn test_recursive_macro() {
 
     // This might run until end of file or error
     // Test behavior
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\nb\nc\nd\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================
@@ -217,7 +226,8 @@ fn test_macro_with_text_objects() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), " two\n four\nsix\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -234,7 +244,8 @@ fn test_macro_with_search() {
         .press('@')
         .press('a');      // Play - should find next and delete
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world ello test\n");
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -255,7 +266,8 @@ fn test_macro_with_visual_mode() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n\ntest\n");
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -272,7 +284,8 @@ fn test_macro_visual_line() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 4\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -295,7 +308,8 @@ fn test_macro_insert_mode() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1 - done\nline 2 - done\nline 3 - done\n");
+    test.assert_cursor(2, 12);
 }
 
 #[test]
@@ -315,7 +329,8 @@ fn test_macro_complex_insert() {
     test.press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "prefix_word_suffiprefix_x_suffix\n");
+    test.assert_cursor(0, 31);
 }
 
 // ============================================================================
@@ -335,7 +350,8 @@ fn test_macro_yank_paste() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "copy\nline 2\ncopy\nline 3copy\n\n");
+    test.assert_cursor(4, 0);
 }
 
 // ============================================================================
@@ -355,7 +371,8 @@ fn test_macro_then_undo() {
         .press('a')       // Play macro
         .press('u');      // Undo macro
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\nb\nc\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -370,7 +387,8 @@ fn test_macro_with_undo_inside() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "hello world\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -387,7 +405,8 @@ fn test_empty_macro() {
         .press('@')
         .press('a');      // Play empty macro
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -396,7 +415,8 @@ fn test_macro_stop_without_start() {
 
     test.press('q');      // Press 'q' but don't record
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -412,7 +432,8 @@ fn test_macro_at_eof() {
         .press('@')
         .press('a');      // Play again
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "a\nb\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -435,7 +456,8 @@ fn test_macro_uppercase_register() {
     test.press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "estxq@a \n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -453,7 +475,8 @@ fn test_macro_with_count_inside() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "gh\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -468,7 +491,8 @@ fn test_macro_with_dot_repeat() {
         .press('a')
         .press('.');      // Repeat last change
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "e\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -487,7 +511,8 @@ fn test_macro_record_during_playback() {
         .press('x')
         .press('q');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "txqest\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -504,7 +529,8 @@ fn test_macro_line_operations() {
         .press('q')
         .keys("3@a");     // Delete 3 more lines
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -521,5 +547,6 @@ fn test_macro_with_o_command() {
         .press('@')
         .press('a');
 
-    assert_snapshot!(test.snapshot_state());
+    assert_eq!(test.buffer_content(), "line 1\ninserted\nline 2\ninserted\n\n");
+    test.assert_cursor(3, 7);
 }
