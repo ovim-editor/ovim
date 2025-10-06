@@ -5,6 +5,7 @@ use ignore::WalkBuilder;
 pub enum PickerMode {
     FindFiles,
     LiveGrep,
+    Custom,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,36 @@ impl Picker {
         }
     }
 
+    /// Creates a new picker with custom items
+    pub fn new_custom(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let results: Vec<PickerResult> = items
+            .into_iter()
+            .enumerate()
+            .map(|(idx, display)| PickerResult {
+                display,
+                location: idx.to_string(), // Use index as location identifier
+                line: idx,
+                col: 0,
+            })
+            .collect();
+
+        Self {
+            mode: PickerMode::Custom,
+            query: String::new(),
+            query_cursor: 0,
+            all_results: results.clone(),
+            filtered_results: results,
+            selected_index: 0,
+            base_dir,
+        }
+    }
+
+    /// Sets the prompt for the picker
+    pub fn set_prompt(&mut self, _prompt: String) {
+        // Prompt display is handled by the UI layer
+        // This is a placeholder for API compatibility
+    }
+
     /// Recursively finds all files in a directory, respecting .gitignore
     fn find_files_recursive(dir: &Path) -> Vec<PickerResult> {
         let mut results = Vec::new();
@@ -91,8 +122,9 @@ impl Picker {
 
             if path.is_file() {
                 if let Ok(relative_path) = path.strip_prefix(dir) {
+                    let display_path = relative_path.to_string_lossy().to_string();
                     results.push(PickerResult {
-                        display: relative_path.to_string_lossy().to_string(),
+                        display: display_path,
                         location: path.to_string_lossy().to_string(),
                         line: 0,
                         col: 0,
@@ -174,6 +206,16 @@ impl Picker {
             PickerMode::LiveGrep => {
                 // Perform live grep
                 self.filtered_results = Self::live_grep(&self.query, &self.base_dir);
+            }
+            PickerMode::Custom => {
+                // Simple substring matching for custom mode
+                let query_lower = self.query.to_lowercase();
+                self.filtered_results = self
+                    .all_results
+                    .iter()
+                    .filter(|r| r.display.to_lowercase().contains(&query_lower))
+                    .cloned()
+                    .collect();
             }
         }
 
@@ -292,5 +334,92 @@ impl Picker {
     /// Gets picker mode
     pub fn mode(&self) -> &PickerMode {
         &self.mode
+    }
+
+    /// Truncates a path in the middle if it's too long
+    /// Prioritizes showing the filename and immediate parent directories
+    /// Examples:
+    ///   "src/buffer/mod.rs" -> "src/buffer/mod.rs" (fits)
+    ///   "src/buffer/cursor/position.rs" -> "src/.../position.rs" (truncated)
+    ///   "backend/services/user-state/users.ts" -> "backend/.../user-state/users.ts"
+    pub fn truncate_path(path: &str, max_len: usize) -> String {
+        if path.len() <= max_len {
+            return path.to_string();
+        }
+
+        // Split by path separator
+        let parts: Vec<&str> = path.split('/').collect();
+
+        if parts.is_empty() {
+            return path.to_string();
+        }
+
+        if parts.len() == 1 {
+            // Single component, truncate with ellipsis in middle
+            if max_len < 4 {
+                return "...".to_string();
+            }
+            let start_len = (max_len - 3) / 2;
+            let end_len = max_len - 3 - start_len;
+            return format!("{}...{}", &path[..start_len], &path[path.len() - end_len..]);
+        }
+
+        // Always keep the last component (filename)
+        let last = parts[parts.len() - 1];
+
+        // Reserve space for ".../" (4 chars) and the last component
+        let reserved = 4 + last.len();
+
+        if reserved >= max_len {
+            // Not enough space, truncate the filename itself
+            if max_len < 4 {
+                return "...".to_string();
+            }
+            let available = max_len - 3;
+            return format!("...{}", &last[last.len().saturating_sub(available)..]);
+        }
+
+        // Try to include as many parts from the end as possible
+        let mut included_parts = vec![last];
+        let mut current_len = last.len();
+
+        // Work backwards from the second-to-last component
+        for i in (0..parts.len() - 1).rev() {
+            let part = parts[i];
+            let needed = part.len() + 1; // +1 for the separator
+
+            // Check if adding this part would fit
+            if current_len + needed + 4 <= max_len {
+                // We have room for this part plus ".../"
+                included_parts.insert(0, part);
+                current_len += needed;
+            } else {
+                // Can't fit this part, but check if we can fit it without the leading parts
+                if i > 0 && current_len + needed + 4 <= max_len {
+                    included_parts.insert(0, part);
+                    current_len += needed;
+                }
+                break;
+            }
+        }
+
+        // Build the result
+        if included_parts.len() == parts.len() {
+            // We managed to fit everything (shouldn't happen since path.len() > max_len)
+            return path.to_string();
+        }
+
+        // Check if we're missing the first part
+        if included_parts.len() < parts.len() {
+            // Add ellipsis at the beginning
+            if included_parts[0] != parts[0] {
+                // We're not showing from the start, add ".../"
+                let mut result = String::from(".../");
+                result.push_str(&included_parts.join("/"));
+                return result;
+            }
+        }
+
+        included_parts.join("/")
     }
 }

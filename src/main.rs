@@ -356,6 +356,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
             mode: match p.mode() {
                 crate::editor::PickerMode::FindFiles => "FindFiles".to_string(),
                 crate::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
+                crate::editor::PickerMode::Custom => "Custom".to_string(),
             },
             query: p.query().to_string(),
             results: p.filtered_results().iter().map(|r| {
@@ -586,6 +587,29 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     ApiResponse::Error(ErrorResponse {
                         error: "Lua support not enabled".to_string(),
                     })
+                }
+            // Handle :colorscheme <name> or :colorscheme (to show current)
+            } else if command == "colorscheme" {
+                let current = editor.current_color_scheme_name();
+                let schemes = editor.list_color_schemes().join(", ");
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Current: {}\nAvailable: {}", current, schemes)),
+                    line_count: None,
+                })
+            } else if let Some(scheme_name) = command.strip_prefix("colorscheme ") {
+                match editor.set_color_scheme(scheme_name.trim()) {
+                    Ok(_) => ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Color scheme set to '{}'", scheme_name.trim())),
+                        line_count: None,
+                    }),
+                    Err(e) => {
+                        let available = editor.list_color_schemes().join(", ");
+                        ApiResponse::Error(ErrorResponse {
+                            error: format!("{}. Available schemes: {}", e, available),
+                        })
+                    }
                 }
             } else {
                 ApiResponse::Error(ErrorResponse {
