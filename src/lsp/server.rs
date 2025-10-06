@@ -879,10 +879,86 @@ impl LanguageServer {
         }
     }
 
+    /// Checks if the server supports range formatting
+    pub async fn supports_range_formatting(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.document_range_formatting_provider.is_some()
+        } else {
+            false
+        }
+    }
+
     /// Checks if the server supports code actions
     pub async fn supports_code_actions(&self) -> bool {
         if let Some(caps) = self.capabilities().await {
             caps.code_action_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports references
+    pub async fn supports_references(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.references_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports rename
+    pub async fn supports_rename(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.rename_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports prepare rename
+    pub async fn supports_prepare_rename(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            // Check if rename_provider exists and has prepare_support
+            match &caps.rename_provider {
+                Some(lsp_types::OneOf::Right(options)) => options.prepare_provider.unwrap_or(false),
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports signature help
+    pub async fn supports_signature_help(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.signature_help_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports document symbols
+    pub async fn supports_document_symbol(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.document_symbol_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports selection range
+    pub async fn supports_selection_range(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.selection_range_provider.is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Checks if the server supports workspace symbols
+    pub async fn supports_workspace_symbol(&self) -> bool {
+        if let Some(caps) = self.capabilities().await {
+            caps.workspace_symbol_provider.is_some()
         } else {
             false
         }

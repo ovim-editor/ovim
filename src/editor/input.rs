@@ -46,7 +46,7 @@ impl InputHandler {
             editor.clear_hover();
         }
 
-        // Handle pending leader key sequences (e.g., <Space>sf, <Space>sg)
+        // Handle pending leader key sequences (e.g., <Space>sf, <Space>sg, <Space>ca)
         if editor.pending_leader() {
             editor.set_pending_leader(false);
 
@@ -54,6 +54,11 @@ impl InputHandler {
                 KeyCode::Char('s') => {
                     // Expect 'f' or 'g' next
                     editor.set_pending_command('s');
+                    return Ok(());
+                }
+                KeyCode::Char('c') => {
+                    // Expect 'a' next for code actions
+                    editor.set_pending_command('c');
                     return Ok(());
                 }
                 _ => {
@@ -74,6 +79,8 @@ impl InputHandler {
                     let picker = crate::editor::Picker::new_file_finder(base_dir);
                     editor.set_picker(picker);
                     editor.set_mode(Mode::Picker);
+                    // Preload first item's preview
+                    Self::preload_picker_preview(editor);
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
@@ -82,6 +89,24 @@ impl InputHandler {
                     let picker = crate::editor::Picker::new_live_grep(base_dir);
                     editor.set_picker(picker);
                     editor.set_mode(Mode::Picker);
+                    // Note: live grep starts empty, so no preview to preload
+                    return Ok(());
+                }
+                _ => {
+                    // Invalid sequence
+                    return Ok(());
+                }
+            }
+        }
+
+        // Handle 'c' prefix for leader sequences (code actions)
+        if let Some('c') = editor.pending_command() {
+            editor.clear_pending_command();
+
+            match key_event.code {
+                KeyCode::Char('a') => {
+                    // <Space>ca - Code actions
+                    editor.request_code_actions();
                     return Ok(());
                 }
                 _ => {
@@ -1967,6 +1992,13 @@ impl InputHandler {
                 Self::paste_before(editor)?;
                 editor.clear_count();
             }
+            KeyCode::Char('Y') => {
+                // Y - yank line (same as yy)
+                let count = editor.effective_count();
+                let yanked = Operators::yank_line(editor.buffer(), count)?;
+                editor.registers_mut().yank(yanked);
+                editor.clear_count();
+            }
             // Join lines
             KeyCode::Char('J') => {
                 // J - join current line with next line
@@ -2043,8 +2075,11 @@ impl InputHandler {
             }
             // Toggle case
             KeyCode::Char('~') => {
-                // ~ - toggle case of character under cursor
-                Self::toggle_case_at_cursor(editor)?;
+                // ~ - toggle case of character under cursor (with count)
+                let count = editor.effective_count();
+                for _ in 0..count {
+                    Self::toggle_case_at_cursor(editor)?;
+                }
                 editor.clear_count();
             }
             // Undo/Redo
@@ -2692,24 +2727,38 @@ impl InputHandler {
             // Enter - select current item
             KeyCode::Enter => {
                 if let Some(picker) = editor.picker() {
+                    let picker_mode = picker.mode().clone();
+
                     if let Some(result) = picker.selected_result() {
-                        // Load file and jump to location
-                        let location = result.location.clone();
-                        let line = result.line;
-                        let col = result.col;
+                        if picker_mode == crate::editor::PickerMode::Custom {
+                            // Custom mode - apply code action
+                            let action_index = result.line; // We stored index in line field
 
-                        // Close picker first
-                        editor.close_picker();
-                        editor.set_mode(Mode::Normal);
+                            // Close picker first
+                            editor.close_picker();
+                            editor.set_mode(Mode::Normal);
 
-                        // Load the file
-                        if let Err(e) = editor.load_file(&location) {
-                            eprintln!("Failed to load file {}: {}", location, e);
-                            return Ok(());
+                            // Apply the selected code action
+                            editor.apply_code_action(action_index);
+                        } else {
+                            // Regular mode - load file and jump to location
+                            let location = result.location.clone();
+                            let line = result.line;
+                            let col = result.col;
+
+                            // Close picker first
+                            editor.close_picker();
+                            editor.set_mode(Mode::Normal);
+
+                            // Load the file
+                            if let Err(e) = editor.load_file(&location) {
+                                eprintln!("Failed to load file {}: {}", location, e);
+                                return Ok(());
+                            }
+
+                            // Jump to line/col
+                            editor.buffer_mut().cursor_mut().set_position(line, col);
                         }
-
-                        // Jump to line/col
-                        editor.buffer_mut().cursor_mut().set_position(line, col);
                     }
                 } else {
                     // No picker, return to normal
@@ -2757,24 +2806,32 @@ impl InputHandler {
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_down();
                 }
+                // Preload preview for newly selected item
+                Self::preload_picker_preview(editor);
             }
             // Ctrl-P - move up in results
             KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_up();
                 }
+                // Preload preview for newly selected item
+                Self::preload_picker_preview(editor);
             }
             // Down arrow - move down in results
             KeyCode::Down => {
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_down();
                 }
+                // Preload preview for newly selected item
+                Self::preload_picker_preview(editor);
             }
             // Up arrow - move up in results
             KeyCode::Up => {
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_up();
                 }
+                // Preload preview for newly selected item
+                Self::preload_picker_preview(editor);
             }
             // Any other character - insert at cursor
             KeyCode::Char(ch) => {
@@ -2786,6 +2843,22 @@ impl InputHandler {
         }
 
         Ok(())
+    }
+
+    /// Preloads preview for the currently selected picker item
+    fn preload_picker_preview(editor: &mut Editor) {
+        if let Some(picker) = editor.picker() {
+            if let Some(result) = picker.selected_result() {
+                // Only preload for file picker modes (not custom)
+                if *picker.mode() != crate::editor::PickerMode::Custom {
+                    let file_path = result.location.clone();
+                    // This will load the file if not cached
+                    editor.get_or_load_preview(&file_path);
+                    // Trim cache to prevent memory bloat (keep max 50 entries)
+                    editor.trim_preview_cache(50);
+                }
+            }
+        }
     }
 
     /// Polls for the next event
@@ -3217,8 +3290,13 @@ impl InputHandler {
 
         // Check if text contains newline (line paste vs character paste)
         let position = if text.contains('\n') {
-            // Line paste - insert before current line (at start of line)
-            (line_idx, 0)
+            // Line paste - insert at end of previous line (or start if on first line)
+            if line_idx > 0 {
+                let prev_line_len = editor.buffer().rope().line(line_idx - 1).len_chars();
+                (line_idx - 1, prev_line_len)
+            } else {
+                (0, 0)
+            }
         } else {
             // Character paste - insert at cursor
             (line_idx, col)

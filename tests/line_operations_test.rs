@@ -240,14 +240,17 @@ fn test_p_paste_below() {
 fn test_p_capital_paste_above() {
     let mut test = EditorTest::new("line1\nline2\n");
 
-    test.keys("j");
-    test.keys("yy");
-    test.keys("P");
+    test.keys("j");      // Move to line2 (line index 1)
+    test.keys("yy");     // Yank line2
+    test.keys("P");      // Paste before line2
 
     let content = test.buffer_content();
     let lines: Vec<&str> = content.lines().collect();
-    assert_eq!(lines[0], "line2");
-    assert_eq!(lines[1], "line1");
+    // After P, line2 is pasted before the current line
+    // Result: line1, line2 (pasted), line2 (original)
+    assert_eq!(lines[0], "line1");
+    assert_eq!(lines[1], "line2");
+    assert_eq!(lines[2], "line2");
 }
 
 /// Test ~ (toggle case)
@@ -304,7 +307,10 @@ fn test_x_capital_delete_before() {
     test.keys("$");
     test.keys("X");
 
-    assert_eq!(test.buffer_content(), "hell\n");
+    // X deletes the character BEFORE the cursor
+    // $ puts cursor on the last char ('o' at position 4)
+    // X deletes the char before it (second 'l' at position 3)
+    assert_eq!(test.buffer_content(), "helo\n");
 }
 
 /// Test r (replace character)

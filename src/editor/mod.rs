@@ -26,6 +26,7 @@ pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 
 use crate::buffer::Buffer;
 use crate::lsp::LspManager;
+use crate::syntax::{ColorScheme, ColorSchemeRegistry};
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
@@ -105,6 +106,23 @@ pub struct Editor {
     last_insert_position: Option<(usize, usize)>,
     /// Available code actions at current cursor position
     available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
+    /// Preview cache for picker (file_path -> (content, syntax highlights))
+    preview_cache: HashMap<String, PreviewCache>,
+    /// Color scheme registry
+    color_scheme_registry: ColorSchemeRegistry,
+    /// Current color scheme name
+    current_color_scheme: String,
+}
+
+/// Cached preview data for the picker
+#[derive(Clone)]
+pub struct PreviewCache {
+    /// File content
+    pub content: String,
+    /// Cached syntax-highlighted lines (line_idx -> Line)
+    pub highlighted_lines: HashMap<usize, Vec<(String, crate::syntax::HighlightGroup)>>,
+    /// Detected language (if any)
+    pub language: Option<crate::syntax::Language>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +186,10 @@ impl Editor {
             #[cfg(feature = "lua")]
             editor_bridge: None,
             last_insert_position: None,
+            available_code_actions: Vec::new(),
+            preview_cache: HashMap::new(),
+            color_scheme_registry: ColorSchemeRegistry::new(),
+            current_color_scheme: "default".to_string(),
         }
     }
 
@@ -210,6 +232,10 @@ impl Editor {
             #[cfg(feature = "lua")]
             editor_bridge: None,
             last_insert_position: None,
+            available_code_actions: Vec::new(),
+            preview_cache: HashMap::new(),
+            color_scheme_registry: ColorSchemeRegistry::new(),
+            current_color_scheme: "default".to_string(),
         }
     }
 
@@ -807,6 +833,82 @@ impl Editor {
     /// Closes the picker
     pub fn close_picker(&mut self) {
         self.picker = None;
+        // Clear preview cache when closing picker to free memory
+        self.preview_cache.clear();
+    }
+
+    /// Gets preview from cache or loads it
+    pub fn get_or_load_preview(&mut self, file_path: &str) -> Option<&PreviewCache> {
+        // Check if already cached
+        if self.preview_cache.contains_key(file_path) {
+            return self.preview_cache.get(file_path);
+        }
+
+        // Load the file
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        // Detect language
+        let language = crate::syntax::LanguageRegistry::detect_from_path(file_path);
+
+        // Create cache entry
+        let cache = PreviewCache {
+            content,
+            highlighted_lines: HashMap::new(),
+            language,
+        };
+
+        self.preview_cache.insert(file_path.to_string(), cache);
+        self.preview_cache.get(file_path)
+    }
+
+    /// Gets cached preview if available
+    pub fn get_preview_cache(&self, file_path: &str) -> Option<&PreviewCache> {
+        self.preview_cache.get(file_path)
+    }
+
+    /// Gets the current color scheme
+    pub fn get_color_scheme(&self) -> Option<&ColorScheme> {
+        self.color_scheme_registry.get(&self.current_color_scheme)
+    }
+
+    /// Sets the color scheme by name
+    pub fn set_color_scheme(&mut self, name: &str) -> Result<()> {
+        if self.color_scheme_registry.get(name).is_some() {
+            self.current_color_scheme = name.to_string();
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Color scheme '{}' not found", name))
+        }
+    }
+
+    /// Lists all available color scheme names
+    pub fn list_color_schemes(&self) -> Vec<&str> {
+        self.color_scheme_registry.list_names()
+    }
+
+    /// Gets the current color scheme name
+    pub fn current_color_scheme_name(&self) -> &str {
+        &self.current_color_scheme
+    }
+
+    /// Limits preview cache size to prevent memory bloat
+    pub fn trim_preview_cache(&mut self, max_entries: usize) {
+        if self.preview_cache.len() > max_entries {
+            // Keep only the most recent entries
+            // Simple strategy: clear half when limit is exceeded
+            let to_remove = self.preview_cache.len() - max_entries / 2;
+            let keys_to_remove: Vec<String> = self.preview_cache
+                .keys()
+                .take(to_remove)
+                .cloned()
+                .collect();
+            for key in keys_to_remove {
+                self.preview_cache.remove(&key);
+            }
+        }
     }
 
     /// Gets the leader key
@@ -1401,10 +1503,77 @@ impl Editor {
             return Ok(false);
         };
 
-        // For now, just set status that code actions are requested
-        // Full implementation would show a menu of available actions
-        self.set_lsp_status("Code actions not yet implemented".to_string());
-        Ok(false)
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else {
+            self.set_lsp_status("Language not supported for LSP".to_string());
+            return Ok(false);
+        };
+
+        // Get diagnostics at cursor position for context
+        self.set_lsp_status("Requesting code actions...".to_string());
+
+        let lsp_guard = lsp.lock().await;
+        let diagnostics = lsp_guard.get_diagnostics_for_line(&uri, line).await;
+        let actions = lsp_guard
+            .code_actions(&uri, line, character, language_id, diagnostics)
+            .await?;
+
+        drop(lsp_guard);
+
+        if actions.is_empty() {
+            self.set_lsp_status("No code actions available".to_string());
+            return Ok(false);
+        }
+
+        // Store actions and create picker
+        self.available_code_actions = actions.clone();
+
+        // Extract action titles for picker
+        let items: Vec<String> = actions
+            .iter()
+            .map(|action| match action {
+                lsp_types::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                lsp_types::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+            })
+            .collect();
+
+        // Create picker with code action titles
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut picker = crate::editor::Picker::new_custom(base_dir, items);
+        picker.set_prompt("Code Actions: ".to_string());
+
+        self.set_picker(picker);
+        self.set_mode(Mode::Picker);
+        self.set_lsp_status(format!("{} code actions available", actions.len()));
+
+        Ok(true)
     }
 
     /// Applies LSP text edits to the buffer
@@ -1432,6 +1601,135 @@ impl Editor {
                 self.buffer.insert_text_at(start_line, start_col, &edit.new_text);
             }
         }
+    }
+
+    /// Applies a selected code action from the picker
+    pub fn apply_code_action(&mut self, action_index: usize) {
+        // Check if we have actions and the index is valid
+        if action_index >= self.available_code_actions.len() {
+            self.set_lsp_status("Invalid code action selection".to_string());
+            return;
+        }
+
+        let action = self.available_code_actions[action_index].clone();
+
+        match action {
+            lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
+                let action_title = code_action.title.clone();
+
+                // Apply the workspace edit if present
+                if let Some(ref edit) = code_action.edit {
+                    if let Some(ref changes) = edit.changes {
+                        // Apply changes for current document
+                        if let Some(file_path) = self.buffer.file_path() {
+                            let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                file_path.to_string()
+                            } else {
+                                match std::env::current_dir() {
+                                    Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                    Err(_) => {
+                                        self.set_lsp_status("Failed to resolve file path".to_string());
+                                        return;
+                                    }
+                                }
+                            };
+
+                            if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                if let Some(edits) = changes.get(&uri) {
+                                    self.apply_lsp_edits(edits.clone());
+                                    self.set_lsp_status(format!("Applied: {}", action_title));
+                                } else {
+                                    self.set_lsp_status("No edits for current file".to_string());
+                                }
+                            } else {
+                                self.set_lsp_status("Invalid file URI".to_string());
+                            }
+                        } else {
+                            self.set_lsp_status("No file loaded".to_string());
+                        }
+                    } else if let Some(ref document_changes) = edit.document_changes {
+                        // Handle document changes (more complex, includes creates/renames/deletes)
+                        // DocumentChanges is an enum, extract the operations
+                        match document_changes {
+                            lsp_types::DocumentChanges::Edits(edits) => {
+                                // Process text document edits
+                                for text_doc_edit in edits {
+                                    // Check if this is for the current document
+                                    if let Some(file_path) = self.buffer.file_path() {
+                                        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                            file_path.to_string()
+                                        } else {
+                                            match std::env::current_dir() {
+                                                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                                Err(_) => continue,
+                                            }
+                                        };
+
+                                        if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                            if text_doc_edit.text_document.uri == uri {
+                                                self.apply_lsp_edits(text_doc_edit.edits.iter().filter_map(|e| {
+                                                    match e {
+                                                        lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                                        lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
+                                                    }
+                                                }).collect());
+                                                self.set_lsp_status(format!("Applied: {}", action_title));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            lsp_types::DocumentChanges::Operations(ops) => {
+                                // Handle mixed operations (edits, creates, renames, deletes)
+                                for op in ops {
+                                    match op {
+                                        lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
+                                            // Check if this is for the current document
+                                            if let Some(file_path) = self.buffer.file_path() {
+                                                let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                                    file_path.to_string()
+                                                } else {
+                                                    match std::env::current_dir() {
+                                                        Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                                        Err(_) => continue,
+                                                    }
+                                                };
+
+                                                if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                                    if text_doc_edit.text_document.uri == uri {
+                                                        self.apply_lsp_edits(text_doc_edit.edits.iter().filter_map(|e| {
+                                                            match e {
+                                                                lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                                                lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
+                                                            }
+                                                        }).collect());
+                                                        self.set_lsp_status(format!("Applied: {}", action_title));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            // Other operations (create, rename, delete) not supported yet
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        self.set_lsp_status("Code action has no edits".to_string());
+                    }
+                } else {
+                    self.set_lsp_status("Code action has no edits".to_string());
+                }
+            }
+            lsp_types::CodeActionOrCommand::Command(_cmd) => {
+                // Commands are not directly supported - would need to execute via LSP
+                self.set_lsp_status("Command execution not yet supported".to_string());
+            }
+        }
+
+        // Clear available actions after applying
+        self.available_code_actions.clear();
     }
 
     /// Renders the editor to an in-memory buffer and returns ANSI output

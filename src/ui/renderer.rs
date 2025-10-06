@@ -352,14 +352,21 @@ impl Renderer {
         frame.render_widget(paragraph, area);
     }
 
-    /// Calculates the picker overlay area (centered, takes up 60% of screen)
+    /// Calculates the picker overlay area (centered, takes up 80% of screen)
     fn get_picker_area(full_area: Rect) -> Rect {
-        let width = (full_area.width * 60) / 100;
+        let width = (full_area.width * 80) / 100;
         let height = (full_area.height * 60) / 100;
         let x = (full_area.width - width) / 2;
         let y = (full_area.height - height) / 2;
 
-        Rect::new(x, y, width.max(40), height.max(15))
+        Rect::new(x, y, width.max(60), height.max(15))
+    }
+
+    /// Determines if we should show the preview panel based on available width
+    fn should_show_preview(area: Rect) -> bool {
+        // Show preview only if we have at least 100 columns total
+        // This leaves ~40 cols for the list and ~60 for preview
+        area.width >= 100
     }
 
     /// Renders the picker overlay
@@ -367,11 +374,13 @@ impl Renderer {
         let Some(picker) = editor.picker() else { return };
 
         let picker_area = Self::get_picker_area(frame.area());
+        let show_preview = Self::should_show_preview(picker_area);
 
         // Create block with border
         let mode_name = match picker.mode() {
             crate::editor::PickerMode::FindFiles => "Find Files",
             crate::editor::PickerMode::LiveGrep => "Live Grep",
+            crate::editor::PickerMode::Custom => "Select",
         };
 
         let block = Block::default()
@@ -381,12 +390,27 @@ impl Renderer {
 
         frame.render_widget(block.clone(), picker_area);
 
-        // Split picker area into query line and results
+        // Split picker area into left (query + results) and right (preview)
         let inner_area = block.inner(picker_area);
-        let chunks = Layout::default()
+        let main_chunks = if show_preview {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
+                .split(inner_area)
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(100)].as_ref())
+                .split(inner_area)
+        };
+
+        // Split left side into query line and results
+        let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
-            .split(inner_area);
+            .split(main_chunks[0]);
+
+        let chunks = left_chunks;
 
         // Render query line
         let query_text = format!("> {}", picker.query());
@@ -424,7 +448,11 @@ impl Renderer {
                 let actual_idx = idx + scroll_offset;
                 let is_selected = actual_idx == selected_idx;
 
-                let text = format!("  {}", result.display);
+                // Truncate the display path if needed
+                let max_display_len = result_width.saturating_sub(4); // Leave room for "  " prefix and padding
+                let display = crate::editor::Picker::truncate_path(&result.display, max_display_len);
+                let text = format!("  {}", display);
+
                 let style = if is_selected {
                     Style::default()
                         .bg(Color::Blue)
@@ -492,6 +520,189 @@ impl Renderer {
         let results_paragraph = Paragraph::new(all_lines)
             .style(Style::default().bg(Color::Black));
         frame.render_widget(results_paragraph, chunks[1]);
+
+        // Render preview panel if enabled and we have a selection
+        if show_preview {
+            if let Some(selected) = picker.selected_result() {
+                Self::render_picker_preview(frame, editor, selected, main_chunks[1]);
+            }
+        }
+    }
+
+    /// Renders the file preview for the picker
+    fn render_picker_preview(frame: &mut Frame, editor: &Editor, result: &crate::editor::PickerResult, area: Rect) {
+        use std::path::Path;
+
+        // Add border around preview
+        let preview_block = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(Color::DarkGray));
+
+        let inner_area = preview_block.inner(area);
+        frame.render_widget(preview_block, area);
+
+        // Try to get cached preview
+        let file_path = &result.location;
+        let preview = match editor.get_preview_cache(file_path) {
+            Some(p) => p,
+            None => {
+                // Show loading message (cache miss, will be loaded on next frame)
+                let loading_msg = "Loading preview...";
+                let paragraph = Paragraph::new(loading_msg)
+                    .style(Style::default().fg(Color::DarkGray).bg(Color::Black));
+                frame.render_widget(paragraph, inner_area);
+                return;
+            }
+        };
+
+        let theme = crate::syntax::Theme::default();
+        let mut lines_to_render = Vec::new();
+
+        let max_lines = inner_area.height as usize;
+        let total_lines = preview.content.lines().count();
+
+        // Calculate which lines to show
+        let (start_line, end_line) = if result.line > 0 {
+            // For LiveGrep results, center around the matched line
+            let context = max_lines / 2;
+            let start = result.line.saturating_sub(context);
+            let end = (result.line + context).min(total_lines);
+            (start, end)
+        } else {
+            // For file finder, show from the top
+            (0, max_lines.min(total_lines))
+        };
+
+        if let Some(lang) = preview.language {
+            // Use syntax highlighting
+            match crate::syntax::SyntaxHighlighter::new(lang) {
+                Ok(mut highlighter) => {
+                    highlighter.parse(&preview.content);
+
+                    for (line_idx, line_text) in preview.content.lines().enumerate() {
+                        if line_idx < start_line {
+                            continue;
+                        }
+                        if line_idx >= end_line {
+                            break;
+                        }
+
+                        let highlights = highlighter.highlights_for_line(line_idx, &preview.content);
+                        let is_target_line = result.line > 0 && line_idx == result.line;
+
+                        // Build the line with syntax highlighting
+                        let mut spans = Vec::new();
+
+                        // Add line number prefix
+                        let line_num = format!("{:>4} │ ", line_idx + 1);
+                        let line_num_style = if is_target_line {
+                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        };
+                        spans.push(Span::styled(line_num, line_num_style));
+
+                        // Add syntax-highlighted content
+                        let chars: Vec<char> = line_text.chars().collect();
+                        let mut col_idx = 0;
+
+                        while col_idx < chars.len() {
+                            // Find the syntax group for this character
+                            let syntax_group = highlights.iter()
+                                .find(|(range, _)| range.contains(&col_idx))
+                                .map(|(_, group)| *group);
+
+                            // Find the end of this styled region
+                            let mut end_col = col_idx + 1;
+                            while end_col < chars.len() {
+                                let next_group = highlights.iter()
+                                    .find(|(range, _)| range.contains(&end_col))
+                                    .map(|(_, group)| *group);
+
+                                if next_group != syntax_group {
+                                    break;
+                                }
+                                end_col += 1;
+                            }
+
+                            let text: String = chars[col_idx..end_col].iter().collect();
+                            let mut style = if let Some(group) = syntax_group {
+                                let color = theme.get_color(group);
+                                Style::default().fg(color)
+                            } else {
+                                Style::default().fg(Color::White)
+                            };
+
+                            // Highlight the target line
+                            if is_target_line {
+                                style = style.bg(Color::Rgb(40, 40, 60));
+                            }
+
+                            spans.push(Span::styled(text, style));
+                            col_idx = end_col;
+                        }
+
+                        lines_to_render.push(Line::from(spans));
+                    }
+                }
+                Err(_) => {
+                    // Fall back to plain text
+                    Self::render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+                }
+            }
+        } else {
+            // No syntax highlighting available, show plain text
+            Self::render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+        }
+
+        let paragraph = Paragraph::new(lines_to_render)
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(paragraph, inner_area);
+    }
+
+    /// Renders plain text preview without syntax highlighting
+    fn render_plain_preview(content: &str, result: &crate::editor::PickerResult, area: Rect, lines: &mut Vec<Line<'static>>) {
+        let max_lines = area.height as usize;
+        let total_lines = content.lines().count();
+
+        // Calculate which lines to show
+        let (start_line, end_line) = if result.line > 0 {
+            let context = max_lines / 2;
+            let start = result.line.saturating_sub(context);
+            let end = (result.line + context).min(total_lines);
+            (start, end)
+        } else {
+            (0, max_lines.min(total_lines))
+        };
+
+        for (line_idx, line_text) in content.lines().enumerate() {
+            if line_idx < start_line {
+                continue;
+            }
+            if line_idx >= end_line {
+                break;
+            }
+
+            let is_target_line = result.line > 0 && line_idx == result.line;
+
+            let line_num = format!("{:>4} │ ", line_idx + 1);
+            let line_num_style = if is_target_line {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            let text_style = if is_target_line {
+                Style::default().fg(Color::White).bg(Color::Rgb(40, 40, 60))
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(line_num, line_num_style),
+                Span::styled(line_text.to_string(), text_style),
+            ]));
+        }
     }
 
     /// Renders a single line with all highlighting (syntax, visual selection, search)

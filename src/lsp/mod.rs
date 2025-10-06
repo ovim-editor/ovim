@@ -496,8 +496,62 @@ impl LspManager {
                         }
                     }
                 }
+                "window/showMessage" => {
+                    // Only show messages if OVIM_LSP_DEBUG is set to avoid cluttering the terminal
+                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                        if let Some(params) = notification.params {
+                            if let Ok(msg_params) = serde_json::from_value::<lsp_types::ShowMessageParams>(params) {
+                                // Format message with severity prefix
+                                let prefix = match msg_params.typ {
+                                    lsp_types::MessageType::ERROR => "LSP Error",
+                                    lsp_types::MessageType::WARNING => "LSP Warning",
+                                    lsp_types::MessageType::INFO => "LSP Info",
+                                    lsp_types::MessageType::LOG => "LSP Log",
+                                    _ => "LSP",
+                                };
+                                let type_str = match msg_params.typ {
+                                    lsp_types::MessageType::ERROR => "ERROR",
+                                    lsp_types::MessageType::WARNING => "WARN",
+                                    lsp_types::MessageType::INFO => "INFO",
+                                    lsp_types::MessageType::LOG => "LOG",
+                                    _ => "UNKNOWN",
+                                };
+                                eprintln!("[{}:{}] {}: {}", language_id, prefix, type_str, msg_params.message);
+                            }
+                        }
+                    }
+                }
+                "window/logMessage" => {
+                    if let Some(params) = notification.params {
+                        if let Ok(log_params) = serde_json::from_value::<lsp_types::LogMessageParams>(params) {
+                            // Only log if OVIM_LSP_DEBUG is set
+                            if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                                let prefix = match log_params.typ {
+                                    lsp_types::MessageType::ERROR => "ERROR",
+                                    lsp_types::MessageType::WARNING => "WARN",
+                                    lsp_types::MessageType::INFO => "INFO",
+                                    lsp_types::MessageType::LOG => "LOG",
+                                    _ => "UNKNOWN",
+                                };
+                                eprintln!("[LSP:{}:{}] {}", language_id, prefix, log_params.message);
+                            }
+                        }
+                    }
+                }
+                "$/progress" => {
+                    // Progress notifications - could be used for status line updates
+                    // For now, silently ignore unless debug mode
+                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                        if let Some(params) = &notification.params {
+                            eprintln!("[LSP:{}] Progress: {:?}", language_id, params);
+                        }
+                    }
+                }
                 _ => {
                     // Silently ignore unknown notifications
+                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                        eprintln!("[LSP:{}] Unknown notification: {}", language_id, method);
+                    }
                 }
             }
         }
@@ -754,6 +808,61 @@ impl LspManager {
         Ok(edits.unwrap_or_default())
     }
 
+    /// Requests range formatting (format only a selection)
+    pub async fn format_range(
+        &self,
+        uri: &Url,
+        language_id: &str,
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        tab_size: u32,
+        insert_spaces: bool,
+    ) -> Result<Vec<lsp_types::TextEdit>> {
+        use lsp_types::{DocumentRangeFormattingParams, FormattingOptions, Position, Range, TextDocumentIdentifier};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports range formatting
+        if !server.supports_range_formatting().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = DocumentRangeFormattingParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            range: Range {
+                start: Position {
+                    line: start_line,
+                    character: start_character,
+                },
+                end: Position {
+                    line: end_line,
+                    character: end_character,
+                },
+            },
+            options: FormattingOptions {
+                tab_size,
+                insert_spaces,
+                ..Default::default()
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/rangeFormatting", serde_json::to_value(params)?)
+            .await?;
+
+        let edits: Option<Vec<lsp_types::TextEdit>> = serde_json::from_value(result).ok();
+
+        Ok(edits.unwrap_or_default())
+    }
+
     /// Requests code actions for a position in a document
     pub async fn code_actions(
         &self,
@@ -805,6 +914,326 @@ impl LspManager {
             serde_json::from_value(result).ok();
 
         Ok(response.unwrap_or_default())
+    }
+
+    /// Requests find references for a symbol at a position
+    pub async fn references(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+        include_declaration: bool,
+    ) -> Result<Vec<lsp_types::Location>> {
+        use lsp_types::{Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports references
+        if !server.supports_references().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            context: ReferenceContext {
+                include_declaration,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/references", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::Location>> = serde_json::from_value(result).ok();
+
+        Ok(response.unwrap_or_default())
+    }
+
+    /// Prepares for rename by checking if the symbol can be renamed
+    /// Returns the range of the symbol to rename and optionally a placeholder
+    pub async fn prepare_rename(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::PrepareRenameResponse>> {
+        use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports prepare rename
+        if !server.supports_prepare_rename().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            position: Position { line, character },
+        };
+
+        let result = server
+            .request("textDocument/prepareRename", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<lsp_types::PrepareRenameResponse> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests rename for a symbol at a position
+    pub async fn rename(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+        new_name: String,
+    ) -> Result<Option<lsp_types::WorkspaceEdit>> {
+        use lsp_types::{Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports rename
+        if !server.supports_rename().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = RenameParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            new_name,
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/rename", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<lsp_types::WorkspaceEdit> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests signature help for a position in a document
+    pub async fn signature_help(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::SignatureHelp>> {
+        use lsp_types::{Position, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports signature help
+        if !server.supports_signature_help().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = SignatureHelpParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            context: None,
+        };
+
+        let result = server
+            .request("textDocument/signatureHelp", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<lsp_types::SignatureHelp> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests selection ranges for smart selection expansion
+    pub async fn selection_range(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::SelectionRange>> {
+        use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports selection range
+        if !server.supports_selection_range().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = SelectionRangeParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            positions: vec![Position { line, character }],
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/selectionRange", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::SelectionRange>> = serde_json::from_value(result).ok();
+
+        // Return the first (and only) selection range
+        Ok(response.and_then(|ranges| ranges.into_iter().next()))
+    }
+
+    /// Requests document symbols (outline)
+    pub async fn document_symbols(
+        &self,
+        uri: &Url,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::DocumentSymbol>> {
+        use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports document symbols
+        if !server.supports_document_symbol().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = DocumentSymbolParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/documentSymbol", serde_json::to_value(params)?)
+            .await?;
+
+        // Response can be either DocumentSymbol[] or SymbolInformation[]
+        // Try DocumentSymbol first (hierarchical)
+        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::DocumentSymbol>>(result.clone()) {
+            return Ok(symbols);
+        }
+
+        // Fall back to SymbolInformation (flat) - convert to DocumentSymbol
+        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::SymbolInformation>>(result) {
+            // Convert SymbolInformation to DocumentSymbol (without children)
+            let doc_symbols = symbols.into_iter().map(|sym| {
+                lsp_types::DocumentSymbol {
+                    name: sym.name,
+                    detail: None,
+                    kind: sym.kind,
+                    tags: sym.tags,
+                    deprecated: None, // Use tags instead
+                    range: sym.location.range,
+                    selection_range: sym.location.range,
+                    children: None,
+                }
+            }).collect();
+            return Ok(doc_symbols);
+        }
+
+        Ok(Vec::new())
+    }
+
+    /// Requests workspace-wide symbol search
+    pub async fn workspace_symbols(
+        &self,
+        language_id: &str,
+        query: String,
+    ) -> Result<Vec<lsp_types::SymbolInformation>> {
+        use lsp_types::WorkspaceSymbolParams;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports workspace symbols
+        if !server.supports_workspace_symbol().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = WorkspaceSymbolParams {
+            query,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("workspace/symbol", serde_json::to_value(params)?)
+            .await?;
+
+        // Response can be either SymbolInformation[] or WorkspaceSymbol[]
+        // Try SymbolInformation first (simpler format)
+        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::SymbolInformation>>(result.clone()) {
+            return Ok(symbols);
+        }
+
+        // Try WorkspaceSymbol (newer format with optional data field)
+        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::WorkspaceSymbol>>(result) {
+            // Convert WorkspaceSymbol to SymbolInformation
+            let symbol_infos = symbols.into_iter().filter_map(|sym| {
+                // WorkspaceSymbol has OneOf<Location, WorkspaceLocation>
+                // We only support full Location for now
+                match sym.location {
+                    lsp_types::OneOf::Left(location) => Some(lsp_types::SymbolInformation {
+                        name: sym.name,
+                        kind: sym.kind,
+                        tags: sym.tags,
+                        deprecated: None,
+                        location,
+                        container_name: sym.container_name,
+                    }),
+                    lsp_types::OneOf::Right(_workspace_location) => {
+                        // Skip workspace locations (URIs without ranges) for now
+                        // These need to be resolved separately
+                        None
+                    }
+                }
+            }).collect();
+            return Ok(symbol_infos);
+        }
+
+        Ok(Vec::new())
     }
 }
 
