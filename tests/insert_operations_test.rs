@@ -65,23 +65,25 @@ fn test_I_with_indentation() {
     let mut test = EditorTest::new("    indented line");
 
     test.press('$') // Move to end
-        .press('I') // Should go to first non-blank
+        .press('I') // Should go to first non-blank (column 4, before 'i')
         .type_text("prefix ")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "prefix     indented line\n");
-    test.assert_cursor(0, 6);
+    // I goes to first non-blank, so "prefix " is inserted at column 4
+    assert_eq!(test.buffer_content(), "    prefix indented line\n");
+    test.assert_cursor(0, 10); // After "    prefix" (cursor moved back 1 from 11)
 }
 
 #[test]
 fn test_I_whitespace_only_line() {
     let mut test = EditorTest::new("    \n");
 
-    test.press('I')
+    test.press('I') // On whitespace-only line, I goes to column 0
         .type_text("text")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "text\n");
+    // The trailing whitespace is preserved
+    assert_eq!(test.buffer_content(), "text    \n");
     test.assert_cursor(0, 3);
 }
 

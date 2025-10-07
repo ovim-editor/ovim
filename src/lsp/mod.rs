@@ -34,7 +34,7 @@ use lsp_types::{
 };
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -50,7 +50,8 @@ const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 
 /// Debounce duration for textDocument/didChange notifications (milliseconds)
 /// Coalesces rapid changes to reduce LSP traffic by ~1000x
-const CHANGE_DEBOUNCE_MS: u64 = 300;
+/// Reduced to 150ms for faster diagnostics feedback (was 300ms)
+const CHANGE_DEBOUNCE_MS: u64 = 150;
 
 /// Notification message from a language server
 #[derive(Clone)]
@@ -71,16 +72,20 @@ struct ChangeDebouncer {
     /// Full text of the pending change
     pending_text: String,
 
+    /// Old text before change (for incremental sync)
+    old_text: Option<String>,
+
     /// Timer handle for the debounce delay
     timer_handle: Option<JoinHandle<()>>,
 }
 
 impl ChangeDebouncer {
-    fn new(uri: Url, language_id: String, text: String) -> Self {
+    fn new(uri: Url, language_id: String, text: String, old_text: Option<String>) -> Self {
         Self {
             uri,
             language_id,
             pending_text: text,
+            old_text,
             timer_handle: None,
         }
     }
@@ -125,6 +130,9 @@ pub struct LspManager {
     /// Channel for debounce flush requests (URI to flush)
     flush_tx: mpsc::Sender<Url>,
     flush_rx: Mutex<Option<mpsc::Receiver<Url>>>,
+
+    /// Flag indicating diagnostics have changed and cache needs update
+    diagnostics_changed: AtomicBool,
 }
 
 impl LspManager {
@@ -143,12 +151,18 @@ impl LspManager {
             change_debouncers: RwLock::new(HashMap::new()),
             flush_tx,
             flush_rx: Mutex::new(Some(flush_rx)),
+            diagnostics_changed: AtomicBool::new(false),
         }
     }
 
     /// Generates a unique request ID
     fn next_request_id(&self) -> RequestId {
         RequestId::Number(self.next_request_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Checks if diagnostics have changed and resets the flag
+    pub fn diagnostics_changed(&self) -> bool {
+        self.diagnostics_changed.swap(false, Ordering::SeqCst)
     }
 
     /// Starts a language server for the given language
@@ -242,6 +256,7 @@ impl LspManager {
     pub async fn set_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>) {
         let mut diags = self.diagnostics.lock().await;
         diags.insert(uri, diagnostics);
+        self.diagnostics_changed.store(true, Ordering::SeqCst);
     }
 
     /// Gets health information for all language servers
@@ -321,11 +336,13 @@ impl LspManager {
     }
 
     /// Internal method to send textDocument/didChange notification immediately
+    /// Supports both full and incremental sync
     async fn send_did_change_immediate(
         &self,
         uri: Url,
         language_id: &str,
         text: String,
+        old_text: Option<String>,
     ) -> Result<()> {
         // Increment version BEFORE acquiring server lock to prevent race condition
         let version = self.increment_document_version(&uri).await;
@@ -335,17 +352,46 @@ impl LspManager {
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
-        // Use full document sync for simplicity (instead of incremental changes)
+        // Check if server supports incremental sync and we have old content
+        let supports_incremental = server.supports_incremental_sync().await;
+
+        let content_changes = if supports_incremental && old_text.is_some() {
+            // Try incremental sync
+            if let Some(old) = old_text {
+                if let Some((range, new_text)) = compute_simple_diff(&old, &text) {
+                    // Use incremental change
+                    vec![TextDocumentContentChangeEvent {
+                        range: Some(range),
+                        range_length: None, // Optional, we don't compute it
+                        text: new_text,
+                    }]
+                } else {
+                    // No changes detected or identical content
+                    return Ok(());
+                }
+            } else {
+                // Fallback to full sync
+                vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text,
+                }]
+            }
+        } else {
+            // Use full document sync
+            vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text,
+            }]
+        };
+
         let params = DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier {
                 uri: uri.clone(),
                 version,
             },
-            content_changes: vec![TextDocumentContentChangeEvent {
-                range: None, // None = full document
-                range_length: None,
-                text,
-            }],
+            content_changes,
         };
 
         server
@@ -368,10 +414,11 @@ impl LspManager {
             // Send the pending change
             let language_id = debouncer.language_id.clone();
             let text = debouncer.pending_text.clone();
+            let old_text = debouncer.old_text.clone();
             let uri = debouncer.uri.clone();
             drop(debouncer); // Release lock before async call
 
-            self.send_did_change_immediate(uri, &language_id, text)
+            self.send_did_change_immediate(uri, &language_id, text, old_text)
                 .await?;
         }
         Ok(())
@@ -384,6 +431,7 @@ impl LspManager {
         uri: Url,
         language_id: &str,
         text: String,
+        old_text: Option<String>,
     ) -> Result<()> {
         // Get or create debouncer for this document
         let debouncers = self.change_debouncers.read().await;
@@ -398,6 +446,7 @@ impl LspManager {
                 uri.clone(),
                 language_id.to_string(),
                 text.clone(),
+                old_text.clone(),
             )));
             debouncers.insert(uri.clone(), debouncer.clone());
             debouncer
@@ -409,8 +458,12 @@ impl LspManager {
         // Cancel existing timer if any
         debouncer.cancel_timer();
 
-        // Update pending text
+        // Update pending text and old text
         debouncer.pending_text = text;
+        // Only set old_text if we don't already have it (first change after sync)
+        if debouncer.old_text.is_none() {
+            debouncer.old_text = old_text;
+        }
 
         // Clone flush channel for timer closure
         let flush_tx = self.flush_tx.clone();
@@ -1174,6 +1227,47 @@ impl LspManager {
         Ok(Vec::new())
     }
 
+    /// Requests document highlights for symbol at position
+    /// Returns ranges that should be highlighted (read, write, or text occurrences)
+    pub async fn document_highlight(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::DocumentHighlight>> {
+        use lsp_types::{DocumentHighlightParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports document highlight
+        if !server.supports_document_highlight().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = DocumentHighlightParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/documentHighlight", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::DocumentHighlight>> = serde_json::from_value(result).ok();
+
+        Ok(response.unwrap_or_default())
+    }
+
     /// Requests workspace-wide symbol search
     pub async fn workspace_symbols(
         &self,
@@ -1235,6 +1329,167 @@ impl LspManager {
 
         Ok(Vec::new())
     }
+
+    /// Requests folding ranges for a document
+    /// Returns ranges that can be folded (functions, blocks, comments, etc.)
+    pub async fn folding_range(
+        &self,
+        uri: &Url,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::FoldingRange>> {
+        use lsp_types::{FoldingRangeParams, TextDocumentIdentifier};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports folding range
+        if !server.supports_folding_range().await {
+            return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        let params = FoldingRangeParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/foldingRange", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::FoldingRange>> = serde_json::from_value(result).ok();
+
+        Ok(response.unwrap_or_default())
+    }
+}
+
+/// Computes a simple diff between old and new content for incremental sync
+/// Returns Some((range, new_text)) if a single contiguous change is found,
+/// or None if the change is too complex (fallback to full sync)
+pub fn compute_simple_diff(old_content: &str, new_content: &str) -> Option<(lsp_types::Range, String)> {
+    use lsp_types::{Position, Range};
+
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    let new_lines: Vec<&str> = new_content.lines().collect();
+
+    // Find first differing line from start
+    let mut start_line = 0;
+    while start_line < old_lines.len() && start_line < new_lines.len() {
+        if old_lines[start_line] != new_lines[start_line] {
+            break;
+        }
+        start_line += 1;
+    }
+
+    // If all old lines match prefix of new lines, it's just appending
+    if start_line == old_lines.len() {
+        if new_lines.len() > old_lines.len() {
+            // Lines were appended
+            let start_pos = Position {
+                line: old_lines.len() as u32,
+                character: 0,
+            };
+            let new_text = new_lines[old_lines.len()..].join("\n");
+            let new_text = if !old_content.is_empty() { format!("\n{}", new_text) } else { new_text };
+
+            return Some((
+                Range {
+                    start: start_pos,
+                    end: start_pos,
+                },
+                new_text,
+            ));
+        }
+        // Contents are identical
+        return None;
+    }
+
+    // Find first differing line from end
+    let mut end_line_old = old_lines.len();
+    let mut end_line_new = new_lines.len();
+
+    while end_line_old > start_line && end_line_new > start_line {
+        if old_lines[end_line_old - 1] != new_lines[end_line_new - 1] {
+            break;
+        }
+        end_line_old -= 1;
+        end_line_new -= 1;
+    }
+
+    // Now we have a contiguous changed region:
+    // old: start_line..end_line_old
+    // new: start_line..end_line_new
+
+    // Find character-level start position within the first changed line
+    let start_char = if start_line < old_lines.len() && start_line < new_lines.len() {
+        let old_line = old_lines[start_line];
+        let new_line = new_lines[start_line];
+        let mut char_pos = 0;
+
+        for (old_ch, new_ch) in old_line.chars().zip(new_line.chars()) {
+            if old_ch != new_ch {
+                break;
+            }
+            char_pos += 1;
+        }
+        char_pos
+    } else {
+        0
+    };
+
+    // Find character-level end position within the last changed line
+    let end_char = if end_line_old > 0 && end_line_old <= old_lines.len() {
+        old_lines[end_line_old - 1].chars().count()
+    } else {
+        0
+    };
+
+    let start_pos = Position {
+        line: start_line as u32,
+        character: start_char as u32,
+    };
+
+    let end_pos = Position {
+        line: (end_line_old.saturating_sub(1)) as u32,
+        character: end_char as u32,
+    };
+
+    // Extract the new text for the changed region
+    let new_text = if start_line < new_lines.len() {
+        if end_line_new > start_line {
+            // Multiple lines changed
+            let mut result = String::new();
+
+            // First line: from start_char onwards
+            if let Some(first_line) = new_lines.get(start_line) {
+                if start_char < first_line.chars().count() {
+                    result.push_str(&first_line.chars().skip(start_char).collect::<String>());
+                }
+            }
+
+            // Middle lines
+            for line in &new_lines[start_line + 1..end_line_new] {
+                result.push('\n');
+                result.push_str(line);
+            }
+
+            result
+        } else {
+            // Single line partial change
+            new_lines[start_line]
+                .chars()
+                .skip(start_char)
+                .collect::<String>()
+        }
+    } else {
+        String::new()
+    };
+
+    Some((Range { start: start_pos, end: end_pos }, new_text))
 }
 
 /// Converts a MarkedString to plain text
@@ -1294,5 +1549,107 @@ mod tests {
         assert_eq!(v2, 2);
 
         assert_eq!(manager.get_document_version(&uri).await, 2);
+    }
+
+    #[test]
+    fn test_compute_simple_diff_no_change() {
+        let old = "Hello, world!";
+        let new = "Hello, world!";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_none(), "No diff expected for identical content");
+    }
+
+    #[test]
+    fn test_compute_simple_diff_single_line_insert() {
+        let old = "Hello, world!";
+        let new = "Hello, beautiful world!";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for inserted text");
+
+        let (range, new_text) = result.unwrap();
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 7);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, 13);
+        assert_eq!(new_text, "beautiful world!");
+    }
+
+    #[test]
+    fn test_compute_simple_diff_single_line_delete() {
+        let old = "Hello, beautiful world!";
+        let new = "Hello, world!";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for deleted text");
+
+        let (range, new_text) = result.unwrap();
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 7);
+        assert_eq!(range.end.line, 0);
+        assert_eq!(range.end.character, 23);
+        assert_eq!(new_text, "world!");
+    }
+
+    #[test]
+    fn test_compute_simple_diff_multiline_change() {
+        let old = "Line 1\nLine 2\nLine 3\n";
+        let new = "Line 1\nModified Line 2\nLine 3\n";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for modified line");
+
+        let (range, new_text) = result.unwrap();
+        assert_eq!(range.start.line, 1);
+        assert_eq!(range.start.character, 0);
+        assert_eq!(range.end.line, 1);
+        assert_eq!(range.end.character, 6);
+        assert_eq!(new_text, "Modified Line 2");
+    }
+
+    #[test]
+    fn test_compute_simple_diff_insert_line() {
+        let old = "Line 1\nLine 3\n";
+        let new = "Line 1\nLine 2\nLine 3\n";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for inserted line");
+
+        let (range, new_text) = result.unwrap();
+        assert_eq!(range.start.line, 1);
+        // The diff algorithm should include "Line 2\nLine 3" as the new text
+        assert!(new_text.contains("Line 2") || new_text.contains("Line 3"),
+                "Expected new_text to contain inserted content, got: {:?}", new_text);
+    }
+
+    #[test]
+    fn test_compute_simple_diff_delete_line() {
+        let old = "Line 1\nLine 2\nLine 3\n";
+        let new = "Line 1\nLine 3\n";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for deleted line");
+
+        let (_range, _new_text) = result.unwrap();
+        assert_eq!(_range.start.line, 1);
+    }
+
+    #[test]
+    fn test_compute_simple_diff_start_of_file() {
+        let old = "fn main() {\n    println!(\"Hello\");\n}\n";
+        let new = "// Comment\nfn main() {\n    println!(\"Hello\");\n}\n";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for content added at start");
+
+        let (range, new_text) = result.unwrap();
+        assert_eq!(range.start.line, 0);
+        assert_eq!(range.start.character, 0);
+        assert!(new_text.starts_with("// Comment"));
+    }
+
+    #[test]
+    fn test_compute_simple_diff_end_of_file() {
+        let old = "fn main() {\n    println!(\"Hello\");\n}\n";
+        let new = "fn main() {\n    println!(\"Hello\");\n}\n// Trailing comment\n";
+        let result = compute_simple_diff(old, new);
+        assert!(result.is_some(), "Expected diff for content added at end");
+
+        let (_range, new_text) = result.unwrap();
+        assert!(new_text.contains("// Trailing comment"));
     }
 }

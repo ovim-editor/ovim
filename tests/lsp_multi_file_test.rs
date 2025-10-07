@@ -138,7 +138,10 @@ fn main() {
     test.keys("gd");
 
     // Go back with Ctrl-O
-    test.keys("<C-o>");
+    test.press_with(
+        crossterm::event::KeyCode::Char('o'),
+        crossterm::event::KeyModifiers::CONTROL
+    );
 
     // Should be back at original position (or close to it)
     test.assert_mode(ovim::mode::Mode::Normal);
@@ -171,6 +174,10 @@ fn main() {
 /// Test LSP cleans up properly when switching files
 #[test]
 fn test_lsp_cleanup_on_file_switch() {
+    // Create test files
+    std::fs::write("/tmp/file1.rs", "fn test() {}\n").unwrap();
+    std::fs::write("/tmp/file2.rs", "fn other() {}\n").unwrap();
+
     let mut test = EditorTest::new("fn test() {}\n");
     test.set_file_path("/tmp/file1.rs".to_string());
 
@@ -184,6 +191,10 @@ fn test_lsp_cleanup_on_file_switch() {
 
     // Should still be in normal mode, LSP should handle gracefully
     test.assert_mode(ovim::mode::Mode::Normal);
+
+    // Clean up
+    std::fs::remove_file("/tmp/file1.rs").ok();
+    std::fs::remove_file("/tmp/file2.rs").ok();
 }
 
 /// Test LSP with syntax errors

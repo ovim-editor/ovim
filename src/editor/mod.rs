@@ -86,10 +86,14 @@ pub struct Editor {
     pending_lsp_action: Option<LspAction>,
     /// Hover information to display (from LSP)
     hover_info: Option<String>,
+    /// Scroll offset for hover window (line number)
+    hover_scroll: usize,
     /// Flag to track if buffer was modified this iteration (for LSP didChange)
     buffer_modified_this_iteration: bool,
     /// Flag to track if buffer was saved this iteration (for LSP didSave)
     buffer_saved_this_iteration: bool,
+    /// Last synced buffer content for incremental LSP sync (None = use full sync)
+    last_synced_content: Option<String>,
     /// LSP status message (errors, warnings, or info)
     lsp_status: String,
     /// Active LSP servers (language_id -> server_name)
@@ -106,6 +110,8 @@ pub struct Editor {
     last_insert_position: Option<(usize, usize)>,
     /// Available code actions at current cursor position
     available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
+    /// Available completion items at current cursor position
+    available_completions: Vec<lsp_types::CompletionItem>,
     /// Preview cache for picker (file_path -> (content, syntax highlights))
     preview_cache: HashMap<String, PreviewCache>,
     /// Color scheme registry
@@ -119,8 +125,9 @@ pub struct Editor {
 pub struct PreviewCache {
     /// File content
     pub content: String,
-    /// Cached syntax-highlighted lines (line_idx -> Line)
-    pub highlighted_lines: HashMap<usize, Vec<(String, crate::syntax::HighlightGroup)>>,
+    /// Cached syntax-highlighted lines (line_idx -> highlights)
+    /// Uses RefCell for interior mutability so we can cache highlights even with immutable reference
+    pub highlighted_lines: std::cell::RefCell<HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>>,
     /// Detected language (if any)
     pub language: Option<crate::syntax::Language>,
 }
@@ -176,8 +183,10 @@ impl Editor {
             diagnostic_count: (0, 0, 0, 0),
             pending_lsp_action: None,
             hover_info: None,
+            hover_scroll: 0,
             buffer_modified_this_iteration: false,
             buffer_saved_this_iteration: false,
+            last_synced_content: None,
             lsp_status: String::new(),
             active_lsp_servers: HashMap::new(),
             needs_lsp_init: false,
@@ -187,6 +196,7 @@ impl Editor {
             editor_bridge: None,
             last_insert_position: None,
             available_code_actions: Vec::new(),
+            available_completions: Vec::new(),
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "default".to_string(),
@@ -222,8 +232,10 @@ impl Editor {
             diagnostic_count: (0, 0, 0, 0),
             pending_lsp_action: None,
             hover_info: None,
+            hover_scroll: 0,
             buffer_modified_this_iteration: false,
             buffer_saved_this_iteration: false,
+            last_synced_content: None,
             lsp_status: String::new(),
             active_lsp_servers: HashMap::new(),
             needs_lsp_init: false,
@@ -233,6 +245,7 @@ impl Editor {
             editor_bridge: None,
             last_insert_position: None,
             available_code_actions: Vec::new(),
+            available_completions: Vec::new(),
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "default".to_string(),
@@ -844,6 +857,21 @@ impl Editor {
             return self.preview_cache.get(file_path);
         }
 
+        // Check file size before loading (max 1MB for preview)
+        const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
+        if let Ok(metadata) = std::fs::metadata(file_path) {
+            if metadata.len() > MAX_PREVIEW_SIZE {
+                // File too large, create a placeholder cache entry
+                let cache = PreviewCache {
+                    content: format!("File too large for preview ({} bytes)", metadata.len()),
+                    highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+                    language: None,
+                };
+                self.preview_cache.insert(file_path.to_string(), cache);
+                return self.preview_cache.get(file_path);
+            }
+        }
+
         // Load the file
         let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
@@ -856,7 +884,7 @@ impl Editor {
         // Create cache entry
         let cache = PreviewCache {
             content,
-            highlighted_lines: HashMap::new(),
+            highlighted_lines: std::cell::RefCell::new(HashMap::new()),
             language,
         };
 
@@ -989,6 +1017,49 @@ impl Editor {
         &self.active_lsp_servers
     }
 
+    /// Gets comprehensive LSP information for debugging
+    pub fn get_lsp_info(&self) -> String {
+        let mut info = String::new();
+
+        // LSP Manager status
+        if self.lsp_manager.is_some() {
+            info.push_str("LSP Manager: Active\n");
+        } else {
+            info.push_str("LSP Manager: Not initialized\n");
+            return info;
+        }
+
+        // Active servers
+        if self.active_lsp_servers.is_empty() {
+            info.push_str("\nActive Servers: None\n");
+        } else {
+            info.push_str("\nActive Servers:\n");
+            for (lang_id, server_name) in &self.active_lsp_servers {
+                info.push_str(&format!("  {} -> {}\n", lang_id, server_name));
+            }
+        }
+
+        // Current file
+        if let Some(path) = self.buffer.file_path() {
+            info.push_str(&format!("\nCurrent File: {}\n", path));
+        }
+
+        // Diagnostic counts
+        let (errors, warnings, infos, hints) = self.diagnostic_count;
+        info.push_str(&format!("\nDiagnostics:\n"));
+        info.push_str(&format!("  Errors: {}\n", errors));
+        info.push_str(&format!("  Warnings: {}\n", warnings));
+        info.push_str(&format!("  Info: {}\n", infos));
+        info.push_str(&format!("  Hints: {}\n", hints));
+
+        // Current status
+        if !self.lsp_status.is_empty() {
+            info.push_str(&format!("\nStatus: {}\n", self.lsp_status));
+        }
+
+        info
+    }
+
     /// Triggers async re-highlighting if needed
     pub async fn process_pending_rehighlight(&mut self) {
         // Check if buffer needs re-highlighting
@@ -1059,6 +1130,24 @@ impl Editor {
     /// Clears the hover information
     pub fn clear_hover(&mut self) {
         self.hover_info = None;
+        self.hover_scroll = 0;
+    }
+
+    /// Gets the hover scroll offset
+    pub fn hover_scroll(&self) -> usize {
+        self.hover_scroll
+    }
+
+    /// Scrolls the hover window down
+    pub fn scroll_hover_down(&mut self, lines: usize) {
+        if self.hover_info.is_some() {
+            self.hover_scroll = self.hover_scroll.saturating_add(lines);
+        }
+    }
+
+    /// Scrolls the hover window up
+    pub fn scroll_hover_up(&mut self, lines: usize) {
+        self.hover_scroll = self.hover_scroll.saturating_sub(lines);
     }
 
     /// Marks that the buffer was modified (for LSP notification)
@@ -1102,11 +1191,18 @@ impl Editor {
             return;
         };
 
-        // Send full document sync with debouncing
+        // Send document sync with debouncing (incremental if supported)
         let content = self.buffer.rope().to_string();
 
+        // Pass last_synced_content for incremental sync
+        let old_content = self.last_synced_content.clone();
+
         let lsp_guard = lsp.lock().await;
-        let _ = lsp_guard.did_change(uri, language_id, content).await;
+        let _ = lsp_guard.did_change(uri, language_id, content.clone(), old_content).await;
+        drop(lsp_guard);
+
+        // Update last_synced_content after successful sync
+        self.last_synced_content = Some(content);
     }
 
     /// Sends didSave notification if buffer was saved, then resets the flag
@@ -1338,11 +1434,13 @@ impl Editor {
 
         drop(lsp_guard);
 
-        // Store hover information and provide feedback
+        // Store hover information and enter HoverWindow mode if available
         self.hover_info = hover_text;
+        self.hover_scroll = 0; // Reset scroll position
 
         if self.hover_info.is_some() {
-            self.set_lsp_status("Hover information available".to_string());
+            self.set_mode(Mode::HoverWindow);
+            self.set_lsp_status("Hover window opened (q to close, j/k to scroll)".to_string());
             Ok(true)
         } else {
             self.set_lsp_status("No hover information found".to_string());
@@ -1410,14 +1508,33 @@ impl Editor {
 
         drop(lsp_guard);
 
-        if !items.is_empty() {
-            self.set_lsp_status(format!("Found {} completion items", items.len()));
-            // TODO: Display completion items in picker/popup
-            Ok(true)
-        } else {
+        if items.is_empty() {
             self.set_lsp_status("No completion items found".to_string());
-            Ok(false)
+            return Ok(false);
         }
+
+        // Store completion items
+        self.available_completions = items.clone();
+
+        // Extract labels for picker
+        let labels: Vec<String> = items
+            .iter()
+            .map(|item| {
+                // Use label or insert_text, fallback to empty
+                item.label.clone()
+            })
+            .collect();
+
+        // Create picker with completion items
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut picker = crate::editor::Picker::new_completion(base_dir, labels);
+        picker.set_prompt("Completion: ".to_string());
+
+        self.set_picker(picker);
+        self.set_mode(Mode::Picker);
+        self.set_lsp_status(format!("{} completions available", items.len()));
+
+        Ok(true)
     }
 
     /// Formats the current document via LSP (implementation)
@@ -1730,6 +1847,43 @@ impl Editor {
 
         // Clear available actions after applying
         self.available_code_actions.clear();
+    }
+
+    /// Applies the selected completion item
+    pub fn apply_completion(&mut self, completion_index: usize) {
+        // Check if we have completions and the index is valid
+        if completion_index >= self.available_completions.len() {
+            self.set_lsp_status("Invalid completion selection".to_string());
+            return;
+        }
+
+        // Clone the completion data we need before mutable borrow
+        let completion = self.available_completions[completion_index].clone();
+        let insert_text = completion.insert_text.as_ref()
+            .unwrap_or(&completion.label)
+            .clone();
+        let label = completion.label.clone();
+
+        // Insert the completion text at cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line();
+        let col = cursor.col();
+
+        // Get the line's char index
+        let line_char_idx = self.buffer.rope().line_to_char(line);
+        let insert_pos = line_char_idx + col;
+
+        // Insert the text
+        self.buffer_mut().rope_mut().insert(insert_pos, &insert_text);
+
+        // Move cursor to end of inserted text
+        let new_col = col + insert_text.chars().count();
+        self.buffer_mut().cursor_mut().set_position(line, new_col);
+
+        self.set_lsp_status(format!("Inserted: {}", label));
+
+        // Clear available completions after applying
+        self.available_completions.clear();
     }
 
     /// Renders the editor to an in-memory buffer and returns ANSI output

@@ -55,6 +55,12 @@ impl TextObjects {
             end_col += 1;
         }
 
+        // Include trailing whitespace (but not all of it if at end of line)
+        // Vim's iw includes "white space between words"
+        while end_col < chars.len() && chars[end_col].is_whitespace() && chars[end_col] != '\n' {
+            end_col += 1;
+        }
+
         Some(TextObjectRange {
             start_line: line_idx,
             start_col,

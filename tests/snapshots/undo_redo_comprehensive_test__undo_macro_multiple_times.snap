@@ -1,0 +1,12 @@
+---
+source: tests/undo_redo_comprehensive_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:0
+Lines: 3
+
+Buffer:
+bc
+[d]ef
+ghi

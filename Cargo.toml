@@ -23,6 +23,7 @@ lsp-types = "0.95"
 url = "2.5"
 mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional = true }
 ignore = "0.4"
+dashmap = "6.0"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
@@ -34,3 +35,4 @@ lua = ["mlua"]
 [dev-dependencies]
 criterion = "0.5"
 reqwest = { version = "0.12.23", features = ["json"] }
+insta = "1.40"

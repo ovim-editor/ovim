@@ -71,6 +71,9 @@ fn test_command_force_quit() {
 /// Test :e command (edit file)
 #[test]
 fn test_command_edit_file() {
+    // Create the file first
+    std::fs::write("/tmp/newfile.txt", "new content\n").unwrap();
+
     let mut test = EditorTest::new("old\n");
 
     test.press(':');
@@ -78,6 +81,9 @@ fn test_command_edit_file() {
     test.press_enter();
 
     test.assert_mode(ovim::mode::Mode::Normal);
+
+    // Clean up
+    std::fs::remove_file("/tmp/newfile.txt").ok();
 }
 
 /// Test :s command (substitute)
@@ -174,6 +180,10 @@ fn test_backspace_in_command_mode() {
 
     test.press(':');
     test.type_text("wrong");
+    // Backspace 5 times to delete "wrong"
+    test.press_backspace();
+    test.press_backspace();
+    test.press_backspace();
     test.press_backspace();
     test.press_backspace();
     test.type_text("q");

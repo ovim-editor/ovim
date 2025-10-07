@@ -112,6 +112,7 @@ async fn run_headless_loop(
         if let Some(lsp_manager) = editor.lsp_manager() {
             let lsp = lsp_manager.lock().await;
             lsp.process_notifications().await;
+            lsp.process_flush_requests().await;
         }
 
         // Initialize LSP for newly loaded files
@@ -127,8 +128,14 @@ async fn run_headless_loop(
         #[cfg(feature = "lua")]
         let _ = editor.process_lua_commands();
 
-        // Update diagnostic cache
-        editor.update_diagnostic_cache().await;
+        // Update diagnostic cache only if diagnostics changed
+        if let Some(lsp_manager) = editor.lsp_manager() {
+            let lsp = lsp_manager.lock().await;
+            if lsp.diagnostics_changed() {
+                drop(lsp); // Release lock before async call
+                editor.update_diagnostic_cache().await;
+            }
+        }
 
         // Check for API requests (non-blocking with timeout)
         match tokio::time::timeout(Duration::from_millis(50), api_rx.recv()).await {
@@ -174,6 +181,7 @@ async fn run_event_loop(
         if let Some(lsp_manager) = editor.lsp_manager() {
             let lsp = lsp_manager.lock().await;
             lsp.process_notifications().await;
+            lsp.process_flush_requests().await;
         }
 
         // Initialize LSP for newly loaded files
@@ -182,8 +190,14 @@ async fn run_event_loop(
             editor.clear_lsp_init_flag();
         }
 
-        // Update diagnostic cache for UI display
-        editor.update_diagnostic_cache().await;
+        // Update diagnostic cache only if diagnostics changed
+        if let Some(lsp_manager) = editor.lsp_manager() {
+            let lsp = lsp_manager.lock().await;
+            if lsp.diagnostics_changed() {
+                drop(lsp); // Release lock before async call
+                editor.update_diagnostic_cache().await;
+            }
+        }
 
         // Check if enough time has passed since last edit for re-highlighting
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
@@ -357,6 +371,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
                 crate::editor::PickerMode::FindFiles => "FindFiles".to_string(),
                 crate::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
                 crate::editor::PickerMode::Custom => "Custom".to_string(),
+                crate::editor::PickerMode::Completion => "Completion".to_string(),
             },
             query: p.query().to_string(),
             results: p.filtered_results().iter().map(|r| {
@@ -589,7 +604,8 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     })
                 }
             // Handle :colorscheme <name> or :colorscheme (to show current)
-            } else if command == "colorscheme" {
+            // Also support :colo abbreviation
+            } else if command == "colorscheme" || command == "colo" {
                 let current = editor.current_color_scheme_name();
                 let schemes = editor.list_color_schemes().join(", ");
                 ApiResponse::Success(SuccessResponse {
@@ -597,7 +613,7 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     message: Some(format!("Current: {}\nAvailable: {}", current, schemes)),
                     line_count: None,
                 })
-            } else if let Some(scheme_name) = command.strip_prefix("colorscheme ") {
+            } else if let Some(scheme_name) = command.strip_prefix("colorscheme ").or_else(|| command.strip_prefix("colo ")) {
                 match editor.set_color_scheme(scheme_name.trim()) {
                     Ok(_) => ApiResponse::Success(SuccessResponse {
                         success: true,

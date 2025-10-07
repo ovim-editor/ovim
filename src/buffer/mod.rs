@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
 use std::ops::Range;
+use std::collections::HashSet;
 
 /// Represents a text buffer using a Rope data structure for efficient editing
 pub struct Buffer {
@@ -27,6 +28,9 @@ pub struct Buffer {
     highlight_version: u64,
     /// Whether re-highlighting is pending
     pending_rehighlight: bool,
+    /// Set of line numbers that are folded (start line of each fold)
+    /// Lines are 0-indexed
+    folded_lines: HashSet<usize>,
 }
 
 impl Buffer {
@@ -41,6 +45,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
+            folded_lines: HashSet::new(),
         }
     }
 
@@ -55,6 +60,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
+            folded_lines: HashSet::new(),
         }
     }
 
@@ -189,6 +195,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
+            folded_lines: HashSet::new(),
         };
 
         // Enable syntax highlighting based on file extension
@@ -505,6 +512,40 @@ impl Buffer {
         } else {
             false
         }
+    }
+
+    /// Checks if a line is folded
+    pub fn is_line_folded(&self, line: usize) -> bool {
+        self.folded_lines.contains(&line)
+    }
+
+    /// Folds a line (hides lines from start_line to end_line)
+    pub fn fold_line(&mut self, start_line: usize) {
+        self.folded_lines.insert(start_line);
+    }
+
+    /// Unfolds a line
+    pub fn unfold_line(&mut self, start_line: usize) {
+        self.folded_lines.remove(&start_line);
+    }
+
+    /// Toggles fold state for a line
+    pub fn toggle_fold(&mut self, start_line: usize) {
+        if self.folded_lines.contains(&start_line) {
+            self.folded_lines.remove(&start_line);
+        } else {
+            self.folded_lines.insert(start_line);
+        }
+    }
+
+    /// Gets all folded lines
+    pub fn folded_lines(&self) -> &HashSet<usize> {
+        &self.folded_lines
+    }
+
+    /// Clears all folds
+    pub fn clear_folds(&mut self) {
+        self.folded_lines.clear();
     }
 }
 

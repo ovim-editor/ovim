@@ -19,6 +19,8 @@ pub enum Mode {
     Replace,
     /// Picker mode - for fuzzy finding files/grep
     Picker,
+    /// HoverWindow mode - for displaying and scrolling hover information
+    HoverWindow,
 }
 
 impl Mode {
@@ -34,6 +36,7 @@ impl Mode {
             Mode::Search => "SEARCH",
             Mode::Replace => "REPLACE",
             Mode::Picker => "PICKER",
+            Mode::HoverWindow => "HOVER",
         }
     }
 

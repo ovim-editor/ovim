@@ -572,8 +572,10 @@ fn test_ctrl_t_indent_in_insert() {
         )                 // Indent in insert mode
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "tline\n");
-    test.assert_cursor(0, 0);
+    // Ctrl-T in insert mode adds one level of indentation (4 spaces by default)
+    assert_eq!(test.buffer_content(), "    line\n");
+    // After Esc from insert mode, cursor moves back one position, so from 4 to 3
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -587,6 +589,7 @@ fn test_ctrl_d_dedent_in_insert() {
         )                 // Dedent in insert mode
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "d    line\n");
+    // Ctrl-D in insert mode removes one level of indentation (4 spaces)
+    assert_eq!(test.buffer_content(), "line\n");
     test.assert_cursor(0, 0);
 }
