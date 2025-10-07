@@ -16,7 +16,7 @@ use lsp_types::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -169,6 +169,40 @@ struct LanguageServerInner {
 
     /// Task supervisor for managing background tasks
     supervisor: TaskSupervisor,
+
+    // Cached capability flags (lock-free, set once during initialization)
+    /// Cached: supports goto definition
+    cap_goto_definition: AtomicBool,
+    /// Cached: supports hover
+    cap_hover: AtomicBool,
+    /// Cached: supports completion
+    cap_completion: AtomicBool,
+    /// Cached: supports formatting
+    cap_formatting: AtomicBool,
+    /// Cached: supports range formatting
+    cap_range_formatting: AtomicBool,
+    /// Cached: supports code actions
+    cap_code_actions: AtomicBool,
+    /// Cached: supports references
+    cap_references: AtomicBool,
+    /// Cached: supports rename
+    cap_rename: AtomicBool,
+    /// Cached: supports prepare rename
+    cap_prepare_rename: AtomicBool,
+    /// Cached: supports signature help
+    cap_signature_help: AtomicBool,
+    /// Cached: supports document symbols
+    cap_document_symbol: AtomicBool,
+    /// Cached: supports selection range
+    cap_selection_range: AtomicBool,
+    /// Cached: supports workspace symbols
+    cap_workspace_symbol: AtomicBool,
+    /// Cached: supports document highlight
+    cap_document_highlight: AtomicBool,
+    /// Cached: supports incremental sync
+    cap_incremental_sync: AtomicBool,
+    /// Cached: supports folding range
+    cap_folding_range: AtomicBool,
 }
 
 impl LanguageServer {
@@ -224,6 +258,23 @@ impl LanguageServer {
             outgoing_tx,
             incoming_rx: Mutex::new(Some(incoming_rx)),
             supervisor,
+            // Initialize cached capabilities to false (will be set during initialization)
+            cap_goto_definition: AtomicBool::new(false),
+            cap_hover: AtomicBool::new(false),
+            cap_completion: AtomicBool::new(false),
+            cap_formatting: AtomicBool::new(false),
+            cap_range_formatting: AtomicBool::new(false),
+            cap_code_actions: AtomicBool::new(false),
+            cap_references: AtomicBool::new(false),
+            cap_rename: AtomicBool::new(false),
+            cap_prepare_rename: AtomicBool::new(false),
+            cap_signature_help: AtomicBool::new(false),
+            cap_document_symbol: AtomicBool::new(false),
+            cap_selection_range: AtomicBool::new(false),
+            cap_workspace_symbol: AtomicBool::new(false),
+            cap_document_highlight: AtomicBool::new(false),
+            cap_incremental_sync: AtomicBool::new(false),
+            cap_folding_range: AtomicBool::new(false),
         });
 
         let server = Self { inner: inner.clone() };
@@ -462,6 +513,10 @@ impl LanguageServer {
         // Store capabilities
         let mut caps = self.inner.capabilities.lock().await;
         *caps = Some(init_result.capabilities.clone());
+        drop(caps); // Release lock
+
+        // Cache capability flags for lock-free access
+        self.cache_capabilities(&init_result.capabilities);
 
         // Send initialized notification
         self.notify("initialized", serde_json::to_value(InitializedParams {})?).await
@@ -640,8 +695,8 @@ impl LanguageServer {
             .await
             .map_err(|_| anyhow!("Failed to send request"))?;
 
-        // Wait for response with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        // Wait for response with timeout (5s for faster feedback on failures)
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
             Ok(Ok(result)) => result.context(format!("LSP request '{}' failed", method)),
             Ok(Err(_)) => Err(anyhow!("Response channel closed for method '{}'", method)),
             Err(_) => {
@@ -837,131 +892,197 @@ impl LanguageServer {
         }
     }
 
+    /// Caches capability flags from ServerCapabilities for lock-free access
+    /// Called once during initialization
+    fn cache_capabilities(&self, caps: &ServerCapabilities) {
+        // Cache goto definition support
+        self.inner.cap_goto_definition.store(
+            caps.definition_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache hover support
+        self.inner.cap_hover.store(
+            caps.hover_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache completion support
+        self.inner.cap_completion.store(
+            caps.completion_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache formatting support
+        self.inner.cap_formatting.store(
+            caps.document_formatting_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache range formatting support
+        self.inner.cap_range_formatting.store(
+            caps.document_range_formatting_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache code actions support
+        self.inner.cap_code_actions.store(
+            caps.code_action_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache references support
+        self.inner.cap_references.store(
+            caps.references_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache rename support
+        self.inner.cap_rename.store(
+            caps.rename_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache prepare rename support
+        let prepare_rename_support = match &caps.rename_provider {
+            Some(lsp_types::OneOf::Right(options)) => options.prepare_provider.unwrap_or(false),
+            _ => false,
+        };
+        self.inner.cap_prepare_rename.store(prepare_rename_support, Ordering::Relaxed);
+
+        // Cache signature help support
+        self.inner.cap_signature_help.store(
+            caps.signature_help_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache document symbol support
+        self.inner.cap_document_symbol.store(
+            caps.document_symbol_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache selection range support
+        self.inner.cap_selection_range.store(
+            caps.selection_range_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache workspace symbol support
+        self.inner.cap_workspace_symbol.store(
+            caps.workspace_symbol_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache document highlight support
+        self.inner.cap_document_highlight.store(
+            caps.document_highlight_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache incremental sync support
+        let incremental_sync = match &caps.text_document_sync {
+            Some(lsp_types::TextDocumentSyncCapability::Kind(kind)) => {
+                *kind == lsp_types::TextDocumentSyncKind::INCREMENTAL
+            }
+            Some(lsp_types::TextDocumentSyncCapability::Options(opts)) => {
+                opts.change == Some(lsp_types::TextDocumentSyncKind::INCREMENTAL)
+            }
+            None => false,
+        };
+        self.inner.cap_incremental_sync.store(incremental_sync, Ordering::Relaxed);
+
+        // Cache folding range support
+        self.inner.cap_folding_range.store(
+            caps.folding_range_provider.is_some(),
+            Ordering::Relaxed,
+        );
+    }
+
     /// Gets the server capabilities
     pub async fn capabilities(&self) -> Option<ServerCapabilities> {
         let caps = self.inner.capabilities.lock().await;
         caps.clone()
     }
 
-    /// Checks if the server supports goto definition
+    /// Checks if the server supports goto definition (lock-free)
     pub async fn supports_goto_definition(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.definition_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_goto_definition.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports hover
+    /// Checks if the server supports hover (lock-free)
     pub async fn supports_hover(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.hover_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_hover.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports completion
+    /// Checks if the server supports completion (lock-free)
     pub async fn supports_completion(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.completion_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_completion.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports formatting
+    /// Checks if the server supports formatting (lock-free)
     pub async fn supports_formatting(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.document_formatting_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_formatting.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports range formatting
+    /// Checks if the server supports range formatting (lock-free)
     pub async fn supports_range_formatting(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.document_range_formatting_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_range_formatting.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports code actions
+    /// Checks if the server supports code actions (lock-free)
     pub async fn supports_code_actions(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.code_action_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_code_actions.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports references
+    /// Checks if the server supports references (lock-free)
     pub async fn supports_references(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.references_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_references.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports rename
+    /// Checks if the server supports rename (lock-free)
     pub async fn supports_rename(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.rename_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_rename.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports prepare rename
+    /// Checks if the server supports prepare rename (lock-free)
     pub async fn supports_prepare_rename(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            // Check if rename_provider exists and has prepare_support
-            match &caps.rename_provider {
-                Some(lsp_types::OneOf::Right(options)) => options.prepare_provider.unwrap_or(false),
-                _ => false,
-            }
-        } else {
-            false
-        }
+        self.inner.cap_prepare_rename.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports signature help
+    /// Checks if the server supports signature help (lock-free)
     pub async fn supports_signature_help(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.signature_help_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_signature_help.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports document symbols
+    /// Checks if the server supports document symbols (lock-free)
     pub async fn supports_document_symbol(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.document_symbol_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_document_symbol.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports selection range
+    /// Checks if the server supports selection range (lock-free)
     pub async fn supports_selection_range(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.selection_range_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_selection_range.load(Ordering::Relaxed)
     }
 
-    /// Checks if the server supports workspace symbols
+    /// Checks if the server supports workspace symbols (lock-free)
     pub async fn supports_workspace_symbol(&self) -> bool {
-        if let Some(caps) = self.capabilities().await {
-            caps.workspace_symbol_provider.is_some()
-        } else {
-            false
-        }
+        self.inner.cap_workspace_symbol.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports document highlight (lock-free)
+    pub async fn supports_document_highlight(&self) -> bool {
+        self.inner.cap_document_highlight.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports incremental sync (lock-free)
+    pub async fn supports_incremental_sync(&self) -> bool {
+        self.inner.cap_incremental_sync.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports folding range (lock-free)
+    pub async fn supports_folding_range(&self) -> bool {
+        self.inner.cap_folding_range.load(Ordering::Relaxed)
     }
 }
 

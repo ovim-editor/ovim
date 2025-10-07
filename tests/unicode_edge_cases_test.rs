@@ -1,6 +1,6 @@
 mod helpers;
 use helpers::EditorTest;
-// use insta::assert_snapshot;
+use insta::assert_snapshot;
 
 // ============================================================================
 // Unicode - Basic multi-byte characters

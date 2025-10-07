@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal as RatatuiTerminal,
 };
 use std::io;
@@ -32,39 +32,26 @@ impl Renderer {
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
     pub fn render_to_frame(frame: &mut Frame, editor: &Editor) {
-        let theme = Theme::default();
+        // Get color scheme from editor, fall back to default if not found
+        let scheme = editor.get_color_scheme()
+            .cloned()
+            .unwrap_or_else(|| crate::syntax::ColorScheme::default_dark());
+        let theme = Theme::from_scheme(scheme);
         let cursor_pos = editor.buffer().cursor();
         let cursor_line = cursor_pos.line();
         let cursor_col = cursor_pos.col();
 
-        // Calculate layout based on whether we have hover info to display
-        let hover_height = if editor.hover_info().is_some() { 3 } else { 0 };
-        let chunks = if hover_height > 0 {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(hover_height as u16),
-                    Constraint::Length(1),
-                ].as_ref())
-                .split(frame.area())
-        } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
-                .split(frame.area())
-        };
+        // Simple layout: main buffer + status line
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+            .split(frame.area());
 
         // Render the main text area
         let viewport_start = Self::render_buffer(frame, editor, &theme, chunks[0]);
 
-        // Render hover info if present
-        if let Some(hover_text) = editor.hover_info() {
-            Self::render_hover_info(frame, hover_text, chunks[1]);
-        }
-
-        // Render the status line or command line or search line (last chunk)
-        let status_chunk = if hover_height > 0 { chunks[2] } else { chunks[1] };
+        // Render the status line or command line or search line
+        let status_chunk = chunks[1];
         if editor.mode() == crate::mode::Mode::Command {
             Self::render_command_line(frame, editor, status_chunk);
         } else if editor.mode() == crate::mode::Mode::Search {
@@ -76,6 +63,13 @@ impl Renderer {
         // Render picker overlay if in Picker mode
         if editor.mode() == crate::mode::Mode::Picker {
             Self::render_picker(frame, editor, frame.area());
+        }
+
+        // Render hover window if in HoverWindow mode
+        if editor.mode() == crate::mode::Mode::HoverWindow {
+            if let Some(hover_text) = editor.hover_info() {
+                Self::render_hover_window(frame, hover_text, editor.hover_scroll(), chunks[0]);
+            }
         }
 
         // Set hardware cursor position
@@ -123,6 +117,7 @@ impl Renderer {
             crate::mode::Mode::Picker => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Command => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::HoverWindow => SetCursorStyle::SteadyBlock,
             _ => SetCursorStyle::SteadyBlock,
         };
         crossterm::execute!(io::stdout(), cursor_style)?;
@@ -296,23 +291,78 @@ impl Renderer {
         frame.render_widget(paragraph, area);
     }
 
-    /// Renders hover information from LSP
-    fn render_hover_info(frame: &mut Frame, hover_text: &str, area: Rect) {
-        // Limit hover text to fit in the area (truncate if needed)
-        let max_lines = area.height.saturating_sub(2) as usize; // Leave room for borders
-        let lines: Vec<&str> = hover_text.lines().take(max_lines).collect();
-        let text = lines.join("\n");
+    /// Renders hover information as a scrollable floating window
+    fn render_hover_window(
+        frame: &mut Frame,
+        hover_text: &str,
+        scroll_offset: usize,
+        buffer_area: Rect,
+    ) {
+        // Split text into lines
+        let all_lines: Vec<&str> = hover_text.lines().collect();
+        let total_lines = all_lines.len();
+
+        // Calculate window dimensions (centered, large window)
+        let window_width = (buffer_area.width * 80 / 100).min(120); // 80% of screen, max 120 cols
+        let window_height = (buffer_area.height * 70 / 100).min(30); // 70% of screen, max 30 lines
+
+        // Center the window
+        let window_x = buffer_area.x + (buffer_area.width.saturating_sub(window_width)) / 2;
+        let window_y = buffer_area.y + (buffer_area.height.saturating_sub(window_height)) / 2;
+
+        let window_area = Rect {
+            x: window_x,
+            y: window_y,
+            width: window_width,
+            height: window_height,
+        };
+
+        // Calculate visible content height (minus borders and title)
+        let content_height = window_height.saturating_sub(2) as usize;
+
+        // Clamp scroll offset to valid range
+        let max_scroll = total_lines.saturating_sub(content_height);
+        let clamped_scroll = scroll_offset.min(max_scroll);
+
+        // Get visible lines
+        let visible_lines: Vec<String> = all_lines
+            .iter()
+            .skip(clamped_scroll)
+            .take(content_height)
+            .map(|line| format!(" {} ", line)) // Add padding
+            .collect();
+
+        let text = visible_lines.join("\n");
+
+        // Create title with scroll indicator
+        let title = if total_lines > content_height {
+            format!(
+                " Hover Info ({}/{} lines, q to close, j/k to scroll) ",
+                clamped_scroll + 1,
+                total_lines
+            )
+        } else {
+            " Hover Info (q to close) ".to_string()
+        };
 
         let paragraph = Paragraph::new(text)
-            .style(Style::default().bg(Color::Black).fg(Color::White))
+            .style(Style::default()
+                .bg(Color::Rgb(30, 30, 40))
+                .fg(Color::Rgb(230, 230, 230)))
             .block(
-                ratatui::widgets::Block::default()
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
-                    .title(" Hover Info ")
-                    .title_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            );
-        frame.render_widget(paragraph, area);
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(255, 200, 100)))
+                    .title(title)
+                    .title_style(Style::default()
+                        .fg(Color::Rgb(255, 200, 100))
+                        .add_modifier(Modifier::BOLD)),
+            )
+            .wrap(ratatui::widgets::Wrap { trim: false });
+
+        // Clear background and render window
+        frame.render_widget(ratatui::widgets::Clear, window_area);
+        frame.render_widget(paragraph, window_area);
     }
 
     /// Renders the command line
@@ -381,6 +431,7 @@ impl Renderer {
             crate::editor::PickerMode::FindFiles => "Find Files",
             crate::editor::PickerMode::LiveGrep => "Live Grep",
             crate::editor::PickerMode::Custom => "Select",
+            crate::editor::PickerMode::Completion => "Completion",
         };
 
         let block = Block::default()
@@ -562,7 +613,7 @@ impl Renderer {
         let total_lines = preview.content.lines().count();
 
         // Calculate which lines to show
-        let (start_line, end_line) = if result.line > 0 {
+        let (start_line, end_line) = if result.line > 0 && result.line < total_lines {
             // For LiveGrep results, center around the matched line
             let context = max_lines / 2;
             let start = result.line.saturating_sub(context);
@@ -577,7 +628,34 @@ impl Renderer {
             // Use syntax highlighting
             match crate::syntax::SyntaxHighlighter::new(lang) {
                 Ok(mut highlighter) => {
-                    highlighter.parse(&preview.content);
+                    // Parse only once if not already parsed
+                    // Note: We can't cache the parsed tree easily, but we can cache the highlights per line
+                    let mut need_parsing = false;
+
+                    // Check if we need to parse (if any line in our range is not cached)
+                    {
+                        let cache = preview.highlighted_lines.borrow();
+                        for line_idx in start_line..end_line {
+                            if !cache.contains_key(&line_idx) {
+                                need_parsing = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse if needed
+                    if need_parsing {
+                        highlighter.parse(&preview.content);
+
+                        // Cache highlights for the visible range
+                        let mut cache = preview.highlighted_lines.borrow_mut();
+                        for line_idx in start_line..end_line {
+                            if !cache.contains_key(&line_idx) {
+                                let highlights = highlighter.highlights_for_line(line_idx, &preview.content);
+                                cache.insert(line_idx, highlights);
+                            }
+                        }
+                    }
 
                     for (line_idx, line_text) in preview.content.lines().enumerate() {
                         if line_idx < start_line {
@@ -587,8 +665,9 @@ impl Renderer {
                             break;
                         }
 
-                        let highlights = highlighter.highlights_for_line(line_idx, &preview.content);
-                        let is_target_line = result.line > 0 && line_idx == result.line;
+                        // Get highlights from cache
+                        let highlights = preview.highlighted_lines.borrow().get(&line_idx).cloned().unwrap_or_default();
+                        let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
 
                         // Build the line with syntax highlighting
                         let mut spans = Vec::new();
@@ -666,7 +745,7 @@ impl Renderer {
         let total_lines = content.lines().count();
 
         // Calculate which lines to show
-        let (start_line, end_line) = if result.line > 0 {
+        let (start_line, end_line) = if result.line > 0 && result.line < total_lines {
             let context = max_lines / 2;
             let start = result.line.saturating_sub(context);
             let end = (result.line + context).min(total_lines);
@@ -683,7 +762,7 @@ impl Renderer {
                 break;
             }
 
-            let is_target_line = result.line > 0 && line_idx == result.line;
+            let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
 
             let line_num = format!("{:>4} │ ", line_idx + 1);
             let line_num_style = if is_target_line {

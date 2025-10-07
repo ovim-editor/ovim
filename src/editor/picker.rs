@@ -6,6 +6,7 @@ pub enum PickerMode {
     FindFiles,
     LiveGrep,
     Custom,
+    Completion,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +86,30 @@ impl Picker {
 
         Self {
             mode: PickerMode::Custom,
+            query: String::new(),
+            query_cursor: 0,
+            all_results: results.clone(),
+            filtered_results: results,
+            selected_index: 0,
+            base_dir,
+        }
+    }
+
+    /// Creates a new completion picker with custom items
+    pub fn new_completion(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let results: Vec<PickerResult> = items
+            .into_iter()
+            .enumerate()
+            .map(|(idx, display)| PickerResult {
+                display,
+                location: idx.to_string(), // Use index as location identifier
+                line: idx,
+                col: 0,
+            })
+            .collect();
+
+        Self {
+            mode: PickerMode::Completion,
             query: String::new(),
             query_cursor: 0,
             all_results: results.clone(),
@@ -176,9 +201,16 @@ impl Picker {
                 let col_num = parts[2].parse::<usize>().unwrap_or(1);
                 let content = parts[3];
 
+                // Convert relative path to absolute path
+                let abs_path = if std::path::Path::new(file).is_absolute() {
+                    file.to_string()
+                } else {
+                    base_dir.join(file).to_string_lossy().to_string()
+                };
+
                 results.push(PickerResult {
                     display: format!("{}:{}:{}: {}", file, line_num, col_num, content.trim()),
-                    location: file.to_string(),
+                    location: abs_path,
                     line: line_num.saturating_sub(1), // Convert to 0-indexed
                     col: col_num.saturating_sub(1),
                 });
@@ -188,33 +220,133 @@ impl Picker {
         results
     }
 
+    /// Fuzzy match scoring function
+    /// Returns Some(score) if match succeeds, None otherwise
+    /// Higher scores are better matches
+    fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
+        if query.is_empty() {
+            return Some(0);
+        }
+
+        let query_lower = query.to_lowercase();
+        let target_lower = target.to_lowercase();
+
+        let query_chars: Vec<char> = query_lower.chars().collect();
+        let target_chars: Vec<char> = target_lower.chars().collect();
+
+        if query_chars.is_empty() {
+            return Some(0);
+        }
+
+        let mut query_idx = 0;
+        let mut target_idx = 0;
+        let mut score: i32 = 0;
+        let mut consecutive_matches = 0;
+        let mut last_match_idx: Option<usize> = None;
+
+        while query_idx < query_chars.len() && target_idx < target_chars.len() {
+            if query_chars[query_idx] == target_chars[target_idx] {
+                // Base score for match
+                score += 1;
+
+                // Bonus for consecutive matches
+                if let Some(last_idx) = last_match_idx {
+                    if target_idx == last_idx + 1 {
+                        consecutive_matches += 1;
+                        score += consecutive_matches * 5; // Increasing bonus for longer sequences
+                    } else {
+                        consecutive_matches = 0;
+                        // Penalty for gaps (but capped to not penalize too much)
+                        let gap = target_idx - last_idx - 1;
+                        score -= (gap as i32).min(3);
+                    }
+                } else {
+                    consecutive_matches = 0;
+                }
+
+                // Bonus for matching at start of target
+                if target_idx == 0 {
+                    score += 10;
+                }
+
+                // Bonus for matching after path separator or start of word
+                if target_idx > 0 {
+                    let prev_char = target_chars[target_idx - 1];
+                    if prev_char == '/' || prev_char == '_' || prev_char == '-' || prev_char == ' ' {
+                        score += 8;
+                    }
+                }
+
+                // Bonus for case match
+                if query.chars().nth(query_idx) == target.chars().nth(target_idx) {
+                    score += 2;
+                }
+
+                last_match_idx = Some(target_idx);
+                query_idx += 1;
+            }
+            target_idx += 1;
+        }
+
+        // Check if we matched all query characters
+        if query_idx == query_chars.len() {
+            // Bonus for shorter targets (more specific matches)
+            score += 100 - (target_chars.len() as i32).min(100);
+            Some(score)
+        } else {
+            None
+        }
+    }
+
     /// Updates the query and refreshes filtered results
     pub fn set_query(&mut self, query: String) {
         self.query = query;
 
         match self.mode {
             PickerMode::FindFiles => {
-                // Simple substring matching (case-insensitive)
-                let query_lower = self.query.to_lowercase();
-                self.filtered_results = self
+                // Fuzzy matching with scoring
+                let mut scored_results: Vec<(PickerResult, i32)> = self
                     .all_results
                     .iter()
-                    .filter(|r| r.display.to_lowercase().contains(&query_lower))
-                    .cloned()
+                    .filter_map(|r| {
+                        Self::fuzzy_match(&self.query, &r.display)
+                            .map(|score| (r.clone(), score))
+                    })
+                    .collect();
+
+                // Sort by score (descending)
+                scored_results.sort_by(|a, b| b.1.cmp(&a.1));
+
+                self.filtered_results = scored_results
+                    .into_iter()
+                    .map(|(result, _score)| result)
                     .collect();
             }
             PickerMode::LiveGrep => {
-                // Perform live grep
-                self.filtered_results = Self::live_grep(&self.query, &self.base_dir);
+                // Perform live grep, then apply fuzzy filtering on results
+                let grep_results = Self::live_grep(&self.query, &self.base_dir);
+
+                // For LiveGrep, we still want to show the grep results as-is
+                // since the query is used for the actual grep search
+                self.filtered_results = grep_results;
             }
-            PickerMode::Custom => {
-                // Simple substring matching for custom mode
-                let query_lower = self.query.to_lowercase();
-                self.filtered_results = self
+            PickerMode::Custom | PickerMode::Completion => {
+                // Fuzzy matching for custom mode and completion
+                let mut scored_results: Vec<(PickerResult, i32)> = self
                     .all_results
                     .iter()
-                    .filter(|r| r.display.to_lowercase().contains(&query_lower))
-                    .cloned()
+                    .filter_map(|r| {
+                        Self::fuzzy_match(&self.query, &r.display)
+                            .map(|score| (r.clone(), score))
+                    })
+                    .collect();
+
+                // Sort by score (descending)
+                scored_results.sort_by(|a, b| b.1.cmp(&a.1));
+
+                self.filtered_results = scored_results
+                    .into_iter()
+                    .map(|(result, _score)| result)
                     .collect();
             }
         }

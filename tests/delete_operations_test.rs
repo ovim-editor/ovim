@@ -441,7 +441,8 @@ fn test_delete_all_content() {
 
     test.keys("daw"); // Delete all
 
-    assert_eq!(test.buffer_content(), "o\n");
+    // daw on "hello" deletes the entire word, leaving empty buffer
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 

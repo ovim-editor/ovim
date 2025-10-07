@@ -1,0 +1,13 @@
+---
+source: tests/snapshot_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 1:7
+Lines: 4
+
+Buffer:
+line 1
+new lin[e]
+line 2
+line 3

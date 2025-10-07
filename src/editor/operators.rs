@@ -12,6 +12,7 @@ pub enum Operator {
     Lowercase,
     Uppercase,
     ToggleCase,
+    ReplaceWithRegister,
 }
 
 /// Handles operator commands (delete, change, yank)
