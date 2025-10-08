@@ -15,6 +15,10 @@ use cli::Args;
 use api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use std::sync::OnceLock;
+
+// Global channel for Java LSP status updates
+static JAVA_STATUS_SENDER: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -95,8 +99,14 @@ async fn main() -> Result<()> {
         UI::new()?
     };
 
+    // Create channel for Java LSP status updates
+    let (java_status_tx, java_status_rx) = mpsc::unbounded_channel();
+
+    // Store the sender in a static for background tasks to use
+    JAVA_STATUS_SENDER.set(java_status_tx).ok();
+
     // Main event loop with TUI
-    run_event_loop(&mut ui, &mut editor, api_rx).await?;
+    run_event_loop(&mut ui, &mut editor, api_rx, java_status_rx).await?;
 
     Ok(())
 }
@@ -109,10 +119,13 @@ async fn run_headless_loop(
 
     loop {
         // Process LSP notifications (diagnostics, etc.)
+        // Use try_lock to avoid blocking if background task (e.g., Java init) holds lock
         if let Some(lsp_manager) = editor.lsp_manager() {
-            let lsp = lsp_manager.lock().await;
-            lsp.process_notifications().await;
-            lsp.process_flush_requests().await;
+            if let Ok(lsp) = lsp_manager.try_lock() {
+                lsp.process_notifications().await;
+                lsp.process_flush_requests().await;
+            }
+            // If lock is held, skip this iteration - background task is working
         }
 
         // Initialize LSP for newly loaded files
@@ -129,11 +142,13 @@ async fn run_headless_loop(
         let _ = editor.process_lua_commands();
 
         // Update diagnostic cache only if diagnostics changed
+        // Use try_lock to avoid blocking if background task holds lock
         if let Some(lsp_manager) = editor.lsp_manager() {
-            let lsp = lsp_manager.lock().await;
-            if lsp.diagnostics_changed() {
-                drop(lsp); // Release lock before async call
-                editor.update_diagnostic_cache().await;
+            if let Ok(lsp) = lsp_manager.try_lock() {
+                if lsp.diagnostics_changed() {
+                    drop(lsp); // Release lock before async call
+                    editor.update_diagnostic_cache().await;
+                }
             }
         }
 
@@ -170,6 +185,7 @@ async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
     mut api_rx: Option<mpsc::UnboundedReceiver<ApiRequest>>,
+    mut java_status_rx: mpsc::UnboundedReceiver<String>,
 ) -> Result<()> {
     use tokio::time::{Duration, Instant};
 
@@ -177,11 +193,19 @@ async fn run_event_loop(
     let debounce_delay = Duration::from_millis(100);
 
     while !editor.should_quit() {
+        // Check for Java LSP status updates
+        while let Ok(status) = java_status_rx.try_recv() {
+            editor.set_lsp_status(status);
+        }
+
         // Process LSP notifications (diagnostics, etc.)
+        // Use try_lock to avoid blocking if background task (e.g., Java init) holds lock
         if let Some(lsp_manager) = editor.lsp_manager() {
-            let lsp = lsp_manager.lock().await;
-            lsp.process_notifications().await;
-            lsp.process_flush_requests().await;
+            if let Ok(lsp) = lsp_manager.try_lock() {
+                lsp.process_notifications().await;
+                lsp.process_flush_requests().await;
+            }
+            // If lock is held, skip this iteration - background task is working
         }
 
         // Initialize LSP for newly loaded files
@@ -191,11 +215,13 @@ async fn run_event_loop(
         }
 
         // Update diagnostic cache only if diagnostics changed
+        // Use try_lock to avoid blocking if background task holds lock
         if let Some(lsp_manager) = editor.lsp_manager() {
-            let lsp = lsp_manager.lock().await;
-            if lsp.diagnostics_changed() {
-                drop(lsp); // Release lock before async call
-                editor.update_diagnostic_cache().await;
+            if let Ok(lsp) = lsp_manager.try_lock() {
+                if lsp.diagnostics_changed() {
+                    drop(lsp); // Release lock before async call
+                    editor.update_diagnostic_cache().await;
+                }
             }
         }
 
@@ -636,9 +662,389 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
     }
 }
 
+/// Find the root of a JVM project (Maven or Gradle)
+/// Searches parent directories for pom.xml, build.gradle, build.gradle.kts, or settings.gradle
+fn find_jvm_project_root(file_path: &std::path::Path) -> &std::path::Path {
+    let mut current = file_path.parent();
+    while let Some(dir) = current {
+        // Check for Maven project (pom.xml)
+        if dir.join("pom.xml").exists() {
+            return dir;
+        }
+        // Check for Gradle project (build.gradle, build.gradle.kts, or settings.gradle)
+        if dir.join("build.gradle").exists()
+            || dir.join("build.gradle.kts").exists()
+            || dir.join("settings.gradle").exists()
+            || dir.join("settings.gradle.kts").exists()
+        {
+            return dir;
+        }
+        current = dir.parent();
+    }
+    // Fall back to file's parent directory if no project root found
+    file_path.parent().unwrap_or_else(|| std::path::Path::new("/"))
+}
+
+/// Initialize Java LSP with auto-download and configuration
+/// Helper to send Java status updates
+fn send_java_status(msg: String) {
+    if let Some(tx) = JAVA_STATUS_SENDER.get() {
+        let _ = tx.send(format!("Java: {}", msg));
+    }
+}
+
+/// Background Java LSP initialization that doesn't block the UI
+async fn initialize_java_lsp_background(
+    lsp_manager: Option<std::sync::Arc<tokio::sync::Mutex<lsp::LspManager>>>,
+    file_path: std::path::PathBuf,
+) {
+    use ovim::java::{JdtlsDownloader, JdtlsLauncher, parser};
+
+    // Early exit if no LSP manager
+    let Some(lsp_manager) = lsp_manager else {
+        send_java_status("No LSP manager available".to_string());
+        return;
+    };
+
+    // Find project root
+    let project_root = find_jvm_project_root(&file_path);
+
+    send_java_status("Detecting project configuration...".to_string());
+
+    // Detect Java version from build files
+    let project_config = match parser::detect_java_version(project_root).await {
+        Ok(config) => config,
+        Err(e) => {
+            send_java_status(format!("Failed to detect version: {}", e));
+            return;
+        }
+    };
+
+    send_java_status(format!("Detected Java {} project", project_config.java_version.as_str()));
+
+    // Get jdtls installation directory
+    let jdtls_dir = match ovim::java::jdtls_dir().await {
+        Ok(dir) => dir,
+        Err(e) => {
+            send_java_status(format!("Failed to get cache dir: {}", e));
+            return;
+        }
+    };
+
+    // Ensure jdtls is installed
+    let downloader = JdtlsDownloader::new(jdtls_dir.clone());
+
+    if !downloader.is_installed().await {
+        send_java_status("Downloading jdtls... (first time setup)".to_string());
+
+        match downloader.ensure_installed(|msg| {
+            send_java_status(msg);
+        }).await {
+            Ok(()) => send_java_status("Download complete!".to_string()),
+            Err(e) => {
+                send_java_status(format!("Download failed: {}", e));
+                return;
+            }
+        }
+    } else {
+        send_java_status("Using cached jdtls".to_string());
+    }
+
+    // Get workspace directory
+    let workspace_dir = match ovim::java::workspace_dir(project_root).await {
+        Ok(dir) => dir,
+        Err(e) => {
+            send_java_status(format!("Failed to create workspace: {}", e));
+            return;
+        }
+    };
+
+    send_java_status("Configuring launcher...".to_string());
+
+    // Create launcher
+    let launcher = JdtlsLauncher::from_project_config(
+        project_config,
+        jdtls_dir,
+        workspace_dir,
+    );
+
+    send_java_status("Finding JVM...".to_string());
+
+    // Get launch command (async JVM detection)
+    let launch_args = match launcher.launch_command().await {
+        Ok(args) => {
+            send_java_status("JVM found, launching jdtls...".to_string());
+            args
+        }
+        Err(e) => {
+            send_java_status(format!("Failed to find JVM: {}", e));
+            return;
+        }
+    };
+
+    // Extract java command and args
+    if launch_args.is_empty() {
+        send_java_status("Invalid launch configuration".to_string());
+        return;
+    }
+
+    let server_command = &launch_args[0];
+    let server_args: Vec<String> = launch_args[1..].to_vec();
+
+    send_java_status("Starting LSP server...".to_string());
+
+    // Start the LSP server with progress updates during initialization
+    // jdtls can take 60-120 seconds to initialize, so we send periodic updates
+    let lsp_clone = lsp_manager.clone();
+    let server_command_clone = server_command.to_string();
+    let server_args_clone = server_args.clone();
+    let project_root_clone = project_root.to_path_buf();
+
+    let mut start_task = tokio::spawn(async move {
+        let lsp = lsp_clone.lock().await;
+        lsp.start_server("java", &server_command_clone, server_args_clone, &project_root_clone).await
+    });
+
+    // Poll for completion with progress updates
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+    let mut dots = 1;
+    let start_result = loop {
+        tokio::select! {
+            result = &mut start_task => {
+                break result;
+            }
+            _ = interval.tick() => {
+                let dot_str = ".".repeat(dots);
+                send_java_status(format!("Starting LSP server{}", dot_str));
+                dots = (dots % 3) + 1;
+            }
+        }
+    };
+
+    match start_result {
+        Ok(Ok(())) => {
+            send_java_status("Server started successfully".to_string());
+        }
+        Ok(Err(e)) => {
+            send_java_status(format!("Failed to start server: {}", e));
+            return;
+        }
+        Err(e) => {
+            send_java_status(format!("Server task failed: {}", e));
+            return;
+        }
+    }
+
+    send_java_status("Initializing LSP connection...".to_string());
+
+    // Start notification listener - acquire lock again
+    {
+        let lsp = lsp_manager.lock().await;
+        lsp.start_notification_listener("java".to_string()).await;
+    }
+
+    send_java_status("Opening file...".to_string());
+
+    // Send didOpen notification - acquire lock again
+    let uri = match lsp_types::Url::from_file_path(&file_path) {
+        Ok(uri) => uri,
+        Err(_) => {
+            send_java_status(format!("Invalid file path: {:?}", file_path));
+            return;
+        }
+    };
+
+    // Read the actual file content (async to avoid blocking)
+    let file_content = match tokio::fs::read_to_string(&file_path).await {
+        Ok(content) => content,
+        Err(e) => {
+            send_java_status(format!("Failed to read file: {}", e));
+            String::new()
+        }
+    };
+
+    {
+        let lsp = lsp_manager.lock().await;
+        match lsp.did_open(uri, "java", 1, file_content).await {
+            Ok(_) => {
+                send_java_status("Ready ✓".to_string());
+            }
+            Err(e) => {
+                send_java_status(format!("Failed to initialize: {}", e));
+            }
+        }
+    }
+}
+
+/// Old version that requires mutable editor (used in headless mode)
+async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
+    use ovim::java::{JdtlsDownloader, JdtlsLauncher, parser};
+
+    // Find project root
+    let project_root = find_jvm_project_root(file_path);
+
+    editor.set_lsp_status("Java: Detecting project configuration...".to_string());
+
+    // Detect Java version from build files
+    let project_config = match parser::detect_java_version(project_root).await {
+        Ok(config) => config,
+        Err(e) => {
+            editor.set_lsp_status(format!("Java: Failed to detect version: {}", e));
+            return;
+        }
+    };
+
+    editor.set_lsp_status(format!(
+        "Java: Detected Java {} project",
+        project_config.java_version.as_str()
+    ));
+
+    // Get jdtls installation directory
+    let jdtls_dir = match ovim::java::jdtls_dir().await {
+        Ok(dir) => dir,
+        Err(e) => {
+            editor.set_lsp_status(format!("Java: Failed to get cache dir: {}", e));
+            return;
+        }
+    };
+
+    // Ensure jdtls is installed
+    let downloader = JdtlsDownloader::new(jdtls_dir.clone());
+
+    if !downloader.is_installed().await {
+        editor.set_lsp_status("Java: Downloading jdtls... (first time setup)".to_string());
+
+        // Create a channel for async progress updates
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Spawn download task
+        let mut download_task = tokio::spawn(async move {
+            downloader.ensure_installed(move |msg| {
+                let _ = progress_tx.send(msg);
+            }).await
+        });
+
+        // Poll for progress updates without blocking
+        loop {
+            tokio::select! {
+                Some(msg) = progress_rx.recv() => {
+                    editor.set_lsp_status(format!("Java: {}", msg));
+                }
+                result = &mut download_task => {
+                    match result {
+                        Ok(Ok(())) => {
+                            editor.set_lsp_status("Java: Download complete!".to_string());
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            editor.set_lsp_status(format!("Java: Download failed: {}", e));
+                            return;
+                        }
+                        Err(e) => {
+                            editor.set_lsp_status(format!("Java: Download task failed: {}", e));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        editor.set_lsp_status("Java: Using cached jdtls".to_string());
+    }
+
+    // Get workspace directory
+    let workspace_dir = match ovim::java::workspace_dir(project_root).await {
+        Ok(dir) => dir,
+        Err(e) => {
+            editor.set_lsp_status(format!("Java: Failed to create workspace: {}", e));
+            return;
+        }
+    };
+
+    editor.set_lsp_status("Java: Configuring launcher...".to_string());
+
+    // Create launcher
+    let launcher = JdtlsLauncher::from_project_config(
+        project_config,
+        jdtls_dir,
+        workspace_dir,
+    );
+
+    editor.set_lsp_status("Java: Finding JVM...".to_string());
+
+    // Get launch command (async JVM detection)
+    let launch_args = match launcher.launch_command().await {
+        Ok(args) => {
+            editor.set_lsp_status("Java: JVM found, launching jdtls...".to_string());
+            args
+        }
+        Err(e) => {
+            editor.set_lsp_status(format!("Java: Failed to find JVM: {}", e));
+            return;
+        }
+    };
+
+    // Start LSP server using the launch args
+    if let Some(lsp_manager) = editor.lsp_manager() {
+        let lsp = lsp_manager.lock().await;
+
+        // Extract java command and args
+        if launch_args.is_empty() {
+            editor.set_lsp_status("Java: Invalid launch configuration".to_string());
+            return;
+        }
+
+        let server_command = &launch_args[0];
+        let server_args: Vec<String> = launch_args[1..].to_vec();
+
+        editor.set_lsp_status("Java: Starting LSP server...".to_string());
+
+        match lsp.start_server("java", server_command, server_args, project_root).await {
+            Ok(_) => {
+                drop(lsp);
+                editor.register_lsp_server("java".to_string(), "jdtls".to_string());
+
+                editor.set_lsp_status("Java: Initializing LSP connection...".to_string());
+
+                let lsp = lsp_manager.lock().await;
+                lsp.start_notification_listener("java".to_string()).await;
+
+                editor.set_lsp_status("Java: Opening file...".to_string());
+
+                // Send didOpen notification
+                let file_content = editor.buffer().rope().to_string();
+                let uri = match lsp_types::Url::from_file_path(file_path) {
+                    Ok(uri) => uri,
+                    Err(_) => {
+                        drop(lsp);
+                        editor.set_lsp_status("Java: Invalid file path".to_string());
+                        return;
+                    }
+                };
+
+                match lsp.did_open(uri, "java", 1, file_content).await {
+                    Ok(_) => {
+                        drop(lsp);
+                        editor.set_lsp_status("Java: Ready ✓".to_string());
+                    }
+                    Err(e) => {
+                        drop(lsp);
+                        editor.set_lsp_status(format!("Java: Failed to initialize: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                drop(lsp);
+                editor.set_lsp_status(format!("Java: Failed to start server: {}", e));
+            }
+        }
+    }
+}
+
 /// Initialize LSP for a file based on its extension
 async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     use std::path::Path;
+    use ovim::java::{JdtlsDownloader, JdtlsLauncher};
 
     let path = Path::new(file_path);
 
@@ -657,6 +1063,21 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
 
     let extension = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
+    // Handle Java specially with auto-setup (spawn in background to avoid blocking UI)
+    if extension == "java" {
+        // We need to move values into the spawned task, so clone what we need
+        let abs_path_clone = abs_path.clone();
+        let lsp_manager = editor.lsp_manager().map(|arc| arc.clone());
+
+        // Spawn Java LSP initialization in background
+        tokio::spawn(async move {
+            initialize_java_lsp_background(lsp_manager, abs_path_clone).await;
+        });
+
+        // Initial status will be updated immediately by the background task
+        return;
+    }
+
     // Determine language and LSP server based on file extension
     let (language_id, server_command, server_args) = match extension {
         "rs" => ("rust", "rust-analyzer", vec![]),
@@ -665,20 +1086,21 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         _ => return, // No LSP support for this file type
     };
 
-    // Find the project root (look for Cargo.toml for Rust projects)
-    let root_path = if extension == "rs" {
-        // Look for Cargo.toml in parent directories
-        let mut current = abs_path.parent();
-        while let Some(dir) = current {
-            let cargo_toml = dir.join("Cargo.toml");
-            if cargo_toml.exists() {
-                break;
+    // Find the project root based on language
+    let root_path = match extension {
+        "rs" => {
+            // Look for Cargo.toml in parent directories for Rust
+            let mut current = abs_path.parent();
+            while let Some(dir) = current {
+                let cargo_toml = dir.join("Cargo.toml");
+                if cargo_toml.exists() {
+                    break;
+                }
+                current = dir.parent();
             }
-            current = dir.parent();
+            current.unwrap_or_else(|| abs_path.parent().unwrap_or_else(|| Path::new("/")))
         }
-        current.unwrap_or_else(|| abs_path.parent().unwrap_or_else(|| Path::new("/")))
-    } else {
-        abs_path.parent().unwrap_or_else(|| Path::new("/"))
+        _ => abs_path.parent().unwrap_or_else(|| Path::new("/")),
     };
 
     // Start the language server

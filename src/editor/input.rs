@@ -2985,8 +2985,30 @@ impl InputHandler {
                 let info = editor.get_lsp_info();
                 editor.set_lsp_status(info);
             }
+            "colorscheme" | "colo" => {
+                // Show current color scheme and available schemes
+                let current = editor.current_color_scheme_name();
+                let schemes = editor.list_color_schemes().join(", ");
+                let message = format!("Current: {}\nAvailable: {}", current, schemes);
+                editor.set_lsp_status(message);
+            }
             _ => {
-                // Unknown command - for now just ignore
+                // Check if it's a :colorscheme <name> or :colo <name> command
+                if let Some(scheme_name) = command.strip_prefix("colorscheme ").or_else(|| command.strip_prefix("colo ")) {
+                    match editor.set_color_scheme(scheme_name.trim()) {
+                        Ok(_) => {
+                            let message = format!("Color scheme set to '{}'", scheme_name.trim());
+                            editor.set_lsp_status(message);
+                        }
+                        Err(e) => {
+                            let available = editor.list_color_schemes().join(", ");
+                            let message = format!("{}. Available schemes: {}", e, available);
+                            editor.set_lsp_status(message);
+                        }
+                    }
+                } else {
+                    // Unknown command - for now just ignore
+                }
             }
         }
 
@@ -3182,7 +3204,9 @@ impl InputHandler {
 
     /// Polls for the next event
     pub fn poll_event() -> Result<Option<Event>> {
-        if event::poll(std::time::Duration::from_millis(100))? {
+        // Use a very short timeout to keep the event loop responsive
+        // This allows status updates and rendering to happen frequently
+        if event::poll(std::time::Duration::from_millis(16))? {  // ~60 FPS
             Ok(Some(event::read()?))
         } else {
             Ok(None)

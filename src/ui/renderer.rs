@@ -32,10 +32,10 @@ impl Renderer {
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
     pub fn render_to_frame(frame: &mut Frame, editor: &Editor) {
-        // Get color scheme from editor, fall back to default if not found
+        // Get color scheme from editor, fall back to Tokyonight if not found
         let scheme = editor.get_color_scheme()
             .cloned()
-            .unwrap_or_else(|| crate::syntax::ColorScheme::default_dark());
+            .unwrap_or_else(|| crate::syntax::ColorScheme::tokyonight());
         let theme = Theme::from_scheme(scheme);
         let cursor_pos = editor.buffer().cursor();
         let cursor_line = cursor_pos.line();

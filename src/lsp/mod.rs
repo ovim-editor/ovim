@@ -173,21 +173,30 @@ impl LspManager {
         args: Vec<String>,
         root_path: &Path,
     ) -> Result<()> {
-        let mut servers = self.servers.write().await;
-
-        if servers.contains_key(language) {
-            return Ok(()); // Already running
+        // Check if already running (short lock)
+        {
+            let servers = self.servers.read().await;
+            if servers.contains_key(language) {
+                return Ok(()); // Already running
+            }
         }
 
+        // Spawn and initialize without holding the lock (this can take 10-60 seconds)
         let mut server = LanguageServer::spawn(language, command, args).await?;
 
-        // Initialize the server
         let root_uri = Url::from_file_path(root_path)
             .map_err(|_| anyhow::anyhow!("Invalid root path"))?;
 
         server.initialize(root_uri).await?;
 
-        servers.insert(language.to_string(), server);
+        // Insert into servers map (short lock)
+        {
+            let mut servers = self.servers.write().await;
+            // Double-check in case another task started the same server
+            if !servers.contains_key(language) {
+                servers.insert(language.to_string(), server);
+            }
+        }
 
         Ok(())
     }
