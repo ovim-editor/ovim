@@ -1,4 +1,4 @@
-use super::state::{ApiRequest, ApiResponse, ApiState};
+use super::state::{ApiRequest, ApiState};
 use axum::{
     extract::State,
     http::StatusCode,

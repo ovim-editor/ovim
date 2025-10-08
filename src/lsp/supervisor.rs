@@ -6,7 +6,7 @@
 //! - Shutdown all tasks gracefully
 //! - Prevent resource leaks from forgotten tasks
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -295,6 +295,7 @@ pub struct TaskHealth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[tokio::test]

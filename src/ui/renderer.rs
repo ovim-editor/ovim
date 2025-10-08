@@ -1,4 +1,3 @@
-use crate::buffer::Buffer;
 use crate::editor::Editor;
 use crate::syntax::Theme;
 use anyhow::Result;
@@ -8,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame, Terminal as RatatuiTerminal,
 };
 use std::io;

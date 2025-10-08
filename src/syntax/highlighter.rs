@@ -1,6 +1,6 @@
 use super::theme::HighlightGroup;
 use super::languages::{Language, LanguageRegistry};
-use tree_sitter::{Parser, Tree, Query, QueryCursor, Point};
+use tree_sitter::{Parser, Tree, Query, QueryCursor};
 use std::ops::Range;
 
 /// Syntax highlighter using tree-sitter

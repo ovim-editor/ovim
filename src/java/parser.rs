@@ -105,7 +105,7 @@ pub async fn detect_java_version(project_root: &Path) -> Result<ProjectConfig> {
 async fn parse_gradle(project_root: &Path) -> Result<JavaVersion> {
     // Try build.gradle.kts first (Kotlin DSL)
     let gradle_kts = project_root.join("build.gradle.kts");
-    if gradle_kts.exists() {
+    if tokio::fs::try_exists(&gradle_kts).await.unwrap_or(false) {
         if let Ok(version) = parse_gradle_file(&gradle_kts).await {
             return Ok(version);
         }
@@ -113,7 +113,7 @@ async fn parse_gradle(project_root: &Path) -> Result<JavaVersion> {
 
     // Try build.gradle (Groovy DSL)
     let gradle_groovy = project_root.join("build.gradle");
-    if gradle_groovy.exists() {
+    if tokio::fs::try_exists(&gradle_groovy).await.unwrap_or(false) {
         if let Ok(version) = parse_gradle_file(&gradle_groovy).await {
             return Ok(version);
         }
@@ -163,7 +163,7 @@ async fn parse_gradle_file(path: &Path) -> Result<JavaVersion> {
 /// Parse pom.xml for Java version
 async fn parse_maven(project_root: &Path) -> Result<JavaVersion> {
     let pom_path = project_root.join("pom.xml");
-    if !pom_path.exists() {
+    if !tokio::fs::try_exists(&pom_path).await.unwrap_or(false) {
         anyhow::bail!("No pom.xml found");
     }
 

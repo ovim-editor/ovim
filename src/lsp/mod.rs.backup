@@ -195,12 +195,6 @@ impl LspManager {
             // Double-check in case another task started the same server
             if !servers.contains_key(language) {
                 servers.insert(language.to_string(), server);
-            } else {
-                // Another thread won the race - clean up our server
-                drop(servers); // Release lock before async operation
-                if let Err(e) = server.shutdown().await {
-                    eprintln!("[LSP] Warning: Failed to shut down redundant server for {}: {}", language, e);
-                }
             }
         }
 
@@ -563,8 +557,6 @@ impl LspManager {
             match method.as_str() {
                 "textDocument/publishDiagnostics" => {
                     if let Some(params) = notification.params {
-                        // Clone params for error message before moving
-                        let params_clone = params.clone();
                         match serde_json::from_value::<PublishDiagnosticsParams>(params) {
                             Ok(diag_params) => {
                                 self.set_diagnostics(diag_params.uri, diag_params.diagnostics)
@@ -577,7 +569,7 @@ impl LspManager {
                                     language_id, e
                                 );
                                 // Show params preview for debugging
-                                let params_str = format!("{:?}", params_clone);
+                                let params_str = format!("{:?}", params);
                                 let preview = if params_str.len() > 500 {
                                     format!("{}...", &params_str[..500])
                                 } else {
@@ -1181,7 +1173,7 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::SelectionRange>> {
-        use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier};
+        use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier, TextDocumentPositionParams};
 
         let servers = self.servers.read().await;
         let server = servers
@@ -1467,11 +1459,7 @@ pub fn compute_simple_diff(old_content: &str, new_content: &str) -> Option<(lsp_
     // new: start_line..end_line_new
 
     // Find character-level start position within the first changed line
-    let start_char = if end_line_old == start_line {
-        // Pure insertion: no old lines in the changed region
-        // Start at beginning of the line
-        0
-    } else if start_line < old_lines.len() && start_line < new_lines.len() {
+    let start_char = if start_line < old_lines.len() && start_line < new_lines.len() {
         let old_line = old_lines[start_line];
         let new_line = new_lines[start_line];
         let mut char_pos = 0;
