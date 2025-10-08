@@ -145,8 +145,8 @@ impl JdtlsLauncher {
         };
 
         // Build command
-        let mut args = vec![
-            java_bin.to_str().unwrap().to_string(),
+        let args = vec![
+            java_bin.to_string_lossy().to_string(),
 
             // Memory settings (optimized for speed)
             "-Xms256m".to_string(),
@@ -158,15 +158,15 @@ impl JdtlsLauncher {
 
             // JDT.LS JAR
             "-jar".to_string(),
-            jdtls_launcher.to_str().unwrap().to_string(),
+            jdtls_launcher.to_string_lossy().to_string(),
 
             // Configuration
             "-configuration".to_string(),
-            config_dir.to_str().unwrap().to_string(),
+            config_dir.to_string_lossy().to_string(),
 
             // Workspace data
             "-data".to_string(),
-            self.config.workspace_dir.to_str().unwrap().to_string(),
+            self.config.workspace_dir.to_string_lossy().to_string(),
         ];
 
         Ok(args)

@@ -100,6 +100,8 @@ pub struct Editor {
     active_lsp_servers: HashMap<String, String>,
     /// Flag to indicate LSP needs initialization for current file
     needs_lsp_init: bool,
+    /// File path that needs didClose notification (set when switching files)
+    pending_did_close_file: Option<String>,
     /// Lua context for configuration and plugins (optional)
     #[cfg(feature = "lua")]
     lua_context: Option<LuaContext>,
@@ -190,6 +192,7 @@ impl Editor {
             lsp_status: String::new(),
             active_lsp_servers: HashMap::new(),
             needs_lsp_init: false,
+            pending_did_close_file: None,
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
@@ -239,6 +242,7 @@ impl Editor {
             lsp_status: String::new(),
             active_lsp_servers: HashMap::new(),
             needs_lsp_init: false,
+            pending_did_close_file: None,
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
@@ -618,6 +622,41 @@ impl Editor {
         self.should_quit = true;
     }
 
+    /// Sends didClose notification for current file (called on shutdown)
+    pub async fn close_current_file_lsp(&mut self) {
+        let Some(ref lsp) = self.lsp_manager else {
+            return;
+        };
+
+        let Some(file_path) = self.buffer.file_path() else {
+            return;
+        };
+
+        let Ok(uri) = lsp_types::Url::from_file_path(file_path) else {
+            return;
+        };
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else if file_path.ends_with(".java") {
+            "java"
+        } else {
+            return;
+        };
+
+        // Try to get lock without blocking
+        let Ok(lsp_guard) = lsp.try_lock() else {
+            return;
+        };
+
+        let _ = lsp_guard.did_close(uri, language_id).await;
+    }
+
     /// Gets the current count prefix
     pub fn count(&self) -> Option<usize> {
         self.count
@@ -748,12 +787,28 @@ impl Editor {
         })
     }
 
-    /// Loads a file into the editor
-    pub fn load_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
-        self.buffer = Buffer::load_file(path)?;
+    /// Loads a file into the editor (async version)
+    pub async fn load_file_async<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        // Store old file path before loading new file
+        let old_file_path = self.buffer.file_path().map(|s| s.to_string());
+
+        self.buffer = Buffer::load_file_async(path).await?;
         self.change_manager = ChangeManager::new();
         self.needs_lsp_init = true; // Flag that LSP needs initialization
+
+        // Mark that we need to send didClose for the old file
+        if old_file_path.is_some() {
+            self.pending_did_close_file = old_file_path;
+        }
+
         Ok(())
+    }
+
+    /// Loads a file into the editor (blocking wrapper)
+    pub fn load_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.load_file_async(path))
+        })
     }
 
     /// Checks if LSP initialization is needed and returns the file path
@@ -850,8 +905,8 @@ impl Editor {
         self.preview_cache.clear();
     }
 
-    /// Gets preview from cache or loads it
-    pub fn get_or_load_preview(&mut self, file_path: &str) -> Option<&PreviewCache> {
+    /// Gets preview from cache or loads it (async version)
+    pub async fn get_or_load_preview_async(&mut self, file_path: &str) -> Option<&PreviewCache> {
         // Check if already cached
         if self.preview_cache.contains_key(file_path) {
             return self.preview_cache.get(file_path);
@@ -859,7 +914,7 @@ impl Editor {
 
         // Check file size before loading (max 1MB for preview)
         const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
-        if let Ok(metadata) = std::fs::metadata(file_path) {
+        if let Ok(metadata) = tokio::fs::metadata(file_path).await {
             if metadata.len() > MAX_PREVIEW_SIZE {
                 // File too large, create a placeholder cache entry
                 let cache = PreviewCache {
@@ -873,7 +928,7 @@ impl Editor {
         }
 
         // Load the file
-        let content = match std::fs::read_to_string(file_path) {
+        let content = match tokio::fs::read_to_string(file_path).await {
             Ok(c) => c,
             Err(_) => return None,
         };
@@ -890,6 +945,13 @@ impl Editor {
 
         self.preview_cache.insert(file_path.to_string(), cache);
         self.preview_cache.get(file_path)
+    }
+
+    /// Gets preview from cache or loads it (blocking wrapper)
+    pub fn get_or_load_preview(&mut self, file_path: &str) -> Option<&PreviewCache> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.get_or_load_preview_async(file_path))
+        })
     }
 
     /// Gets cached preview if available
@@ -1163,6 +1225,11 @@ impl Editor {
         self.buffer_saved_this_iteration = true;
     }
 
+    /// Sets the last synced content for incremental LSP sync
+    pub fn set_last_synced_content(&mut self, content: Option<String>) {
+        self.last_synced_content = content;
+    }
+
     /// Sends didChange notification if buffer was modified, then resets the flag
     pub async fn send_lsp_changes_if_modified(&mut self) {
         if !self.buffer_modified_this_iteration {
@@ -1251,6 +1318,42 @@ impl Editor {
         };
 
         let _ = lsp_guard.did_save(uri, language_id, text).await;
+    }
+
+    /// Sends didClose notification for pending file (when switching files)
+    pub async fn send_lsp_close_if_needed(&mut self) {
+        let Some(file_path) = self.pending_did_close_file.take() else {
+            return;
+        };
+
+        let Some(ref lsp) = self.lsp_manager else {
+            return;
+        };
+
+        let Ok(uri) = lsp_types::Url::from_file_path(&file_path) else {
+            return;
+        };
+
+        // Detect language from file extension
+        let language_id = if file_path.ends_with(".rs") {
+            "rust"
+        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
+            "javascript"
+        } else if file_path.ends_with(".py") {
+            "python"
+        } else if file_path.ends_with(".java") {
+            "java"
+        } else {
+            return;
+        };
+
+        // Try to get lock without blocking - if LSP is busy, put it back for retry
+        let Ok(lsp_guard) = lsp.try_lock() else {
+            self.pending_did_close_file = Some(file_path);
+            return;
+        };
+
+        let _ = lsp_guard.did_close(uri, language_id).await;
     }
 
     /// Process any pending LSP actions
@@ -1367,7 +1470,7 @@ impl Editor {
                 match location.uri.to_file_path() {
                     Ok(target_path) => {
                         // Try to open the target file
-                        match self.load_file(&target_path) {
+                        match self.load_file_async(&target_path).await {
                             Ok(_) => {
                                 self.buffer.cursor_mut().set_position(target_line, target_col);
                                 let file_name = target_path.file_name()

@@ -259,7 +259,11 @@ async fn run_event_loop(
         // Send LSP notifications if needed
         editor.send_lsp_changes_if_modified().await;
         editor.send_lsp_save_if_needed().await;
+        editor.send_lsp_close_if_needed().await;
     }
+
+    // Send didClose for current file on shutdown
+    editor.close_current_file_lsp().await;
 
     Ok(())
 }
@@ -1022,9 +1026,13 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
                     }
                 };
 
-                match lsp.did_open(uri, "java", 1, file_content).await {
+                match lsp.did_open(uri, "java", 1, file_content.clone()).await {
                     Ok(_) => {
                         drop(lsp);
+                        // CRITICAL FIX: Initialize last_synced_content after successful didOpen
+                        // Without this, the first didChange uses empty string as old_text,
+                        // breaking incremental sync
+                        editor.set_last_synced_content(Some(file_content));
                         editor.set_lsp_status("Java: Ready ✓".to_string());
                     }
                     Err(e) => {
@@ -1130,9 +1138,13 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     }
                 };
 
-                match lsp.did_open(uri, language_id, 1, file_content).await {
+                match lsp.did_open(uri, language_id, 1, file_content.clone()).await {
                     Ok(_) => {
                         drop(lsp);
+                        // CRITICAL FIX: Initialize last_synced_content after successful didOpen
+                        // Without this, the first didChange uses empty string as old_text,
+                        // breaking incremental sync
+                        editor.set_last_synced_content(Some(file_content));
                         editor.set_lsp_status(format!("LSP: {} ready", server_command));
                     }
                     Err(e) => {

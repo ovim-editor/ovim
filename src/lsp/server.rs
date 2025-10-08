@@ -6,7 +6,7 @@
 //! - Request/response matching
 //! - Initialization handshake
 
-use super::protocol::{write_message, JsonRpcMessage, RequestId, ResponseError};
+use super::protocol::{write_message, JsonRpcMessage, RequestId};
 use super::supervisor::{RestartPolicy, TaskHealth, TaskSupervisor};
 use anyhow::{anyhow, Context, Result};
 use lsp_types::{
@@ -26,6 +26,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 /// Maximum LSP message size in bytes (50MB)
 /// Must match MAX_MESSAGE_SIZE in mod.rs
 const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
+
+/// Maximum number of pending requests to prevent OOM
+const MAX_PENDING_REQUESTS: usize = 1000;
 
 /// Maximum time a request can remain pending before cleanup (5 minutes)
 const REQUEST_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -205,10 +208,17 @@ struct LanguageServerInner {
     cap_folding_range: AtomicBool,
 }
 
+impl LanguageServerInner {
+    /// Returns a log prefix with language and command context
+    fn log_prefix(&self) -> String {
+        format!("[LSP:{}:{}]", self.language, self.command)
+    }
+}
+
 impl LanguageServer {
     /// Returns a log prefix with language and command context
     fn log_prefix(&self) -> String {
-        format!("[LSP:{}:{}]", self.inner.language, self.inner.command)
+        self.inner.log_prefix()
     }
 
     /// Spawns a new language server process
@@ -279,31 +289,23 @@ impl LanguageServer {
 
         let server = Self { inner: inner.clone() };
 
-        // Spawn supervised task to write messages to stdin
+        // Spawn writer task to write messages to stdin
+        // Note: This task is NOT supervised because:
+        // 1. It owns the unique receiver for the outgoing channel
+        // 2. If this task fails, the entire LSP communication is broken
+        // 3. Restarting would require unsafe code or complex channel recreation
+        // 4. Better to let the server process fail and restart cleanly
         let stdin_clone = stdin.clone();
-        let mut outgoing_rx_moved = outgoing_rx;
-        inner.supervisor.spawn_supervised(
-            "lsp_writer".to_string(),
-            move || {
-                let stdin = stdin_clone.clone();
-                let mut rx: mpsc::Receiver<JsonRpcMessage> = unsafe {
-                    // SAFETY: We need to share the receiver across restarts
-                    // This is safe because:
-                    // 1. Only one writer task runs at a time (supervised)
-                    // 2. The receiver is never actually cloned, just re-referenced
-                    std::ptr::read(&outgoing_rx_moved as *const _)
-                };
-                async move {
-                    while let Some(msg) = rx.recv().await {
-                        let mut stdin_guard = stdin.lock().await;
-                        if let Err(e) = write_message(&mut *stdin_guard, &msg).await {
-                            return Err(anyhow!("Error writing to language server: {}", e));
-                        }
-                    }
-                    Ok(())
+        tokio::spawn(async move {
+            while let Some(msg) = outgoing_rx.recv().await {
+                let mut stdin_guard = stdin_clone.lock().await;
+                if let Err(e) = write_message(&mut *stdin_guard, &msg).await {
+                    eprintln!("[LSP Writer] Error writing to language server: {}", e);
+                    break;
                 }
             }
-        ).await?;
+            // Writer task exiting - LSP server is no longer functional
+        });
 
         // Spawn supervised stale request cleanup task
         let inner_cleanup = inner.clone();
@@ -356,8 +358,14 @@ impl LanguageServer {
                             );
                         }
 
-                        if pending.len() > 100 {
-                            eprintln!("[LSP Cleanup] Warning: {} pending requests", pending.len());
+                        // Warn at 80% of maximum capacity
+                        let warning_threshold = (MAX_PENDING_REQUESTS as f64 * 0.8) as usize;
+                        if pending.len() > warning_threshold {
+                            eprintln!(
+                                "[LSP Cleanup] Warning: {} pending requests (max: {})",
+                                pending.len(),
+                                MAX_PENDING_REQUESTS
+                            );
                         }
                     }
                 }
@@ -374,6 +382,13 @@ impl LanguageServer {
                 // Read Content-Length header
                 let mut header = String::new();
                 if let Err(e) = reader.read_line(&mut header).await {
+                    // CRITICAL ERROR: LSP server reader task failed
+                    eprintln!(
+                        "{} CRITICAL: Reader task failed while reading header: {}",
+                        inner_clone.log_prefix(),
+                        e
+                    );
+
                     // Mark server as failed (error reading from LSP server)
                     let mut state = state_clone.lock().await;
                     *state = ServerState::Failed {
@@ -447,9 +462,26 @@ impl LanguageServer {
                             }
                         }
                     }
-                    Err(_e) => {
-                        // Parse error - silently skip malformed messages
-                        // Debug info available via OVIM_LSP_DEBUG env var
+                    Err(e) => {
+                        // ERROR: Failed to parse LSP message - log for visibility
+                        eprintln!(
+                            "{} ERROR: Failed to parse LSP message (size: {} bytes): {}",
+                            inner_clone.log_prefix(),
+                            content.len(),
+                            e
+                        );
+                        // Show a truncated preview of the malformed content for debugging
+                        let preview = if content.len() > 200 {
+                            format!("{}...", String::from_utf8_lossy(&content[..200]))
+                        } else {
+                            String::from_utf8_lossy(&content).to_string()
+                        };
+                        eprintln!(
+                            "{} Malformed message preview: {}",
+                            inner_clone.log_prefix(),
+                            preview
+                        );
+                        // Continue processing other messages (don't break the loop)
                     }
                 }
             }
@@ -481,6 +513,17 @@ impl LanguageServer {
 
     /// Initializes the language server
     pub async fn initialize(&mut self, root_uri: Url) -> Result<()> {
+        // Wrap initialization in timeout (30 seconds)
+        // This prevents hanging indefinitely if server doesn't respond
+        const INIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+        tokio::time::timeout(INIT_TIMEOUT, self.initialize_internal(root_uri))
+            .await
+            .context("LSP initialization timed out after 30 seconds")?
+    }
+
+    /// Internal initialization implementation (wrapped by timeout)
+    async fn initialize_internal(&mut self, root_uri: Url) -> Result<()> {
         // Transition to Initializing state
         self.transition_to(ServerState::Initializing {
             started_at: Instant::now(),
@@ -533,7 +576,6 @@ impl LanguageServer {
     /// Transitions to a new state, handling state-specific logic
     async fn transition_to(&self, new_state: ServerState) {
         let mut state = self.inner.state.lock().await;
-        let old_state = state.clone();
         let prefix = self.log_prefix();
 
         // Removed verbose logging: State: {:?} → {:?}
@@ -575,7 +617,7 @@ impl LanguageServer {
                     .await
                     .context("Failed to replay didOpen")
             }
-            PendingOperation::DidChange { uri, language_id, changes } => {
+            PendingOperation::DidChange { uri, language_id: _, changes } => {
                 use lsp_types::{DidChangeTextDocumentParams, VersionedTextDocumentIdentifier};
 
                 // Note: version might be stale, but better than losing the operation
@@ -591,7 +633,7 @@ impl LanguageServer {
                     .await
                     .context("Failed to replay didChange")
             }
-            PendingOperation::DidSave { uri, language_id, text } => {
+            PendingOperation::DidSave { uri, language_id: _, text } => {
                 use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
 
                 let params = DidSaveTextDocumentParams {
@@ -603,7 +645,7 @@ impl LanguageServer {
                     .await
                     .context("Failed to replay didSave")
             }
-            PendingOperation::Request { method, params } => {
+            PendingOperation::Request { method, params: _ } => {
                 // Requests are not replayed (they would have timed out already)
                 eprintln!("{} Skipping replay of request '{}'", self.log_prefix(), method);
                 Ok(())
@@ -665,6 +707,16 @@ impl LanguageServer {
         // Register pending request with metadata
         {
             let mut pending = self.inner.pending_requests.lock().await;
+
+            // Check if we've hit the hard limit on pending requests
+            if pending.len() >= MAX_PENDING_REQUESTS {
+                return Err(anyhow!(
+                    "Too many pending LSP requests ({}/{}) - server may be slow or hanging",
+                    pending.len(),
+                    MAX_PENDING_REQUESTS
+                ));
+            }
+
             pending.insert(request_id.clone(), PendingRequest {
                 sender: tx,
                 sent_at: Instant::now(),

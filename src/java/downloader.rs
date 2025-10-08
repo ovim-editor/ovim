@@ -4,7 +4,7 @@
 //! Caches installation for fast startup
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
 // Use latest milestone release (more stable than snapshots)
@@ -152,19 +152,34 @@ impl JdtlsDownloader {
                 }
             };
 
-            // Wait for extraction with periodic progress updates
+            // Wait for extraction with periodic progress updates and timeout (10 seconds)
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
             let mut dots = 1;
-            let extract_result = loop {
-                tokio::select! {
-                    result = child.wait() => {
-                        break result;
+            const EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+            let extract_result = tokio::time::timeout(EXTRACT_TIMEOUT, async {
+                loop {
+                    tokio::select! {
+                        result = child.wait() => {
+                            return result;
+                        }
+                        _ = interval.tick() => {
+                            let dot_str = ".".repeat(dots);
+                            progress_callback(format!("Extracting jdtls{}", dot_str));
+                            dots = (dots % 3) + 1; // Cycle through 1, 2, 3 dots
+                        }
                     }
-                    _ = interval.tick() => {
-                        let dot_str = ".".repeat(dots);
-                        progress_callback(format!("Extracting jdtls{}", dot_str));
-                        dots = (dots % 3) + 1; // Cycle through 1, 2, 3 dots
-                    }
+                }
+            }).await;
+
+            let extract_result = match extract_result {
+                Ok(result) => result,
+                Err(_) => {
+                    // Timeout - kill the tar process
+                    let _ = child.kill().await;
+                    last_error = Some("Tar extraction timed out after 10 seconds".to_string());
+                    progress_callback("Extraction timeout - server may be slow or file corrupt".to_string());
+                    continue;
                 }
             };
 

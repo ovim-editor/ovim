@@ -4,7 +4,6 @@ pub use cursor::Cursor;
 
 use anyhow::{Context, Result};
 use ropey::Rope;
-use std::fs;
 use std::path::Path;
 use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
 use std::ops::Range;
@@ -180,10 +179,11 @@ impl Buffer {
         deleted
     }
 
-    /// Loads a file into the buffer
-    pub fn load_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+    /// Loads a file into the buffer (async version)
+    pub async fn load_file_async<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
-        let content = fs::read_to_string(&path)
+        let content = tokio::fs::read_to_string(&path)
+            .await
             .context(format!("Failed to read file: {}", path_str))?;
 
         let mut buffer = Self {
@@ -204,24 +204,46 @@ impl Buffer {
         Ok(buffer)
     }
 
-    /// Saves the buffer to its file path
-    pub fn save(&mut self) -> Result<()> {
+    /// Loads a file into the buffer (blocking wrapper for async contexts)
+    pub fn load_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(Self::load_file_async(path))
+        })
+    }
+
+    /// Saves the buffer to its file path (async version)
+    pub async fn save_async(&mut self) -> Result<()> {
         let path = self.file_path.as_ref()
             .context("No file path set for buffer")?;
-        self.save_as(path.clone())?;
+        self.save_as_async(path.clone()).await?;
         Ok(())
     }
 
-    /// Saves the buffer to a specific file path
-    pub fn save_as<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+    /// Saves the buffer to a specific file path (async version)
+    pub async fn save_as_async<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path_str = path.as_ref().to_string_lossy().to_string();
         let content = self.rope.to_string();
-        fs::write(&path, content)
+        tokio::fs::write(&path, content)
+            .await
             .context(format!("Failed to write file: {}", path_str))?;
 
         self.file_path = Some(path_str);
         self.modified = false;
         Ok(())
+    }
+
+    /// Saves the buffer to its file path (blocking wrapper)
+    pub fn save(&mut self) -> Result<()> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.save_async())
+        })
+    }
+
+    /// Saves the buffer to a specific file path (blocking wrapper)
+    pub fn save_as<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.save_as_async(path))
+        })
     }
 
     /// Replaces the entire buffer content
