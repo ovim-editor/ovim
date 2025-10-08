@@ -46,6 +46,30 @@ cargo run -- myfile.txt --dimension=80x24
 cargo test
 ```
 
+## Java Development (Zero Config)
+
+ovim has **supersmooth Java support** with zero configuration:
+
+```bash
+# Just open any Java file - that's it!
+ovim MyJavaFile.java
+
+# ovim automatically:
+# ✓ Downloads jdtls (one-time)
+# ✓ Detects Java version from build.gradle/pom.xml
+# ✓ Finds correct JVM (17, 21, etc.)
+# ✓ Gives you full IDE features in seconds
+```
+
+**Features:**
+- Auto-installs Eclipse JDT.LS
+- Detects Java 8, 11, 17, 21, 24 from build files
+- Works with Maven (pom.xml) and Gradle (build.gradle/build.gradle.kts)
+- Full LSP: completion, go-to-definition, hover, diagnostics, refactoring
+- Fully async and non-blocking
+
+**See [ZERO_CONFIG_JAVA.md](ZERO_CONFIG_JAVA.md) for details.**
+
 ## Testing the REST API
 
 1. **Start ovim in headless mode:**
