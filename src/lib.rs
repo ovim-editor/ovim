@@ -6,6 +6,8 @@ pub mod buffer;
 pub mod editor;
 pub mod ui;
 pub mod lsp;
+pub mod java;
+pub mod daemon;
 #[cfg(feature = "lua")]
 pub mod lua;
 pub mod config;

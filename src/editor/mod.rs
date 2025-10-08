@@ -199,7 +199,7 @@ impl Editor {
             available_completions: Vec::new(),
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
-            current_color_scheme: "default".to_string(),
+            current_color_scheme: "tokyonight".to_string(),
         }
     }
 
@@ -248,7 +248,7 @@ impl Editor {
             available_completions: Vec::new(),
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
-            current_color_scheme: "default".to_string(),
+            current_color_scheme: "tokyonight".to_string(),
         }
     }
 
@@ -961,7 +961,8 @@ impl Editor {
         let file_path = self.buffer.file_path()?;
         let uri = lsp_types::Url::from_file_path(file_path).ok()?;
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - return None if busy
+        let lsp_guard = lsp.try_lock().ok()?;
         Some(lsp_guard.get_diagnostics(&uri).await)
     }
 
@@ -970,8 +971,10 @@ impl Editor {
         if let Some(lsp) = &self.lsp_manager {
             if let Some(file_path) = self.buffer.file_path() {
                 if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
-                    let lsp_guard = lsp.lock().await;
-                    return lsp_guard.count_diagnostics(&uri).await;
+                    // Try to get lock without blocking - return (0,0,0,0) if busy
+                    if let Ok(lsp_guard) = lsp.try_lock() {
+                        return lsp_guard.count_diagnostics(&uri).await;
+                    }
                 }
             }
         }
@@ -1197,7 +1200,11 @@ impl Editor {
         // Pass last_synced_content for incremental sync
         let old_content = self.last_synced_content.clone();
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, skip this iteration
+        let Ok(lsp_guard) = lsp.try_lock() else {
+            return; // LSP busy, will sync on next change
+        };
+
         let _ = lsp_guard.did_change(uri, language_id, content.clone(), old_content).await;
         drop(lsp_guard);
 
@@ -1238,29 +1245,38 @@ impl Editor {
 
         let text = Some(self.buffer.rope().to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, skip
+        let Ok(lsp_guard) = lsp.try_lock() else {
+            return; // LSP busy, save notification will be sent on next save
+        };
+
         let _ = lsp_guard.did_save(uri, language_id, text).await;
     }
 
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.pending_lsp_action.take() {
-            match action {
+            let retry = match action {
                 LspAction::GoToDefinition => {
-                    let _ = self.goto_definition_impl().await;
+                    matches!(self.goto_definition_impl().await, Err(_))
                 }
                 LspAction::ShowHover => {
-                    let _ = self.hover_impl().await;
+                    matches!(self.hover_impl().await, Err(_))
                 }
                 LspAction::Completion => {
-                    let _ = self.completion_impl().await;
+                    matches!(self.completion_impl().await, Err(_))
                 }
                 LspAction::FormatDocument => {
-                    let _ = self.format_document_impl().await;
+                    matches!(self.format_document_impl().await, Err(_))
                 }
                 LspAction::CodeActions => {
-                    let _ = self.code_actions_impl().await;
+                    matches!(self.code_actions_impl().await, Err(_))
                 }
+            };
+
+            // If action returned error (e.g., couldn't get lock), put it back for retry
+            if retry {
+                self.pending_lsp_action = Some(action);
             }
         }
     }
@@ -1304,21 +1320,26 @@ impl Editor {
         let character = cursor.col() as u32;
 
         // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
-            self.set_lsp_status("Language not supported for LSP".to_string());
-            return Ok(false);
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
         };
 
         // Request definition
         self.set_lsp_status("Searching for definition...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
         let location = lsp_guard
             .goto_definition(&uri, line, character, language_id)
             .await?;
@@ -1413,21 +1434,26 @@ impl Editor {
         let character = cursor.col() as u32;
 
         // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
-            self.set_lsp_status("Language not supported for LSP".to_string());
-            return Ok(false);
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
         };
 
         // Request hover information
         self.set_lsp_status("Requesting hover information...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
         let hover_text = lsp_guard
             .hover(&uri, line, character, language_id)
             .await?;
@@ -1487,21 +1513,26 @@ impl Editor {
         let character = cursor.col() as u32;
 
         // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
-            self.set_lsp_status("Language not supported for LSP".to_string());
-            return Ok(false);
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
         };
 
         // Request completion
         self.set_lsp_status("Requesting completion...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
         let items = lsp_guard
             .completion(&uri, line, character, language_id)
             .await?;
@@ -1571,21 +1602,26 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
-            self.set_lsp_status("Language not supported for LSP".to_string());
-            return Ok(false);
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
         };
 
         // Request formatting
         self.set_lsp_status("Formatting document...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
         let edits = lsp_guard
             .format_document(&uri, language_id, 4, true) // 4 spaces, insert spaces
             .await?;
@@ -1642,21 +1678,26 @@ impl Editor {
         let character = cursor.col() as u32;
 
         // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
-            self.set_lsp_status("Language not supported for LSP".to_string());
-            return Ok(false);
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
         };
 
         // Get diagnostics at cursor position for context
         self.set_lsp_status("Requesting code actions...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
         let diagnostics = lsp_guard.get_diagnostics_for_line(&uri, line).await;
         let actions = lsp_guard
             .code_actions(&uri, line, character, language_id, diagnostics)

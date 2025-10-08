@@ -374,8 +374,7 @@ impl LanguageServer {
                 // Read Content-Length header
                 let mut header = String::new();
                 if let Err(e) = reader.read_line(&mut header).await {
-                    eprintln!("[LSP Reader] Error reading header: {}", e);
-                    // Mark server as failed
+                    // Mark server as failed (error reading from LSP server)
                     let mut state = state_clone.lock().await;
                     *state = ServerState::Failed {
                         error: format!("Reader task failed: {}", e),
@@ -385,7 +384,7 @@ impl LanguageServer {
                 }
 
                 if header.is_empty() {
-                    eprintln!("[LSP Reader] EOF reached");
+                    // EOF reached - LSP server closed output
                     break;
                 }
 
@@ -400,7 +399,7 @@ impl LanguageServer {
                 {
                     Some(len) => len,
                     None => {
-                        eprintln!("[LSP Reader] Failed to parse Content-Length: {}", header);
+                        // Invalid Content-Length header, skip this message
                         continue;
                     }
                 };
@@ -413,9 +412,9 @@ impl LanguageServer {
 
                 // Read content
                 let mut content = vec![0u8; content_length];
-                if let Err(e) = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut content).await
+                if let Err(_e) = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut content).await
                 {
-                    eprintln!("[LSP Reader] Error reading message: {}", e);
+                    // Error reading message body, LSP server may have closed
                     break;
                 }
 
@@ -695,15 +694,22 @@ impl LanguageServer {
             .await
             .map_err(|_| anyhow!("Failed to send request"))?;
 
-        // Wait for response with timeout (5s for faster feedback on failures)
-        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        // Wait for response with timeout
+        // Use longer timeout for initialize request (jdtls can be very slow)
+        let timeout_duration = if method == "initialize" {
+            std::time::Duration::from_secs(120)  // 120s for initialize (jdtls needs lots of time)
+        } else {
+            std::time::Duration::from_secs(5)   // 5s for other requests
+        };
+
+        match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(result)) => result.context(format!("LSP request '{}' failed", method)),
             Ok(Err(_)) => Err(anyhow!("Response channel closed for method '{}'", method)),
             Err(_) => {
                 // Timeout - remove pending request
                 let mut pending = self.inner.pending_requests.lock().await;
                 pending.remove(&request_id);
-                Err(anyhow!("Request '{}' timed out after 30 seconds", method))
+                Err(anyhow!("Request '{}' timed out after {:?}", method, timeout_duration))
             }
         }
     }

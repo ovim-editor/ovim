@@ -465,6 +465,67 @@ impl ColorScheme {
 
         scheme
     }
+
+    /// Tokyonight theme (most popular Neovim colorscheme)
+    pub fn tokyonight() -> Self {
+        let mut scheme = Self::new("tokyonight");
+
+        // Tokyonight night palette
+        let bg = Color::Rgb(26, 27, 38);           // #1a1b26
+        let bg_dark = Color::Rgb(22, 22, 30);      // #16161e
+        let bg_highlight = Color::Rgb(41, 46, 66); // #292e42
+        let fg = Color::Rgb(192, 202, 245);        // #c0caf5
+        let fg_dark = Color::Rgb(169, 177, 214);   // #a9b1d6
+        let comment = Color::Rgb(86, 95, 137);     // #565f89
+
+        // Accent colors
+        let blue = Color::Rgb(122, 162, 247);      // #7aa2f7
+        let cyan = Color::Rgb(42, 195, 222);       // #2ac3de
+        let green = Color::Rgb(158, 206, 106);     // #9ece6a
+        let yellow = Color::Rgb(224, 175, 104);    // #e0af68
+        let orange = Color::Rgb(255, 158, 100);    // #ff9e64
+        let red = Color::Rgb(247, 118, 142);       // #f7768e
+        let purple = Color::Rgb(187, 154, 247);    // #bb9af7
+        let magenta = Color::Rgb(187, 154, 247);   // #bb9af7
+        let teal = Color::Rgb(26, 188, 156);       // #1abc9c
+
+        // Syntax colors - following Tokyonight's style
+        scheme.set_syntax(HighlightGroup::Keyword, purple);
+        scheme.set_syntax(HighlightGroup::Function, blue);
+        scheme.set_syntax(HighlightGroup::Type, cyan);
+        scheme.set_syntax(HighlightGroup::String, green);
+        scheme.set_syntax(HighlightGroup::Number, orange);
+        scheme.set_syntax(HighlightGroup::Comment, comment);
+        scheme.set_syntax(HighlightGroup::Operator, cyan);
+        scheme.set_syntax(HighlightGroup::Variable, fg);
+        scheme.set_syntax(HighlightGroup::Macro, magenta);
+        scheme.set_syntax(HighlightGroup::Constant, orange);
+        scheme.set_syntax(HighlightGroup::Property, teal);
+        scheme.set_syntax(HighlightGroup::Parameter, yellow);
+        scheme.set_syntax(HighlightGroup::Label, blue);
+        scheme.set_syntax(HighlightGroup::Punctuation, cyan);
+        scheme.set_syntax(HighlightGroup::Other, fg);
+
+        // UI colors
+        scheme.set_ui(UiGroup::Background, bg);
+        scheme.set_ui(UiGroup::Foreground, fg);
+        scheme.set_ui(UiGroup::StatusLineBackground, bg_dark);
+        scheme.set_ui(UiGroup::StatusLineForeground, fg);
+        scheme.set_ui(UiGroup::CursorLine, bg_highlight);
+        scheme.set_ui(UiGroup::Visual, bg_highlight);
+        scheme.set_ui(UiGroup::LineNumber, comment);
+        scheme.set_ui(UiGroup::LineNumberCurrent, blue);
+        scheme.set_ui(UiGroup::Search, Color::Rgb(86, 95, 137));
+        scheme.set_ui(UiGroup::IncSearch, orange);
+        scheme.set_ui(UiGroup::Error, red);
+        scheme.set_ui(UiGroup::Warning, yellow);
+        scheme.set_ui(UiGroup::Info, cyan);
+        scheme.set_ui(UiGroup::MenuBackground, bg_dark);
+        scheme.set_ui(UiGroup::MenuSelected, bg_highlight);
+        scheme.set_ui(UiGroup::Border, Color::Rgb(41, 46, 66));
+
+        scheme
+    }
 }
 
 /// Legacy Theme struct for backward compatibility
@@ -496,7 +557,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::from_scheme(ColorScheme::default_dark())
+        Self::from_scheme(ColorScheme::tokyonight())
     }
 }
 
@@ -510,6 +571,7 @@ impl ColorSchemeRegistry {
     pub fn new() -> Self {
         let mut schemes = HashMap::new();
 
+        schemes.insert("tokyonight".to_string(), ColorScheme::tokyonight());
         schemes.insert("default".to_string(), ColorScheme::default_dark());
         schemes.insert("gruvbox-dark".to_string(), ColorScheme::gruvbox_dark());
         schemes.insert("gruvbox-light".to_string(), ColorScheme::gruvbox_light());

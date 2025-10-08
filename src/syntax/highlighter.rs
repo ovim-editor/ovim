@@ -19,10 +19,10 @@ impl SyntaxHighlighter {
         let query_source = LanguageRegistry::get_highlight_query(language);
 
         let mut parser = Parser::new();
-        parser.set_language(ts_language)
+        parser.set_language(&ts_language)
             .map_err(|e| format!("Failed to set language: {}", e))?;
 
-        let query = Query::new(ts_language, query_source)
+        let query = Query::new(&ts_language, query_source)
             .map_err(|e| format!("Failed to create query: {}", e))?;
 
         let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();

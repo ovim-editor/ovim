@@ -6,6 +6,7 @@ pub enum Language {
     Rust,
     JavaScript,
     Python,
+    Java,
 }
 
 /// Registry for language detection and grammar access
@@ -47,6 +48,9 @@ impl LanguageRegistry {
             "pyc" | "pyd" | "pyo" | "pyz" | "pywz" |
             "py3" | "pyde" | "pyt" | "snakefile" | "smk" => Some(Language::Python),
 
+            // Java
+            "java" => Some(Language::Java),
+
             _ => None,
         }
     }
@@ -82,9 +86,10 @@ impl LanguageRegistry {
     /// Gets the tree-sitter language grammar
     pub fn get_tree_sitter_language(lang: Language) -> tree_sitter::Language {
         match lang {
-            Language::Rust => tree_sitter_rust::language(),
-            Language::JavaScript => tree_sitter_javascript::language(),
-            Language::Python => tree_sitter_python::language(),
+            Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::Python => tree_sitter_python::LANGUAGE.into(),
+            Language::Java => tree_sitter_java::LANGUAGE.into(),
         }
     }
 
@@ -94,6 +99,23 @@ impl LanguageRegistry {
             Language::Rust => include_str!("queries/rust.scm"),
             Language::JavaScript => include_str!("queries/javascript.scm"),
             Language::Python => include_str!("queries/python.scm"),
+            Language::Java => include_str!("queries/java.scm"),
         }
+    }
+
+    /// Get LSP language identifier from file path
+    /// Returns None if language is not supported by LSP
+    pub fn get_lsp_language_id(file_path: &str) -> Option<&'static str> {
+        Self::detect_from_path(file_path).and_then(|lang| match lang {
+            Language::Rust => Some("rust"),
+            Language::JavaScript => Some("javascript"),
+            Language::Python => Some("python"),
+            Language::Java => Some("java"),
+        })
+    }
+
+    /// Check if a file path has LSP support
+    pub fn has_lsp_support(file_path: &str) -> bool {
+        Self::get_lsp_language_id(file_path).is_some()
     }
 }

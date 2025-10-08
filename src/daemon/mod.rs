@@ -1,0 +1,41 @@
+//! LSP Daemon Mode
+//!
+//! Keeps jdtls (or other LSP servers) alive between editor sessions for instant startup.
+//!
+//! ## Architecture
+//!
+//! - **Client**: ovim process that connects to daemon
+//! - **Daemon**: Background process that manages LSP server
+//! - **Protocol**: Request/response over Unix domain socket
+//!
+//! ## Safety Features
+//!
+//! - **PID Verification**: Prevents PID reuse attacks (start time + cmdline hash)
+//! - **Process Killing**: Robust termination with escalation (SIGTERM → SIGKILL)
+//! - **File Locking**: Prevents race conditions during daemon startup
+//! - **Stale Detection**: Identifies and cleans up dead daemons
+//!
+//! ## Usage
+//!
+//! ```rust
+//! // Start or connect to daemon for a project
+//! let daemon = DaemonClient::connect_or_start(project_root).await?;
+//!
+//! // Send LSP requests
+//! let response = daemon.send_request(DaemonRequest::Hover { uri, position }).await?;
+//!
+//! // Daemon stays alive after client disconnects
+//! ```
+
+pub mod lock;
+pub mod pid;
+pub mod process;
+pub mod protocol;
+
+pub use lock::DaemonLock;
+pub use pid::{get_process_cmdline, get_process_start_time, process_exists, DaemonPidInfo};
+pub use process::{
+    get_process_state, kill_process_forcefully, ProcessKillStatus, RogueProcess,
+    RogueProcessTracker,
+};
+pub use protocol::{DaemonRequest, DaemonResponse, LspPosition, LspRange};
