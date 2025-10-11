@@ -1,11 +1,14 @@
 mod change;
 mod completion;
+mod filetree;
+mod fold;
 mod input;
 mod macros;
 mod marks;
 mod motions;
 mod operators;
 mod picker;
+mod quickfix;
 mod register;
 mod search;
 mod textobjects;
@@ -14,12 +17,15 @@ mod window;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range};
 pub use completion::CompletionMenu;
+pub use filetree::{FileTree, TreeNode};
+pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
 pub use macros::MacroManager;
 pub use marks::{JumpList, Mark, MarkManager};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use picker::{Picker, PickerMode, PickerResult};
+pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::RegisterManager;
 pub use search::Search;
 pub use textobjects::{TextObjectRange, TextObjects};
@@ -172,6 +178,8 @@ pub struct Editor {
     available_call_hierarchy: Vec<(String, lsp_types::Location)>,
     /// Available type hierarchy items (supertypes and subtypes)
     available_type_hierarchy: Vec<(String, lsp_types::Location)>,
+    /// Inlay hints for the visible region
+    inlay_hints: Vec<lsp_types::InlayHint>,
     /// Currently active LSP result type (for picker navigation)
     active_lsp_result_type: Option<LspResultType>,
     /// Preview cache for picker (file_path -> (content, syntax highlights))
@@ -184,6 +192,16 @@ pub struct Editor {
     viewport_height: usize,
     /// Current color scheme name
     current_color_scheme: String,
+    /// File tree explorer
+    file_tree: FileTree,
+    /// Quickfix list (global error/location list)
+    quickfix_list: QuickfixList,
+    /// Location list (per-window error/location list)
+    location_list: LocationList,
+    /// Whether quickfix window is open
+    quickfix_window_open: bool,
+    /// Whether location list window is open
+    location_window_open: bool,
 }
 
 /// Cached preview data for the picker
@@ -281,12 +299,18 @@ impl Editor {
             available_workspace_symbols: Vec::new(),
             available_call_hierarchy: Vec::new(),
             available_type_hierarchy: Vec::new(),
+            inlay_hints: Vec::new(),
             active_lsp_result_type: None,
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
             viewport_height: 24,
+            file_tree: FileTree::new(),
+            quickfix_list: QuickfixList::new(),
+            location_list: LocationList::new(),
+            quickfix_window_open: false,
+            location_window_open: false,
         }
     }
 
@@ -342,12 +366,18 @@ impl Editor {
             available_workspace_symbols: Vec::new(),
             available_call_hierarchy: Vec::new(),
             available_type_hierarchy: Vec::new(),
+            inlay_hints: Vec::new(),
             active_lsp_result_type: None,
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
             viewport_height: 24,
+            file_tree: FileTree::new(),
+            quickfix_list: QuickfixList::new(),
+            location_list: LocationList::new(),
+            quickfix_window_open: false,
+            location_window_open: false,
         }
     }
 
@@ -3177,9 +3207,36 @@ impl Editor {
                     self.set_lsp_status("Code action has no edits".to_string());
                 }
             }
-            lsp_types::CodeActionOrCommand::Command(_cmd) => {
-                // Commands are not directly supported - would need to execute via LSP
-                self.set_lsp_status("Command execution not yet supported".to_string());
+            lsp_types::CodeActionOrCommand::Command(cmd) => {
+                // Execute the command via LSP
+                let command_title = cmd.title.clone();
+                let command_name = cmd.command.clone();
+                let arguments = cmd.arguments.clone();
+
+                // Get language ID
+                let Some(file_path) = self.buffer().file_path() else {
+                    self.set_lsp_status("No file loaded".to_string());
+                    return;
+                };
+
+                let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) else {
+                    self.set_lsp_status("Language not supported".to_string());
+                    return;
+                };
+
+                // Execute command asynchronously
+                if let Some(lsp) = self.lsp_manager.clone() {
+                    self.set_lsp_status(format!("Executing: {}", command_title));
+
+                    tokio::spawn(async move {
+                        let guard = lsp.lock().await;
+                        let _result = guard.execute_command(command_name, arguments, &language_id).await;
+                        // Note: Result isn't sent back to editor - this is fire and forget
+                        // A full implementation would use a channel to send results back
+                    });
+                } else {
+                    self.set_lsp_status("LSP not available".to_string());
+                }
             }
         }
 
@@ -3678,6 +3735,197 @@ impl Editor {
 
         // Hide the completion menu
         self.hide_completion_menu();
+    }
+
+    /// Gets the inlay hints for the current file
+    pub fn inlay_hints(&self) -> &[lsp_types::InlayHint] {
+        &self.inlay_hints
+    }
+
+    /// Gets the file tree
+    pub fn file_tree(&self) -> &FileTree {
+        &self.file_tree
+    }
+
+    /// Gets mutable file tree
+    pub fn file_tree_mut(&mut self) -> &mut FileTree {
+        &mut self.file_tree
+    }
+
+    /// Opens the file tree explorer at the current file's directory
+    pub fn open_file_tree(&mut self) {
+        // Extract file path first to avoid borrowing issues
+        let file_path = self.buffer().file_path().map(|s| s.to_string());
+
+        if let Some(file_path) = file_path {
+            if let Some(parent) = std::path::Path::new(&file_path).parent() {
+                self.file_tree.open(parent);
+                return;
+            }
+        }
+
+        // Fallback to current directory if no file path
+        if let Ok(cwd) = std::env::current_dir() {
+            self.file_tree.open(&cwd);
+        }
+    }
+
+    /// Toggles the file tree visibility
+    pub fn toggle_file_tree(&mut self) {
+        if !self.file_tree.is_visible() {
+            self.open_file_tree();
+            self.mode = Mode::FileTree;
+        } else {
+            self.file_tree.toggle();
+            self.mode = Mode::Normal;
+        }
+    }
+
+    /// Opens the file selected in the file tree
+    pub fn open_file_from_tree(&mut self) {
+        if let Some(node) = self.file_tree.selected_node() {
+            if node.is_dir() {
+                // Toggle directory expansion
+                self.file_tree.toggle_selected();
+            } else {
+                // Open file
+                let path = node.path().to_path_buf();
+                // Load file into buffer (reuse existing buffer loading logic)
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let mut buffer = Buffer::from_str(&content);
+                    buffer.set_file_path(path.to_str().unwrap_or("").to_string());
+                    self.buffers.push(buffer);
+                    self.current_buffer_index = self.buffers.len() - 1;
+                    self.needs_lsp_init = true;
+                    // Switch back to Normal mode and keep file tree visible
+                    self.mode = Mode::Normal;
+                }
+            }
+        }
+    }
+
+    /// Gets the quickfix list
+    pub fn quickfix_list(&self) -> &QuickfixList {
+        &self.quickfix_list
+    }
+
+    /// Gets mutable quickfix list
+    pub fn quickfix_list_mut(&mut self) -> &mut QuickfixList {
+        &mut self.quickfix_list
+    }
+
+    /// Sets the quickfix list entries
+    pub fn set_quickfix_list(&mut self, entries: Vec<QuickfixEntry>, title: String) {
+        self.quickfix_list.set_entries(entries, title);
+    }
+
+    /// Opens the quickfix window
+    pub fn open_quickfix_window(&mut self) {
+        self.quickfix_window_open = true;
+    }
+
+    /// Closes the quickfix window
+    pub fn close_quickfix_window(&mut self) {
+        self.quickfix_window_open = false;
+    }
+
+    /// Toggles the quickfix window
+    pub fn toggle_quickfix_window(&mut self) {
+        self.quickfix_window_open = !self.quickfix_window_open;
+    }
+
+    /// Whether the quickfix window is open
+    pub fn is_quickfix_window_open(&self) -> bool {
+        self.quickfix_window_open
+    }
+
+    /// Jumps to the current quickfix entry
+    pub fn jump_to_quickfix_entry(&mut self) {
+        if let Some(entry) = self.quickfix_list.current_entry() {
+            if let Some(ref path) = entry.filename {
+                // Load the file if needed
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let mut buffer = Buffer::from_str(&content);
+                    buffer.set_file_path(path.to_str().unwrap_or("").to_string());
+                    self.buffers.push(buffer);
+                    self.current_buffer_index = self.buffers.len() - 1;
+                    self.needs_lsp_init = true;
+
+                    // Move cursor to the location
+                    if entry.lnum > 0 {
+                        let line = entry.lnum.saturating_sub(1);
+                        let col = if entry.col > 0 {
+                            entry.col.saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        self.buffer_mut().cursor_mut().set_position(line, col);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Gets the location list
+    pub fn location_list(&self) -> &LocationList {
+        &self.location_list
+    }
+
+    /// Gets mutable location list
+    pub fn location_list_mut(&mut self) -> &mut LocationList {
+        &mut self.location_list
+    }
+
+    /// Sets the location list entries
+    pub fn set_location_list(&mut self, entries: Vec<QuickfixEntry>, title: String) {
+        self.location_list.set_entries(entries, title);
+    }
+
+    /// Opens the location list window
+    pub fn open_location_window(&mut self) {
+        self.location_window_open = true;
+    }
+
+    /// Closes the location list window
+    pub fn close_location_window(&mut self) {
+        self.location_window_open = false;
+    }
+
+    /// Toggles the location list window
+    pub fn toggle_location_window(&mut self) {
+        self.location_window_open = !self.location_window_open;
+    }
+
+    /// Whether the location list window is open
+    pub fn is_location_window_open(&self) -> bool {
+        self.location_window_open
+    }
+
+    /// Jumps to the current location list entry
+    pub fn jump_to_location_entry(&mut self) {
+        if let Some(entry) = self.location_list.current_entry() {
+            if let Some(ref path) = entry.filename {
+                // Load the file if needed
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let mut buffer = Buffer::from_str(&content);
+                    buffer.set_file_path(path.to_str().unwrap_or("").to_string());
+                    self.buffers.push(buffer);
+                    self.current_buffer_index = self.buffers.len() - 1;
+                    self.needs_lsp_init = true;
+
+                    // Move cursor to the location
+                    if entry.lnum > 0 {
+                        let line = entry.lnum.saturating_sub(1);
+                        let col = if entry.col > 0 {
+                            entry.col.saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        self.buffer_mut().cursor_mut().set_position(line, col);
+                    }
+                }
+            }
+        }
     }
 }
 

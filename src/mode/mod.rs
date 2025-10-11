@@ -21,6 +21,8 @@ pub enum Mode {
     Picker,
     /// HoverWindow mode - for displaying and scrolling hover information
     HoverWindow,
+    /// FileTree mode - for navigating the file tree explorer
+    FileTree,
 }
 
 impl Mode {
@@ -37,6 +39,7 @@ impl Mode {
             Mode::Replace => "REPLACE",
             Mode::Picker => "PICKER",
             Mode::HoverWindow => "HOVER",
+            Mode::FileTree => "FILETREE",
         }
     }
 

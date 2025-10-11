@@ -37,6 +37,7 @@ impl InputHandler {
             Mode::Replace => Self::handle_replace_mode(editor, key_event),
             Mode::Picker => Self::handle_picker_mode(editor, key_event),
             Mode::HoverWindow => Self::handle_hover_window_mode(editor, key_event),
+            Mode::FileTree => Self::handle_filetree_mode(editor, key_event),
         }
     }
 
@@ -77,6 +78,11 @@ impl InputHandler {
                 KeyCode::Char('i') => {
                     // <Space>i - Organize imports
                     editor.request_organize_imports();
+                    return Ok(());
+                }
+                KeyCode::Char('e') => {
+                    // <Space>e - Toggle file tree explorer
+                    editor.toggle_file_tree();
                     return Ok(());
                 }
                 _ => {
@@ -1653,6 +1659,45 @@ impl InputHandler {
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                ('z', KeyCode::Char('o')) => {
+                    // zo - open fold at cursor
+                    let line = editor.buffer().cursor().line();
+                    editor.buffer_mut().open_fold(line);
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('c')) => {
+                    // zc - close fold at cursor
+                    let line = editor.buffer().cursor().line();
+                    editor.buffer_mut().close_fold(line);
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('a')) => {
+                    // za - toggle fold at cursor
+                    let line = editor.buffer().cursor().line();
+                    editor.buffer_mut().toggle_fold(line);
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('R')) => {
+                    // zR - open all folds
+                    editor.buffer_mut().fold_manager_mut().open_all();
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('M')) => {
+                    // zM - close all folds
+                    editor.buffer_mut().fold_manager_mut().close_all();
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('d')) => {
+                    // zd - delete fold at cursor
+                    let line = editor.buffer().cursor().line();
+                    editor.buffer_mut().fold_manager_mut().delete_fold_at(line);
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('E')) => {
+                    // zE - eliminate all folds
+                    editor.buffer_mut().clear_folds();
+                    return Ok(());
+                }
                 ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
                     // m{a-z} - set mark
                     editor.set_mark(ch);
@@ -2136,6 +2181,11 @@ impl InputHandler {
                 };
                 editor.buffer_mut().cursor_mut().set_position(target_line, 0);
                 editor.clear_count();
+            }
+            // Fold commands
+            KeyCode::Char('z') => {
+                // Set pending command to wait for second character (zo, zc, etc.)
+                editor.set_pending_command('z');
             }
             // Find character motions
             KeyCode::Char('f') => {
@@ -4409,6 +4459,53 @@ impl InputHandler {
             // G - go to bottom
             KeyCode::Char('G') => {
                 editor.scroll_hover_down(usize::MAX); // Scroll to bottom
+            }
+            _ => {
+                // Ignore other keys
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles input in FileTree mode
+    fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            // Esc or q - close file tree
+            KeyCode::Esc | KeyCode::Char('q') => {
+                editor.toggle_file_tree();
+            }
+            // j or Down - move selection down
+            KeyCode::Char('j') | KeyCode::Down => {
+                editor.file_tree_mut().select_next();
+            }
+            // k or Up - move selection up
+            KeyCode::Char('k') | KeyCode::Up => {
+                editor.file_tree_mut().select_previous();
+            }
+            // Enter or o - open file or toggle directory
+            KeyCode::Enter | KeyCode::Char('o') => {
+                editor.open_file_from_tree();
+            }
+            // x or h - collapse directory
+            KeyCode::Char('x') | KeyCode::Char('h') => {
+                // Only collapse if it's an expanded directory
+                if let Some(node) = editor.file_tree().selected_node() {
+                    if node.is_dir() && node.is_expanded() {
+                        editor.file_tree_mut().toggle_selected();
+                    }
+                }
+            }
+            // l - expand directory or open file
+            KeyCode::Char('l') => {
+                editor.open_file_from_tree();
+            }
+            // r - refresh file tree
+            KeyCode::Char('r') => {
+                editor.file_tree_mut().refresh();
+            }
+            // Tab - switch focus to buffer
+            KeyCode::Tab => {
+                editor.set_mode(Mode::Normal);
             }
             _ => {
                 // Ignore other keys

@@ -216,6 +216,8 @@ struct LanguageServerInner {
     cap_type_hierarchy: AtomicBool,
     /// Cached: supports execute command
     cap_execute_command: AtomicBool,
+    /// Cached: supports inlay hints
+    cap_inlay_hint: AtomicBool,
 }
 
 impl LanguageServerInner {
@@ -302,6 +304,7 @@ impl LanguageServer {
             cap_call_hierarchy: AtomicBool::new(false),
             cap_type_hierarchy: AtomicBool::new(false),
             cap_execute_command: AtomicBool::new(false),
+            cap_inlay_hint: AtomicBool::new(false),
         });
 
         let server = Self { inner: inner.clone() };
@@ -1130,6 +1133,12 @@ impl LanguageServer {
             caps.execute_command_provider.is_some(),
             Ordering::Relaxed,
         );
+
+        // Cache inlay hint support
+        self.inner.cap_inlay_hint.store(
+            caps.inlay_hint_provider.is_some(),
+            Ordering::Relaxed,
+        );
     }
 
     /// Gets the server capabilities
@@ -1241,6 +1250,11 @@ impl LanguageServer {
     /// Checks if the server supports execute command (lock-free)
     pub async fn supports_execute_command(&self) -> bool {
         self.inner.cap_execute_command.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports inlay hints (lock-free)
+    pub async fn supports_inlay_hints(&self) -> bool {
+        self.inner.cap_inlay_hint.load(Ordering::Relaxed)
     }
 }
 

@@ -1809,6 +1809,42 @@ impl LspManager {
 
         Ok(Some(result))
     }
+
+    /// Requests inlay hints for a document range
+    pub async fn inlay_hints(
+        &self,
+        uri: &Url,
+        range: lsp_types::Range,
+        language_id: &str,
+    ) -> Result<Vec<lsp_types::InlayHint>> {
+        use lsp_types::{InlayHintParams, TextDocumentIdentifier, WorkDoneProgressParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports inlay hints
+        if !server.supports_inlay_hints().await {
+            return Ok(Vec::new());
+        }
+
+        let params = InlayHintParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.clone(),
+            },
+            range,
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+
+        let result = server
+            .request("textDocument/inlayHint", serde_json::to_value(params)?)
+            .await?;
+
+        let hints: Vec<lsp_types::InlayHint> = serde_json::from_value(result).unwrap_or_default();
+
+        Ok(hints)
+    }
 }
 
 /// Computes a simple diff between old and new content for incremental sync
