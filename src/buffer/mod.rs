@@ -4,7 +4,7 @@ pub use cursor::Cursor;
 
 use anyhow::{Context, Result};
 use ropey::Rope;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
 use crate::GitStatus;
 use std::ops::Range;
@@ -186,9 +186,23 @@ impl Buffer {
     /// Loads a file into the buffer (async version)
     pub async fn load_file_async<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
-        let content = tokio::fs::read_to_string(&path)
+
+        // Read as bytes first to validate UTF-8
+        let bytes = tokio::fs::read(&path)
             .await
             .context(format!("Failed to read file: {}", path_str))?;
+
+        // Validate UTF-8 with clear error message
+        let content = String::from_utf8(bytes)
+            .map_err(|e| {
+                let valid_up_to = e.utf8_error().valid_up_to();
+                anyhow::anyhow!(
+                    "File '{}' contains invalid UTF-8 at byte position {}\n\
+                     This file may be a binary file or use a non-UTF-8 encoding.\n\
+                     Only UTF-8 encoded text files are supported.",
+                    path_str, valid_up_to
+                )
+            })?;
 
         let mut buffer = Self {
             rope: Rope::from_str(&content),
@@ -228,12 +242,44 @@ impl Buffer {
     }
 
     /// Saves the buffer to a specific file path (async version)
+    /// Uses atomic write pattern: write to temp file, sync, then rename
     pub async fn save_as_async<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let path_str = path.as_ref().to_string_lossy().to_string();
+        use tokio::io::AsyncWriteExt;
+
+        let path_ref = path.as_ref();
+        let path_str = path_ref.to_string_lossy().to_string();
         let content = self.rope.to_string();
-        tokio::fs::write(&path, content)
+
+        // Create temp file in same directory (ensures atomic rename on same filesystem)
+        let temp_path = if let Some(parent) = path_ref.parent() {
+            parent.join(format!(".{}.tmp", path_ref.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("buffer")))
+        } else {
+            PathBuf::from(format!("{}.tmp", path_str))
+        };
+
+        // Write to temp file
+        let mut file = tokio::fs::File::create(&temp_path)
             .await
-            .context(format!("Failed to write file: {}", path_str))?;
+            .context(format!("Failed to create temp file: {}", temp_path.display()))?;
+
+        file.write_all(content.as_bytes())
+            .await
+            .context("Failed to write file content")?;
+
+        // CRITICAL: Ensure data reaches disk before rename
+        file.sync_all()
+            .await
+            .context("Failed to sync file to disk")?;
+
+        // Close file before rename
+        drop(file);
+
+        // Atomic rename (overwrites destination if exists)
+        tokio::fs::rename(&temp_path, path_ref)
+            .await
+            .context(format!("Failed to rename temp file to {}", path_str))?;
 
         self.file_path = Some(path_str);
         self.modified = false;

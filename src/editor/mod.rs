@@ -11,6 +11,7 @@ mod picker;
 mod quickfix;
 mod register;
 mod search;
+mod tabpage;
 mod textobjects;
 mod undo;
 mod window;
@@ -28,6 +29,7 @@ pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::RegisterManager;
 pub use search::Search;
+pub use tabpage::{TabPage, TabPageManager};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
@@ -101,6 +103,8 @@ pub struct Editor {
     pending_operator: Option<Operator>,
     /// Pending command character (e.g., 'g' waiting for second character)
     pending_command: Option<char>,
+    /// Pending register selection (e.g., 'a' from "a for next operation)
+    pending_register: Option<char>,
     /// Register manager for yank/delete operations
     registers: RegisterManager,
     /// Visual mode selection start (line, col)
@@ -202,6 +206,8 @@ pub struct Editor {
     quickfix_window_open: bool,
     /// Whether location list window is open
     location_window_open: bool,
+    /// Tab page manager
+    tab_page_manager: TabPageManager,
 }
 
 /// Cached preview data for the picker
@@ -260,6 +266,7 @@ impl Editor {
             count: None,
             pending_operator: None,
             pending_command: None,
+            pending_register: None,
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
@@ -311,6 +318,7 @@ impl Editor {
             location_list: LocationList::new(),
             quickfix_window_open: false,
             location_window_open: false,
+            tab_page_manager: TabPageManager::new(),
         }
     }
 
@@ -327,6 +335,7 @@ impl Editor {
             count: None,
             pending_operator: None,
             pending_command: None,
+            pending_register: None,
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
@@ -378,6 +387,7 @@ impl Editor {
             location_list: LocationList::new(),
             quickfix_window_open: false,
             location_window_open: false,
+            tab_page_manager: TabPageManager::new(),
         }
     }
 
@@ -955,6 +965,52 @@ impl Editor {
     /// Gets a mutable reference to the register manager
     pub fn registers_mut(&mut self) -> &mut RegisterManager {
         &mut self.registers
+    }
+
+    /// Yanks text to the appropriate register (pending_register or default)
+    pub fn yank_to_register(&mut self, text: String) {
+        if let Some(reg) = self.pending_register {
+            self.registers.set(Some(reg), text);
+            self.pending_register = None;
+        } else {
+            self.registers.yank(text);
+        }
+    }
+
+    /// Deletes text and stores in the appropriate register (pending_register or default)
+    pub fn delete_to_register(&mut self, text: String) {
+        if let Some(reg) = self.pending_register {
+            self.registers.set(Some(reg), text);
+            self.pending_register = None;
+        } else {
+            self.registers.delete(text);
+        }
+    }
+
+    /// Gets text from the appropriate register (pending_register or default)
+    pub fn get_from_register(&mut self) -> String {
+        let text = if let Some(reg) = self.pending_register {
+            self.registers.get(Some(reg)).to_string()
+        } else {
+            self.registers.get_default().to_string()
+        };
+        self.pending_register = None;
+        text
+    }
+
+    /// Gets the pending register for next operation
+    pub fn pending_register(&self) -> Option<char> {
+        self.pending_register
+    }
+
+    /// Sets the pending register for next operation
+    pub fn set_pending_register(&mut self, reg: char) {
+        self.pending_register = Some(reg);
+    }
+
+    /// Clears the pending register
+    pub fn clear_pending_register(&mut self) {
+        self.pending_register = None;
     }
 
     /// Gets the visual selection start position
@@ -1670,54 +1726,57 @@ impl Editor {
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.pending_lsp_action.take() {
-            let retry = match action {
-                LspAction::GoToDefinition => {
-                    matches!(self.goto_definition_impl().await, Err(_))
-                }
-                LspAction::GoToImplementation => {
-                    matches!(self.goto_implementation_impl().await, Err(_))
-                }
-                LspAction::GoToType => {
-                    matches!(self.goto_type_impl().await, Err(_))
-                }
-                LspAction::ShowHover => {
-                    matches!(self.hover_impl().await, Err(_))
-                }
-                LspAction::Completion => {
-                    matches!(self.completion_impl().await, Err(_))
-                }
-                LspAction::FormatDocument => {
-                    matches!(self.format_document_impl().await, Err(_))
-                }
-                LspAction::CodeActions => {
-                    matches!(self.code_actions_impl().await, Err(_))
-                }
-                LspAction::TypeHierarchy => {
-                    matches!(self.type_hierarchy_impl().await, Err(_))
-                }
-                LspAction::CallHierarchyIncoming => {
-                    matches!(self.call_hierarchy_incoming_impl().await, Err(_))
-                }
-                LspAction::CallHierarchyOutgoing => {
-                    matches!(self.call_hierarchy_outgoing_impl().await, Err(_))
-                }
-                LspAction::FindReferences => {
-                    matches!(self.find_references_impl().await, Err(_))
-                }
-                LspAction::DocumentSymbols => {
-                    matches!(self.document_symbols_impl().await, Err(_))
-                }
-                LspAction::WorkspaceSymbols => {
-                    matches!(self.workspace_symbols_impl().await, Err(_))
-                }
-                LspAction::OrganizeImports => {
-                    matches!(self.organize_imports_impl().await, Err(_))
-                }
+            let result = match action {
+                LspAction::GoToDefinition => self.goto_definition_impl().await,
+                LspAction::GoToImplementation => self.goto_implementation_impl().await,
+                LspAction::GoToType => self.goto_type_impl().await,
+                LspAction::ShowHover => self.hover_impl().await,
+                LspAction::Completion => self.completion_impl().await,
+                LspAction::FormatDocument => self.format_document_impl().await,
+                LspAction::CodeActions => self.code_actions_impl().await,
+                LspAction::TypeHierarchy => self.type_hierarchy_impl().await,
+                LspAction::CallHierarchyIncoming => self.call_hierarchy_incoming_impl().await,
+                LspAction::CallHierarchyOutgoing => self.call_hierarchy_outgoing_impl().await,
+                LspAction::FindReferences => self.find_references_impl().await,
+                LspAction::DocumentSymbols => self.document_symbols_impl().await,
+                LspAction::WorkspaceSymbols => self.workspace_symbols_impl().await,
+                LspAction::OrganizeImports => self.organize_imports_impl().await,
             };
 
-            // If action returned error (e.g., couldn't get lock), put it back for retry
-            if retry {
-                self.pending_lsp_action = Some(action);
+            // Handle errors: update status and optionally retry
+            match result {
+                Ok(_) => {
+                    // Success - status was already updated by the impl function
+                }
+                Err(e) => {
+                    // Check if error message indicates we should retry (e.g., "LSP busy")
+                    let error_msg = e.to_string();
+                    let should_retry = error_msg.contains("LSP busy") || error_msg.contains("couldn't get lock");
+
+                    if should_retry {
+                        // Retry silently - put action back
+                        self.pending_lsp_action = Some(action);
+                    } else {
+                        // Permanent error - update status to show the error
+                        let action_name = match action {
+                            LspAction::GoToDefinition => "Go to definition",
+                            LspAction::GoToImplementation => "Go to implementation",
+                            LspAction::GoToType => "Go to type",
+                            LspAction::ShowHover => "Hover",
+                            LspAction::Completion => "Completion",
+                            LspAction::FormatDocument => "Format document",
+                            LspAction::CodeActions => "Code actions",
+                            LspAction::TypeHierarchy => "Type hierarchy",
+                            LspAction::CallHierarchyIncoming => "Call hierarchy incoming",
+                            LspAction::CallHierarchyOutgoing => "Call hierarchy outgoing",
+                            LspAction::FindReferences => "Find references",
+                            LspAction::DocumentSymbols => "Document symbols",
+                            LspAction::WorkspaceSymbols => "Workspace symbols",
+                            LspAction::OrganizeImports => "Organize imports",
+                        };
+                        self.set_lsp_status(format!("{} failed: {}", action_name, error_msg));
+                    }
+                }
             }
         }
     }
@@ -3926,6 +3985,61 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Gets the tab page manager
+    pub fn tab_page_manager(&self) -> &TabPageManager {
+        &self.tab_page_manager
+    }
+
+    /// Gets mutable tab page manager
+    pub fn tab_page_manager_mut(&mut self) -> &mut TabPageManager {
+        &mut self.tab_page_manager
+    }
+
+    /// Creates a new tab page
+    pub fn new_tab(&mut self, title: Option<String>) {
+        self.tab_page_manager.new_tab(title);
+    }
+
+    /// Closes the current tab
+    pub fn close_current_tab(&mut self) {
+        self.tab_page_manager.close_current_tab();
+    }
+
+    /// Switches to the next tab
+    pub fn next_tab(&mut self) {
+        self.tab_page_manager.next_tab();
+    }
+
+    /// Switches to the previous tab
+    pub fn previous_tab(&mut self) {
+        self.tab_page_manager.previous_tab();
+    }
+
+    /// Switches to a specific tab by index (0-based)
+    pub fn goto_tab(&mut self, index: usize) {
+        self.tab_page_manager.switch_to_tab(index);
+    }
+
+    /// Switches to the first tab
+    pub fn first_tab(&mut self) {
+        self.tab_page_manager.first_tab();
+    }
+
+    /// Switches to the last tab
+    pub fn last_tab(&mut self) {
+        self.tab_page_manager.last_tab();
+    }
+
+    /// Gets the current tab index
+    pub fn current_tab_index(&self) -> usize {
+        self.tab_page_manager.current_tab_index()
+    }
+
+    /// Gets the number of tabs
+    pub fn tab_count(&self) -> usize {
+        self.tab_page_manager.tab_count()
     }
 }
 

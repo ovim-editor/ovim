@@ -234,7 +234,7 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
                     editor.add_change(change);
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
 
                     // Clamp cursor to buffer bounds
                     Self::clamp_cursor_to_buffer(editor);
@@ -338,7 +338,7 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
 
                     // Clamp cursor to buffer bounds (handles end of file)
@@ -380,7 +380,7 @@ impl InputHandler {
                     // Position cursor at deletion start
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
 
                     // Clamp cursor to buffer bounds
@@ -408,7 +408,7 @@ impl InputHandler {
                             let range = Range::new(start_pos, end_pos);
                             let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                            editor.registers_mut().delete(deleted);
+                            editor.delete_to_register(deleted);
                             editor.add_change(change);
 
                             // Clamp cursor to buffer bounds
@@ -422,21 +422,21 @@ impl InputHandler {
                 (Operator::Yank, KeyCode::Char('y')) => {
                     // yy - yank line
                     let yanked = Operators::yank_line(editor.buffer(), count)?;
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Yank, KeyCode::Char('w')) => {
                     // yw - yank word
                     let yanked = Operators::yank_word(editor.buffer_mut(), count)?;
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Yank, KeyCode::Char('$')) => {
                     // y$ - yank to end of line
                     let yanked = Operators::yank_to_end_of_line(editor.buffer())?;
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -455,7 +455,7 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.clear_count();
                     let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -488,7 +488,7 @@ impl InputHandler {
                     // Position cursor at deletion start
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
 
                     // Don't clamp cursor for c$ - we want to insert at end of line
@@ -517,7 +517,7 @@ impl InputHandler {
                             let range = Range::new(start_pos, end_pos);
                             let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                            editor.registers_mut().delete(deleted);
+                            editor.delete_to_register(deleted);
                             editor.add_change(change);
 
                             // Don't clamp cursor - we want to insert at end of line (col position)
@@ -603,7 +603,7 @@ impl InputHandler {
                     let line_idx = cursor.line();
                     let col = cursor.col();
 
-                    let register_content = editor.registers().get_default().to_string();
+                    let register_content = editor.get_from_register();
 
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
@@ -641,7 +641,7 @@ impl InputHandler {
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
                         if col < line_text.chars().count() {
-                            let register_content = editor.registers().get_default().to_string();
+                            let register_content = editor.get_from_register();
 
                             // Delete one character
                             let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
@@ -676,7 +676,7 @@ impl InputHandler {
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
                         if !line_text.is_empty() {
-                            let register_content = editor.registers().get_default().to_string();
+                            let register_content = editor.get_from_register();
 
                             // Delete first character
                             let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, 1);
@@ -711,7 +711,7 @@ impl InputHandler {
                         let line_text = line.trim_end_matches('\n');
                         let line_len = line_text.chars().count();
                         if line_len > 0 {
-                            let register_content = editor.registers().get_default().to_string();
+                            let register_content = editor.get_from_register();
                             let last_col = line_len - 1;
 
                             // Delete last character
@@ -747,7 +747,7 @@ impl InputHandler {
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
                         let line_len = line_text.chars().count();
-                        let register_content = editor.registers().get_default().to_string();
+                        let register_content = editor.get_from_register();
 
                         if line_len > 0 {
                             let start_pos = (line_idx, 0);
@@ -794,7 +794,7 @@ impl InputHandler {
                         }
                     }
 
-                    let register_content = editor.registers().get_default().to_string();
+                    let register_content = editor.get_from_register();
                     let start_pos = (start_line, start_col);
                     let end_pos = (end_line, end_col);
 
@@ -827,7 +827,7 @@ impl InputHandler {
                         let line_len = line_text.chars().count();
 
                         if col < line_len {
-                            let register_content = editor.registers().get_default().to_string();
+                            let register_content = editor.get_from_register();
                             let start_pos = (line_idx, col);
                             let end_pos = (line_idx, line_len);
 
@@ -879,7 +879,7 @@ impl InputHandler {
                     let range = Range::new((start_line, 0), (end_line, 0));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     Self::clamp_cursor_to_buffer(editor);
                     editor.clear_count();
@@ -896,7 +896,7 @@ impl InputHandler {
                     let range = Range::new((start_line, 0), (end_line, 0));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     Self::clamp_cursor_to_buffer(editor);
                     editor.clear_count();
@@ -913,7 +913,7 @@ impl InputHandler {
                             yanked.push_str(&line);
                         }
                     }
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -928,7 +928,7 @@ impl InputHandler {
                             yanked.push_str(&line);
                         }
                     }
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -950,7 +950,7 @@ impl InputHandler {
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     Self::clamp_cursor_to_buffer(editor);
                     editor.clear_count();
@@ -972,7 +972,7 @@ impl InputHandler {
                     let range = Range::new((start_line, start_col), (end_line, end_col));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     Self::clamp_cursor_to_buffer(editor);
                     editor.clear_count();
@@ -1048,7 +1048,7 @@ impl InputHandler {
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
                         editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
-                        editor.registers_mut().delete(deleted);
+                        editor.delete_to_register(deleted);
                         editor.add_change(change);
                         Self::clamp_cursor_to_buffer(editor);
                     }
@@ -1083,7 +1083,7 @@ impl InputHandler {
                         }
                     }
 
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
                     editor.clear_count();
                     return Ok(());
@@ -1108,7 +1108,7 @@ impl InputHandler {
                         }
                     }
 
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                     editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
                     editor.clear_count();
                     return Ok(());
@@ -1129,7 +1129,7 @@ impl InputHandler {
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.set_mode(Mode::Insert);
                     editor.clear_count();
@@ -1149,7 +1149,7 @@ impl InputHandler {
                     let range = Range::new((start_line, start_col), (end_line, end_col));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.set_mode(Mode::Insert);
                     editor.clear_count();
@@ -1324,7 +1324,7 @@ impl InputHandler {
                             // Apply the change to actually delete the text
                             change.apply(editor.buffer_mut());
 
-                            editor.registers_mut().delete(deleted);
+                            editor.delete_to_register(deleted);
                             editor.add_change(change);
 
                             // Clamp cursor to buffer bounds
@@ -1332,7 +1332,7 @@ impl InputHandler {
                         }
                         Operator::Yank => {
                             let yanked = TextObjects::yank_range(editor.buffer(), range)?;
-                            editor.registers_mut().yank(yanked);
+                            editor.yank_to_register(yanked);
                         }
                         Operator::Change => {
                             let cursor = editor.buffer().cursor();
@@ -1351,7 +1351,7 @@ impl InputHandler {
                             // Apply the change to actually delete the text
                             change.apply(editor.buffer_mut());
 
-                            editor.registers_mut().delete(deleted);
+                            editor.delete_to_register(deleted);
                             editor.add_change(change);
 
                             // Clamp cursor to buffer bounds
@@ -1473,7 +1473,7 @@ impl InputHandler {
                             let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
 
                             // Get the register content
-                            let register_content = editor.registers().get_default().to_string();
+                            let register_content = editor.get_from_register();
 
                             // Get the text in the range (to delete)
                             let deleted = TextObjects::yank_range(editor.buffer(), range)?;
@@ -1696,6 +1696,29 @@ impl InputHandler {
                 ('z', KeyCode::Char('E')) => {
                     // zE - eliminate all folds
                     editor.buffer_mut().clear_folds();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('t')) => {
+                    // gt - go to next tab (or tab number if count specified)
+                    if let Some(count) = editor.count() {
+                        // {count}gt - go to specific tab (1-indexed)
+                        editor.goto_tab(count.saturating_sub(1));
+                    } else {
+                        // gt - next tab
+                        editor.next_tab();
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('T')) => {
+                    // gT - go to previous tab
+                    editor.previous_tab();
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('"', KeyCode::Char(ch)) if ch.is_ascii_alphanumeric() || ch == '"' => {
+                    // "{register} - select register for next yank/delete/paste
+                    editor.set_pending_register(ch);
                     return Ok(());
                 }
                 ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
@@ -2080,6 +2103,10 @@ impl InputHandler {
                     editor.set_current_search(search);
                 }
             }
+            // Register selection (" followed by register name)
+            KeyCode::Char('"') => {
+                editor.set_pending_command('"');
+            }
             // Set mark (m followed by letter)
             KeyCode::Char('m') => {
                 editor.set_pending_command('m');
@@ -2316,7 +2343,7 @@ impl InputHandler {
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                        editor.registers_mut().delete(deleted);
+                        editor.delete_to_register(deleted);
                         editor.add_change(change);
 
                         // Clamp cursor to buffer bounds
@@ -2347,7 +2374,7 @@ impl InputHandler {
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                        editor.registers_mut().delete(deleted);
+                        editor.delete_to_register(deleted);
                         editor.add_change(change);
 
                         // Move cursor to the start of deletion
@@ -2378,7 +2405,7 @@ impl InputHandler {
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                        editor.registers_mut().delete(deleted);
+                        editor.delete_to_register(deleted);
                         editor.add_change(change);
 
                         // Clamp cursor to buffer bounds
@@ -2406,7 +2433,7 @@ impl InputHandler {
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                        editor.registers_mut().delete(deleted);
+                        editor.delete_to_register(deleted);
                         editor.add_change(change);
 
                         // Don't clamp cursor - we want to insert at end of line
@@ -2437,7 +2464,7 @@ impl InputHandler {
                 // Y - yank line (same as yy)
                 let count = editor.effective_count();
                 let yanked = Operators::yank_line(editor.buffer(), count)?;
-                editor.registers_mut().yank(yanked);
+                editor.yank_to_register(yanked);
                 editor.clear_count();
             }
             // Join lines
@@ -2469,7 +2496,7 @@ impl InputHandler {
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                        editor.registers_mut().delete(deleted);
+                        editor.delete_to_register(deleted);
                         editor.add_change(change);
 
                         // Clamp cursor to buffer bounds
@@ -2496,7 +2523,7 @@ impl InputHandler {
                 let range = Range::new(start_pos, end_pos);
                 let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                editor.registers_mut().delete(deleted);
+                editor.delete_to_register(deleted);
                 editor.add_change(change);
                 editor.clear_count();
                 let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -3034,9 +3061,8 @@ impl InputHandler {
                 // Remove the lines
                 editor.buffer_mut().rope_mut().remove(start_char..end_char);
 
-                // Store in register
-                editor.registers_mut().set(Some('"'), deleted_text.clone());
-                editor.registers_mut().set(Some('0'), deleted_text.clone());
+                // Store in register (use delete, which updates " and numbered regs but not 0)
+                editor.delete_to_register(deleted_text.clone());
 
                 // Position cursor at start of deleted range
                 let new_cursor_line = start_line.min(editor.buffer().line_count().saturating_sub(1));
@@ -3062,8 +3088,8 @@ impl InputHandler {
                 }
                 let yanked_text = yanked_lines.join("");
 
-                // Store in register
-                editor.registers_mut().yank(yanked_text);
+                // Store in register (use yank, which updates " and 0)
+                editor.yank_to_register(yanked_text);
 
                 return Ok(());
             }
@@ -3770,7 +3796,7 @@ impl InputHandler {
     }
 
     fn paste_after(editor: &mut Editor) -> Result<()> {
-        let text = editor.registers().get_default().to_string();
+        let text = editor.get_from_register();
         if text.is_empty() {
             return Ok(());
         }
@@ -3800,7 +3826,7 @@ impl InputHandler {
     }
 
     fn paste_before(editor: &mut Editor) -> Result<()> {
-        let text = editor.registers().get_default().to_string();
+        let text = editor.get_from_register();
         if text.is_empty() {
             return Ok(());
         }
@@ -3851,7 +3877,7 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
                     editor.add_change(change);
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
 
                     // Position cursor at start of selection
                     let new_line = start_line.min(editor.buffer().line_count().saturating_sub(1));
@@ -3887,7 +3913,7 @@ impl InputHandler {
                     let range = Range::new((start_line, start_col), (end_line, end_col + 1));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
                     editor.add_change(change);
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
 
                     // Position cursor at start of block
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
@@ -3905,7 +3931,7 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
                     editor.add_change(change);
-                    editor.registers_mut().delete(deleted);
+                    editor.delete_to_register(deleted);
 
                     // Position cursor at start of selection
                     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
@@ -3931,7 +3957,7 @@ impl InputHandler {
                     };
 
                     let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                 }
                 Mode::VisualBlock => {
                     // Yank rectangular block
@@ -3953,7 +3979,7 @@ impl InputHandler {
                     }
 
                     let yanked = yanked_lines.join("\n");
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                 }
                 _ => {
                     // Character-wise visual mode
@@ -3961,7 +3987,7 @@ impl InputHandler {
                     let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
 
                     let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
-                    editor.registers_mut().yank(yanked);
+                    editor.yank_to_register(yanked);
                 }
             }
         }

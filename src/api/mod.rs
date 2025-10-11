@@ -3,15 +3,17 @@ mod routes;
 mod state;
 
 pub use routes::create_router;
-pub use state::{ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
+pub use state::{ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
 
 use anyhow::Result;
 use tokio::sync::mpsc;
 
 /// Start the API server on the given address
+/// Returns the actual port number the server is listening on
 pub async fn start_server(
     addr: &str,
     tx: mpsc::UnboundedSender<ApiRequest>,
+    port_tx: tokio::sync::oneshot::Sender<u16>,
 ) -> Result<()> {
     let state = ApiState::new(tx);
     let app = create_router(state);
@@ -21,6 +23,9 @@ pub async fn start_server(
 
     eprintln!("REST API server listening on http://{}", actual_addr);
     eprintln!("API URL: http://{}", actual_addr);
+
+    // Send the actual port back
+    let _ = port_tx.send(actual_addr.port());
 
     axum::serve(listener, app).await?;
 

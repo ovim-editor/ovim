@@ -10,6 +10,7 @@ pub mod ui;
 pub mod lsp;
 pub mod java;
 pub mod daemon;
+pub mod session;
 #[cfg(feature = "lua")]
 pub mod lua;
 pub mod config;

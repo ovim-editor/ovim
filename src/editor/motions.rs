@@ -50,6 +50,10 @@ impl Motions {
                 buffer.cursor_mut().set_position(line_idx + 1, 0);
                 // Skip leading whitespace
                 Self::skip_whitespace_forward(buffer);
+            } else {
+                // At end of last line - clamp cursor to valid position
+                let max_col = chars.len().saturating_sub(1).max(0);
+                buffer.cursor_mut().set_col(max_col);
             }
             return;
         }

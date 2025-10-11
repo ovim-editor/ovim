@@ -193,7 +193,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col,
                 end_line: line_idx,
-                end_col,
+                end_col: end_col + 1,
             })
         } else {
             // "inner" - exclude the quotes
@@ -204,7 +204,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col: start_col + 1,
                 end_line: line_idx,
-                end_col: end_col - 1,
+                end_col: end_col,
             })
         }
     }
@@ -275,7 +275,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col,
                 end_line: line_idx,
-                end_col,
+                end_col: end_col + 1,
             })
         } else {
             // "inner" - exclude the delimiters
@@ -286,7 +286,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col: start_col + 1,
                 end_line: line_idx,
-                end_col: end_col - 1,
+                end_col: end_col,
             })
         }
     }

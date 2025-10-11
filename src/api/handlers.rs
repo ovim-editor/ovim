@@ -157,6 +157,36 @@ pub async fn get_render(State(state): State<ApiState>) -> Response {
     }
 }
 
+/// Handler for GET /lsp/status
+/// Returns LSP server status information
+pub async fn get_lsp_status(State(state): State<ApiState>) -> Response {
+    let (tx, rx) = oneshot::channel();
+
+    if state.tx.send(ApiRequest::GetLspStatus(tx)).is_err() {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to get LSP status"),
+    }
+}
+
+/// Handler for GET /health
+/// Returns health check information including LSP readiness
+pub async fn get_health(State(state): State<ApiState>) -> Response {
+    let (tx, rx) = oneshot::channel();
+
+    if state.tx.send(ApiRequest::GetHealth(tx)).is_err() {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to get health"),
+    }
+}
+
 /// Helper function to create error responses
 fn error_response(message: &str) -> Response {
     (
