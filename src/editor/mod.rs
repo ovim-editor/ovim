@@ -1,4 +1,5 @@
 mod change;
+mod completion;
 mod input;
 mod macros;
 mod marks;
@@ -12,6 +13,7 @@ mod undo;
 mod window;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range};
+pub use completion::CompletionMenu;
 pub use input::InputHandler;
 pub use macros::MacroManager;
 pub use marks::{JumpList, Mark, MarkManager};
@@ -158,6 +160,8 @@ pub struct Editor {
     available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
     /// Available completion items at current cursor position
     available_completions: Vec<lsp_types::CompletionItem>,
+    /// Completion menu popup
+    completion_menu: CompletionMenu,
     /// Available LSP references at current cursor position
     available_references: Vec<lsp_types::Location>,
     /// Available document symbols for current file
@@ -271,6 +275,7 @@ impl Editor {
             last_insert_position: None,
             available_code_actions: Vec::new(),
             available_completions: Vec::new(),
+            completion_menu: CompletionMenu::new(),
             available_references: Vec::new(),
             available_document_symbols: Vec::new(),
             available_workspace_symbols: Vec::new(),
@@ -331,6 +336,7 @@ impl Editor {
             last_insert_position: None,
             available_code_actions: Vec::new(),
             available_completions: Vec::new(),
+            completion_menu: CompletionMenu::new(),
             available_references: Vec::new(),
             available_document_symbols: Vec::new(),
             available_workspace_symbols: Vec::new(),
@@ -2833,23 +2839,28 @@ impl Editor {
         // Store completion items
         self.available_completions = items.clone();
 
-        // Extract labels for picker
-        let labels: Vec<String> = items
-            .iter()
-            .map(|item| {
-                // Use label or insert_text, fallback to empty
-                item.label.clone()
-            })
-            .collect();
+        // Get the current word prefix for filtering
+        let cursor_line = self.buffer().cursor().line();
+        let cursor_col = self.buffer().cursor().col();
+        let line_text = self.buffer().line(cursor_line).unwrap_or_default();
 
-        // Create picker with completion items
-        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let mut picker = crate::editor::Picker::new_completion(base_dir, labels);
-        picker.set_prompt("Completion: ".to_string());
+        // Find the start of the current word
+        let mut trigger_col = cursor_col;
+        let chars: Vec<char> = line_text.chars().collect();
+        while trigger_col > 0 {
+            let prev_char = chars.get(trigger_col - 1).copied().unwrap_or(' ');
+            if prev_char.is_alphanumeric() || prev_char == '_' {
+                trigger_col -= 1;
+            } else {
+                break;
+            }
+        }
 
-        self.set_picker(picker);
-        self.set_mode(Mode::Picker);
-        self.set_lsp_status(format!("{} completions available", items.len()));
+        let trigger_prefix = chars[trigger_col..cursor_col].iter().collect::<String>();
+
+        // Show the completion menu
+        self.completion_menu.show(items, trigger_col, trigger_prefix);
+        self.set_lsp_status(format!("{} completions available", self.completion_menu.items().len()));
 
         Ok(true)
     }
@@ -3605,6 +3616,68 @@ impl Editor {
             .as_ref()
             .map(|wm| wm.window_count())
             .unwrap_or(1)
+    }
+
+    /// Gets a reference to the completion menu
+    pub fn completion_menu(&self) -> &CompletionMenu {
+        &self.completion_menu
+    }
+
+    /// Gets a mutable reference to the completion menu
+    pub fn completion_menu_mut(&mut self) -> &mut CompletionMenu {
+        &mut self.completion_menu
+    }
+
+    /// Hides the completion menu
+    pub fn hide_completion_menu(&mut self) {
+        self.completion_menu.hide();
+    }
+
+    /// Selects the next completion item
+    pub fn completion_next(&mut self) {
+        self.completion_menu.select_next();
+    }
+
+    /// Selects the previous completion item
+    pub fn completion_previous(&mut self) {
+        self.completion_menu.select_previous();
+    }
+
+    /// Accepts the currently selected completion
+    pub fn accept_completion(&mut self) {
+        if let Some(item) = self.completion_menu.selected_item() {
+            // Get the text to insert (prefer insertText, fallback to label)
+            let text_to_insert = if let Some(ref insert_text) = item.insert_text {
+                insert_text.clone()
+            } else {
+                item.label.clone()
+            };
+
+            // Get cursor position
+            let cursor_line = self.buffer().cursor().line();
+            let cursor_col = self.buffer().cursor().col();
+
+            // Calculate the range to replace
+            let trigger_col = self.completion_menu.trigger_col();
+
+            // Delete the partial word from trigger position to cursor
+            if cursor_col > trigger_col {
+                self.buffer_mut().delete_range(cursor_line, trigger_col, cursor_line, cursor_col);
+            }
+
+            // Insert the completion text
+            self.buffer_mut().insert_text_at(cursor_line, trigger_col, &text_to_insert);
+
+            // Move cursor to end of inserted text
+            let new_col = trigger_col + text_to_insert.chars().count();
+            self.buffer_mut().cursor_mut().set_position(cursor_line, new_col);
+
+            // Mark buffer as modified
+            self.buffer_modified_this_iteration = true;
+        }
+
+        // Hide the completion menu
+        self.hide_completion_menu();
     }
 }
 
