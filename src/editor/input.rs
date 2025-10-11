@@ -2491,17 +2491,22 @@ impl InputHandler {
     fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         match key_event.code {
             KeyCode::Esc => {
-                // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
-                let cursor = editor.buffer().cursor();
-                editor.last_insert_position = Some((cursor.line(), cursor.col()));
+                // If completion menu is visible, hide it first without exiting insert mode
+                if editor.completion_menu().is_visible() {
+                    editor.hide_completion_menu();
+                } else {
+                    // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
+                    let cursor = editor.buffer().cursor();
+                    editor.last_insert_position = Some((cursor.line(), cursor.col()));
 
-                editor.finalize_change_building();
-                editor.mark_buffer_modified(); // Mark for LSP didChange notification
-                editor.set_mode(Mode::Normal);
-                // Move cursor left when exiting insert mode (unless at column 0)
-                let cursor = editor.buffer_mut().cursor_mut();
-                if cursor.col() > 0 {
-                    cursor.move_left(1);
+                    editor.finalize_change_building();
+                    editor.mark_buffer_modified(); // Mark for LSP didChange notification
+                    editor.set_mode(Mode::Normal);
+                    // Move cursor left when exiting insert mode (unless at column 0)
+                    let cursor = editor.buffer_mut().cursor_mut();
+                    if cursor.col() > 0 {
+                        cursor.move_left(1);
+                    }
                 }
             }
             // Ctrl-W - Delete word backward
@@ -2528,11 +2533,32 @@ impl InputHandler {
             KeyCode::Char('o') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 editor.request_completion();
             }
+            // Ctrl-N - Next completion item
+            KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if editor.completion_menu().is_visible() {
+                    editor.completion_next();
+                }
+            }
+            // Ctrl-P - Previous completion item
+            KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if editor.completion_menu().is_visible() {
+                    editor.completion_previous();
+                }
+            }
+            // Tab - Accept completion if menu is visible, otherwise insert tab
+            KeyCode::Tab if editor.completion_menu().is_visible() => {
+                editor.accept_completion();
+            }
             KeyCode::Char(c) => {
                 Self::insert_char(editor, c)?;
             }
             KeyCode::Enter => {
-                Self::insert_newline(editor)?;
+                // If completion menu is visible, accept the selected completion
+                if editor.completion_menu().is_visible() {
+                    editor.accept_completion();
+                } else {
+                    Self::insert_newline(editor)?;
+                }
             }
             KeyCode::Backspace => {
                 Self::delete_char_before_cursor(editor)?;

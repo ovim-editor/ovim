@@ -1,18 +1,9 @@
-mod syntax;
-mod buffer;
-mod editor;
-mod ui;
-mod mode;
-mod api;
-mod cli;
-mod lsp;
-
 use anyhow::Result;
 use crossterm::event::Event;
-use editor::{Editor, InputHandler};
-use ui::UI;
-use cli::Args;
-use api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
+use ovim::editor::{Editor, InputHandler};
+use ovim::ui::UI;
+use ovim::cli::Args;
+use ovim::api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use std::sync::OnceLock;
@@ -88,7 +79,7 @@ async fn main() -> Result<()> {
         // Port 0 means "pick any available port"
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = api::start_server("127.0.0.1:0", tx_clone).await {
+            if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone).await {
                 eprintln!("API server error: {}", e);
             }
         });
@@ -409,11 +400,11 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     let picker = editor.picker().map(|p| {
         PickerInfo {
             mode: match p.mode() {
-                crate::editor::PickerMode::FindFiles => "FindFiles".to_string(),
-                crate::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
-                crate::editor::PickerMode::Custom => "Custom".to_string(),
-                crate::editor::PickerMode::Completion => "Completion".to_string(),
-                crate::editor::PickerMode::LspLocations => "LspLocations".to_string(),
+                ovim::editor::PickerMode::FindFiles => "FindFiles".to_string(),
+                ovim::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
+                ovim::editor::PickerMode::Custom => "Custom".to_string(),
+                ovim::editor::PickerMode::Completion => "Completion".to_string(),
+                ovim::editor::PickerMode::LspLocations => "LspLocations".to_string(),
             },
             query: p.query().to_string(),
             results: p.filtered_results().iter().map(|r| {
@@ -1027,10 +1018,10 @@ fn send_java_status(msg: String) {
 
 /// Background Java LSP initialization that doesn't block the UI
 async fn initialize_java_lsp_background(
-    lsp_manager: Option<std::sync::Arc<tokio::sync::Mutex<lsp::LspManager>>>,
+    lsp_manager: Option<std::sync::Arc<tokio::sync::Mutex<ovim::lsp::LspManager>>>,
     file_path: std::path::PathBuf,
 ) {
-    crate::lsp_debug!("Java", "Background task started for {:?}", file_path);
+    ovim::lsp_debug!("Java", "Background task started for {:?}", file_path);
     use ovim::java::{JdtlsDownloader, JdtlsLauncher, parser};
 
     // Early exit if no LSP manager
@@ -1041,10 +1032,10 @@ async fn initialize_java_lsp_background(
 
     // Find project root
     let project_root = find_jvm_project_root(&file_path);
-    crate::lsp_debug!("Java", "Project root: {:?}", project_root);
+    ovim::lsp_debug!("Java", "Project root: {:?}", project_root);
 
     send_java_status("Detecting project configuration...".to_string());
-    crate::lsp_debug!("Java", "Sent status: Detecting project configuration...");
+    ovim::lsp_debug!("Java", "Sent status: Detecting project configuration...");
 
     // Detect Java version from build files
     let project_config = match parser::detect_java_version(project_root).await {
@@ -1152,9 +1143,9 @@ async fn initialize_java_lsp_background(
     let server_args: Vec<String> = launch_args[1..].to_vec();
 
     send_java_status("Starting LSP server...".to_string());
-    crate::lsp_debug!("Java", "About to spawn start_server task");
-    crate::lsp_debug!("Java", "Server command: {:?}", server_command);
-    crate::lsp_debug!("Java", "Server args: {:?}", server_args);
+    ovim::lsp_debug!("Java", "About to spawn start_server task");
+    ovim::lsp_debug!("Java", "Server command: {:?}", server_command);
+    ovim::lsp_debug!("Java", "Server args: {:?}", server_args);
 
     // Start the LSP server with progress updates during initialization
     // jdtls can take 60-120 seconds to initialize, so we send periodic updates
@@ -1164,11 +1155,11 @@ async fn initialize_java_lsp_background(
     let project_root_clone = project_root.to_path_buf();
 
     let mut start_task = tokio::spawn(async move {
-        crate::lsp_debug!("Java", "Inside start_server task, acquiring lock...");
+        ovim::lsp_debug!("Java", "Inside start_server task, acquiring lock...");
         let lsp = lsp_clone.lock().await;
-        crate::lsp_debug!("Java", "Lock acquired, calling start_server...");
+        ovim::lsp_debug!("Java", "Lock acquired, calling start_server...");
         let result = lsp.start_server("java", &server_command_clone, server_args_clone, &project_root_clone).await;
-        crate::lsp_debug!("Java", "start_server returned: {:?}", result);
+        ovim::lsp_debug!("Java", "start_server returned: {:?}", result);
         result
     });
 
@@ -1573,7 +1564,7 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             Err(e) => {
                 drop(lsp);
                 editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
-                crate::lsp_warn!("LSP", "Failed to start server '{}': {}", server_command, e);
+                ovim::lsp_warn!("LSP", "Failed to start server '{}': {}", server_command, e);
             }
         }
     }

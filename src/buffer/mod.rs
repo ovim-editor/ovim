@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use ropey::Rope;
 use std::path::Path;
 use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
+use crate::GitStatus;
 use std::ops::Range;
 use std::collections::HashSet;
 
@@ -30,6 +31,8 @@ pub struct Buffer {
     /// Set of line numbers that are folded (start line of each fold)
     /// Lines are 0-indexed
     folded_lines: HashSet<usize>,
+    /// Git status for this buffer
+    git_status: GitStatus,
 }
 
 impl Buffer {
@@ -45,6 +48,7 @@ impl Buffer {
             highlight_version: 0,
             pending_rehighlight: false,
             folded_lines: HashSet::new(),
+            git_status: GitStatus::new(),
         }
     }
 
@@ -60,6 +64,7 @@ impl Buffer {
             highlight_version: 0,
             pending_rehighlight: false,
             folded_lines: HashSet::new(),
+            git_status: GitStatus::new(),
         }
     }
 
@@ -190,16 +195,20 @@ impl Buffer {
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, 0),
             modified: false,
-            file_path: Some(path_str),
+            file_path: Some(path_str.clone()),
             syntax: None,
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
             folded_lines: HashSet::new(),
+            git_status: GitStatus::new(),
         };
 
         // Enable syntax highlighting based on file extension
         buffer.enable_syntax_highlighting();
+
+        // Load git status
+        buffer.refresh_git_status();
 
         Ok(buffer)
     }
@@ -241,9 +250,16 @@ impl Buffer {
 
     /// Saves the buffer to a specific file path (blocking wrapper)
     pub fn save_as<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        tokio::task::block_in_place(|| {
+        let result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.save_as_async(path))
-        })
+        });
+
+        // Refresh git status after save
+        if result.is_ok() {
+            self.refresh_git_status();
+        }
+
+        result
     }
 
     /// Replaces the entire buffer content
@@ -568,6 +584,18 @@ impl Buffer {
     /// Clears all folds
     pub fn clear_folds(&mut self) {
         self.folded_lines.clear();
+    }
+
+    /// Refreshes git status for this buffer
+    pub fn refresh_git_status(&mut self) {
+        if let Some(ref path) = self.file_path {
+            self.git_status = GitStatus::from_file(path).unwrap_or_else(|_| GitStatus::new());
+        }
+    }
+
+    /// Gets the git status for this buffer
+    pub fn git_status(&self) -> &GitStatus {
+        &self.git_status
     }
 }
 

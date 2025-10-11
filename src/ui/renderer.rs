@@ -1,4 +1,5 @@
 use crate::editor::Editor;
+use crate::LineStatus;
 use crate::syntax::Theme;
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
@@ -69,6 +70,11 @@ impl Renderer {
             if let Some(hover_text) = editor.hover_info() {
                 Self::render_hover_window(frame, hover_text, editor.hover_scroll(), chunks[0]);
             }
+        }
+
+        // Render completion menu if visible (in Insert mode)
+        if editor.completion_menu().is_visible() {
+            Self::render_completion_menu(frame, editor, chunks[0], viewport_start);
         }
 
         // Set hardware cursor position
@@ -213,19 +219,26 @@ impl Renderer {
                         "  ".to_string()
                     };
 
-                    // Add sign column (currently just spaces, will be used for git/diagnostics)
-                    let sign_text = "  ";
-
-                    let gutter_text = format!("{}{}", sign_text, line_num_text);
+                    // Add sign column for git status indicators
+                    let (sign_text, sign_color) = match buffer.git_status().get_line_status(line_idx) {
+                        Some(LineStatus::Added) => ("+ ", Color::Green),
+                        Some(LineStatus::Modified) => ("~ ", Color::Yellow),
+                        Some(LineStatus::Removed) => ("- ", Color::Red),
+                        None => ("  ", Color::DarkGray),
+                    };
 
                     // Highlight current line number
-                    let style = if line_idx == cursor.line() {
+                    let line_num_style = if line_idx == cursor.line() {
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::DarkGray)
                     };
 
-                    gutter_lines.push(Line::from(Span::styled(gutter_text, style)));
+                    // Build gutter with separate styles for sign and line number
+                    let sign_span = Span::styled(sign_text, Style::default().fg(sign_color).add_modifier(Modifier::BOLD));
+                    let line_num_span = Span::styled(line_num_text, line_num_style);
+
+                    gutter_lines.push(Line::from(vec![sign_span, line_num_span]));
                 }
             }
 
@@ -447,6 +460,110 @@ impl Renderer {
         // Clear background and render window
         frame.render_widget(ratatui::widgets::Clear, window_area);
         frame.render_widget(paragraph, window_area);
+    }
+
+    /// Renders the completion menu popup
+    fn render_completion_menu(frame: &mut Frame, editor: &Editor, buffer_area: Rect, viewport_start: usize) {
+        let completion_menu = editor.completion_menu();
+        if !completion_menu.is_visible() {
+            return;
+        }
+
+        let items = completion_menu.items();
+        if items.is_empty() {
+            return;
+        }
+
+        // Get cursor position on screen
+        let cursor = editor.buffer().cursor();
+        let cursor_line = cursor.line();
+        let cursor_col = cursor.col();
+        let screen_line = cursor_line.saturating_sub(viewport_start);
+
+        // Calculate gutter width
+        let show_numbers = editor.options.number || editor.options.relative_number;
+        let max_line_num = editor.buffer().rope().len_lines();
+        let line_num_width = if show_numbers {
+            max_line_num.to_string().len().max(3)
+        } else {
+            0
+        };
+        let sign_width = 2;
+        let gutter_width = if show_numbers || sign_width > 0 {
+            sign_width + line_num_width + 1
+        } else {
+            0
+        };
+
+        // Position menu below cursor
+        let menu_x = buffer_area.x + gutter_width as u16 + cursor_col as u16;
+        let menu_y = buffer_area.y + screen_line as u16 + 1; // Below current line
+
+        // Determine menu dimensions
+        let max_items_to_show = 10;
+        let num_items = items.len().min(max_items_to_show);
+        let menu_height = num_items as u16 + 2; // +2 for borders
+
+        // Calculate width based on longest label
+        let max_label_len = items.iter()
+            .take(max_items_to_show)
+            .map(|item| item.label.len())
+            .max()
+            .unwrap_or(20);
+        let menu_width = (max_label_len + 4).min(60) as u16; // +4 for padding and borders
+
+        // Adjust position if menu would go off screen
+        let menu_x = menu_x.min(buffer_area.width.saturating_sub(menu_width));
+        let menu_y = if menu_y + menu_height > buffer_area.y + buffer_area.height {
+            // Show above cursor if not enough space below
+            (buffer_area.y + screen_line as u16)
+                .saturating_sub(menu_height)
+                .max(buffer_area.y)
+        } else {
+            menu_y
+        };
+
+        let menu_area = Rect::new(
+            menu_x,
+            menu_y,
+            menu_width,
+            menu_height.min(buffer_area.height),
+        );
+
+        // Build menu lines
+        let selected_index = completion_menu.selected_index();
+        let mut lines = Vec::new();
+
+        for (idx, item) in items.iter().take(max_items_to_show).enumerate() {
+            let is_selected = idx == selected_index;
+            let style = if is_selected {
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .bg(Color::Rgb(40, 44, 52))
+                    .fg(Color::White)
+            };
+
+            // Format: "label"  or "  label" with selection indicator
+            let prefix = if is_selected { "> " } else { "  " };
+            let text = format!("{}{}", prefix, item.label);
+
+            lines.push(Line::from(Span::styled(text, style)));
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .style(Style::default().bg(Color::Rgb(40, 44, 52)));
+
+        let paragraph = Paragraph::new(lines).block(block);
+
+        // Clear background and render menu
+        frame.render_widget(ratatui::widgets::Clear, menu_area);
+        frame.render_widget(paragraph, menu_area);
     }
 
     /// Renders the command line
