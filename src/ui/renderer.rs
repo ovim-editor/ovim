@@ -41,11 +41,30 @@ impl Renderer {
         let cursor_line = cursor_pos.line();
         let cursor_col = cursor_pos.col();
 
-        // Simple layout: main buffer + status line
+        // Layout: [file tree (optional)] + main buffer + status line
+        let main_area = frame.area();
+
+        // First split: file tree (if visible) + rest
+        let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
+            let horizontal_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(30), Constraint::Min(1)].as_ref())
+                .split(main_area);
+            (Some(horizontal_chunks[0]), horizontal_chunks[1])
+        } else {
+            (None, main_area)
+        };
+
+        // Second split: buffer + status line
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
-            .split(frame.area());
+            .split(content_area);
+
+        // Render the file tree if visible
+        if let Some(tree_area) = file_tree_area {
+            Self::render_file_tree(frame, editor, tree_area);
+        }
 
         // Render the main text area
         let viewport_start = Self::render_buffer(frame, editor, &theme, chunks[0]);
@@ -564,6 +583,65 @@ impl Renderer {
         // Clear background and render menu
         frame.render_widget(ratatui::widgets::Clear, menu_area);
         frame.render_widget(paragraph, menu_area);
+    }
+
+    /// Renders the file tree explorer
+    fn render_file_tree(frame: &mut Frame, editor: &Editor, area: Rect) {
+        use ratatui::widgets::{Block, Borders, List, ListItem};
+
+        if !editor.file_tree().is_visible() {
+            return;
+        }
+
+        let tree = editor.file_tree();
+        let flattened = tree.flattened();
+        let selected_index = tree.selected_index();
+
+        // Create list items from flattened tree
+        let items: Vec<ListItem> = flattened
+            .iter()
+            .enumerate()
+            .map(|(idx, node)| {
+                let indent = "  ".repeat(node.depth());
+                let icon = if node.is_dir() {
+                    if node.is_expanded() {
+                        "▼ "
+                    } else {
+                        "▶ "
+                    }
+                } else {
+                    "  "
+                };
+
+                let name = node.name();
+                let display = format!("{}{}{}", indent, icon, name);
+
+                let style = if idx == selected_index {
+                    Style::default()
+                        .bg(Color::Blue)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else if node.is_dir() {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                ListItem::new(display).style(style)
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::RIGHT)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(" Files ")
+                    .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            )
+            .style(Style::default().bg(Color::Rgb(30, 34, 42)));
+
+        frame.render_widget(list, area);
     }
 
     /// Renders the command line

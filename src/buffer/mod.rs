@@ -28,9 +28,8 @@ pub struct Buffer {
     highlight_version: u64,
     /// Whether re-highlighting is pending
     pending_rehighlight: bool,
-    /// Set of line numbers that are folded (start line of each fold)
-    /// Lines are 0-indexed
-    folded_lines: HashSet<usize>,
+    /// Fold manager for code folding
+    fold_manager: crate::editor::FoldManager,
     /// Git status for this buffer
     git_status: GitStatus,
 }
@@ -47,7 +46,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
-            folded_lines: HashSet::new(),
+            fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
         }
     }
@@ -63,7 +62,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
-            folded_lines: HashSet::new(),
+            fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
         }
     }
@@ -200,7 +199,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
-            folded_lines: HashSet::new(),
+            fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
         };
 
@@ -552,38 +551,44 @@ impl Buffer {
         }
     }
 
-    /// Checks if a line is folded
+    /// Checks if a line is hidden by a fold
     pub fn is_line_folded(&self, line: usize) -> bool {
-        self.folded_lines.contains(&line)
+        self.fold_manager.is_line_hidden(line)
     }
 
-    /// Folds a line (hides lines from start_line to end_line)
-    pub fn fold_line(&mut self, start_line: usize) {
-        self.folded_lines.insert(start_line);
+    /// Gets the fold manager
+    pub fn fold_manager(&self) -> &crate::editor::FoldManager {
+        &self.fold_manager
     }
 
-    /// Unfolds a line
-    pub fn unfold_line(&mut self, start_line: usize) {
-        self.folded_lines.remove(&start_line);
+    /// Gets mutable fold manager
+    pub fn fold_manager_mut(&mut self) -> &mut crate::editor::FoldManager {
+        &mut self.fold_manager
     }
 
-    /// Toggles fold state for a line
-    pub fn toggle_fold(&mut self, start_line: usize) {
-        if self.folded_lines.contains(&start_line) {
-            self.folded_lines.remove(&start_line);
-        } else {
-            self.folded_lines.insert(start_line);
-        }
+    /// Creates a fold from start_line to end_line
+    pub fn create_fold(&mut self, start_line: usize, end_line: usize) {
+        self.fold_manager.create_fold(start_line, end_line);
     }
 
-    /// Gets all folded lines
-    pub fn folded_lines(&self) -> &HashSet<usize> {
-        &self.folded_lines
+    /// Opens fold at a line
+    pub fn open_fold(&mut self, line: usize) {
+        self.fold_manager.open_fold_at(line);
+    }
+
+    /// Closes fold at a line
+    pub fn close_fold(&mut self, line: usize) {
+        self.fold_manager.close_fold_at(line);
+    }
+
+    /// Toggles fold at a line
+    pub fn toggle_fold(&mut self, line: usize) {
+        self.fold_manager.toggle_fold_at(line);
     }
 
     /// Clears all folds
     pub fn clear_folds(&mut self) {
-        self.folded_lines.clear();
+        self.fold_manager.delete_all();
     }
 
     /// Refreshes git status for this buffer
