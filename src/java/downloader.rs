@@ -11,6 +11,9 @@ use tokio::io::AsyncWriteExt;
 const JDTLS_VERSION: &str = "1.38.0";
 const JDTLS_MILESTONE_DATE: &str = "202408011337";
 
+// Lombok version
+const LOMBOK_VERSION: &str = "1.18.34";
+
 /// Auto-downloader for jdtls
 pub struct JdtlsDownloader {
     install_dir: PathBuf,
@@ -244,6 +247,67 @@ impl JdtlsDownloader {
         }
 
         self.download(progress_callback).await
+    }
+
+    /// Get the path to the Lombok JAR
+    pub fn lombok_jar_path(&self) -> PathBuf {
+        self.install_dir.join(format!("lombok-{}.jar", LOMBOK_VERSION))
+    }
+
+    /// Check if Lombok is installed
+    pub async fn is_lombok_installed(&self) -> bool {
+        let lombok_jar = self.lombok_jar_path();
+        match tokio::fs::metadata(&lombok_jar).await {
+            Ok(metadata) => metadata.is_file(),
+            Err(_) => false,
+        }
+    }
+
+    /// Download Lombok JAR
+    pub async fn download_lombok(&self, progress_callback: impl Fn(String)) -> Result<()> {
+        progress_callback("Downloading Lombok...".to_string());
+
+        let url = format!(
+            "https://repo1.maven.org/maven2/org/projectlombok/lombok/{}/lombok-{}.jar",
+            LOMBOK_VERSION, LOMBOK_VERSION
+        );
+
+        let response = reqwest::get(&url)
+            .await
+            .context("Failed to download Lombok")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to download Lombok: HTTP {}", response.status());
+        }
+
+        let bytes = response.bytes().await.context("Failed to read Lombok JAR")?;
+
+        progress_callback(format!("Downloaded {} bytes", bytes.len()));
+
+        let lombok_path = self.lombok_jar_path();
+        let mut file = tokio::fs::File::create(&lombok_path)
+            .await
+            .context("Failed to create Lombok JAR file")?;
+
+        file.write_all(&bytes)
+            .await
+            .context("Failed to write Lombok JAR")?;
+
+        progress_callback("Lombok installed successfully!".to_string());
+
+        Ok(())
+    }
+
+    /// Ensure Lombok is installed (download if needed)
+    pub async fn ensure_lombok_installed(
+        &self,
+        progress_callback: impl Fn(String),
+    ) -> Result<()> {
+        if self.is_lombok_installed().await {
+            return Ok(());
+        }
+
+        self.download_lombok(progress_callback).await
     }
 }
 

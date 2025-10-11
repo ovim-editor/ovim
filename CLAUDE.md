@@ -302,6 +302,28 @@ curl -X POST http://127.0.0.1:56789/keys \
   -d '{"keys": "<Esc>"}' # Exit insert mode
 ```
 
+Prefer using the CLI instead!
+
+```
+❯ ./send-cmd
+Usage:
+  ./send-cmd <port> keys <keys>
+  ./send-cmd <port> buffer <content>
+  ./send-cmd <port> get <endpoint>
+  ./send-cmd <port> command <cmd>
+
+Examples:
+  ./send-cmd 56789 keys "gg"
+  ./send-cmd 56789 keys "iHello<Esc>"
+  ./send-cmd 56789 buffer "Line 1
+Line 2"
+  ./send-cmd 56789 get buffer
+  ./send-cmd 56789 get cursor
+  ./send-cmd 56789 get mode
+  ./send-cmd 56789 get snapshot
+  ./send-cmd 56789 command "w"
+```
+
 ## Development
 
 ### Dependencies

@@ -176,6 +176,10 @@ struct LanguageServerInner {
     // Cached capability flags (lock-free, set once during initialization)
     /// Cached: supports goto definition
     cap_goto_definition: AtomicBool,
+    /// Cached: supports goto implementation
+    cap_goto_implementation: AtomicBool,
+    /// Cached: supports goto type definition
+    cap_goto_type_definition: AtomicBool,
     /// Cached: supports hover
     cap_hover: AtomicBool,
     /// Cached: supports completion
@@ -206,6 +210,12 @@ struct LanguageServerInner {
     cap_incremental_sync: AtomicBool,
     /// Cached: supports folding range
     cap_folding_range: AtomicBool,
+    /// Cached: supports call hierarchy
+    cap_call_hierarchy: AtomicBool,
+    /// Cached: supports type hierarchy
+    cap_type_hierarchy: AtomicBool,
+    /// Cached: supports execute command
+    cap_execute_command: AtomicBool,
 }
 
 impl LanguageServerInner {
@@ -223,6 +233,7 @@ impl LanguageServer {
 
     /// Spawns a new language server process
     pub async fn spawn(language: &str, command: &str, args: Vec<String>) -> Result<Self> {
+        crate::lsp_debug!("Server", "Spawning {} with command: {} args: {:?}", language, command, args);
         let mut child = Command::new(command)
             .args(&args)
             .stdin(Stdio::piped())
@@ -230,6 +241,7 @@ impl LanguageServer {
             .stderr(Stdio::piped()) // Capture stderr for debugging
             .spawn()
             .context(format!("Failed to spawn language server: {}", command))?;
+        crate::lsp_debug!("Server", "Process spawned, PID: {:?}", child.id());
 
         let stdin = child
             .stdin
@@ -270,6 +282,8 @@ impl LanguageServer {
             supervisor,
             // Initialize cached capabilities to false (will be set during initialization)
             cap_goto_definition: AtomicBool::new(false),
+            cap_goto_implementation: AtomicBool::new(false),
+            cap_goto_type_definition: AtomicBool::new(false),
             cap_hover: AtomicBool::new(false),
             cap_completion: AtomicBool::new(false),
             cap_formatting: AtomicBool::new(false),
@@ -285,6 +299,9 @@ impl LanguageServer {
             cap_document_highlight: AtomicBool::new(false),
             cap_incremental_sync: AtomicBool::new(false),
             cap_folding_range: AtomicBool::new(false),
+            cap_call_hierarchy: AtomicBool::new(false),
+            cap_type_hierarchy: AtomicBool::new(false),
+            cap_execute_command: AtomicBool::new(false),
         });
 
         let server = Self { inner: inner.clone() };
@@ -300,7 +317,7 @@ impl LanguageServer {
             while let Some(msg) = outgoing_rx.recv().await {
                 let mut stdin_guard = stdin_clone.lock().await;
                 if let Err(e) = write_message(&mut *stdin_guard, &msg).await {
-                    eprintln!("[LSP Writer] Error writing to language server: {}", e);
+                    crate::lsp_error!("Writer", "Error writing to language server: {}", e);
                     break;
                 }
             }
@@ -338,8 +355,9 @@ impl LanguageServer {
                         for id in stale_ids {
                             if let Some(req) = pending.remove(&id) {
                                 let age = now.duration_since(req.sent_at);
-                                eprintln!(
-                                    "[LSP Cleanup] Removing stale request {:?} for method '{}' (age: {:?})",
+                                crate::lsp_warn!(
+                                    "Cleanup",
+                                    "Removing stale request {:?} for method '{}' (age: {:?})",
                                     id, req.method, age
                                 );
                                 let _ = req.sender.send(Err(anyhow!(
@@ -351,8 +369,9 @@ impl LanguageServer {
 
                         let count_after = pending.len();
                         if count_before > count_after {
-                            eprintln!(
-                                "[LSP Cleanup] Cleaned up {} stale requests ({} remaining)",
+                            crate::lsp_info!(
+                                "Cleanup",
+                                "Cleaned up {} stale requests ({} remaining)",
                                 count_before - count_after,
                                 count_after
                             );
@@ -361,8 +380,9 @@ impl LanguageServer {
                         // Warn at 80% of maximum capacity
                         let warning_threshold = (MAX_PENDING_REQUESTS as f64 * 0.8) as usize;
                         if pending.len() > warning_threshold {
-                            eprintln!(
-                                "[LSP Cleanup] Warning: {} pending requests (max: {})",
+                            crate::lsp_warn!(
+                                "Cleanup",
+                                "Warning: {} pending requests (max: {})",
                                 pending.len(),
                                 MAX_PENDING_REQUESTS
                             );
@@ -383,9 +403,9 @@ impl LanguageServer {
                 let mut header = String::new();
                 if let Err(e) = reader.read_line(&mut header).await {
                     // CRITICAL ERROR: LSP server reader task failed
-                    eprintln!(
-                        "{} CRITICAL: Reader task failed while reading header: {}",
-                        inner_clone.log_prefix(),
+                    crate::lsp_error!(
+                        &inner_clone.log_prefix(),
+                        "CRITICAL: Reader task failed while reading header: {}",
                         e
                     );
 
@@ -464,9 +484,9 @@ impl LanguageServer {
                     }
                     Err(e) => {
                         // ERROR: Failed to parse LSP message - log for visibility
-                        eprintln!(
-                            "{} ERROR: Failed to parse LSP message (size: {} bytes): {}",
-                            inner_clone.log_prefix(),
+                        crate::lsp_error!(
+                            &inner_clone.log_prefix(),
+                            "Failed to parse LSP message (size: {} bytes): {}",
                             content.len(),
                             e
                         );
@@ -476,9 +496,9 @@ impl LanguageServer {
                         } else {
                             String::from_utf8_lossy(&content).to_string()
                         };
-                        eprintln!(
-                            "{} Malformed message preview: {}",
-                            inner_clone.log_prefix(),
+                        crate::lsp_error!(
+                            &inner_clone.log_prefix(),
+                            "Malformed message preview: {}",
                             preview
                         );
                         // Continue processing other messages (don't break the loop)
@@ -488,9 +508,8 @@ impl LanguageServer {
             // Reader task exiting silently
         });
 
-        // Spawn task to capture stderr (silently consume it to prevent terminal spam)
+        // Spawn task to capture stderr and log it for debugging
         // Note: Not supervised because stderr is unique to the process
-        // TODO: Optionally log to file or send to status line for debugging
         tokio::spawn(async move {
             let mut stderr_reader = BufReader::new(stderr);
             let mut line = String::new();
@@ -498,14 +517,11 @@ impl LanguageServer {
                 if n == 0 {
                     break; // EOF
                 }
-                // Silently consume stderr - LSP servers can be very verbose
-                // Debug output can be enabled via environment variable if needed
-                if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                    eprint!("[LSP stderr] {}", line);
-                }
+                // Log stderr output from LSP server
+                crate::lsp_debug!("stderr", "{}", line.trim_end());
                 line.clear();
             }
-            // Silently exit
+            crate::lsp_debug!("stderr", "LSP stderr task exiting");
         });
 
         Ok(server)
@@ -513,13 +529,21 @@ impl LanguageServer {
 
     /// Initializes the language server
     pub async fn initialize(&mut self, root_uri: Url) -> Result<()> {
-        // Wrap initialization in timeout (30 seconds)
-        // This prevents hanging indefinitely if server doesn't respond
-        const INIT_TIMEOUT: Duration = Duration::from_secs(30);
+        // Use language-specific timeout (Java needs much longer due to indexing)
+        // Java/jdtls: 5 minutes (300s) for large projects with many dependencies
+        // Other languages: 2 minutes (120s) should be plenty
+        let init_timeout = if self.inner.language == "java" {
+            Duration::from_secs(300)  // 5 minutes for Java
+        } else {
+            Duration::from_secs(120)  // 2 minutes for other languages
+        };
 
-        tokio::time::timeout(INIT_TIMEOUT, self.initialize_internal(root_uri))
+        tokio::time::timeout(init_timeout, self.initialize_internal(root_uri))
             .await
-            .context("LSP initialization timed out after 30 seconds")?
+            .context(format!(
+                "LSP initialization timed out after {:?}. For large projects, this may take several minutes on first run.",
+                init_timeout
+            ))?
     }
 
     /// Internal initialization implementation (wrapped by timeout)
@@ -530,18 +554,36 @@ impl LanguageServer {
             pending_operations: Vec::new(),
         }).await;
 
+        // Build client capabilities with work done progress support
+        let mut capabilities = ClientCapabilities::default();
+
+        // Enable work done progress so LSP servers (especially jdtls) send progress notifications
+        // This allows us to show "Indexing...", "Building workspace...", etc.
+        capabilities.window = Some(lsp_types::WindowClientCapabilities {
+            work_done_progress: Some(true),
+            show_message: Some(lsp_types::ShowMessageRequestClientCapabilities {
+                message_action_item: Some(lsp_types::MessageActionItemCapabilities {
+                    additional_properties_support: Some(false),
+                }),
+            }),
+            show_document: None,
+        });
+
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(root_uri.clone()),
             root_path: None,
             initialization_options: None,
-            capabilities: ClientCapabilities::default(),
+            capabilities,
             trace: None,
             workspace_folders: Some(vec![WorkspaceFolder {
                 uri: root_uri,
                 name: "workspace".to_string(),
             }]),
-            client_info: None,
+            client_info: Some(lsp_types::ClientInfo {
+                name: "ovim".to_string(),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            }),
             locale: None,
             work_done_progress_params: Default::default(),
         };
@@ -588,7 +630,7 @@ impl LanguageServer {
 
                 for op in pending_operations {
                     if let Err(e) = self.replay_operation(op).await {
-                        eprintln!("{} Failed to replay operation: {}", prefix, e);
+                        crate::lsp_error!(&prefix, "Failed to replay operation: {}", e);
                     }
                 }
             }
@@ -647,7 +689,7 @@ impl LanguageServer {
             }
             PendingOperation::Request { method, params: _ } => {
                 // Requests are not replayed (they would have timed out already)
-                eprintln!("{} Skipping replay of request '{}'", self.log_prefix(), method);
+                crate::lsp_debug!(&self.log_prefix(), "Skipping replay of request '{}'", method);
                 Ok(())
             }
         }
@@ -749,9 +791,10 @@ impl LanguageServer {
         // Wait for response with timeout
         // Use longer timeout for initialize request (jdtls can be very slow)
         let timeout_duration = if method == "initialize" {
-            std::time::Duration::from_secs(120)  // 120s for initialize (jdtls needs lots of time)
+            // Java LSP can take 5+ minutes to index large projects on first run
+            std::time::Duration::from_secs(300)  // 5 minutes for initialize
         } else {
-            std::time::Duration::from_secs(5)   // 5s for other requests
+            std::time::Duration::from_secs(10)   // 10s for other requests
         };
 
         match tokio::time::timeout(timeout_duration, rx).await {
@@ -835,7 +878,7 @@ impl LanguageServer {
                         return Ok(());
                     }
                     Ok(Err(e)) => {
-                        eprintln!("{} Shutdown: Error waiting for exit: {}", prefix, e);
+                        crate::lsp_warn!(&prefix, "Shutdown: Error waiting for exit: {}", e);
                     }
                     Err(_) => {
                         // Graceful exit timeout, trying SIGTERM
@@ -865,7 +908,7 @@ impl LanguageServer {
                                 return Ok(());
                             }
                             Ok(Err(e)) => {
-                                eprintln!("{} Shutdown: Error after SIGTERM: {}", prefix, e);
+                                crate::lsp_warn!(&prefix, "Shutdown: Error after SIGTERM: {}", e);
                             }
                             Err(_) => {
                                 // SIGTERM timeout, using SIGKILL
@@ -880,18 +923,18 @@ impl LanguageServer {
         let mut process = self.inner.process.lock().await;
         if let Some(ref mut child) = *process {
             if let Err(e) = child.kill().await {
-                eprintln!("{} Shutdown: SIGKILL failed: {}", prefix, e);
+                crate::lsp_error!(&prefix, "Shutdown: SIGKILL failed: {}", e);
             }
 
             // Wait to reap zombie
             if let Err(e) = child.wait().await {
-                eprintln!("{} Shutdown: Error reaping process: {}", prefix, e);
+                crate::lsp_error!(&prefix, "Shutdown: Error reaping process: {}", e);
             }
         }
 
         // Shutdown all supervised tasks
         if let Err(e) = self.inner.supervisor.shutdown_all().await {
-            eprintln!("{} Shutdown: Error shutting down tasks: {}", prefix, e);
+            crate::lsp_error!(&prefix, "Shutdown: Error shutting down tasks: {}", e);
         }
 
         // Final transition to Terminated
@@ -956,6 +999,18 @@ impl LanguageServer {
         // Cache goto definition support
         self.inner.cap_goto_definition.store(
             caps.definition_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache goto implementation support
+        self.inner.cap_goto_implementation.store(
+            caps.implementation_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache goto type definition support
+        self.inner.cap_goto_type_definition.store(
+            caps.type_definition_provider.is_some(),
             Ordering::Relaxed,
         );
 
@@ -1055,6 +1110,26 @@ impl LanguageServer {
             caps.folding_range_provider.is_some(),
             Ordering::Relaxed,
         );
+
+        // Cache call hierarchy support
+        self.inner.cap_call_hierarchy.store(
+            caps.call_hierarchy_provider.is_some(),
+            Ordering::Relaxed,
+        );
+
+        // Cache type hierarchy support
+        // Note: type_hierarchy_provider doesn't exist in lsp-types 0.95.1
+        // Will be available when upgrading to lsp-types 0.96+
+        self.inner.cap_type_hierarchy.store(
+            false,
+            Ordering::Relaxed,
+        );
+
+        // Cache execute command support
+        self.inner.cap_execute_command.store(
+            caps.execute_command_provider.is_some(),
+            Ordering::Relaxed,
+        );
     }
 
     /// Gets the server capabilities
@@ -1066,6 +1141,16 @@ impl LanguageServer {
     /// Checks if the server supports goto definition (lock-free)
     pub async fn supports_goto_definition(&self) -> bool {
         self.inner.cap_goto_definition.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports goto implementation (lock-free)
+    pub async fn supports_goto_implementation(&self) -> bool {
+        self.inner.cap_goto_implementation.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports goto type definition (lock-free)
+    pub async fn supports_goto_type_definition(&self) -> bool {
+        self.inner.cap_goto_type_definition.load(Ordering::Relaxed)
     }
 
     /// Checks if the server supports hover (lock-free)
@@ -1141,6 +1226,21 @@ impl LanguageServer {
     /// Checks if the server supports folding range (lock-free)
     pub async fn supports_folding_range(&self) -> bool {
         self.inner.cap_folding_range.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports call hierarchy (lock-free)
+    pub async fn supports_call_hierarchy(&self) -> bool {
+        self.inner.cap_call_hierarchy.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports type hierarchy (lock-free)
+    pub async fn supports_type_hierarchy(&self) -> bool {
+        self.inner.cap_type_hierarchy.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports execute command (lock-free)
+    pub async fn supports_execute_command(&self) -> bool {
+        self.inner.cap_execute_command.load(Ordering::Relaxed)
     }
 }
 
