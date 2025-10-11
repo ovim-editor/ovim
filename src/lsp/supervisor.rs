@@ -143,8 +143,9 @@ impl TaskSupervisor {
                     }
                     Err(e) => {
                         // Only log actual errors
-                        eprintln!(
-                            "[Supervisor] Task '{}' failed after {:?}: {}",
+                        crate::lsp_error!(
+                            "Supervisor",
+                            "Task '{}' failed after {:?}: {}",
                             name_clone, uptime, e
                         );
 
@@ -161,8 +162,9 @@ impl TaskSupervisor {
 
                         // Check retry limit
                         if restarts >= max_retries {
-                            eprintln!(
-                                "[Supervisor] Task '{}' exceeded max retries ({}/{})",
+                            crate::lsp_error!(
+                                "Supervisor",
+                                "Task '{}' exceeded max retries ({}/{})",
                                 name_clone, restarts, max_retries
                             );
 

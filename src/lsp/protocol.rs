@@ -162,6 +162,16 @@ pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<JsonRp
         })
         .ok_or_else(|| anyhow!("Missing Content-Length header"))?;
 
+    // Validate content_length to prevent buffer overflow
+    const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024; // 50MB
+    if content_length > MAX_MESSAGE_SIZE {
+        return Err(anyhow!(
+            "Message size {} exceeds maximum allowed size {}",
+            content_length,
+            MAX_MESSAGE_SIZE
+        ));
+    }
+
     // Read exact content_length bytes
     let mut content = vec![0u8; content_length];
     buf_reader.read_exact(&mut content).await?;

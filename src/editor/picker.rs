@@ -7,6 +7,7 @@ pub enum PickerMode {
     LiveGrep,
     Custom,
     Completion,
+    LspLocations,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +111,31 @@ impl Picker {
 
         Self {
             mode: PickerMode::Completion,
+            query: String::new(),
+            query_cursor: 0,
+            all_results: results.clone(),
+            filtered_results: results,
+            selected_index: 0,
+            base_dir,
+        }
+    }
+
+    /// Creates a new LSP locations picker (for references, symbols, hierarchy, etc.)
+    /// Items are display strings, and indices map to editor's LSP storage vectors
+    pub fn new_lsp_locations(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let results: Vec<PickerResult> = items
+            .into_iter()
+            .enumerate()
+            .map(|(idx, display)| PickerResult {
+                display,
+                location: idx.to_string(), // Index into editor's LSP storage vectors
+                line: idx,
+                col: 0,
+            })
+            .collect();
+
+        Self {
+            mode: PickerMode::LspLocations,
             query: String::new(),
             query_cursor: 0,
             all_results: results.clone(),
@@ -330,8 +356,8 @@ impl Picker {
                 // since the query is used for the actual grep search
                 self.filtered_results = grep_results;
             }
-            PickerMode::Custom | PickerMode::Completion => {
-                // Fuzzy matching for custom mode and completion
+            PickerMode::Custom | PickerMode::Completion | PickerMode::LspLocations => {
+                // Fuzzy matching for custom mode, completion, and LSP locations
                 let mut scored_results: Vec<(PickerResult, i32)> = self
                     .all_results
                     .iter()

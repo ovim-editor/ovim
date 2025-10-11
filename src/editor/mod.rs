@@ -35,6 +35,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
 
+/// Type of LSP result currently being displayed in picker
+#[derive(Debug, Clone, PartialEq)]
+enum LspResultType {
+    References,
+    DocumentSymbols,
+    WorkspaceSymbols,
+    CallHierarchy,
+    TypeHierarchy,
+}
+
 /// The main editor state
 pub struct Editor {
     /// The text buffer
@@ -114,6 +124,18 @@ pub struct Editor {
     available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
     /// Available completion items at current cursor position
     available_completions: Vec<lsp_types::CompletionItem>,
+    /// Available LSP references at current cursor position
+    available_references: Vec<lsp_types::Location>,
+    /// Available document symbols for current file
+    available_document_symbols: Vec<lsp_types::DocumentSymbol>,
+    /// Available workspace symbols
+    available_workspace_symbols: Vec<lsp_types::SymbolInformation>,
+    /// Available call hierarchy items (incoming or outgoing)
+    available_call_hierarchy: Vec<(String, lsp_types::Location)>,
+    /// Available type hierarchy items (supertypes and subtypes)
+    available_type_hierarchy: Vec<(String, lsp_types::Location)>,
+    /// Currently active LSP result type (for picker navigation)
+    active_lsp_result_type: Option<LspResultType>,
     /// Preview cache for picker (file_path -> (content, syntax highlights))
     preview_cache: HashMap<String, PreviewCache>,
     /// Color scheme registry
@@ -137,10 +159,19 @@ pub struct PreviewCache {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LspAction {
     GoToDefinition,
+    GoToImplementation,
+    GoToType,
     ShowHover,
     Completion,
     FormatDocument,
     CodeActions,
+    TypeHierarchy,
+    CallHierarchyIncoming,
+    CallHierarchyOutgoing,
+    FindReferences,
+    DocumentSymbols,
+    WorkspaceSymbols,
+    OrganizeImports,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -200,6 +231,12 @@ impl Editor {
             last_insert_position: None,
             available_code_actions: Vec::new(),
             available_completions: Vec::new(),
+            available_references: Vec::new(),
+            available_document_symbols: Vec::new(),
+            available_workspace_symbols: Vec::new(),
+            available_call_hierarchy: Vec::new(),
+            available_type_hierarchy: Vec::new(),
+            active_lsp_result_type: None,
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
@@ -250,6 +287,12 @@ impl Editor {
             last_insert_position: None,
             available_code_actions: Vec::new(),
             available_completions: Vec::new(),
+            available_references: Vec::new(),
+            available_document_symbols: Vec::new(),
+            available_workspace_symbols: Vec::new(),
+            available_call_hierarchy: Vec::new(),
+            available_type_hierarchy: Vec::new(),
+            active_lsp_result_type: None,
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
@@ -1167,6 +1210,16 @@ impl Editor {
         self.pending_lsp_action = Some(LspAction::GoToDefinition);
     }
 
+    /// Request go to implementation (sets pending action)
+    pub fn request_goto_implementation(&mut self) {
+        self.pending_lsp_action = Some(LspAction::GoToImplementation);
+    }
+
+    /// Request go to type definition (sets pending action)
+    pub fn request_goto_type(&mut self) {
+        self.pending_lsp_action = Some(LspAction::GoToType);
+    }
+
     /// Requests hover information for current cursor position
     pub fn request_hover(&mut self) {
         self.pending_lsp_action = Some(LspAction::ShowHover);
@@ -1185,6 +1238,41 @@ impl Editor {
     /// Requests code actions for current cursor position
     pub fn request_code_actions(&mut self) {
         self.pending_lsp_action = Some(LspAction::CodeActions);
+    }
+
+    /// Requests call hierarchy incoming calls (who calls this method)
+    pub fn request_call_hierarchy_incoming(&mut self) {
+        self.pending_lsp_action = Some(LspAction::CallHierarchyIncoming);
+    }
+
+    /// Requests call hierarchy outgoing calls (what this method calls)
+    pub fn request_call_hierarchy_outgoing(&mut self) {
+        self.pending_lsp_action = Some(LspAction::CallHierarchyOutgoing);
+    }
+
+    /// Requests type hierarchy (superclasses/interfaces and subclasses/implementations)
+    pub fn request_type_hierarchy(&mut self) {
+        self.pending_lsp_action = Some(LspAction::TypeHierarchy);
+    }
+
+    /// Requests organize imports command for Java
+    pub fn request_organize_imports(&mut self) {
+        self.pending_lsp_action = Some(LspAction::OrganizeImports);
+    }
+
+    /// Requests find all references to symbol at cursor
+    pub fn request_find_references(&mut self) {
+        self.pending_lsp_action = Some(LspAction::FindReferences);
+    }
+
+    /// Requests document symbols (outline)
+    pub fn request_document_symbols(&mut self) {
+        self.pending_lsp_action = Some(LspAction::DocumentSymbols);
+    }
+
+    /// Requests workspace-wide symbol search
+    pub fn request_workspace_symbols(&mut self) {
+        self.pending_lsp_action = Some(LspAction::WorkspaceSymbols);
     }
 
     /// Gets the current hover information (if any)
@@ -1363,6 +1451,12 @@ impl Editor {
                 LspAction::GoToDefinition => {
                     matches!(self.goto_definition_impl().await, Err(_))
                 }
+                LspAction::GoToImplementation => {
+                    matches!(self.goto_implementation_impl().await, Err(_))
+                }
+                LspAction::GoToType => {
+                    matches!(self.goto_type_impl().await, Err(_))
+                }
                 LspAction::ShowHover => {
                     matches!(self.hover_impl().await, Err(_))
                 }
@@ -1374,6 +1468,27 @@ impl Editor {
                 }
                 LspAction::CodeActions => {
                     matches!(self.code_actions_impl().await, Err(_))
+                }
+                LspAction::TypeHierarchy => {
+                    matches!(self.type_hierarchy_impl().await, Err(_))
+                }
+                LspAction::CallHierarchyIncoming => {
+                    matches!(self.call_hierarchy_incoming_impl().await, Err(_))
+                }
+                LspAction::CallHierarchyOutgoing => {
+                    matches!(self.call_hierarchy_outgoing_impl().await, Err(_))
+                }
+                LspAction::FindReferences => {
+                    matches!(self.find_references_impl().await, Err(_))
+                }
+                LspAction::DocumentSymbols => {
+                    matches!(self.document_symbols_impl().await, Err(_))
+                }
+                LspAction::WorkspaceSymbols => {
+                    matches!(self.workspace_symbols_impl().await, Err(_))
+                }
+                LspAction::OrganizeImports => {
+                    matches!(self.organize_imports_impl().await, Err(_))
                 }
             };
 
@@ -1496,6 +1611,887 @@ impl Editor {
         // No definition found
         self.set_lsp_status("No definition found".to_string());
         Ok(false)
+    }
+
+    /// Go to implementation at current cursor position via LSP (implementation)
+    async fn goto_implementation_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use goto-implementation".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request implementation
+        self.set_lsp_status("Searching for implementation...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let location = lsp_guard
+            .implementation(&uri, line, character, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Jump to implementation if found
+        if let Some(location) = location {
+            let target_line = location.range.start.line as usize;
+            let target_col = location.range.start.character as usize;
+
+            // Save current position to jump list before jumping
+            let current_line = self.buffer.cursor().line();
+            let current_col = self.buffer.cursor().col();
+            self.jump_list.add_jump(current_line, current_col);
+
+            // Check if implementation is in the same file
+            if location.uri == uri {
+                // Same file - jump directly
+                self.buffer.cursor_mut().set_position(target_line, target_col);
+                self.set_lsp_status(format!("Implementation found at line {}", target_line + 1));
+                return Ok(true);
+            } else {
+                // Different file - open it and jump
+                match location.uri.to_file_path() {
+                    Ok(target_path) => {
+                        // Try to open the target file
+                        match self.load_file_async(&target_path).await {
+                            Ok(_) => {
+                                self.buffer.cursor_mut().set_position(target_line, target_col);
+                                let file_name = target_path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("file");
+                                self.set_lsp_status(format!("Opened {} at line {}", file_name, target_line + 1));
+                                return Ok(true);
+                            }
+                            Err(e) => {
+                                self.set_lsp_status(format!("Failed to open file: {}", e));
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.set_lsp_status("Implementation in invalid file path".to_string());
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // No implementation found
+        self.set_lsp_status("No implementation found".to_string());
+        Ok(false)
+    }
+
+    /// Go to type definition at current cursor position via LSP (implementation)
+    async fn goto_type_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use goto-type".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request type definition
+        self.set_lsp_status("Searching for type definition...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let location = lsp_guard
+            .type_definition(&uri, line, character, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Jump to type definition if found
+        if let Some(location) = location {
+            let target_line = location.range.start.line as usize;
+            let target_col = location.range.start.character as usize;
+
+            // Save current position to jump list before jumping
+            let current_line = self.buffer.cursor().line();
+            let current_col = self.buffer.cursor().col();
+            self.jump_list.add_jump(current_line, current_col);
+
+            // Check if type definition is in the same file
+            if location.uri == uri {
+                // Same file - jump directly
+                self.buffer.cursor_mut().set_position(target_line, target_col);
+                self.set_lsp_status(format!("Type definition found at line {}", target_line + 1));
+                return Ok(true);
+            } else {
+                // Different file - open it and jump
+                match location.uri.to_file_path() {
+                    Ok(target_path) => {
+                        // Try to open the target file
+                        match self.load_file_async(&target_path).await {
+                            Ok(_) => {
+                                self.buffer.cursor_mut().set_position(target_line, target_col);
+                                let file_name = target_path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("file");
+                                self.set_lsp_status(format!("Opened {} at line {}", file_name, target_line + 1));
+                                return Ok(true);
+                            }
+                            Err(e) => {
+                                self.set_lsp_status(format!("Failed to open file: {}", e));
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.set_lsp_status("Type definition in invalid file path".to_string());
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // No type definition found
+        self.set_lsp_status("No type definition found".to_string());
+        Ok(false)
+    }
+
+    /// Find all references to symbol at current cursor position (implementation)
+    async fn find_references_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use find references".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request references
+        self.set_lsp_status("Searching for references...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let locations = lsp_guard
+            .references(&uri, line, character, language_id, true)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Display results in picker
+        if locations.is_empty() {
+            self.set_lsp_status("No references found".to_string());
+            return Ok(false);
+        }
+
+        // Store locations in storage vector
+        self.available_references = locations.clone();
+        self.active_lsp_result_type = Some(LspResultType::References);
+
+        // Format locations as picker items
+        let items: Vec<String> = locations
+            .iter()
+            .map(|loc| {
+                let file_path = loc.uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = loc.range.start.line + 1;
+                let col = loc.range.start.character + 1;
+                format!("{}:{}:{}", file_path, line, col)
+            })
+            .collect();
+
+        self.set_lsp_status(format!("Found {} references", locations.len()));
+
+        // Create picker with results
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picker = crate::editor::Picker::new_lsp_locations(base_dir, items);
+        self.set_picker(picker);
+        self.set_mode(crate::mode::Mode::Picker);
+
+        Ok(true)
+    }
+
+    /// Show document symbols (outline) (implementation)
+    async fn document_symbols_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use document symbols".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request document symbols
+        self.set_lsp_status("Loading document symbols...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let symbols = lsp_guard
+            .document_symbols(&uri, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Display results in picker
+        if symbols.is_empty() {
+            self.set_lsp_status("No symbols found".to_string());
+            return Ok(false);
+        }
+
+        // Store symbols in storage vector
+        self.available_document_symbols = symbols.clone();
+        self.active_lsp_result_type = Some(LspResultType::DocumentSymbols);
+
+        // Format symbols as picker items
+        let items: Vec<String> = symbols
+            .iter()
+            .map(|sym| {
+                let line = sym.range.start.line + 1;
+                format!("{} ({:?}:{})", sym.name, sym.kind, line)
+            })
+            .collect();
+
+        self.set_lsp_status(format!("Found {} symbols", symbols.len()));
+
+        // Create picker with results
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picker = crate::editor::Picker::new_lsp_locations(base_dir, items);
+        self.set_picker(picker);
+        self.set_mode(crate::mode::Mode::Picker);
+
+        Ok(true)
+    }
+
+    /// Search workspace symbols (implementation)
+    async fn workspace_symbols_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file path for language detection
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use workspace symbols".to_string());
+            return Ok(false);
+        };
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request workspace symbols with empty query (gets all symbols)
+        self.set_lsp_status("Loading workspace symbols...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let symbols = lsp_guard
+            .workspace_symbols(language_id, String::new())
+            .await?;
+
+        drop(lsp_guard);
+
+        // Display results in picker
+        if symbols.is_empty() {
+            self.set_lsp_status("No workspace symbols found".to_string());
+            return Ok(false);
+        }
+
+        // Store symbols in storage vector
+        self.available_workspace_symbols = symbols.clone();
+        self.active_lsp_result_type = Some(LspResultType::WorkspaceSymbols);
+
+        // Format symbols as picker items
+        let items: Vec<String> = symbols
+            .iter()
+            .map(|sym| {
+                let file_name = sym.location.uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = sym.location.range.start.line + 1;
+                format!("{} - {} ({:?}:{})", sym.name, file_name, sym.kind, line)
+            })
+            .collect();
+
+        self.set_lsp_status(format!("Found {} workspace symbols", symbols.len()));
+
+        // Create picker with results
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picker = crate::editor::Picker::new_lsp_locations(base_dir, items);
+        self.set_picker(picker);
+        self.set_mode(crate::mode::Mode::Picker);
+
+        Ok(true)
+    }
+
+    /// Show incoming call hierarchy (implementation)
+    async fn call_hierarchy_incoming_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use call hierarchy".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request call hierarchy preparation
+        self.set_lsp_status("Preparing call hierarchy...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let items = lsp_guard
+            .prepare_call_hierarchy(uri, line, character, language_id)
+            .await?;
+
+        let items = match items {
+            Some(items) if !items.is_empty() => items,
+            _ => {
+                drop(lsp_guard);
+                self.set_lsp_status("No call hierarchy item at cursor".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get incoming calls for the first item
+        let first_item = items.into_iter().next().unwrap();
+        let incoming = lsp_guard
+            .incoming_calls(first_item, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Display results in picker
+        let calls = match incoming {
+            Some(calls) if !calls.is_empty() => calls,
+            _ => {
+                self.set_lsp_status("No incoming calls found".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Store call hierarchy data in storage vector
+        self.available_call_hierarchy = calls
+            .iter()
+            .map(|call| {
+                let name = call.from.name.clone();
+                let location = lsp_types::Location {
+                    uri: call.from.uri.clone(),
+                    range: call.from.range,
+                };
+                (name, location)
+            })
+            .collect();
+        self.active_lsp_result_type = Some(LspResultType::CallHierarchy);
+
+        // Format calls as picker items
+        let items: Vec<String> = calls
+            .iter()
+            .map(|call| {
+                let name = &call.from.name;
+                let file_path = call.from.uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = call.from.range.start.line + 1;
+                format!("{} - {}:{}", name, file_path, line)
+            })
+            .collect();
+
+        self.set_lsp_status(format!("Found {} incoming calls", calls.len()));
+
+        // Create picker with results
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picker = crate::editor::Picker::new_lsp_locations(base_dir, items);
+        self.set_picker(picker);
+        self.set_mode(crate::mode::Mode::Picker);
+
+        Ok(true)
+    }
+
+    /// Show outgoing call hierarchy (implementation)
+    async fn call_hierarchy_outgoing_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use call hierarchy".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request call hierarchy preparation
+        self.set_lsp_status("Preparing call hierarchy...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let items = lsp_guard
+            .prepare_call_hierarchy(uri, line, character, language_id)
+            .await?;
+
+        let items = match items {
+            Some(items) if !items.is_empty() => items,
+            _ => {
+                drop(lsp_guard);
+                self.set_lsp_status("No call hierarchy item at cursor".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get outgoing calls for the first item
+        let first_item = items.into_iter().next().unwrap();
+        let outgoing = lsp_guard
+            .outgoing_calls(first_item, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Display results in picker
+        let calls = match outgoing {
+            Some(calls) if !calls.is_empty() => calls,
+            _ => {
+                self.set_lsp_status("No outgoing calls found".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Store call hierarchy data in storage vector
+        self.available_call_hierarchy = calls
+            .iter()
+            .map(|call| {
+                let name = call.to.name.clone();
+                let location = lsp_types::Location {
+                    uri: call.to.uri.clone(),
+                    range: call.to.range,
+                };
+                (name, location)
+            })
+            .collect();
+        self.active_lsp_result_type = Some(LspResultType::CallHierarchy);
+
+        // Format calls as picker items
+        let items: Vec<String> = calls
+            .iter()
+            .map(|call| {
+                let name = &call.to.name;
+                let file_path = call.to.uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = call.to.range.start.line + 1;
+                format!("{} - {}:{}", name, file_path, line)
+            })
+            .collect();
+
+        self.set_lsp_status(format!("Found {} outgoing calls", calls.len()));
+
+        // Create picker with results
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picker = crate::editor::Picker::new_lsp_locations(base_dir, items);
+        self.set_picker(picker);
+        self.set_mode(crate::mode::Mode::Picker);
+
+        Ok(true)
+    }
+
+    /// Show type hierarchy (implementation)
+    async fn type_hierarchy_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use type hierarchy".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position
+        let cursor = self.buffer.cursor();
+        let line = cursor.line() as u32;
+        let character = cursor.col() as u32;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request type hierarchy preparation
+        self.set_lsp_status("Preparing type hierarchy...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        let items = lsp_guard
+            .prepare_type_hierarchy(uri, line, character, language_id)
+            .await?;
+
+        let items = match items {
+            Some(items) if !items.is_empty() => items,
+            _ => {
+                drop(lsp_guard);
+                self.set_lsp_status("No type hierarchy item at cursor".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get supertypes and subtypes for the first item
+        let first_item = items.into_iter().next().unwrap();
+        let supertypes = lsp_guard
+            .supertypes(first_item.clone(), language_id)
+            .await?;
+        let subtypes = lsp_guard
+            .subtypes(first_item, language_id)
+            .await?;
+
+        drop(lsp_guard);
+
+        // Combine results and store in storage vector
+        let mut all_types_display = Vec::new();
+        let mut all_types_data = Vec::new();
+
+        if let Some(supers) = supertypes {
+            for super_type in supers {
+                let name = super_type.name.clone();
+                let location = lsp_types::Location {
+                    uri: super_type.uri.clone(),
+                    range: super_type.range,
+                };
+                let file_name = super_type.uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = super_type.range.start.line + 1;
+                all_types_display.push(format!("↑ {} - {}:{}", name, file_name, line));
+                all_types_data.push((format!("↑ {}", name), location));
+            }
+        }
+
+        if let Some(subs) = subtypes {
+            for sub_type in subs {
+                let name = sub_type.name.clone();
+                let location = lsp_types::Location {
+                    uri: sub_type.uri.clone(),
+                    range: sub_type.range,
+                };
+                let file_name = sub_type.uri.to_file_path().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = sub_type.range.start.line + 1;
+                all_types_display.push(format!("↓ {} - {}:{}", name, file_name, line));
+                all_types_data.push((format!("↓ {}", name), location));
+            }
+        }
+
+        if all_types_data.is_empty() {
+            self.set_lsp_status("No type hierarchy found".to_string());
+            return Ok(false);
+        }
+
+        // Store type hierarchy data in storage vector
+        self.available_type_hierarchy = all_types_data;
+        self.active_lsp_result_type = Some(LspResultType::TypeHierarchy);
+
+        self.set_lsp_status(format!("Found {} types in hierarchy", all_types_display.len()));
+
+        // Create picker with results
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let picker = crate::editor::Picker::new_lsp_locations(base_dir, all_types_display);
+        self.set_picker(picker);
+        self.set_mode(crate::mode::Mode::Picker);
+
+        Ok(true)
     }
 
     /// Gets hover information at current cursor position via LSP (implementation)
@@ -2028,6 +3024,313 @@ impl Editor {
 
         // Clear available completions after applying
         self.available_completions.clear();
+    }
+
+    /// Navigates to an LSP location from the picker selection
+    pub fn navigate_to_lsp_location(&mut self, index: usize) {
+        // Determine which LSP result type we're viewing
+        let result_type = match &self.active_lsp_result_type {
+            Some(t) => t.clone(),
+            None => {
+                self.set_lsp_status("No active LSP results".to_string());
+                return;
+            }
+        };
+
+        // Get the location based on result type
+        let location = match result_type {
+            LspResultType::References => {
+                if index >= self.available_references.len() {
+                    self.set_lsp_status("Invalid reference selection".to_string());
+                    return;
+                }
+                self.available_references[index].clone()
+            }
+            LspResultType::DocumentSymbols => {
+                if index >= self.available_document_symbols.len() {
+                    self.set_lsp_status("Invalid symbol selection".to_string());
+                    return;
+                }
+                let symbol = &self.available_document_symbols[index];
+                // For document symbols, the location is in the current file
+                let file_path = self.buffer.file_path().unwrap_or("").to_string();
+                let uri = match lsp_types::Url::from_file_path(&file_path) {
+                    Ok(u) => u,
+                    Err(_) => {
+                        self.set_lsp_status("Invalid file path".to_string());
+                        return;
+                    }
+                };
+                lsp_types::Location {
+                    uri,
+                    range: symbol.range,
+                }
+            }
+            LspResultType::WorkspaceSymbols => {
+                if index >= self.available_workspace_symbols.len() {
+                    self.set_lsp_status("Invalid symbol selection".to_string());
+                    return;
+                }
+                self.available_workspace_symbols[index].location.clone()
+            }
+            LspResultType::CallHierarchy | LspResultType::TypeHierarchy => {
+                let storage = if result_type == LspResultType::CallHierarchy {
+                    &self.available_call_hierarchy
+                } else {
+                    &self.available_type_hierarchy
+                };
+
+                if index >= storage.len() {
+                    self.set_lsp_status("Invalid selection".to_string());
+                    return;
+                }
+                storage[index].1.clone()
+            }
+        };
+
+        // Convert LSP location to file path
+        let file_path = match location.uri.to_file_path() {
+            Ok(path) => path.to_string_lossy().to_string(),
+            Err(_) => {
+                self.set_lsp_status("Invalid file URI".to_string());
+                return;
+            }
+        };
+
+        // Load the file
+        if let Err(e) = self.load_file(&file_path) {
+            self.set_lsp_status(format!("Failed to load file: {}", e));
+            return;
+        }
+
+        // Move cursor to the location
+        let line = location.range.start.line as usize;
+        let col = location.range.start.character as usize;
+        self.buffer_mut().cursor_mut().set_position(line, col);
+
+        let file_name = std::path::Path::new(&file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file");
+        self.set_lsp_status(format!("Opened {} at line {}", file_name, line + 1));
+    }
+
+    /// Organizes imports in the current file via LSP (implementation)
+    async fn organize_imports_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer.file_path() else {
+            self.set_lsp_status("Save file first to use organize imports".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // For Java, use the organize imports command
+        if language_id != "java" {
+            self.set_lsp_status("Organize imports only supported for Java".to_string());
+            return Ok(false);
+        }
+
+        // Request organize imports
+        self.set_lsp_status("Organizing imports...".to_string());
+
+        // Try to get lock without blocking - if LSP is busy, retry later
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy (e.g., Java initialization), will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        // Execute the organize imports command
+        // For jdtls, the command is "java.action.organizeImports"
+        let command = "java.action.organizeImports".to_string();
+        let arguments = Some(vec![serde_json::to_value(&uri)?]);
+
+        let result = lsp_guard
+            .execute_command(command, arguments, language_id)
+            .await;
+
+        drop(lsp_guard);
+
+        match result {
+            Ok(_) => {
+                self.set_lsp_status("Imports organized".to_string());
+                Ok(true)
+            }
+            Err(e) => {
+                self.set_lsp_status(format!("Failed to organize imports: {}", e));
+                Ok(false)
+            }
+        }
+    }
+
+    /// Applies a workspace edit from the LSP server
+    /// Returns true if all edits were applied successfully
+    pub async fn apply_workspace_edit(
+        &mut self,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> Result<bool> {
+        // Track whether all edits were applied successfully
+        let mut all_applied = true;
+
+        // Handle changes (map of URI to TextEdit[])
+        if let Some(ref changes) = edit.changes {
+            for (uri, text_edits) in changes {
+                // Check if this is the current document
+                if let Some(file_path) = self.buffer.file_path() {
+                    let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                        file_path.to_string()
+                    } else {
+                        match std::env::current_dir() {
+                            Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                            Err(_) => {
+                                all_applied = false;
+                                continue;
+                            }
+                        }
+                    };
+
+                    if let Ok(current_uri) = lsp_types::Url::from_file_path(&abs_path) {
+                        if current_uri == *uri {
+                            // Apply edits to current buffer
+                            self.apply_lsp_edits(text_edits.clone());
+                        } else {
+                            // Different file - would need to open and edit it
+                            // For now, mark as not fully applied
+                            all_applied = false;
+                        }
+                    } else {
+                        all_applied = false;
+                    }
+                } else {
+                    all_applied = false;
+                }
+            }
+        }
+
+        // Handle document_changes (more complex, includes creates/renames/deletes)
+        if let Some(ref document_changes) = edit.document_changes {
+            match document_changes {
+                lsp_types::DocumentChanges::Edits(edits) => {
+                    for text_doc_edit in edits {
+                        // Check if this is for the current document
+                        if let Some(file_path) = self.buffer.file_path() {
+                            let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                file_path.to_string()
+                            } else {
+                                match std::env::current_dir() {
+                                    Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                    Err(_) => {
+                                        all_applied = false;
+                                        continue;
+                                    }
+                                }
+                            };
+
+                            if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                if text_doc_edit.text_document.uri == uri {
+                                    // Apply edits to current buffer
+                                    let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit.edits.iter().filter_map(|e| {
+                                        match e {
+                                            lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                            lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
+                                        }
+                                    }).collect();
+                                    self.apply_lsp_edits(text_edits);
+                                } else {
+                                    all_applied = false;
+                                }
+                            } else {
+                                all_applied = false;
+                            }
+                        } else {
+                            all_applied = false;
+                        }
+                    }
+                }
+                lsp_types::DocumentChanges::Operations(ops) => {
+                    for op in ops {
+                        match op {
+                            lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
+                                // Check if this is for the current document
+                                if let Some(file_path) = self.buffer.file_path() {
+                                    let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                        file_path.to_string()
+                                    } else {
+                                        match std::env::current_dir() {
+                                            Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                            Err(_) => {
+                                                all_applied = false;
+                                                continue;
+                                            }
+                                        }
+                                    };
+
+                                    if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                        if text_doc_edit.text_document.uri == uri {
+                                            // Apply edits to current buffer
+                                            let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit.edits.iter().filter_map(|e| {
+                                                match e {
+                                                    lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                                    lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
+                                                }
+                                            }).collect();
+                                            self.apply_lsp_edits(text_edits);
+                                        } else {
+                                            all_applied = false;
+                                        }
+                                    } else {
+                                        all_applied = false;
+                                    }
+                                } else {
+                                    all_applied = false;
+                                }
+                            }
+                            _ => {
+                                // Other operations (create, rename, delete) not supported yet
+                                all_applied = false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(all_applied)
     }
 
     /// Renders the editor to an in-memory buffer and returns ANSI output

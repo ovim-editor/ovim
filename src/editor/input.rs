@@ -55,8 +55,28 @@ impl InputHandler {
                     return Ok(());
                 }
                 KeyCode::Char('c') => {
-                    // Expect 'a' next for code actions
+                    // Expect 'a' or 'i'/'o' next for code actions or call hierarchy
                     editor.set_pending_command('c');
+                    return Ok(());
+                }
+                KeyCode::Char('o') => {
+                    // <Space>o - Document outline (symbols)
+                    editor.request_document_symbols();
+                    return Ok(());
+                }
+                KeyCode::Char('S') => {
+                    // <Space>S - Workspace symbols
+                    editor.request_workspace_symbols();
+                    return Ok(());
+                }
+                KeyCode::Char('t') => {
+                    // Expect 'h' next for type hierarchy
+                    editor.set_pending_command('t');
+                    return Ok(());
+                }
+                KeyCode::Char('i') => {
+                    // <Space>i - Organize imports
+                    editor.request_organize_imports();
                     return Ok(());
                 }
                 _ => {
@@ -97,7 +117,7 @@ impl InputHandler {
             }
         }
 
-        // Handle 'c' prefix for leader sequences (code actions)
+        // Handle 'c' prefix for leader sequences (code actions, call hierarchy)
         if let Some('c') = editor.pending_command() {
             editor.clear_pending_command();
 
@@ -105,6 +125,33 @@ impl InputHandler {
                 KeyCode::Char('a') => {
                     // <Space>ca - Code actions
                     editor.request_code_actions();
+                    return Ok(());
+                }
+                KeyCode::Char('i') => {
+                    // <Space>ci - Call hierarchy incoming
+                    editor.request_call_hierarchy_incoming();
+                    return Ok(());
+                }
+                KeyCode::Char('o') => {
+                    // <Space>co - Call hierarchy outgoing
+                    editor.request_call_hierarchy_outgoing();
+                    return Ok(());
+                }
+                _ => {
+                    // Invalid sequence
+                    return Ok(());
+                }
+            }
+        }
+
+        // Handle 't' prefix for leader sequences (type hierarchy)
+        if let Some('t') = editor.pending_command() {
+            editor.clear_pending_command();
+
+            match key_event.code {
+                KeyCode::Char('h') => {
+                    // <Space>th - Type hierarchy
+                    editor.request_type_hierarchy();
                     return Ok(());
                 }
                 _ => {
@@ -1513,6 +1560,21 @@ impl InputHandler {
                 ('g', KeyCode::Char('d')) => {
                     // gd - go to definition (LSP)
                     editor.request_goto_definition();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('D')) => {
+                    // gD - go to implementation (LSP)
+                    editor.request_goto_implementation();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('y')) => {
+                    // gy - go to type definition (LSP)
+                    editor.request_goto_type();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('R')) => {
+                    // gR - find references (LSP)
+                    editor.request_find_references();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('c')) => {
@@ -3081,6 +3143,16 @@ impl InputHandler {
 
                             // Apply the selected completion
                             editor.apply_completion(completion_index);
+                        } else if picker_mode == crate::editor::PickerMode::LspLocations {
+                            // LSP locations mode - navigate to location
+                            let location_index = result.line; // We stored index in line field
+
+                            // Close picker first
+                            editor.close_picker();
+                            editor.set_mode(Mode::Normal);
+
+                            // Navigate to the LSP location
+                            editor.navigate_to_lsp_location(location_index);
                         } else {
                             // Regular mode - load file and jump to location
                             let location = result.location.clone();
@@ -3190,8 +3262,10 @@ impl InputHandler {
     fn preload_picker_preview(editor: &mut Editor) {
         if let Some(picker) = editor.picker() {
             if let Some(result) = picker.selected_result() {
-                // Only preload for file picker modes (not custom)
-                if *picker.mode() != crate::editor::PickerMode::Custom {
+                // Only preload for file picker modes (not custom, completion, or LSP locations)
+                if *picker.mode() != crate::editor::PickerMode::Custom
+                    && *picker.mode() != crate::editor::PickerMode::Completion
+                    && *picker.mode() != crate::editor::PickerMode::LspLocations {
                     let file_path = result.location.clone();
                     // This will load the file if not cached
                     editor.get_or_load_preview(&file_path);

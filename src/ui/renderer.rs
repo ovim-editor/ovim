@@ -431,6 +431,7 @@ impl Renderer {
             crate::editor::PickerMode::LiveGrep => "Live Grep",
             crate::editor::PickerMode::Custom => "Select",
             crate::editor::PickerMode::Completion => "Completion",
+            crate::editor::PickerMode::LspLocations => "LSP Navigation",
         };
 
         let block = Block::default()

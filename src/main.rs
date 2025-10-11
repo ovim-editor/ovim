@@ -24,6 +24,11 @@ static JAVA_STATUS_SENDER: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::n
 async fn main() -> Result<()> {
     let args = Args::parse_args();
 
+    // Initialize LSP logging to file
+    if let Err(e) = ovim::lsp::init_lsp_logging() {
+        eprintln!("Warning: Failed to initialize LSP logging: {}", e);
+    }
+
     // Load file from command line argument if provided
     let mut editor = if let Some(file_path) = &args.file {
         let mut ed = Editor::new();
@@ -64,6 +69,12 @@ async fn main() -> Result<()> {
         eprintln!("Warning: Failed to enable Lua support: {}", e);
     }
 
+    // Create channel for Java LSP status updates (needed for both headless and TUI modes)
+    let (java_status_tx, java_status_rx) = mpsc::unbounded_channel();
+
+    // Store the sender in a static for background tasks to use
+    JAVA_STATUS_SENDER.set(java_status_tx).ok();
+
     // Initialize LSP for the opened file if applicable
     if let Some(file_path) = &args.file {
         initialize_lsp_for_file(&mut editor, file_path).await;
@@ -86,7 +97,7 @@ async fn main() -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Run in headless mode (API only, no TUI)
-        run_headless_loop(&mut editor, rx).await?;
+        run_headless_loop(&mut editor, rx, java_status_rx).await?;
         return Ok(());
     } else {
         None
@@ -99,12 +110,6 @@ async fn main() -> Result<()> {
         UI::new()?
     };
 
-    // Create channel for Java LSP status updates
-    let (java_status_tx, java_status_rx) = mpsc::unbounded_channel();
-
-    // Store the sender in a static for background tasks to use
-    JAVA_STATUS_SENDER.set(java_status_tx).ok();
-
     // Main event loop with TUI
     run_event_loop(&mut ui, &mut editor, api_rx, java_status_rx).await?;
 
@@ -114,10 +119,16 @@ async fn main() -> Result<()> {
 async fn run_headless_loop(
     editor: &mut Editor,
     mut api_rx: mpsc::UnboundedReceiver<ApiRequest>,
+    mut java_status_rx: mpsc::UnboundedReceiver<String>,
 ) -> Result<()> {
     use tokio::time::{Duration, sleep};
 
     loop {
+        // Check for Java LSP status updates
+        while let Ok(status) = java_status_rx.try_recv() {
+            editor.set_lsp_status(status);
+        }
+
         // Process LSP notifications (diagnostics, etc.)
         // Use try_lock to avoid blocking if background task (e.g., Java init) holds lock
         if let Some(lsp_manager) = editor.lsp_manager() {
@@ -402,6 +413,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
                 crate::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
                 crate::editor::PickerMode::Custom => "Custom".to_string(),
                 crate::editor::PickerMode::Completion => "Completion".to_string(),
+                crate::editor::PickerMode::LspLocations => "LspLocations".to_string(),
             },
             query: p.query().to_string(),
             results: p.filtered_results().iter().map(|r| {
@@ -702,6 +714,7 @@ async fn initialize_java_lsp_background(
     lsp_manager: Option<std::sync::Arc<tokio::sync::Mutex<lsp::LspManager>>>,
     file_path: std::path::PathBuf,
 ) {
+    crate::lsp_debug!("Java", "Background task started for {:?}", file_path);
     use ovim::java::{JdtlsDownloader, JdtlsLauncher, parser};
 
     // Early exit if no LSP manager
@@ -712,8 +725,10 @@ async fn initialize_java_lsp_background(
 
     // Find project root
     let project_root = find_jvm_project_root(&file_path);
+    crate::lsp_debug!("Java", "Project root: {:?}", project_root);
 
     send_java_status("Detecting project configuration...".to_string());
+    crate::lsp_debug!("Java", "Sent status: Detecting project configuration...");
 
     // Detect Java version from build files
     let project_config = match parser::detect_java_version(project_root).await {
@@ -754,6 +769,30 @@ async fn initialize_java_lsp_background(
         send_java_status("Using cached jdtls".to_string());
     }
 
+    // Ensure Lombok is installed
+    if !downloader.is_lombok_installed().await {
+        send_java_status("Downloading Lombok... (first time setup)".to_string());
+
+        match downloader.ensure_lombok_installed(|msg| {
+            send_java_status(msg);
+        }).await {
+            Ok(()) => send_java_status("Lombok download complete!".to_string()),
+            Err(e) => {
+                send_java_status(format!("Lombok download failed: {}", e));
+                // Non-fatal: continue without Lombok
+            }
+        }
+    } else {
+        send_java_status("Using cached Lombok".to_string());
+    }
+
+    // Get Lombok JAR path (if installed)
+    let lombok_jar = if downloader.is_lombok_installed().await {
+        Some(downloader.lombok_jar_path())
+    } else {
+        None
+    };
+
     // Get workspace directory
     let workspace_dir = match ovim::java::workspace_dir(project_root).await {
         Ok(dir) => dir,
@@ -770,6 +809,7 @@ async fn initialize_java_lsp_background(
         project_config,
         jdtls_dir,
         workspace_dir,
+        lombok_jar,
     );
 
     send_java_status("Finding JVM...".to_string());
@@ -796,6 +836,9 @@ async fn initialize_java_lsp_background(
     let server_args: Vec<String> = launch_args[1..].to_vec();
 
     send_java_status("Starting LSP server...".to_string());
+    crate::lsp_debug!("Java", "About to spawn start_server task");
+    crate::lsp_debug!("Java", "Server command: {:?}", server_command);
+    crate::lsp_debug!("Java", "Server args: {:?}", server_args);
 
     // Start the LSP server with progress updates during initialization
     // jdtls can take 60-120 seconds to initialize, so we send periodic updates
@@ -805,8 +848,12 @@ async fn initialize_java_lsp_background(
     let project_root_clone = project_root.to_path_buf();
 
     let mut start_task = tokio::spawn(async move {
+        crate::lsp_debug!("Java", "Inside start_server task, acquiring lock...");
         let lsp = lsp_clone.lock().await;
-        lsp.start_server("java", &server_command_clone, server_args_clone, &project_root_clone).await
+        crate::lsp_debug!("Java", "Lock acquired, calling start_server...");
+        let result = lsp.start_server("java", &server_command_clone, server_args_clone, &project_root_clone).await;
+        crate::lsp_debug!("Java", "start_server returned: {:?}", result);
+        result
     });
 
     // Poll for completion with progress updates
@@ -956,6 +1003,59 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
         editor.set_lsp_status("Java: Using cached jdtls".to_string());
     }
 
+    // Ensure Lombok is installed
+    let lombok_downloader = JdtlsDownloader::new(jdtls_dir.clone());
+    if !lombok_downloader.is_lombok_installed().await {
+        editor.set_lsp_status("Java: Downloading Lombok... (first time setup)".to_string());
+
+        // Create a channel for async progress updates
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Spawn download task
+        let mut download_task = tokio::spawn(async move {
+            lombok_downloader.ensure_lombok_installed(move |msg| {
+                let _ = progress_tx.send(msg);
+            }).await
+        });
+
+        // Poll for progress updates without blocking
+        loop {
+            tokio::select! {
+                Some(msg) = progress_rx.recv() => {
+                    editor.set_lsp_status(format!("Java: {}", msg));
+                }
+                result = &mut download_task => {
+                    match result {
+                        Ok(Ok(())) => {
+                            editor.set_lsp_status("Java: Lombok download complete!".to_string());
+                            break;
+                        }
+                        Ok(Err(e)) => {
+                            editor.set_lsp_status(format!("Java: Lombok download failed: {}", e));
+                            // Non-fatal: continue without Lombok
+                            break;
+                        }
+                        Err(e) => {
+                            editor.set_lsp_status(format!("Java: Lombok download task failed: {}", e));
+                            // Non-fatal: continue without Lombok
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        editor.set_lsp_status("Java: Using cached Lombok".to_string());
+    }
+
+    // Get Lombok JAR path (if installed)
+    let lombok_downloader2 = JdtlsDownloader::new(jdtls_dir.clone());
+    let lombok_jar = if lombok_downloader2.is_lombok_installed().await {
+        Some(lombok_downloader2.lombok_jar_path())
+    } else {
+        None
+    };
+
     // Get workspace directory
     let workspace_dir = match ovim::java::workspace_dir(project_root).await {
         Ok(dir) => dir,
@@ -972,6 +1072,7 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
         project_config,
         jdtls_dir,
         workspace_dir,
+        lombok_jar,
     );
 
     editor.set_lsp_status("Java: Finding JVM...".to_string());
@@ -1156,7 +1257,7 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             Err(e) => {
                 drop(lsp);
                 editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
-                eprintln!("Warning: Failed to start LSP server '{}': {}", server_command, e);
+                crate::lsp_warn!("LSP", "Failed to start server '{}': {}", server_command, e);
             }
         }
     }

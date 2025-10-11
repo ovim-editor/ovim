@@ -15,10 +15,14 @@
 //! - `protocol`: JSON-RPC message handling
 //! - `types`: Type conversions and helpers
 
+#[macro_use]
+pub mod logger;
 mod protocol;
 mod server;
 mod supervisor;
 mod types;
+
+pub use logger::init_lsp_logging;
 
 pub use protocol::{JsonRpcMessage, RequestId};
 pub use server::{LanguageServer, LanguageServerHealth};
@@ -173,21 +177,28 @@ impl LspManager {
         args: Vec<String>,
         root_path: &Path,
     ) -> Result<()> {
+        lsp_debug!("LspManager", "start_server called for language={}", language);
         // Check if already running (short lock)
         {
             let servers = self.servers.read().await;
             if servers.contains_key(language) {
+                lsp_debug!("LspManager", "Server already running for {}", language);
                 return Ok(()); // Already running
             }
         }
 
+        lsp_debug!("LspManager", "Spawning server: {} {:?}", command, args);
         // Spawn and initialize without holding the lock (this can take 10-60 seconds)
         let mut server = LanguageServer::spawn(language, command, args).await?;
+        lsp_debug!("LspManager", "Server spawned successfully");
 
         let root_uri = Url::from_file_path(root_path)
             .map_err(|_| anyhow::anyhow!("Invalid root path"))?;
+        lsp_debug!("LspManager", "Root URI: {}", root_uri);
 
+        lsp_debug!("LspManager", "Calling initialize...");
         server.initialize(root_uri).await?;
+        lsp_debug!("LspManager", "Initialize completed successfully");
 
         // Insert into servers map (short lock)
         {
@@ -199,7 +210,7 @@ impl LspManager {
                 // Another thread won the race - clean up our server
                 drop(servers); // Release lock before async operation
                 if let Err(e) = server.shutdown().await {
-                    eprintln!("[LSP] Warning: Failed to shut down redundant server for {}: {}", language, e);
+                    lsp_warn!("LspManager", "Failed to shut down redundant server for {}: {}", language, e);
                 }
             }
         }
@@ -493,7 +504,7 @@ impl LspManager {
 
             // Timer expired - request flush via channel
             if let Err(e) = flush_tx.send(uri_clone).await {
-                eprintln!("[LSP Debounce] Error sending flush request: {}", e);
+                lsp_error!("Debounce", "Error sending flush request: {}", e);
             }
         });
 
@@ -572,9 +583,10 @@ impl LspManager {
                             }
                             Err(e) => {
                                 // ERROR: Failed to parse publishDiagnostics - this is critical for user feedback
-                                eprintln!(
-                                    "[LSP:{}] ERROR: Failed to parse publishDiagnostics notification: {}",
-                                    language_id, e
+                                lsp_error!(
+                                    &format!("LSP:{}", language_id),
+                                    "Failed to parse publishDiagnostics notification: {}",
+                                    e
                                 );
                                 // Show params preview for debugging
                                 let params_str = format!("{:?}", params_clone);
@@ -583,9 +595,10 @@ impl LspManager {
                                 } else {
                                     params_str
                                 };
-                                eprintln!(
-                                    "[LSP:{}] Malformed diagnostics params: {}",
-                                    language_id, preview
+                                lsp_error!(
+                                    &format!("LSP:{}", language_id),
+                                    "Malformed diagnostics params: {}",
+                                    preview
                                 );
                             }
                         }
@@ -611,7 +624,13 @@ impl LspManager {
                                     lsp_types::MessageType::LOG => "LOG",
                                     _ => "UNKNOWN",
                                 };
-                                eprintln!("[{}:{}] {}: {}", language_id, prefix, type_str, msg_params.message);
+                                let log_level = match msg_params.typ {
+                                    lsp_types::MessageType::ERROR => crate::lsp::logger::LogLevel::Error,
+                                    lsp_types::MessageType::WARNING => crate::lsp::logger::LogLevel::Warning,
+                                    lsp_types::MessageType::INFO => crate::lsp::logger::LogLevel::Info,
+                                    _ => crate::lsp::logger::LogLevel::Info,
+                                };
+                                crate::lsp::logger::log_message(log_level, &format!("{}:{}", language_id, prefix), &format!("{}: {}", type_str, msg_params.message));
                             }
                         }
                     }
@@ -620,33 +639,69 @@ impl LspManager {
                     if let Some(params) = notification.params {
                         if let Ok(log_params) = serde_json::from_value::<lsp_types::LogMessageParams>(params) {
                             // Only log if OVIM_LSP_DEBUG is set
-                            if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                                let prefix = match log_params.typ {
-                                    lsp_types::MessageType::ERROR => "ERROR",
-                                    lsp_types::MessageType::WARNING => "WARN",
-                                    lsp_types::MessageType::INFO => "INFO",
-                                    lsp_types::MessageType::LOG => "LOG",
-                                    _ => "UNKNOWN",
-                                };
-                                eprintln!("[LSP:{}:{}] {}", language_id, prefix, log_params.message);
-                            }
+                            let log_level = match log_params.typ {
+                                lsp_types::MessageType::ERROR => crate::lsp::logger::LogLevel::Error,
+                                lsp_types::MessageType::WARNING => crate::lsp::logger::LogLevel::Warning,
+                                lsp_types::MessageType::INFO => crate::lsp::logger::LogLevel::Info,
+                                _ => crate::lsp::logger::LogLevel::Debug,
+                            };
+                            let prefix = match log_params.typ {
+                                lsp_types::MessageType::ERROR => "ERROR",
+                                lsp_types::MessageType::WARNING => "WARN",
+                                lsp_types::MessageType::INFO => "INFO",
+                                lsp_types::MessageType::LOG => "LOG",
+                                _ => "UNKNOWN",
+                            };
+                            crate::lsp::logger::log_message(log_level, &format!("LSP:{}:{}", language_id, prefix), &log_params.message);
                         }
                     }
                 }
                 "$/progress" => {
-                    // Progress notifications - could be used for status line updates
-                    // For now, silently ignore unless debug mode
-                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        if let Some(params) = &notification.params {
-                            eprintln!("[LSP:{}] Progress: {:?}", language_id, params);
+                    // Progress notifications from LSP server (e.g., jdtls indexing)
+                    // These provide real-time feedback about long-running operations
+                    if let Some(params) = &notification.params {
+                        // Try to parse as ProgressParams
+                        if let Ok(progress) = serde_json::from_value::<lsp_types::ProgressParams>(params.clone()) {
+                            // Extract meaningful message from progress
+                            let message_opt = match &progress.value {
+                                lsp_types::ProgressParamsValue::WorkDone(work_done) => {
+                                    match work_done {
+                                        lsp_types::WorkDoneProgress::Begin(begin) => {
+                                            Some(format!("{}: {}",
+                                                language_id,
+                                                begin.title,
+                                            ))
+                                        }
+                                        lsp_types::WorkDoneProgress::Report(report) => {
+                                            if let Some(msg) = &report.message {
+                                                Some(format!("{}: {}", language_id, msg))
+                                            } else if let Some(percentage) = report.percentage {
+                                                Some(format!("{}: {}%", language_id, percentage))
+                                            } else {
+                                                None // Skip reports without useful info
+                                            }
+                                        }
+                                        lsp_types::WorkDoneProgress::End(end) => {
+                                            if let Some(msg) = &end.message {
+                                                Some(format!("{}: {}", language_id, msg))
+                                            } else {
+                                                Some(format!("{}: Complete", language_id))
+                                            }
+                                        }
+                                    }
+                                }
+                            };
+
+                            // Log progress messages
+                            if let Some(message) = message_opt {
+                                lsp_info!("Progress", "{}", message);
+                            }
                         }
                     }
                 }
                 _ => {
                     // Silently ignore unknown notifications
-                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        eprintln!("[LSP:{}] Unknown notification: {}", language_id, method);
-                    }
+                    lsp_debug!(&format!("LSP:{}", language_id), "Unknown notification: {}", method);
                 }
             }
         }
@@ -671,7 +726,7 @@ impl LspManager {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
                 if let Err(e) = self.flush_pending_changes(&uri).await {
-                    eprintln!("[LSP Debounce] Error flushing changes for {}: {}", uri, e);
+                    lsp_error!("Debounce", "Error flushing changes for {}: {}", uri, e);
                 }
             }
         }
@@ -699,7 +754,7 @@ impl LspManager {
                             };
 
                             if let Err(e) = tx.send(notification).await {
-                                eprintln!("[LSP Listener] Failed to send notification: {}", e);
+                                lsp_error!("Listener", "Failed to send notification: {}", e);
                                 break; // Manager dropped or channel full, stop listening
                             }
                         }
@@ -753,6 +808,108 @@ impl LspManager {
             GotoDefinitionResponse::Scalar(location) => Some(location),
             GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
             GotoDefinitionResponse::Link(links) => {
+                links.into_iter().next().map(|link| lsp_types::Location {
+                    uri: link.target_uri,
+                    range: link.target_selection_range,
+                })
+            }
+        }))
+    }
+
+    /// Requests go-to-implementation for a position in a document
+    pub async fn implementation(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::Location>> {
+        use lsp_types::{request::GotoImplementationParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::GotoDefinitionResponse as GotoImplementationResponse;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports goto implementation
+        if !server.supports_goto_implementation().await {
+            return Ok(None); // Gracefully return None if not supported
+        }
+
+        let params = GotoImplementationParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/implementation", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<GotoImplementationResponse> = serde_json::from_value(result).ok();
+
+        // Convert response to single location (take first if multiple)
+        Ok(response.and_then(|resp| match resp {
+            GotoImplementationResponse::Scalar(location) => Some(location),
+            GotoImplementationResponse::Array(locations) => locations.into_iter().next(),
+            GotoImplementationResponse::Link(links) => {
+                links.into_iter().next().map(|link| lsp_types::Location {
+                    uri: link.target_uri,
+                    range: link.target_selection_range,
+                })
+            }
+        }))
+    }
+
+    /// Requests go-to-type-definition for a position in a document
+    pub async fn type_definition(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::Location>> {
+        use lsp_types::{request::GotoTypeDefinitionParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::GotoDefinitionResponse as GotoTypeDefinitionResponse;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports goto type definition
+        if !server.supports_goto_type_definition().await {
+            return Ok(None); // Gracefully return None if not supported
+        }
+
+        let params = GotoTypeDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: uri.clone(),
+                },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/typeDefinition", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<GotoTypeDefinitionResponse> = serde_json::from_value(result).ok();
+
+        // Convert response to single location (take first if multiple)
+        Ok(response.and_then(|resp| match resp {
+            GotoTypeDefinitionResponse::Scalar(location) => Some(location),
+            GotoTypeDefinitionResponse::Array(locations) => locations.into_iter().next(),
+            GotoTypeDefinitionResponse::Link(links) => {
                 links.into_iter().next().map(|link| lsp_types::Location {
                     uri: link.target_uri,
                     range: link.target_selection_range,
@@ -1406,6 +1563,251 @@ impl LspManager {
         let response: Option<Vec<lsp_types::FoldingRange>> = serde_json::from_value(result).ok();
 
         Ok(response.unwrap_or_default())
+    }
+
+    /// Prepares call hierarchy for a position in a document
+    /// Returns call hierarchy items at the cursor position (typically one item)
+    pub async fn prepare_call_hierarchy(
+        &self,
+        uri: Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyItem>>> {
+        use lsp_types::{CallHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports call hierarchy
+        if !server.supports_call_hierarchy().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = CallHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/prepareCallHierarchy", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::CallHierarchyItem>> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests incoming calls for a call hierarchy item
+    /// Returns methods/functions that call the given item
+    pub async fn incoming_calls(
+        &self,
+        item: lsp_types::CallHierarchyItem,
+        language_id: &str,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyIncomingCall>>> {
+        use lsp_types::CallHierarchyIncomingCallsParams;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports call hierarchy
+        if !server.supports_call_hierarchy().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = CallHierarchyIncomingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("callHierarchy/incomingCalls", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::CallHierarchyIncomingCall>> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests outgoing calls for a call hierarchy item
+    /// Returns methods/functions that the given item calls
+    pub async fn outgoing_calls(
+        &self,
+        item: lsp_types::CallHierarchyItem,
+        language_id: &str,
+    ) -> Result<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>> {
+        use lsp_types::CallHierarchyOutgoingCallsParams;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports call hierarchy
+        if !server.supports_call_hierarchy().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = CallHierarchyOutgoingCallsParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("callHierarchy/outgoingCalls", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::CallHierarchyOutgoingCall>> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Prepares type hierarchy for a position in a document
+    /// Returns type hierarchy items at the cursor position (typically one item - the class/interface at cursor)
+    pub async fn prepare_type_hierarchy(
+        &self,
+        uri: Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
+        use lsp_types::{TypeHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports type hierarchy
+        if !server.supports_type_hierarchy().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = TypeHierarchyPrepareParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/prepareTypeHierarchy", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests supertypes (parent classes and interfaces) for a type hierarchy item
+    /// Returns parent classes and implemented interfaces
+    pub async fn supertypes(
+        &self,
+        item: lsp_types::TypeHierarchyItem,
+        language_id: &str,
+    ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
+        use lsp_types::TypeHierarchySupertypesParams;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports type hierarchy
+        if !server.supports_type_hierarchy().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = TypeHierarchySupertypesParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("typeHierarchy/supertypes", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Requests subtypes (subclasses and implementations) for a type hierarchy item
+    /// Returns child classes and interface implementations
+    pub async fn subtypes(
+        &self,
+        item: lsp_types::TypeHierarchyItem,
+        language_id: &str,
+    ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
+        use lsp_types::TypeHierarchySubtypesParams;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports type hierarchy
+        if !server.supports_type_hierarchy().await {
+            return Ok(None); // Return None if not supported
+        }
+
+        let params = TypeHierarchySubtypesParams {
+            item,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("typeHierarchy/subtypes", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = serde_json::from_value(result).ok();
+
+        Ok(response)
+    }
+
+    /// Executes a command on the LSP server (e.g., "Organize Imports")
+    /// Returns the command result if successful
+    pub async fn execute_command(
+        &self,
+        command: String,
+        arguments: Option<Vec<serde_json::Value>>,
+        language_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        use lsp_types::ExecuteCommandParams;
+
+        let servers = self.servers.read().await;
+        let server = servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports execute command
+        if !server.supports_execute_command().await {
+            return Err(anyhow::anyhow!("Server does not support workspace/executeCommand"));
+        }
+
+        let params = ExecuteCommandParams {
+            command,
+            arguments: arguments.unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("workspace/executeCommand", serde_json::to_value(params)?)
+            .await?;
+
+        Ok(Some(result))
     }
 }
 
