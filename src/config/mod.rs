@@ -3,6 +3,36 @@ use crate::lua::LuaContext;
 use anyhow::Result;
 use std::path::PathBuf;
 
+/// Editor options and settings
+#[derive(Debug, Clone)]
+pub struct EditorOptions {
+    /// Width of tab character (default: 4)
+    pub tab_width: usize,
+    /// Number of spaces to use for autoindent (default: 4)
+    pub shift_width: usize,
+    /// Use spaces instead of tabs (default: true)
+    pub expand_tab: bool,
+    /// Show line numbers (default: false)
+    pub number: bool,
+    /// Show relative line numbers (default: false)
+    pub relative_number: bool,
+    /// Number of lines to scroll for half-page movements (default: None = calculate from viewport)
+    pub scroll: Option<usize>,
+}
+
+impl Default for EditorOptions {
+    fn default() -> Self {
+        Self {
+            tab_width: 4,
+            shift_width: 4,
+            expand_tab: true,
+            number: false,
+            relative_number: false,
+            scroll: None,
+        }
+    }
+}
+
 /// Configuration manager for ovim
 pub struct Config {
     /// Lua context for executing configuration
@@ -10,6 +40,8 @@ pub struct Config {
     lua_context: LuaContext,
     /// Runtime paths for plugins and scripts
     runtime_paths: Vec<PathBuf>,
+    /// Editor options and settings
+    pub options: EditorOptions,
 }
 
 impl Config {
@@ -23,6 +55,7 @@ impl Config {
             #[cfg(feature = "lua")]
             lua_context,
             runtime_paths,
+            options: EditorOptions::default(),
         })
     }
 
