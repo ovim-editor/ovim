@@ -22,8 +22,8 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
     let g = lua.create_table()?;
     vim.set("g", g)?;
 
-    // Create vim.opt (options) namespace
-    let opt = lua.create_table()?;
+    // Create vim.opt (options) namespace with metatable
+    let opt = create_opt_table(lua, bridge.clone())?;
     vim.set("opt", opt)?;
 
     // Set vim as a global
@@ -125,4 +125,69 @@ fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function
         Ok(())
     })?;
     Ok(cmd)
+}
+
+/// Creates the vim.opt table with metatable for setting options
+fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
+    let opt = lua.create_table()?;
+    let metatable = lua.create_table()?;
+
+    // __newindex: called when setting opt.name = value
+    let bridge_clone = bridge.clone();
+    let newindex = lua.create_function(move |_lua, (_, key, value): (mlua::Value, String, mlua::Value)| {
+        let cmd = match key.as_str() {
+            "number" | "nu" => {
+                match value {
+                    mlua::Value::Boolean(true) => "set number",
+                    mlua::Value::Boolean(false) => "set nonumber",
+                    _ => return Err(mlua::Error::external("number must be boolean")),
+                }
+            }
+            "relativenumber" | "rnu" => {
+                match value {
+                    mlua::Value::Boolean(true) => "set relativenumber",
+                    mlua::Value::Boolean(false) => "set norelativenumber",
+                    _ => return Err(mlua::Error::external("relativenumber must be boolean")),
+                }
+            }
+            "expandtab" | "et" => {
+                match value {
+                    mlua::Value::Boolean(true) => "set expandtab",
+                    mlua::Value::Boolean(false) => "set noexpandtab",
+                    _ => return Err(mlua::Error::external("expandtab must be boolean")),
+                }
+            }
+            "tabstop" | "ts" => {
+                match value {
+                    mlua::Value::Integer(n) => format!("set tabstop={}", n),
+                    mlua::Value::Number(n) => format!("set tabstop={}", n as i64),
+                    _ => return Err(mlua::Error::external("tabstop must be number")),
+                }
+            }
+            "shiftwidth" | "sw" => {
+                match value {
+                    mlua::Value::Integer(n) => format!("set shiftwidth={}", n),
+                    mlua::Value::Number(n) => format!("set shiftwidth={}", n as i64),
+                    _ => return Err(mlua::Error::external("shiftwidth must be number")),
+                }
+            }
+            "scroll" => {
+                match value {
+                    mlua::Value::Integer(n) => format!("set scroll={}", n),
+                    mlua::Value::Number(n) => format!("set scroll={}", n as i64),
+                    _ => return Err(mlua::Error::external("scroll must be number")),
+                }
+            }
+            _ => {
+                return Err(mlua::Error::external(format!("Unknown option: {}", key)));
+            }
+        };
+
+        bridge_clone.execute_command(cmd.to_string()).map_err(mlua::Error::external)?;
+        Ok(())
+    })?;
+    metatable.set("__newindex", newindex)?;
+
+    opt.set_metatable(Some(metatable));
+    Ok(opt)
 }

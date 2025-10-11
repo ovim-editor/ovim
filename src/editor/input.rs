@@ -182,7 +182,7 @@ impl InputHandler {
                     } else {
                         editor.buffer().line_count().saturating_sub(1)
                     };
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -198,7 +198,7 @@ impl InputHandler {
                     } else {
                         editor.buffer().line_count().saturating_sub(1)
                     };
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -262,7 +262,7 @@ impl InputHandler {
                         } else {
                             0
                         };
-                        let tab_width = 4;
+                        let tab_width = editor.options.tab_width;
 
                         Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
                         editor.clear_count();
@@ -279,7 +279,7 @@ impl InputHandler {
                         } else {
                             0
                         };
-                        let tab_width = 4;
+                        let tab_width = editor.options.tab_width;
 
                         Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
                         editor.clear_count();
@@ -1156,7 +1156,7 @@ impl InputHandler {
                     let cursor_before = (cursor.line(), cursor.col());
                     let start_line = cursor.line();
                     let end_line = start_line + count;
-                    let tab_width = 4; // TODO: get from settings
+                    let tab_width = editor.options.tab_width;
 
                     Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -1168,7 +1168,7 @@ impl InputHandler {
                     let cursor_before = (cursor.line(), cursor.col());
                     let start_line = cursor.line();
                     let end_line = start_line + count + 1;
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -1181,7 +1181,7 @@ impl InputHandler {
                     let current_line = cursor.line();
                     let start_line = current_line.saturating_sub(count);
                     let end_line = current_line + 1;
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -1194,7 +1194,7 @@ impl InputHandler {
                     let cursor_before = (cursor.line(), cursor.col());
                     let start_line = cursor.line();
                     let end_line = start_line + count;
-                    let tab_width = 4; // TODO: get from settings
+                    let tab_width = editor.options.tab_width;
 
                     Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -1206,7 +1206,7 @@ impl InputHandler {
                     let cursor_before = (cursor.line(), cursor.col());
                     let start_line = cursor.line();
                     let end_line = start_line + count + 1;
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -1219,7 +1219,7 @@ impl InputHandler {
                     let current_line = cursor.line();
                     let start_line = current_line.saturating_sub(count);
                     let end_line = current_line + 1;
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
                     editor.clear_count();
@@ -1722,6 +1722,30 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                ('W', KeyCode::Char('w')) => {
+                    // Ctrl-W w - cycle to next window
+                    editor.focus_next_window();
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
+                ('W', KeyCode::Char('p')) => {
+                    // Ctrl-W p - cycle to previous window
+                    editor.focus_prev_window();
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
+                ('W', KeyCode::Char('s')) => {
+                    // Ctrl-W s - split window horizontally
+                    editor.split_window_horizontal();
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
+                ('W', KeyCode::Char('v')) => {
+                    // Ctrl-W v - split window vertically
+                    editor.split_window_vertical();
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
                 _ => {
                     // Unknown command sequence, clear and continue
                     editor.clear_count();
@@ -1746,9 +1770,14 @@ impl InputHandler {
             KeyCode::Char('t') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 editor.jump_back();
             }
+            // Window commands (Ctrl-W) - set pending command
+            KeyCode::Char('w') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                editor.set_pending_command('W'); // Use capital W for Ctrl-W prefix
+                return Ok(());
+            }
             // Scroll down half page (Ctrl-D)
             KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                let half_page = 10; // TODO: calculate based on viewport height
+                let half_page = editor.half_page_scroll();
                 let count = editor.count().unwrap_or(half_page);
                 let line_count = editor.buffer().line_count();
                 let mut max_line = line_count.saturating_sub(1);
@@ -1769,7 +1798,7 @@ impl InputHandler {
             }
             // Scroll up half page (Ctrl-U)
             KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                let half_page = 10; // TODO: calculate based on viewport height
+                let half_page = editor.half_page_scroll();
                 let count = editor.count().unwrap_or(half_page);
                 let cursor = editor.buffer_mut().cursor_mut();
                 let new_line = cursor.line().saturating_sub(count);
@@ -2654,7 +2683,7 @@ impl InputHandler {
                 if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                     let cursor = editor.buffer().cursor();
                     let cursor_before = (cursor.line(), cursor.col());
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
                 }
@@ -2665,7 +2694,7 @@ impl InputHandler {
                 if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                     let cursor = editor.buffer().cursor();
                     let cursor_before = (cursor.line(), cursor.col());
-                    let tab_width = 4;
+                    let tab_width = editor.options.tab_width;
 
                     Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
                 }
@@ -3543,7 +3572,7 @@ impl InputHandler {
         let col = cursor.col();
 
         // Get tab width from config or use default
-        let tab_width = 4; // TODO: get from config
+        let tab_width = editor.options.tab_width;
 
         // Create indent string
         let indent_str = " ".repeat(tab_width);
@@ -3569,7 +3598,7 @@ impl InputHandler {
         let col = cursor.col();
 
         // Get tab width from config or use default
-        let tab_width = 4; // TODO: get from config
+        let tab_width = editor.options.tab_width;
 
         // Get current line
         let line = match editor.buffer().line(line_idx) {

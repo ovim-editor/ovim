@@ -46,6 +46,61 @@ cargo run -- myfile.txt --dimension=80x24
 cargo test
 ```
 
+## Configuration
+
+ovim supports Lua-based configuration similar to Neovim. Configuration files are loaded from:
+
+1. `$OVIM_CONFIG/init.lua`
+2. `$XDG_CONFIG_HOME/ovim/init.lua`
+3. `~/.config/ovim/init.lua`
+4. `~/.ovim/init.lua`
+
+### Example Configuration
+
+```lua
+-- Set options using vim.opt (Neovim-style)
+vim.opt.number = true              -- Show line numbers
+vim.opt.relativenumber = true      -- Show relative line numbers
+vim.opt.expandtab = true           -- Use spaces instead of tabs
+vim.opt.tabstop = 4                -- Tab width
+vim.opt.shiftwidth = 4             -- Indent width
+vim.opt.scroll = 10                -- Half-page scroll amount
+
+-- Or use vim.cmd to execute ex commands
+vim.cmd('set number')
+vim.cmd('colorscheme tokyonight')
+
+-- Use vim.api functions
+vim.api.nvim_command('set tabstop=4')
+
+-- Print messages
+print("Configuration loaded!")
+```
+
+### Available Options
+
+- `number` / `nu` - Show line numbers
+- `relativenumber` / `rnu` - Show relative line numbers
+- `expandtab` / `et` - Use spaces instead of tabs
+- `tabstop` / `ts` - Tab width (1-16)
+- `shiftwidth` / `sw` - Indent width (1-16)
+- `scroll` - Half-page scroll amount
+
+### Reloading Configuration
+
+To reload your configuration without restarting ovim:
+```
+:ConfigReload
+```
+
+or
+
+```
+:reload
+```
+
+See `example_init.lua` for a complete example.
+
 ## Java Development (Zero Config)
 
 ovim has **supersmooth Java support** with zero configuration:

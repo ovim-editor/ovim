@@ -669,12 +669,328 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         })
                     }
                 }
+            // Handle :set commands
+            } else if let Some(set_cmd) = command.strip_prefix("set ").or_else(|| command.strip_prefix("se ")) {
+                handle_set_command(editor, set_cmd.trim())
+            // Handle split commands
+            } else if command == "sp" || command == "split" {
+                editor.split_window_horizontal();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Split horizontally ({} windows)", editor.window_count())),
+                    line_count: None,
+                })
+            } else if command == "vsp" || command == "vsplit" {
+                editor.split_window_vertical();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Split vertically ({} windows)", editor.window_count())),
+                    line_count: None,
+                })
+            // Handle config reload
+            } else if command == "ConfigReload" || command == "reload" {
+                #[cfg(feature = "lua")]
+                {
+                    match editor.reload_lua_config() {
+                        Ok(msg) => ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(msg),
+                            line_count: None,
+                        }),
+                        Err(e) => ApiResponse::Error(ErrorResponse {
+                            error: format!("Failed to reload config: {}", e),
+                        }),
+                    }
+                }
+                #[cfg(not(feature = "lua"))]
+                {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "Lua support not enabled".to_string(),
+                    })
+                }
+            // Handle :bn (next buffer)
+            } else if command == "bn" || command == "bnext" {
+                editor.next_buffer();
+                let buf_name = editor.buffer().file_path()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "[No Name]".to_string());
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Buffer {} of {}: {}",
+                        editor.current_buffer_index() + 1,
+                        editor.buffer_count(),
+                        buf_name)),
+                    line_count: None,
+                })
+            // Handle :bp (previous buffer)
+            } else if command == "bp" || command == "bprev" || command == "bprevious" {
+                editor.prev_buffer();
+                let buf_name = editor.buffer().file_path()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "[No Name]".to_string());
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Buffer {} of {}: {}",
+                        editor.current_buffer_index() + 1,
+                        editor.buffer_count(),
+                        buf_name)),
+                    line_count: None,
+                })
+            // Handle :bd (delete buffer)
+            } else if command == "bd" || command == "bdelete" {
+                if editor.buffer().is_modified() {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No write since last change (add ! to override)".to_string(),
+                    })
+                } else {
+                    let should_quit = editor.delete_current_buffer();
+                    if should_quit {
+                        editor.quit();
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some("Last buffer deleted, quitting".to_string()),
+                            line_count: None,
+                        })
+                    } else {
+                        let buf_name = editor.buffer().file_path()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "[No Name]".to_string());
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("Buffer deleted. Now showing: {}", buf_name)),
+                            line_count: None,
+                        })
+                    }
+                }
+            // Handle :bd! (force delete buffer)
+            } else if command == "bd!" || command == "bdelete!" {
+                let should_quit = editor.delete_current_buffer();
+                if should_quit {
+                    editor.quit();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("Last buffer deleted, quitting".to_string()),
+                        line_count: None,
+                    })
+                } else {
+                    let buf_name = editor.buffer().file_path()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "[No Name]".to_string());
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Buffer deleted. Now showing: {}", buf_name)),
+                        line_count: None,
+                    })
+                }
+            // Handle :ls or :buffers (list buffers)
+            } else if command == "ls" || command == "buffers" {
+                let buf_list: Vec<String> = editor.buffer_names()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let marker = if i == editor.current_buffer_index() { "%" } else { " " };
+                        let modified = if i < editor.buffer_count() && editor.buffers[i].is_modified() { "+" } else { " " };
+                        format!("{} {}  {}", marker, modified, name)
+                    })
+                    .collect();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(buf_list.join("\n")),
+                    line_count: None,
+                })
+            } else if let Some(filename) = command.strip_prefix("e ").or_else(|| command.strip_prefix("edit ")) {
+                // :e <filename> - edit file
+                match editor.load_file(filename) {
+                    Ok(_) => {
+                        let buf_name = editor.buffer().file_path()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "[No Name]".to_string());
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("Editing: {}", buf_name)),
+                            line_count: None,
+                        })
+                    }
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to load file: {}", e),
+                    }),
+                }
             } else {
                 ApiResponse::Error(ErrorResponse {
                     error: format!("Not an editor command: {}", command),
                 })
             }
         }
+    }
+}
+
+/// Handle :set commands for options
+fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
+    // Handle empty :set (show all options)
+    if args.is_empty() {
+        let opts = &editor.options;
+        let msg = format!(
+            "  {}number\n  {}relativenumber\n  {}expandtab\n  tabstop={}\n  shiftwidth={}\n  scroll={}",
+            if opts.number { "" } else { "no" },
+            if opts.relative_number { "" } else { "no" },
+            if opts.expand_tab { "" } else { "no" },
+            opts.tab_width,
+            opts.shift_width,
+            opts.scroll.map(|s| s.to_string()).unwrap_or_else(|| "auto".to_string())
+        );
+        return ApiResponse::Success(SuccessResponse {
+            success: true,
+            message: Some(msg),
+            line_count: None,
+        });
+    }
+
+    // Parse option
+    let (opt_name, opt_value) = if let Some((name, value)) = args.split_once('=') {
+        (name.trim(), Some(value.trim()))
+    } else {
+        (args, None)
+    };
+
+    // Check for query (option?)
+    if let Some(query_opt) = opt_name.strip_suffix('?') {
+        let opts = &editor.options;
+        let msg = match query_opt {
+            "number" | "nu" => format!("  {}number", if opts.number { "" } else { "no" }),
+            "relativenumber" | "rnu" => format!("  {}relativenumber", if opts.relative_number { "" } else { "no" }),
+            "expandtab" | "et" => format!("  {}expandtab", if opts.expand_tab { "" } else { "no" }),
+            "tabstop" | "ts" => format!("  tabstop={}", opts.tab_width),
+            "shiftwidth" | "sw" => format!("  shiftwidth={}", opts.shift_width),
+            "scroll" => format!("  scroll={}", opts.scroll.map(|s| s.to_string()).unwrap_or_else(|| "auto".to_string())),
+            _ => return ApiResponse::Error(ErrorResponse {
+                error: format!("Unknown option: {}", query_opt),
+            }),
+        };
+        return ApiResponse::Success(SuccessResponse {
+            success: true,
+            message: Some(msg),
+            line_count: None,
+        });
+    }
+
+    // Handle boolean options
+    match opt_name {
+        "number" | "nu" => {
+            editor.options.number = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  number".to_string()),
+                line_count: None,
+            });
+        }
+        "nonumber" | "nonu" => {
+            editor.options.number = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  nonumber".to_string()),
+                line_count: None,
+            });
+        }
+        "relativenumber" | "rnu" => {
+            editor.options.relative_number = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  relativenumber".to_string()),
+                line_count: None,
+            });
+        }
+        "norelativenumber" | "nornu" => {
+            editor.options.relative_number = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  norelativenumber".to_string()),
+                line_count: None,
+            });
+        }
+        "expandtab" | "et" => {
+            editor.options.expand_tab = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  expandtab".to_string()),
+                line_count: None,
+            });
+        }
+        "noexpandtab" | "noet" => {
+            editor.options.expand_tab = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  noexpandtab".to_string()),
+                line_count: None,
+            });
+        }
+        _ => {}
+    }
+
+    // Handle value-based options
+    if let Some(value) = opt_value {
+        match opt_name {
+            "tabstop" | "ts" => {
+                match value.parse::<usize>() {
+                    Ok(n) if n > 0 && n <= 16 => {
+                        editor.options.tab_width = n;
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("  tabstop={}", n)),
+                            line_count: None,
+                        })
+                    }
+                    Ok(_) => ApiResponse::Error(ErrorResponse {
+                        error: "tabstop must be between 1 and 16".to_string(),
+                    }),
+                    Err(_) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Invalid number: {}", value),
+                    }),
+                }
+            }
+            "shiftwidth" | "sw" => {
+                match value.parse::<usize>() {
+                    Ok(n) if n > 0 && n <= 16 => {
+                        editor.options.shift_width = n;
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("  shiftwidth={}", n)),
+                            line_count: None,
+                        })
+                    }
+                    Ok(_) => ApiResponse::Error(ErrorResponse {
+                        error: "shiftwidth must be between 1 and 16".to_string(),
+                    }),
+                    Err(_) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Invalid number: {}", value),
+                    }),
+                }
+            }
+            "scroll" => {
+                match value.parse::<usize>() {
+                    Ok(n) if n > 0 => {
+                        editor.options.scroll = Some(n);
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("  scroll={}", n)),
+                            line_count: None,
+                        })
+                    }
+                    Ok(_) => ApiResponse::Error(ErrorResponse {
+                        error: "scroll must be greater than 0".to_string(),
+                    }),
+                    Err(_) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Invalid number: {}", value),
+                    }),
+                }
+            }
+            _ => ApiResponse::Error(ErrorResponse {
+                error: format!("Unknown option: {}", opt_name),
+            }),
+        }
+    } else {
+        ApiResponse::Error(ErrorResponse {
+            error: format!("Unknown option: {}", opt_name),
+        })
     }
 }
 

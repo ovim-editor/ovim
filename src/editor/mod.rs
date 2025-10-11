@@ -24,6 +24,36 @@ pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 
+/// Editor options and settings
+#[derive(Debug, Clone)]
+pub struct EditorOptions {
+    /// Width of tab character (default: 4)
+    pub tab_width: usize,
+    /// Number of spaces to use for autoindent (default: 4)
+    pub shift_width: usize,
+    /// Use spaces instead of tabs (default: true)
+    pub expand_tab: bool,
+    /// Show line numbers (default: false)
+    pub number: bool,
+    /// Show relative line numbers (default: false)
+    pub relative_number: bool,
+    /// Number of lines to scroll for half-page movements (default: None = calculate from viewport)
+    pub scroll: Option<usize>,
+}
+
+impl Default for EditorOptions {
+    fn default() -> Self {
+        Self {
+            tab_width: 4,
+            shift_width: 4,
+            expand_tab: true,
+            number: false,
+            relative_number: false,
+            scroll: None,
+        }
+    }
+}
+
 use crate::buffer::Buffer;
 use crate::lsp::LspManager;
 use crate::syntax::{ColorScheme, ColorSchemeRegistry};
@@ -47,8 +77,12 @@ enum LspResultType {
 
 /// The main editor state
 pub struct Editor {
-    /// The text buffer
-    buffer: Buffer,
+    /// List of open buffers
+    pub buffers: Vec<Buffer>,
+    /// Index of the currently active buffer
+    current_buffer_index: usize,
+    /// Window manager for split windows
+    window_manager: Option<WindowManager>,
     /// Current editing mode
     mode: Mode,
     /// Whether the editor should quit
@@ -140,6 +174,10 @@ pub struct Editor {
     preview_cache: HashMap<String, PreviewCache>,
     /// Color scheme registry
     color_scheme_registry: ColorSchemeRegistry,
+    /// Editor options and settings
+    pub options: EditorOptions,
+    /// Viewport height (rows) - updated from UI layer
+    viewport_height: usize,
     /// Current color scheme name
     current_color_scheme: String,
 }
@@ -192,7 +230,9 @@ impl Editor {
         let buffer = Buffer::new();
 
         Self {
-            buffer,
+            buffers: vec![buffer],
+            current_buffer_index: 0,
+            window_manager: None, // Will be initialized when viewport size is known
             mode: Mode::default(),
             should_quit: false,
             count: None,
@@ -240,6 +280,8 @@ impl Editor {
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
+            options: EditorOptions::default(),
+            viewport_height: 24,
         }
     }
 
@@ -248,7 +290,9 @@ impl Editor {
         let buffer = Buffer::from_str(content);
 
         Self {
-            buffer,
+            buffers: vec![buffer],
+            current_buffer_index: 0,
+            window_manager: None, // Will be initialized when viewport size is known
             mode: Mode::default(),
             should_quit: false,
             count: None,
@@ -296,6 +340,8 @@ impl Editor {
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
+            options: EditorOptions::default(),
+            viewport_height: 24,
         }
     }
 
@@ -321,21 +367,53 @@ impl Editor {
             // Set up vim API with bridge
             crate::lua::setup_vim_api(context.lua(), bridge.clone())?;
             // Try to load config
-            let _ = context.load_config();
+            match context.load_config() {
+                Ok(true) => {
+                    // Config loaded successfully - process any commands that were queued
+                    let commands = bridge.drain_commands();
+                    for cmd in commands {
+                        let _ = InputHandler::execute_command_string(self, &cmd);
+                    }
+                }
+                Ok(false) => {
+                    // No config file found - not an error
+                }
+                Err(e) => {
+                    eprintln!("Warning: Error loading config: {}", e);
+                }
+            }
             self.lua_context = Some(context);
             self.editor_bridge = Some(bridge);
         }
         Ok(())
     }
 
+    /// Reloads Lua configuration
+    #[cfg(feature = "lua")]
+    pub fn reload_lua_config(&mut self) -> Result<String> {
+        if let Some(ref mut context) = self.lua_context {
+            context.reload_config()?;
+            // Process any commands that were queued
+            if let Some(ref bridge) = self.editor_bridge {
+                let commands = bridge.drain_commands();
+                for cmd in commands {
+                    InputHandler::execute_command_string(self, &cmd)?;
+                }
+            }
+            Ok("Configuration reloaded".to_string())
+        } else {
+            Ok("Lua not enabled".to_string())
+        }
+    }
+
     /// Syncs the current editor state to the Lua bridge
     #[cfg(feature = "lua")]
     fn sync_lua_bridge(&self, bridge: &crate::lua::EditorBridge) {
         // Update cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         bridge.update_cursor(cursor.line(), cursor.col());
         // Update buffer content
-        bridge.update_buffer(self.buffer.rope().to_string());
+        bridge.update_buffer(self.buffer().rope().to_string());
         // Update mode
         bridge.update_mode(format!("{:?}", self.mode));
     }
@@ -481,30 +559,35 @@ impl Editor {
         }
 
         let mut search = Search::new(self.search_buffer.clone(), self.search_forward);
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
 
         // Start search from current cursor position (inclusive)
-        if let Some((line, col, _)) = search.find_next(&self.buffer, cursor.line(), cursor.col()) {
-            self.buffer.cursor_mut().set_position(line, col);
+        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
+            self.buffer_mut().cursor_mut().set_position(line, col);
             self.current_search = Some(search);
         }
     }
 
     /// Finds the next search match (n command)
     pub fn search_next(&mut self) {
-        if let Some(ref mut search) = self.current_search {
-            let cursor = self.buffer.cursor();
+        // Get cursor position before borrowing
+        let cursor_line = self.buffer().cursor().line();
+        let cursor_col = self.buffer().cursor().col();
+
+        // Clone search to avoid borrow conflicts
+        if let Some(ref search) = self.current_search {
             let is_forward = search.is_forward();
+            let mut search_clone = search.clone();
 
             // For forward search, start from col+1; for backward, start from col-1 or col
             let search_col = if is_forward {
-                cursor.col() + 1
+                cursor_col + 1
             } else {
-                if cursor.col() > 0 { cursor.col() - 1 } else { 0 }
+                if cursor_col > 0 { cursor_col - 1 } else { 0 }
             };
 
-            if let Some((line, col, _)) = search.find_next(&self.buffer, cursor.line(), search_col) {
-                self.buffer.cursor_mut().set_position(line, col);
+            if let Some((line, col, _)) = search_clone.find_next(self.buffer(), cursor_line, search_col) {
+                self.buffer_mut().cursor_mut().set_position(line, col);
             }
         }
     }
@@ -515,7 +598,7 @@ impl Editor {
             // Create a reversed search
             let is_forward = search.is_forward();
             let mut rev_search = Search::new(search.pattern().to_string(), !is_forward);
-            let cursor = self.buffer.cursor();
+            let cursor = self.buffer().cursor();
 
             // For reverse direction: if original was forward, now going backward (use col-1)
             // if original was backward, now going forward (use col+1)
@@ -527,22 +610,22 @@ impl Editor {
                 cursor.col() + 1
             };
 
-            if let Some((line, col, _)) = rev_search.find_next(&self.buffer, cursor.line(), search_col) {
-                self.buffer.cursor_mut().set_position(line, col);
+            if let Some((line, col, _)) = rev_search.find_next(self.buffer(), cursor.line(), search_col) {
+                self.buffer_mut().cursor_mut().set_position(line, col);
             }
         }
     }
 
     /// Sets a mark at the current cursor position
     pub fn set_mark(&mut self, name: char) -> bool {
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         self.marks.set_mark(name, cursor.line(), cursor.col())
     }
 
     /// Jumps to a mark (exact position with backtick)
     pub fn jump_to_mark(&mut self, name: char) -> bool {
         if let Some(mark) = self.marks.get_mark(name) {
-            self.buffer.cursor_mut().set_position(mark.line, mark.col);
+            self.buffer_mut().cursor_mut().set_position(mark.line, mark.col);
             true
         } else {
             false
@@ -552,7 +635,7 @@ impl Editor {
     /// Jumps to mark line (apostrophe - goes to first non-blank on line)
     pub fn jump_to_mark_line(&mut self, name: char) -> bool {
         if let Some(mark) = self.marks.get_mark(name) {
-            self.buffer.cursor_mut().set_position(mark.line, 0);
+            self.buffer_mut().cursor_mut().set_position(mark.line, 0);
             // TODO: Move to first non-blank character
             true
         } else {
@@ -562,14 +645,14 @@ impl Editor {
 
     /// Adds current position to jump list
     pub fn add_jump(&mut self) {
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         self.jump_list.add_jump(cursor.line(), cursor.col());
     }
 
     /// Jumps back in the jump list (Ctrl-O)
     pub fn jump_back(&mut self) -> bool {
         if let Some((line, col)) = self.jump_list.jump_back() {
-            self.buffer.cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, col);
             true
         } else {
             false
@@ -579,7 +662,7 @@ impl Editor {
     /// Jumps forward in the jump list (Ctrl-I)
     pub fn jump_forward(&mut self) -> bool {
         if let Some((line, col)) = self.jump_list.jump_forward() {
-            self.buffer.cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, col);
             true
         } else {
             false
@@ -616,14 +699,84 @@ impl Editor {
         self.macro_manager.get_macro(register)
     }
 
-    /// Gets a reference to the buffer
+    /// Gets a reference to the current buffer
     pub fn buffer(&self) -> &Buffer {
-        &self.buffer
+        &self.buffers[self.current_buffer_index]
     }
 
-    /// Gets a mutable reference to the buffer
+    /// Gets a mutable reference to the current buffer
     pub fn buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.buffer
+        &mut self.buffers[self.current_buffer_index]
+    }
+
+    /// Gets the number of open buffers
+    pub fn buffer_count(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// Gets the current buffer index (0-based)
+    pub fn current_buffer_index(&self) -> usize {
+        self.current_buffer_index
+    }
+
+    /// Gets a list of all buffer names (file paths or "[No Name]")
+    pub fn buffer_names(&self) -> Vec<String> {
+        self.buffers
+            .iter()
+            .map(|buf| {
+                buf.file_path()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "[No Name]".to_string())
+            })
+            .collect()
+    }
+
+    /// Switches to the next buffer
+    pub fn next_buffer(&mut self) {
+        if self.buffers.len() > 1 {
+            self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
+            self.needs_lsp_init = true;
+        }
+    }
+
+    /// Switches to the previous buffer
+    pub fn prev_buffer(&mut self) {
+        if self.buffers.len() > 1 {
+            self.current_buffer_index = if self.current_buffer_index == 0 {
+                self.buffers.len() - 1
+            } else {
+                self.current_buffer_index - 1
+            };
+            self.needs_lsp_init = true;
+        }
+    }
+
+    /// Deletes the current buffer and switches to another if available
+    /// Returns true if the editor should quit (no more buffers)
+    pub fn delete_current_buffer(&mut self) -> bool {
+        if self.buffers.len() == 1 {
+            // Last buffer - quit the editor
+            return true;
+        }
+
+        // Remove current buffer
+        self.buffers.remove(self.current_buffer_index);
+
+        // Adjust index if we were at the end
+        if self.current_buffer_index >= self.buffers.len() {
+            self.current_buffer_index = self.buffers.len() - 1;
+        }
+
+        self.needs_lsp_init = true;
+        false
+    }
+
+    /// Adds a new buffer and switches to it
+    pub fn add_buffer(&mut self, buffer: Buffer) {
+        self.buffers.push(buffer);
+        self.current_buffer_index = self.buffers.len() - 1;
+        self.change_manager = ChangeManager::new();
+        self.needs_lsp_init = true;
     }
 
     /// Gets the current mode
@@ -650,6 +803,24 @@ impl Editor {
         self.pending_command = Some(cmd);
     }
 
+    /// Sets the viewport height (called from UI layer)
+    pub fn set_viewport_height(&mut self, height: usize) {
+        self.viewport_height = height;
+    }
+
+    /// Gets the viewport height
+    pub fn viewport_height(&self) -> usize {
+        self.viewport_height
+    }
+
+    /// Calculates half-page scroll amount
+    /// Uses options.scroll if set, otherwise viewport_height / 2
+    pub fn half_page_scroll(&self) -> usize {
+        self.options.scroll.unwrap_or_else(|| {
+            (self.viewport_height / 2).max(1)
+        })
+    }
+
     /// Clears the pending command
     pub fn clear_pending_command(&mut self) {
         self.pending_command = None;
@@ -671,7 +842,7 @@ impl Editor {
             return;
         };
 
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             return;
         };
 
@@ -770,13 +941,13 @@ impl Editor {
     /// Note: For VisualBlock, this returns the corners of the rectangle
     pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.visual_start.map(|start| {
-            let cursor = self.buffer.cursor();
+            let cursor = self.buffer().cursor();
             let mut end = (cursor.line(), cursor.col());
 
             match self.mode {
                 Mode::VisualLine => {
                     // Get the length of the end line (excluding newline)
-                    if let Some(line_text) = self.buffer.line(end.0) {
+                    if let Some(line_text) = self.buffer().line(end.0) {
                         let line_len = line_text.trim_end_matches('\n').chars().count();
                         end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                     }
@@ -793,7 +964,7 @@ impl Editor {
                         let mut new_start = end;
                         new_start.1 = 0;
                         let mut new_end = start;
-                        if let Some(line_text) = self.buffer.line(new_end.0) {
+                        if let Some(line_text) = self.buffer().line(new_end.0) {
                             let line_len = line_text.trim_end_matches('\n').chars().count();
                             new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                         }
@@ -831,13 +1002,26 @@ impl Editor {
     }
 
     /// Loads a file into the editor (async version)
+    /// If the file is already open in a buffer, switches to that buffer
+    /// Otherwise, adds it as a new buffer
     pub async fn load_file_async<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
-        // Store old file path before loading new file
-        let old_file_path = self.buffer.file_path().map(|s| s.to_string());
+        let path_str = path.as_ref().to_string_lossy().to_string();
 
-        self.buffer = Buffer::load_file_async(path).await?;
-        self.change_manager = ChangeManager::new();
-        self.needs_lsp_init = true; // Flag that LSP needs initialization
+        // Check if file is already open in a buffer
+        for (i, buf) in self.buffers.iter().enumerate() {
+            if buf.file_path() == Some(&path_str) {
+                // File already open - just switch to it
+                self.current_buffer_index = i;
+                return Ok(());
+            }
+        }
+
+        // Store old file path before loading new file
+        let old_file_path = self.buffer().file_path().map(|s| s.to_string());
+
+        // Load new buffer
+        let new_buffer = Buffer::load_file_async(path).await?;
+        self.add_buffer(new_buffer);
 
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {
@@ -857,7 +1041,7 @@ impl Editor {
     /// Checks if LSP initialization is needed and returns the file path
     pub fn needs_lsp_init(&self) -> Option<String> {
         if self.needs_lsp_init {
-            self.buffer.file_path().map(|s| s.to_string())
+            self.buffer().file_path().map(|s| s.to_string())
         } else {
             None
         }
@@ -886,17 +1070,20 @@ impl Editor {
 
     /// Undoes the last change
     pub fn undo(&mut self) {
-        self.change_manager.undo(&mut self.buffer);
+        let buffer = &mut self.buffers[self.current_buffer_index];
+        self.change_manager.undo(buffer);
     }
 
     /// Redoes the next change
     pub fn redo(&mut self) {
-        self.change_manager.redo(&mut self.buffer);
+        let buffer = &mut self.buffers[self.current_buffer_index];
+        self.change_manager.redo(buffer);
     }
 
     /// Repeats the last change
     pub fn repeat_last_change(&mut self) {
-        self.change_manager.repeat_last(&mut self.buffer);
+        let buffer = &mut self.buffers[self.current_buffer_index];
+        self.change_manager.repeat_last(buffer);
     }
 
     /// Checks if buffer is modified relative to last save
@@ -907,7 +1094,7 @@ impl Editor {
     /// Marks current state as saved
     pub fn mark_saved(&mut self) {
         self.change_manager.mark_saved();
-        self.buffer.mark_clean();
+        self.buffer_mut().mark_clean();
     }
 
     /// Runs the editor (main loop will be implemented later)
@@ -1063,7 +1250,7 @@ impl Editor {
     /// Returns None if LSP is not enabled or file has no URI
     pub async fn get_current_file_diagnostics(&self) -> Option<Vec<lsp_types::Diagnostic>> {
         let lsp = self.lsp_manager.as_ref()?;
-        let file_path = self.buffer.file_path()?;
+        let file_path = self.buffer().file_path()?;
         let uri = lsp_types::Url::from_file_path(file_path).ok()?;
 
         // Try to get lock without blocking - return None if busy
@@ -1074,7 +1261,7 @@ impl Editor {
     /// Gets diagnostic count for the current file (errors, warnings, info, hints)
     pub async fn get_diagnostic_count(&self) -> (usize, usize, usize, usize) {
         if let Some(lsp) = &self.lsp_manager {
-            if let Some(file_path) = self.buffer.file_path() {
+            if let Some(file_path) = self.buffer().file_path() {
                 if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
                     // Try to get lock without blocking - return (0,0,0,0) if busy
                     if let Ok(lsp_guard) = lsp.try_lock() {
@@ -1148,7 +1335,7 @@ impl Editor {
         }
 
         // Current file
-        if let Some(path) = self.buffer.file_path() {
+        if let Some(path) = self.buffer().file_path() {
             info.push_str(&format!("\nCurrent File: {}\n", path));
         }
 
@@ -1171,7 +1358,7 @@ impl Editor {
     /// Triggers async re-highlighting if needed
     pub async fn process_pending_rehighlight(&mut self) {
         // Check if buffer needs re-highlighting
-        let Some((content, version, language)) = self.buffer.get_rehighlight_data() else {
+        let Some((content, version, language)) = self.buffer().get_rehighlight_data() else {
             return;
         };
 
@@ -1201,7 +1388,7 @@ impl Editor {
 
         // Apply highlights if successful and version still matches
         if let Ok(Some(highlights)) = highlights {
-            self.buffer.apply_highlights(highlights, version);
+            self.buffer_mut().apply_highlights(highlights, version);
         }
     }
 
@@ -1330,7 +1517,7 @@ impl Editor {
             return;
         };
 
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             return;
         };
 
@@ -1350,7 +1537,7 @@ impl Editor {
         };
 
         // Send document sync with debouncing (incremental if supported)
-        let content = self.buffer.rope().to_string();
+        let content = self.buffer().rope().to_string();
 
         // Pass last_synced_content for incremental sync
         let old_content = self.last_synced_content.clone();
@@ -1379,7 +1566,7 @@ impl Editor {
             return;
         };
 
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             return;
         };
 
@@ -1398,7 +1585,7 @@ impl Editor {
             return;
         };
 
-        let text = Some(self.buffer.rope().to_string());
+        let text = Some(self.buffer().rope().to_string());
 
         // Try to get lock without blocking - if LSP is busy, skip
         let Ok(lsp_guard) = lsp.try_lock() else {
@@ -1511,7 +1698,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use goto-definition".to_string());
             return Ok(false);
         };
@@ -1533,7 +1720,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -1570,14 +1757,14 @@ impl Editor {
             let target_col = location.range.start.character as usize;
 
             // Save current position to jump list before jumping
-            let current_line = self.buffer.cursor().line();
-            let current_col = self.buffer.cursor().col();
+            let current_line = self.buffer().cursor().line();
+            let current_col = self.buffer().cursor().col();
             self.jump_list.add_jump(current_line, current_col);
 
             // Check if definition is in the same file
             if location.uri == uri {
                 // Same file - jump directly
-                self.buffer.cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                 self.set_lsp_status(format!("Definition found at line {}", target_line + 1));
                 return Ok(true);
             } else {
@@ -1587,7 +1774,7 @@ impl Editor {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
-                                self.buffer.cursor_mut().set_position(target_line, target_col);
+                                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                                 let file_name = target_path.file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file");
@@ -1625,7 +1812,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use goto-implementation".to_string());
             return Ok(false);
         };
@@ -1647,7 +1834,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -1684,14 +1871,14 @@ impl Editor {
             let target_col = location.range.start.character as usize;
 
             // Save current position to jump list before jumping
-            let current_line = self.buffer.cursor().line();
-            let current_col = self.buffer.cursor().col();
+            let current_line = self.buffer().cursor().line();
+            let current_col = self.buffer().cursor().col();
             self.jump_list.add_jump(current_line, current_col);
 
             // Check if implementation is in the same file
             if location.uri == uri {
                 // Same file - jump directly
-                self.buffer.cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                 self.set_lsp_status(format!("Implementation found at line {}", target_line + 1));
                 return Ok(true);
             } else {
@@ -1701,7 +1888,7 @@ impl Editor {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
-                                self.buffer.cursor_mut().set_position(target_line, target_col);
+                                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                                 let file_name = target_path.file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file");
@@ -1739,7 +1926,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use goto-type".to_string());
             return Ok(false);
         };
@@ -1761,7 +1948,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -1798,14 +1985,14 @@ impl Editor {
             let target_col = location.range.start.character as usize;
 
             // Save current position to jump list before jumping
-            let current_line = self.buffer.cursor().line();
-            let current_col = self.buffer.cursor().col();
+            let current_line = self.buffer().cursor().line();
+            let current_col = self.buffer().cursor().col();
             self.jump_list.add_jump(current_line, current_col);
 
             // Check if type definition is in the same file
             if location.uri == uri {
                 // Same file - jump directly
-                self.buffer.cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                 self.set_lsp_status(format!("Type definition found at line {}", target_line + 1));
                 return Ok(true);
             } else {
@@ -1815,7 +2002,7 @@ impl Editor {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
-                                self.buffer.cursor_mut().set_position(target_line, target_col);
+                                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                                 let file_name = target_path.file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file");
@@ -1853,7 +2040,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use find references".to_string());
             return Ok(false);
         };
@@ -1875,7 +2062,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -1951,7 +2138,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use document symbols".to_string());
             return Ok(false);
         };
@@ -2040,7 +2227,7 @@ impl Editor {
         };
 
         // Get current file path for language detection
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use workspace symbols".to_string());
             return Ok(false);
         };
@@ -2116,7 +2303,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use call hierarchy".to_string());
             return Ok(false);
         };
@@ -2138,7 +2325,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -2242,7 +2429,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use call hierarchy".to_string());
             return Ok(false);
         };
@@ -2264,7 +2451,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -2368,7 +2555,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use type hierarchy".to_string());
             return Ok(false);
         };
@@ -2390,7 +2577,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -2506,7 +2693,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use hover".to_string());
             return Ok(false);
         };
@@ -2528,7 +2715,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -2585,7 +2772,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use completion".to_string());
             return Ok(false);
         };
@@ -2607,7 +2794,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -2679,7 +2866,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use formatting".to_string());
             return Ok(false);
         };
@@ -2750,7 +2937,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use code actions".to_string());
             return Ok(false);
         };
@@ -2772,7 +2959,7 @@ impl Editor {
             .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = cursor.col() as u32;
 
@@ -2850,12 +3037,12 @@ impl Editor {
 
             // Delete the range
             if start_line != end_line || start_col != end_col {
-                self.buffer.delete_range(start_line, start_col, end_line, end_col);
+                self.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
             }
 
             // Insert new text
             if !edit.new_text.is_empty() {
-                self.buffer.insert_text_at(start_line, start_col, &edit.new_text);
+                self.buffer_mut().insert_text_at(start_line, start_col, &edit.new_text);
             }
         }
     }
@@ -2878,7 +3065,7 @@ impl Editor {
                 if let Some(ref edit) = code_action.edit {
                     if let Some(ref changes) = edit.changes {
                         // Apply changes for current document
-                        if let Some(file_path) = self.buffer.file_path() {
+                        if let Some(file_path) = self.buffer().file_path() {
                             let abs_path = if std::path::Path::new(file_path).is_absolute() {
                                 file_path.to_string()
                             } else {
@@ -2912,7 +3099,7 @@ impl Editor {
                                 // Process text document edits
                                 for text_doc_edit in edits {
                                     // Check if this is for the current document
-                                    if let Some(file_path) = self.buffer.file_path() {
+                                    if let Some(file_path) = self.buffer().file_path() {
                                         let abs_path = if std::path::Path::new(file_path).is_absolute() {
                                             file_path.to_string()
                                         } else {
@@ -2942,7 +3129,7 @@ impl Editor {
                                     match op {
                                         lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
                                             // Check if this is for the current document
-                                            if let Some(file_path) = self.buffer.file_path() {
+                                            if let Some(file_path) = self.buffer().file_path() {
                                                 let abs_path = if std::path::Path::new(file_path).is_absolute() {
                                                     file_path.to_string()
                                                 } else {
@@ -3005,12 +3192,12 @@ impl Editor {
         let label = completion.label.clone();
 
         // Insert the completion text at cursor position
-        let cursor = self.buffer.cursor();
+        let cursor = self.buffer().cursor();
         let line = cursor.line();
         let col = cursor.col();
 
         // Get the line's char index
-        let line_char_idx = self.buffer.rope().line_to_char(line);
+        let line_char_idx = self.buffer().rope().line_to_char(line);
         let insert_pos = line_char_idx + col;
 
         // Insert the text
@@ -3053,7 +3240,7 @@ impl Editor {
                 }
                 let symbol = &self.available_document_symbols[index];
                 // For document symbols, the location is in the current file
-                let file_path = self.buffer.file_path().unwrap_or("").to_string();
+                let file_path = self.buffer().file_path().unwrap_or("").to_string();
                 let uri = match lsp_types::Url::from_file_path(&file_path) {
                     Ok(u) => u,
                     Err(_) => {
@@ -3127,7 +3314,7 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer.file_path() else {
+        let Some(file_path) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use organize imports".to_string());
             return Ok(false);
         };
@@ -3211,7 +3398,7 @@ impl Editor {
         if let Some(ref changes) = edit.changes {
             for (uri, text_edits) in changes {
                 // Check if this is the current document
-                if let Some(file_path) = self.buffer.file_path() {
+                if let Some(file_path) = self.buffer().file_path() {
                     let abs_path = if std::path::Path::new(file_path).is_absolute() {
                         file_path.to_string()
                     } else {
@@ -3248,7 +3435,7 @@ impl Editor {
                 lsp_types::DocumentChanges::Edits(edits) => {
                     for text_doc_edit in edits {
                         // Check if this is for the current document
-                        if let Some(file_path) = self.buffer.file_path() {
+                        if let Some(file_path) = self.buffer().file_path() {
                             let abs_path = if std::path::Path::new(file_path).is_absolute() {
                                 file_path.to_string()
                             } else {
@@ -3287,7 +3474,7 @@ impl Editor {
                         match op {
                             lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
                                 // Check if this is for the current document
-                                if let Some(file_path) = self.buffer.file_path() {
+                                if let Some(file_path) = self.buffer().file_path() {
                                     let abs_path = if std::path::Path::new(file_path).is_absolute() {
                                         file_path.to_string()
                                     } else {
@@ -3352,6 +3539,72 @@ impl Editor {
         // Convert buffer to ANSI string
         let buffer = terminal.backend().buffer();
         Ok(buffer_to_ansi(buffer))
+    }
+
+    // === Window Management ===
+
+    /// Gets a reference to the window manager
+    pub fn window_manager(&self) -> Option<&WindowManager> {
+        self.window_manager.as_ref()
+    }
+
+    /// Gets a mutable reference to the window manager
+    pub fn window_manager_mut(&mut self) -> Option<&mut WindowManager> {
+        self.window_manager.as_mut()
+    }
+
+    /// Initializes the window manager with the current viewport dimensions
+    /// Call this once viewport size is known (typically from UI layer)
+    pub fn init_window_manager(&mut self, width: u16, height: u16) {
+        if self.window_manager.is_none() {
+            self.window_manager = Some(WindowManager::new(0, width, height));
+        }
+    }
+
+    /// Splits the current window horizontally (creates window above/below)
+    pub fn split_window_horizontal(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
+        if let Some(wm) = &mut self.window_manager {
+            wm.split_focused(SplitDirection::Horizontal, 0);
+        }
+    }
+
+    /// Splits the current window vertically (creates window left/right)
+    pub fn split_window_vertical(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
+        if let Some(wm) = &mut self.window_manager {
+            wm.split_focused(SplitDirection::Vertical, 0);
+        }
+    }
+
+    /// Moves focus to the next window
+    pub fn focus_next_window(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            wm.focus_next();
+        }
+    }
+
+    /// Moves focus to the previous window
+    pub fn focus_prev_window(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            wm.focus_prev();
+        }
+    }
+
+    /// Gets the current number of windows
+    pub fn window_count(&self) -> usize {
+        self.window_manager
+            .as_ref()
+            .map(|wm| wm.window_count())
+            .unwrap_or(1)
     }
 }
 

@@ -97,12 +97,28 @@ impl Renderer {
                 chunks[1].y,
             ));
         } else {
-            // Position cursor in text buffer
+            // Position cursor in text buffer (accounting for gutter)
             let screen_line = cursor_line.saturating_sub(viewport_start);
             let cursor_x = cursor_col.min(chunks[0].width.saturating_sub(1) as usize);
             let cursor_y = screen_line.min(chunks[0].height.saturating_sub(1) as usize);
+
+            // Calculate gutter width for cursor offset
+            let show_numbers = editor.options.number || editor.options.relative_number;
+            let max_line_num = editor.buffer().rope().len_lines();
+            let line_num_width = if show_numbers {
+                max_line_num.to_string().len().max(3)
+            } else {
+                0
+            };
+            let sign_width = 2;
+            let gutter_width = if show_numbers || sign_width > 0 {
+                sign_width + line_num_width + 1
+            } else {
+                0
+            };
+
             frame.set_cursor_position((
-                chunks[0].x + cursor_x as u16,
+                chunks[0].x + gutter_width as u16 + cursor_x as u16,
                 chunks[0].y + cursor_y as u16,
             ));
         }
@@ -138,6 +154,35 @@ impl Renderer {
         let start_line = cursor.line().saturating_sub(visible_lines / 2);
         let end_line = (start_line + visible_lines).min(rope.len_lines());
 
+        // Calculate gutter width
+        let show_numbers = editor.options.number || editor.options.relative_number;
+        let max_line_num = rope.len_lines();
+        let line_num_width = if show_numbers {
+            max_line_num.to_string().len().max(3) // At least 3 chars for line numbers
+        } else {
+            0
+        };
+        let sign_width = 2; // Space for signs (git, diagnostics, etc.)
+        let gutter_width = if show_numbers || sign_width > 0 {
+            (sign_width + line_num_width + 1) as u16 // +1 for spacing
+        } else {
+            0
+        };
+
+        // Split area into gutter and text
+        let (gutter_area, text_area) = if gutter_width > 0 {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(gutter_width),
+                    Constraint::Min(1),
+                ])
+                .split(area);
+            (Some(chunks[0]), chunks[1])
+        } else {
+            (None, area)
+        };
+
         // Get visual selection if in visual mode
         let visual_selection = if editor.mode().is_visual() {
             editor.visual_selection()
@@ -147,6 +192,46 @@ impl Renderer {
 
         // Get current search if active
         let current_search = editor.current_search();
+
+        // Build the gutter lines
+        if let Some(gutter_area) = gutter_area {
+            let mut gutter_lines = Vec::new();
+            for line_idx in start_line..end_line {
+                if line_idx < rope.len_lines() {
+                    let line_num_text = if editor.options.relative_number {
+                        // Relative line numbers
+                        let rel = if line_idx == cursor.line() {
+                            line_idx + 1 // Show absolute for current line
+                        } else {
+                            line_idx.abs_diff(cursor.line())
+                        };
+                        format!("{:>width$} ", rel, width = line_num_width)
+                    } else if editor.options.number {
+                        // Absolute line numbers
+                        format!("{:>width$} ", line_idx + 1, width = line_num_width)
+                    } else {
+                        "  ".to_string()
+                    };
+
+                    // Add sign column (currently just spaces, will be used for git/diagnostics)
+                    let sign_text = "  ";
+
+                    let gutter_text = format!("{}{}", sign_text, line_num_text);
+
+                    // Highlight current line number
+                    let style = if line_idx == cursor.line() {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+
+                    gutter_lines.push(Line::from(Span::styled(gutter_text, style)));
+                }
+            }
+
+            let gutter_paragraph = Paragraph::new(gutter_lines);
+            frame.render_widget(gutter_paragraph, gutter_area);
+        }
 
         // Build the visible text with syntax highlighting
         let mut lines = Vec::new();
@@ -192,7 +277,7 @@ impl Renderer {
 
         let paragraph = Paragraph::new(lines)
             .block(Block::default().borders(Borders::NONE));
-        frame.render_widget(paragraph, area);
+        frame.render_widget(paragraph, text_area);
 
         start_line
     }
