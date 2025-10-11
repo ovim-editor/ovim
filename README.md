@@ -1,292 +1,147 @@
-# ovim - A Neovim Clone in Rust
+# ovim
 
-A terminal-based text editor that reimplements core Vim/Neovim functionality in Rust with an optional REST API for remote control and automation.
+A Vim clone in Rust with LSP support and seamless headless mode for testing and automation.
 
-## Features
-
-### Editor Features
-- ✅ **Modal editing** (Normal, Insert, Visual, Command modes)
-- ✅ **Navigation** (hjkl, gg, G, 0, $, w, b, e, ^)
-- ✅ **Find character motions** (f, F, t, T, ;, , for quick line navigation)
-- ✅ **Bracket matching** (% to jump to matching bracket/paren/brace)
-- ✅ **Operators + Motions** (d, c, y combined with motions)
-- ✅ **Count prefixes** (5j, 3dd, 2fo, etc.)
-- ✅ **Visual selection** (character and line modes)
-- ✅ **Undo/Redo** (u, Ctrl-R)
-- ✅ **Repeat command** (. to repeat last change)
-- ✅ **Yank/Paste** (yy, dd, p, P with register support)
-- ✅ **Search** (/, ?, n, N with regex support)
-- ✅ **Insert modes** (i, I, a, A, o, O)
-- ✅ **Text objects** (w, W, p, sentence)
-- ✅ **Marks** (ma, 'a, `a with jump list)
-- ✅ **Macros** (qa, @a for recording and playback)
-- ✅ **Ex commands** (:w, :q, :wq, etc.)
-
-### REST API Features
-- ✅ **Remote control** via HTTP endpoints
-- ✅ **Full state introspection** (buffer, cursor, mode, registers, marks)
-- ✅ **Key injection** (send vim commands programmatically)
-- ✅ **Command execution** (execute ex commands)
-- ✅ **Automated testing** support
-- ✅ **Dynamic port allocation** (no conflicts)
-
-## Installation
+## Quick Start
 
 ```bash
-git clone <repo-url>
-cd ovim
 cargo build --release
+
+# Interactive editing
+./target/release/ovim myfile.txt
+
+# Headless mode with named session
+./target/release/ovim myfile.rs --headless --session dev
 ```
 
-## Usage
+## Development Workflow
 
-### Basic Editor
+### Headless Mode (Recommended)
 
+Start a named session:
 ```bash
-# Open a file
-cargo run -- myfile.txt
-
-# Start with empty buffer
-cargo run
+ovim --headless --session myproject src/main.rs
 ```
 
-### With REST API
-
+Control it from another terminal:
 ```bash
-# Open with API enabled (random port)
-cargo run -- myfile.txt --expose-rest-api
+# List sessions with LSP status
+./ovim-ctl list
 
-# The API URL will be printed:
-# REST API server listening on http://127.0.0.1:56789
-# API URL: http://127.0.0.1:56789
+# Send commands (no port needed!)
+./ovim-ctl send myproject "ggK"      # Go to top, trigger hover
+./ovim-ctl send myproject "iHello<Esc>"
+
+# Check health & LSP readiness
+./ovim-ctl health myproject
+
+# View LSP status
+./ovim-ctl lsp myproject
+
+# Wait for LSP to be ready (useful in scripts)
+./ovim-ctl wait myproject 30
+
+# Kill session (auto-cleanup)
+./ovim-ctl kill myproject
 ```
 
-### With Custom Dimensions
+### Session Management
 
-```bash
-# Useful for testing, screenshots, or headless environments
-cargo run -- myfile.txt --dimension=80x24
+- Sessions stored in `~/Library/Caches/ovim/sessions/` (Mac) or `~/.cache/ovim/sessions/` (Linux)
+- Auto-cleanup on exit or manual `./ovim-ctl kill`
+- Multiple concurrent sessions with different names
+- LSP readiness tracking per session
 
-# Combine options
-cargo run -- myfile.txt --expose-rest-api --dimension=120x40
-```
-
-## REST API
-
-### Available Endpoints
+### REST API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/snapshot` | GET | Get complete editor state |
-| `/buffer` | GET | Get buffer content |
-| `/buffer` | PUT | Replace buffer content |
-| `/cursor` | GET | Get cursor position |
-| `/mode` | GET | Get current mode |
+| `/health` | GET | Health check with LSP readiness |
+| `/lsp/status` | GET | LSP server states & pending requests |
+| `/snapshot` | GET | Complete editor state |
+| `/buffer` | GET/PUT | Buffer content |
+| `/cursor` | GET | Cursor position |
+| `/mode` | GET | Current mode |
 | `/keys` | POST | Send keystrokes |
 | `/command` | POST | Execute ex command |
+| `/render` | GET | ANSI rendering |
 
-### Example Usage
+### LSP Support
 
-Start the editor with API:
+Zero-config Java support:
 ```bash
-cargo run -- test.txt --expose-rest-api
-# Note the port number from output
+ovim MyClass.java  # Auto-downloads jdtls, detects Java version, full IDE features
 ```
 
-In another terminal:
-```bash
-export API_URL="http://127.0.0.1:PORT"  # Replace PORT
+Rust (rust-analyzer), Python (pyright), JavaScript (typescript-language-server) also supported.
 
-# Get editor state
-curl $API_URL/snapshot | jq '.'
+#### LSP Logging
 
-# Set buffer content
-curl -X PUT $API_URL/buffer \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Hello, World!\nLine 2\nLine 3"}'
-
-# Navigate to top
-curl -X POST $API_URL/keys \
-  -H "Content-Type: application/json" \
-  -d '{"keys": "gg"}'
-
-# Enter insert mode and type
-curl -X POST $API_URL/keys \
-  -H "Content-Type: application/json" \
-  -d '{"keys": "iPREFIX: <Esc>"}'
-
-# Delete a line
-curl -X POST $API_URL/keys \
-  -H "Content-Type: application/json" \
-  -d '{"keys": "dd"}'
-
-# Save file
-curl -X POST $API_URL/command \
-  -H "Content-Type: application/json" \
-  -d '{"command": "w"}'
+All LSP communication is logged:
+```
+[LSP-REQUEST] Method: textDocument/hover | Request ID: Number(2) | Server: rust
+[LSP-REQUEST] Pending requests before: 0 | Adding: textDocument/hover
+[LSP-REQUEST] Waiting for response (timeout: 10s)
+[LSP-RESPONSE] Success: textDocument/hover | Took: 751.5µs | Request ID: Number(2)
 ```
 
-## Testing
-
-### Manual Testing
-
-1. Start ovim with API:
-   ```bash
-   cargo run -- test.txt --expose-rest-api
-   ```
-
-2. Note the port number, then run the test script:
-   ```bash
-   ./manual_test.sh 56789  # Replace with your port
-   ```
-
-### Automated Testing
-
-See `TESTING.md` for comprehensive test scenarios.
-
-### Integration Tests
+### Testing
 
 ```bash
-# Start ovim in one terminal
-cargo run -- test.txt --expose-rest-api
+# Unit tests
+cargo test
 
-# In another terminal
-cargo test --test api_test -- --ignored
+# Integration tests with headless mode
+./target/release/ovim test.txt --headless --session test &
+./ovim-ctl send test "iHello<Esc>"
+./ovim-ctl snapshot test | jq '.buffer.content'
+./ovim-ctl kill test
 ```
+
+### Lua Configuration
+
+Create `~/.config/ovim/init.lua`:
+```lua
+vim.opt.number = true
+vim.opt.relativenumber = true
+vim.opt.tabstop = 4
+vim.opt.shiftwidth = 4
+
+print("Config loaded!")
+```
+
+Reload: `:ConfigReload` or `:reload`
 
 ## Architecture
 
-```
-ovim/
-├── src/
-│   ├── api/           # REST API server
-│   │   ├── mod.rs     # Server initialization
-│   │   ├── routes.rs  # Route definitions
-│   │   ├── handlers.rs # Request handlers
-│   │   └── state.rs   # API types and state
-│   ├── buffer/        # Text buffer (rope-based)
-│   ├── editor/        # Core editor logic
-│   │   ├── input.rs   # Key event handling
-│   │   ├── operators.rs # Vim operators (d, c, y)
-│   │   ├── motions.rs  # Cursor motions
-│   │   ├── change.rs   # Undo/redo system
-│   │   ├── register.rs # Yank/paste registers
-│   │   ├── search.rs   # Search functionality
-│   │   ├── marks.rs    # Marks and jump list
-│   │   └── macros.rs   # Macro recording
-│   ├── ui/            # Terminal UI (ratatui)
-│   ├── mode/          # Editor modes
-│   └── cli.rs         # CLI argument parsing
-```
+- **buffer/**: Rope-based text buffer
+- **editor/**: Core logic, operators, motions, LSP actions
+- **lsp/**: Language server protocol client
+- **api/**: REST API server (Axum)
+- **session/**: Session persistence & management
+- **ui/**: Terminal UI (ratatui + crossterm)
 
-### Communication Flow
+## Features
 
-```
-┌─────────────┐     HTTP      ┌──────────────┐
-│   REST API  │◄──────────────┤  API Client  │
-│   (Axum)    │               └──────────────┘
-└──────┬──────┘
-       │ mpsc channel (tokio)
-       │
-       ▼
-┌─────────────┐               ┌──────────────┐
-│ Main Event  │◄──────────────┤  Terminal    │
-│    Loop     │   Key Events  │   Input      │
-└──────┬──────┘               └──────────────┘
-       │
-       ▼
-┌─────────────┐               ┌──────────────┐
-│   Editor    │◄─────────────►│    Buffer    │
-│    State    │               │    (Rope)    │
-└─────────────┘               └──────────────┘
-```
-
-- API requests are sent via tokio channels
-- Main event loop processes both API requests and keyboard input
-- All state mutations happen on the main thread (thread-safe)
-- API responses include updated state after operations
-
-## Dependencies
-
-- **ropey** - Efficient rope data structure for text editing
-- **ratatui** - Terminal UI framework
-- **crossterm** - Cross-platform terminal manipulation
-- **axum** - Web framework for REST API
-- **tokio** - Async runtime
-- **serde** - Serialization/deserialization
-- **clap** - Command-line argument parsing
-- **regex** - Regular expression support
-
-## Use Cases
-
-### Automated Testing
-```bash
-# Test script can control editor programmatically
-./run_tests.sh
-```
-
-### IDE Integration
-Build tools or plugins that interact with ovim via HTTP instead of complex IPC.
-
-### Remote Editing
-Control an ovim instance from another process or machine.
-
-### Debugging
-Inspect editor state without interrupting the editing session.
-
-### CI/CD
-Automate editor operations in headless environments with `--dimension` flag.
-
-## Vim Compatibility
-
-ovim implements a subset of Vim commands. Notable differences:
-- Limited ex command support (`:w`, `:q`, `:wq` primarily)
-- Simplified visual block mode
-- No plugin system (yet)
-- No split windows (yet)
-
-## Development
-
-### Running Tests
-```bash
-cargo test
-```
-
-### Building Release
-```bash
-cargo build --release
-./target/release/ovim myfile.txt
-```
-
-### Code Style
-```bash
-cargo fmt
-cargo clippy
-```
-
-## Documentation
-
-- `CLAUDE.md` - Project overview and architecture
-- `TESTING.md` - Comprehensive testing guide
-- `manual_test.sh` - Quick manual API test script
-- `test_api.sh` - Detailed API test scenarios
-- `run_tests.sh` - Automated test runner
-
-## License
-
-[Add license information]
+- Modal editing (Normal, Insert, Visual, Command)
+- Operators + motions (d, c, y + w, $, gg, etc.)
+- Visual selection, undo/redo, macros, marks
+- Text objects (w, p, sentence, quotes, brackets)
+- Search (/, ?, n, N)
+- LSP (hover, go-to-def, completion, diagnostics)
+- Lua configuration
+- Git status in UI
+- Session management for headless mode
 
 ## Contributing
 
-[Add contribution guidelines]
+Run before committing:
+```bash
+cargo fmt
+cargo clippy
+cargo test
+```
 
-## Roadmap
+## License
 
-- [ ] Visual block mode
-- [ ] Split windows
-- [ ] Plugin system
-- [ ] More ex commands
-- [ ] Configuration file
-- [ ] Syntax highlighting
-- [ ] LSP integration
-- [ ] Extended API endpoints (tabs, windows)
+[Add license]

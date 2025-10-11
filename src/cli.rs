@@ -11,6 +11,10 @@ pub struct Args {
     #[arg(long)]
     pub headless: bool,
 
+    /// Session name for headless mode (default: "default")
+    #[arg(long)]
+    pub session: Option<String>,
+
     /// Set viewport dimensions (e.g., 80x24)
     #[arg(long, value_parser = parse_dimensions)]
     pub dimension: Option<(u16, u16)>,

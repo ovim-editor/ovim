@@ -3,10 +3,12 @@ use crossterm::event::Event;
 use ovim::editor::{Editor, InputHandler};
 use ovim::ui::UI;
 use ovim::cli::Args;
-use ovim::api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
+use ovim::api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
+use ovim::session::SessionInfo;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 use tokio::sync::mpsc;
-use std::sync::OnceLock;
 
 // Global channel for Java LSP status updates
 static JAVA_STATUS_SENDER: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
@@ -74,21 +76,50 @@ async fn main() -> Result<()> {
     // Set up API server if requested
     let api_rx = if args.headless {
         let (tx, rx) = mpsc::unbounded_channel();
+        let (port_tx, port_rx) = tokio::sync::oneshot::channel();
 
         // Spawn API server in a separate task
         // Port 0 means "pick any available port"
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone).await {
+            if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
                 eprintln!("API server error: {}", e);
             }
         });
 
-        // Give the server a moment to start and print its address
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Wait for the server to start and get the actual port
+        let port = port_rx.await.expect("Failed to get server port");
+
+        // Write session info
+        let session_name = args.session.clone().unwrap_or_else(|| "default".to_string());
+        let session_info = SessionInfo::new(
+            port,
+            args.file.clone(),
+            session_name.clone(),
+        );
+
+        if let Err(e) = session_info.write() {
+            eprintln!("Warning: Failed to write session info: {}", e);
+        } else {
+            eprintln!("Session '{}' created at ~/.cache/ovim/sessions/{}.json", session_name, session_name);
+        }
+
+        // Set up cleanup on exit
+        let session_info_for_cleanup = session_info.clone();
+        let cleanup_handle = tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            let _ = session_info_for_cleanup.delete();
+            eprintln!("\nSession cleaned up");
+            std::process::exit(0);
+        });
+
+        // Store session info and start time for health checks
+        let start_time = SystemTime::now();
+        let session_info_arc = Arc::new(Mutex::new(session_info));
 
         // Run in headless mode (API only, no TUI)
-        run_headless_loop(&mut editor, rx, java_status_rx).await?;
+        run_headless_loop(&mut editor, rx, java_status_rx, start_time, session_info_arc).await?;
+        cleanup_handle.abort();
         return Ok(());
     } else {
         None
@@ -111,6 +142,8 @@ async fn run_headless_loop(
     editor: &mut Editor,
     mut api_rx: mpsc::UnboundedReceiver<ApiRequest>,
     mut java_status_rx: mpsc::UnboundedReceiver<String>,
+    start_time: SystemTime,
+    session_info: Arc<Mutex<SessionInfo>>,
 ) -> Result<()> {
     use tokio::time::{Duration, sleep};
 
@@ -157,7 +190,7 @@ async fn run_headless_loop(
         // Check for API requests (non-blocking with timeout)
         match tokio::time::timeout(Duration::from_millis(50), api_rx.recv()).await {
             Ok(Some(request)) => {
-                handle_api_request(editor, request).await;
+                handle_api_request(editor, request, start_time, &session_info).await;
                 // Check if quit was requested
                 if editor.should_quit() {
                     break;
@@ -245,7 +278,10 @@ async fn run_event_loop(
         // Check for API requests (non-blocking)
         if let Some(ref mut rx) = api_rx {
             while let Ok(request) = rx.try_recv() {
-                handle_api_request(editor, request).await;
+                // For TUI mode, use dummy start time and session info since /health isn't typically used
+                let dummy_start = SystemTime::now();
+                let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".to_string())));
+                handle_api_request(editor, request, dummy_start, &dummy_session).await;
             }
         }
 
@@ -270,7 +306,12 @@ async fn run_event_loop(
     Ok(())
 }
 
-async fn handle_api_request(editor: &mut Editor, request: ApiRequest) {
+async fn handle_api_request(
+    editor: &mut Editor,
+    request: ApiRequest,
+    start_time: SystemTime,
+    session_info: &Arc<Mutex<SessionInfo>>,
+) {
     match request {
         ApiRequest::GetSnapshot(tx) => {
             let snapshot = create_snapshot(editor);
@@ -356,6 +397,86 @@ async fn handle_api_request(editor: &mut Editor, request: ApiRequest) {
                     }));
                 }
             }
+        }
+        ApiRequest::GetLspStatus(tx) => {
+            // Get LSP status from the editor's LSP manager
+            if let Some(lsp_manager_arc) = editor.lsp_manager() {
+                let servers = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let lsp_manager = lsp_manager_arc.lock().await;
+                        lsp_manager.get_lsp_status().await
+                    })
+                });
+
+                let lsp_status_info = LspStatusInfo {
+                    servers: servers.into_iter().map(|s| LspServerInfoItem {
+                        language: s.language,
+                        command: s.command,
+                        state: s.state,
+                        pending_requests: s.pending_requests,
+                        has_capabilities: s.has_capabilities,
+                    }).collect(),
+                };
+
+                let _ = tx.send(ApiResponse::LspStatus(lsp_status_info));
+            } else {
+                // No LSP manager available
+                let lsp_status_info = LspStatusInfo {
+                    servers: vec![],
+                };
+                let _ = tx.send(ApiResponse::LspStatus(lsp_status_info));
+            }
+        }
+        ApiRequest::GetHealth(tx) => {
+            // Calculate uptime
+            let uptime = start_time
+                .elapsed()
+                .unwrap_or_default()
+                .as_secs();
+
+            // Get file being edited
+            let file = editor.buffer().file_path().map(|p| p.to_string());
+
+            // Get LSP server statuses
+            let mut lsp_servers = HashMap::new();
+            if let Some(lsp_manager_arc) = editor.lsp_manager() {
+                if let Ok(lsp_manager) = lsp_manager_arc.try_lock() {
+                    let servers = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async {
+                            lsp_manager.get_lsp_status().await
+                        })
+                    });
+
+                    for server in servers {
+                        let state = if server.has_capabilities {
+                            "ready"
+                        } else if server.state.contains("Initializing") {
+                            "initializing"
+                        } else {
+                            "unknown"
+                        };
+                        lsp_servers.insert(server.language, state.to_string());
+                    }
+                }
+            }
+
+            // Determine if the system is ready
+            let ready = lsp_servers.values().all(|s| s == "ready") || lsp_servers.is_empty();
+
+            // Update session info with LSP ready status
+            if let Ok(mut session) = session_info.lock() {
+                let _ = session.set_lsp_ready(ready);
+            }
+
+            let health_info = HealthInfo {
+                status: "healthy".to_string(),
+                uptime_seconds: uptime,
+                file,
+                lsp_servers,
+                ready,
+            };
+
+            let _ = tx.send(ApiResponse::Health(health_info));
         }
     }
 }

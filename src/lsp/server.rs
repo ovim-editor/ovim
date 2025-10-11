@@ -470,7 +470,9 @@ impl LanguageServer {
                                     } else if let Some(error) = msg.error {
                                         // Don't print to stderr - propagate error to caller
                                         // Errors will be shown in status line by the editor
-                                        let _ = req.sender.send(Err(anyhow!("LSP error: {:?}", error)));
+                                        let error_msg = format!("{} (code {})", error.message, error.code);
+                                        eprintln!("[LSP-ERROR] Request failed: {:?} | Method: {} | Error: {}", id, req.method, error_msg);
+                                        let _ = req.sender.send(Err(anyhow!("LSP error: {}", error_msg)));
                                     } else {
                                         // Neither result nor error - protocol violation
                                         let _ = req.sender.send(Err(anyhow!("Invalid response: no result or error")));
@@ -747,6 +749,8 @@ impl LanguageServer {
                 .fetch_add(1, Ordering::SeqCst),
         );
 
+        eprintln!("[LSP-REQUEST] Method: {} | Request ID: {:?} | Server: {}", method, request_id, self.inner.language);
+
         let (tx, rx) = oneshot::channel();
 
         // Register pending request with metadata
@@ -755,12 +759,15 @@ impl LanguageServer {
 
             // Check if we've hit the hard limit on pending requests
             if pending.len() >= MAX_PENDING_REQUESTS {
+                eprintln!("[LSP-ERROR] Too many pending requests: {}/{}", pending.len(), MAX_PENDING_REQUESTS);
                 return Err(anyhow!(
                     "Too many pending LSP requests ({}/{}) - server may be slow or hanging",
                     pending.len(),
                     MAX_PENDING_REQUESTS
                 ));
             }
+
+            eprintln!("[LSP-REQUEST] Pending requests before: {} | Adding: {}", pending.len(), method);
 
             pending.insert(request_id.clone(), PendingRequest {
                 sender: tx,
@@ -800,10 +807,22 @@ impl LanguageServer {
             std::time::Duration::from_secs(10)   // 10s for other requests
         };
 
+        eprintln!("[LSP-REQUEST] Waiting for response (timeout: {:?})", timeout_duration);
+        let start_time = Instant::now();
+
         match tokio::time::timeout(timeout_duration, rx).await {
-            Ok(Ok(result)) => result.context(format!("LSP request '{}' failed", method)),
-            Ok(Err(_)) => Err(anyhow!("Response channel closed for method '{}'", method)),
+            Ok(Ok(result)) => {
+                let elapsed = start_time.elapsed();
+                eprintln!("[LSP-RESPONSE] Success: {} | Took: {:?} | Request ID: {:?}", method, elapsed, request_id);
+                result.context(format!("LSP request '{}' failed", method))
+            }
+            Ok(Err(_)) => {
+                let elapsed = start_time.elapsed();
+                eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);
+                Err(anyhow!("Response channel closed for method '{}'", method))
+            }
             Err(_) => {
+                eprintln!("[LSP-ERROR] Timeout: {} | After: {:?}", method, timeout_duration);
                 // Timeout - remove pending request
                 let mut pending = self.inner.pending_requests.lock().await;
                 pending.remove(&request_id);
@@ -1255,6 +1274,28 @@ impl LanguageServer {
     /// Checks if the server supports inlay hints (lock-free)
     pub async fn supports_inlay_hints(&self) -> bool {
         self.inner.cap_inlay_hint.load(Ordering::Relaxed)
+    }
+
+    /// Gets the current server state (alias for introspection)
+    pub async fn get_state(&self) -> ServerState {
+        self.state().await
+    }
+
+    /// Gets the number of pending requests
+    pub async fn pending_requests_count(&self) -> usize {
+        let pending = self.inner.pending_requests.lock().await;
+        pending.len()
+    }
+
+    /// Checks if the server has capabilities (is ready)
+    pub async fn has_capabilities(&self) -> bool {
+        let caps = self.inner.capabilities.lock().await;
+        caps.is_some()
+    }
+
+    /// Gets the command used to start the server
+    pub async fn get_command(&self) -> String {
+        self.inner.command.clone()
     }
 }
 

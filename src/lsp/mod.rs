@@ -64,6 +64,16 @@ pub struct LspNotification {
     pub message: JsonRpcMessage,
 }
 
+/// Information about an active LSP server for introspection
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LspServerInfo {
+    pub language: String,
+    pub command: String,
+    pub state: String,
+    pub pending_requests: usize,
+    pub has_capabilities: bool,
+}
+
 /// Debouncer for textDocument/didChange notifications
 /// Coalesces rapid changes to reduce LSP traffic
 struct ChangeDebouncer {
@@ -1844,6 +1854,36 @@ impl LspManager {
         let hints: Vec<lsp_types::InlayHint> = serde_json::from_value(result).unwrap_or_default();
 
         Ok(hints)
+    }
+
+    /// Gets LSP status information for all active servers
+    /// Returns a list of server info with language, command, state, and pending requests
+    pub async fn get_lsp_status(&self) -> Vec<LspServerInfo> {
+        let servers = self.servers.read().await;
+        let mut result = Vec::new();
+
+        for (language, server) in servers.iter() {
+            let state = server.get_state().await;
+            let pending_count = server.pending_requests_count().await;
+            let has_capabilities = server.has_capabilities().await;
+            let command = server.get_command().await;
+
+            result.push(LspServerInfo {
+                language: language.clone(),
+                command,
+                state: format!("{:?}", state),
+                pending_requests: pending_count,
+                has_capabilities,
+            });
+        }
+
+        result
+    }
+
+    /// Gets the list of active language server names
+    pub async fn get_active_servers(&self) -> Vec<String> {
+        let servers = self.servers.read().await;
+        servers.keys().cloned().collect()
     }
 }
 

@@ -55,8 +55,17 @@ impl Operators {
         // Remove the text
         buffer.rope_mut().remove(delete_from..delete_to);
 
-        // Adjust cursor if needed
-        let new_col = col.saturating_sub(1);
+        // Adjust cursor - clamp to new line bounds
+        // After deleting to end of line, cursor should stay at same column or move to last char
+        let line = buffer.rope().line(line_idx);
+        let line_text = line.to_string().trim_end_matches('\n').to_string();
+        let new_line_len = line_text.chars().count();
+
+        let new_col = if new_line_len > 0 {
+            col.min(new_line_len - 1)
+        } else {
+            0
+        };
         buffer.cursor_mut().set_col(new_col);
 
         Ok(deleted)

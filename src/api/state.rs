@@ -14,6 +14,8 @@ pub enum ApiRequest {
     GetMode(oneshot::Sender<ApiResponse>),
     ExecuteCommand(String, oneshot::Sender<ApiResponse>),
     GetRender(oneshot::Sender<ApiResponse>),
+    GetLspStatus(oneshot::Sender<ApiResponse>),
+    GetHealth(oneshot::Sender<ApiResponse>),
 }
 
 /// Response types that can be returned from the editor
@@ -25,6 +27,8 @@ pub enum ApiResponse {
     Cursor(CursorPosition),
     Mode(ModeInfo),
     Render(RenderInfo),
+    LspStatus(LspStatusInfo),
+    Health(HealthInfo),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
@@ -87,6 +91,32 @@ pub struct RenderInfo {
     pub width: u16,
     pub height: u16,
     pub ansi: String,
+}
+
+/// LSP status information
+#[derive(Debug, Clone, Serialize)]
+pub struct LspStatusInfo {
+    pub servers: Vec<LspServerInfoItem>,
+}
+
+/// Information about a single LSP server
+#[derive(Debug, Clone, Serialize)]
+pub struct LspServerInfoItem {
+    pub language: String,
+    pub command: String,
+    pub state: String,
+    pub pending_requests: usize,
+    pub has_capabilities: bool,
+}
+
+/// Health check information
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthInfo {
+    pub status: String,
+    pub uptime_seconds: u64,
+    pub file: Option<String>,
+    pub lsp_servers: HashMap<String, String>,
+    pub ready: bool,
 }
 
 /// Visual selection range
