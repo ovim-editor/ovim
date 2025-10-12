@@ -147,6 +147,9 @@ pub struct LspManager {
 
     /// Flag indicating diagnostics have changed and cache needs update
     diagnostics_changed: AtomicBool,
+
+    /// Current progress messages from LSP servers (language_id -> message)
+    current_progress: Mutex<HashMap<String, String>>,
 }
 
 impl LspManager {
@@ -166,6 +169,7 @@ impl LspManager {
             flush_tx,
             flush_rx: Mutex::new(Some(flush_rx)),
             diagnostics_changed: AtomicBool::new(false),
+            current_progress: Mutex::new(HashMap::new()),
         }
     }
 
@@ -177,6 +181,20 @@ impl LspManager {
     /// Checks if diagnostics have changed and resets the flag
     pub fn diagnostics_changed(&self) -> bool {
         self.diagnostics_changed.swap(false, Ordering::SeqCst)
+    }
+
+    /// Gets current progress message (non-blocking)
+    pub fn get_progress_message(&self) -> Option<String> {
+        if let Ok(progress) = self.current_progress.try_lock() {
+            if !progress.is_empty() {
+                // Return the first progress message (usually only one active)
+                progress.values().next().cloned()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     /// Starts a language server for the given language
@@ -335,6 +353,8 @@ impl LspManager {
         version: i32,
         text: String,
     ) -> Result<()> {
+        lsp_debug!("LSP-NOTIFY", "textDocument/didOpen | URI: {} | Language: {} | Version: {} | Size: {} bytes", uri, language_id, version, text.len());
+
         // Check document size to prevent OOM
         if text.len() > MAX_DOCUMENT_SIZE {
             return Err(anyhow!(
@@ -363,6 +383,8 @@ impl LspManager {
         server
             .notify("textDocument/didOpen", serde_json::to_value(params)?)
             .await?;
+
+        lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
 
         // Initialize version tracking
         let mut versions = self.document_versions.lock().await;
@@ -702,9 +724,19 @@ impl LspManager {
                                 }
                             };
 
-                            // Log progress messages
+                            // Store and log progress messages for UI display
                             if let Some(message) = message_opt {
                                 lsp_info!("Progress", "{}", message);
+                                // Store latest progress message (will be cleared on End)
+                                let mut current_progress = self.current_progress.lock().await;
+                                match &progress.value {
+                                    lsp_types::ProgressParamsValue::WorkDone(lsp_types::WorkDoneProgress::End(_)) => {
+                                        current_progress.remove(&language_id.to_string());
+                                    }
+                                    _ => {
+                                        current_progress.insert(language_id.to_string(), message);
+                                    }
+                                }
                             }
                         }
                     }
@@ -938,15 +970,22 @@ impl LspManager {
     ) -> Result<Option<String>> {
         use lsp_types::{HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
+        lsp_debug!("LSP-HOVER", "hover() called | URI: {} | line: {}, char: {} | language: {}", uri, line, character, language_id);
+
         let servers = self.servers.read().await;
         let server = servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
+        lsp_debug!("LSP-HOVER", "Server found for language: {}", language_id);
+
         // Check if server supports hover
         if !server.supports_hover().await {
+            lsp_debug!("LSP-HOVER", "Server does not support hover");
             return Ok(None); // Gracefully return None if not supported
         }
+
+        lsp_debug!("LSP-HOVER", "Server supports hover, sending request");
 
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -962,7 +1001,17 @@ impl LspManager {
             .request("textDocument/hover", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<lsp_types::Hover> = serde_json::from_value(result).ok();
+        lsp_debug!("LSP-HOVER", "Received response: {}", result);
+
+        // Handle null response (valid LSP response meaning no hover info)
+        let response: Option<lsp_types::Hover> = if result.is_null() {
+            lsp_debug!("LSP-HOVER", "Response is null");
+            None
+        } else {
+            let parsed = serde_json::from_value(result.clone()).ok();
+            lsp_debug!("LSP-HOVER", "Parsed response: {:?}", parsed.is_some());
+            parsed
+        };
 
         // Extract text from hover response
         Ok(response.and_then(|hover| {

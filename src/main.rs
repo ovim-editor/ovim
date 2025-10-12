@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
     // Initialize LSP for the opened file if applicable
     if let Some(file_path) = &args.file {
         initialize_lsp_for_file(&mut editor, file_path).await;
+        editor.clear_lsp_init_flag(); // Clear flag to prevent duplicate initialization in event loop
     }
 
     // Set up API server if requested
@@ -147,6 +148,9 @@ async fn run_headless_loop(
 ) -> Result<()> {
     use tokio::time::{Duration, sleep};
 
+    // Create channel for async preview loading
+    let (preview_tx, mut preview_rx) = tokio::sync::mpsc::unbounded_channel::<(String, ovim::editor::PreviewCache)>();
+
     loop {
         // Check for Java LSP status updates
         while let Ok(status) = java_status_rx.try_recv() {
@@ -175,6 +179,16 @@ async fn run_headless_loop(
         // Process any pending Lua commands
         #[cfg(feature = "lua")]
         let _ = editor.process_lua_commands();
+
+        // Spawn async preview loading if needed (non-blocking!)
+        if editor.mode() == ovim::mode::Mode::Picker {
+            spawn_picker_preview_loading(editor, &preview_tx);
+        }
+
+        // Poll for completed previews (non-blocking)
+        while let Ok((file_path, cache)) = preview_rx.try_recv() {
+            editor.insert_preview(file_path, cache);
+        }
 
         // Update diagnostic cache only if diagnostics changed
         // Use try_lock to avoid blocking if background task holds lock
@@ -216,6 +230,62 @@ async fn run_headless_loop(
     Ok(())
 }
 
+/// Spawns a background task to load picker preview if debounce time has elapsed
+/// Returns immediately without blocking input handling
+fn spawn_picker_preview_loading(
+    editor: &mut Editor,
+    preview_tx: &tokio::sync::mpsc::UnboundedSender<(String, ovim::editor::PreviewCache)>,
+) {
+    if !editor.should_load_picker_preview(200) {
+        return;
+    }
+
+    // Get the file to load (returns None if already cached/loading)
+    if let Some(file_path) = editor.get_preview_to_load() {
+        let tx = preview_tx.clone();
+
+        // Spawn background task - doesn't block!
+        tokio::spawn(async move {
+            // Load preview asynchronously
+            if let Some(cache) = load_preview_async(&file_path).await {
+                // Send result back (non-blocking)
+                let _ = tx.send((file_path, cache));
+            }
+        });
+    }
+}
+
+/// Loads a file preview asynchronously (can be called from background task)
+async fn load_preview_async(file_path: &str) -> Option<ovim::editor::PreviewCache> {
+    use std::collections::HashMap;
+
+    // Check file size before loading (max 1MB for preview)
+    const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
+    if let Ok(metadata) = tokio::fs::metadata(file_path).await {
+        if metadata.len() > MAX_PREVIEW_SIZE {
+            // File too large, create a placeholder
+            return Some(ovim::editor::PreviewCache {
+                content: format!("File too large for preview ({} bytes)", metadata.len()),
+                highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+                language: None,
+            });
+        }
+    }
+
+    // Load the file
+    let content = tokio::fs::read_to_string(file_path).await.ok()?;
+
+    // Detect language
+    let language = ovim::syntax::LanguageRegistry::detect_from_path(file_path);
+
+    // Create cache entry
+    Some(ovim::editor::PreviewCache {
+        content,
+        highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+        language,
+    })
+}
+
 async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
@@ -226,6 +296,9 @@ async fn run_event_loop(
 
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(100);
+
+    // Create channel for async preview loading
+    let (preview_tx, mut preview_rx) = tokio::sync::mpsc::unbounded_channel::<(String, ovim::editor::PreviewCache)>();
 
     while !editor.should_quit() {
         // Check for Java LSP status updates
@@ -271,6 +344,16 @@ async fn run_event_loop(
         // Process any pending Lua commands
         #[cfg(feature = "lua")]
         let _ = editor.process_lua_commands();
+
+        // Spawn async preview loading if needed (non-blocking!)
+        if editor.mode() == ovim::mode::Mode::Picker {
+            spawn_picker_preview_loading(editor, &preview_tx);
+        }
+
+        // Poll for completed previews (non-blocking)
+        while let Ok((file_path, cache)) = preview_rx.try_recv() {
+            editor.insert_preview(file_path, cache);
+        }
 
         // Render the editor
         ui.renderer_mut().render(editor)?;
@@ -548,6 +631,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         registers,
         marks,
         picker,
+        hover_info: editor.hover_info().map(|s| s.to_string()),
     }
 }
 
