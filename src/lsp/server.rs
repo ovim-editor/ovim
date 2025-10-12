@@ -465,17 +465,18 @@ impl LanguageServer {
                                 let mut pending = inner_clone.pending_requests.lock().await;
                                 if let Some(req) = pending.remove(&id) {
                                     // CRITICAL FIX: Propagate errors instead of just logging
-                                    if let Some(result) = msg.result {
-                                        let _ = req.sender.send(Ok(result));
-                                    } else if let Some(error) = msg.error {
+                                    if let Some(error) = msg.error {
                                         // Don't print to stderr - propagate error to caller
                                         // Errors will be shown in status line by the editor
                                         let error_msg = format!("{} (code {})", error.message, error.code);
                                         eprintln!("[LSP-ERROR] Request failed: {:?} | Method: {} | Error: {}", id, req.method, error_msg);
                                         let _ = req.sender.send(Err(anyhow!("LSP error: {}", error_msg)));
+                                    } else if let Some(result) = msg.result {
+                                        let _ = req.sender.send(Ok(result));
                                     } else {
-                                        // Neither result nor error - protocol violation
-                                        let _ = req.sender.send(Err(anyhow!("Invalid response: no result or error")));
+                                        // Response with no result and no error - treat as null result
+                                        // This can happen for valid responses like hover with no info
+                                        let _ = req.sender.send(Ok(Value::Null));
                                     }
                                 }
                             }
@@ -749,7 +750,7 @@ impl LanguageServer {
                 .fetch_add(1, Ordering::SeqCst),
         );
 
-        eprintln!("[LSP-REQUEST] Method: {} | Request ID: {:?} | Server: {}", method, request_id, self.inner.language);
+        crate::lsp_debug!(&self.log_prefix(), "LSP-REQUEST: {} | ID: {:?} | Params: {}", method, request_id, params);
 
         let (tx, rx) = oneshot::channel();
 
@@ -759,7 +760,7 @@ impl LanguageServer {
 
             // Check if we've hit the hard limit on pending requests
             if pending.len() >= MAX_PENDING_REQUESTS {
-                eprintln!("[LSP-ERROR] Too many pending requests: {}/{}", pending.len(), MAX_PENDING_REQUESTS);
+                // eprintln!("[LSP-ERROR] Too many pending requests: {}/{}", pending.len(), MAX_PENDING_REQUESTS);
                 return Err(anyhow!(
                     "Too many pending LSP requests ({}/{}) - server may be slow or hanging",
                     pending.len(),
@@ -767,7 +768,7 @@ impl LanguageServer {
                 ));
             }
 
-            eprintln!("[LSP-REQUEST] Pending requests before: {} | Adding: {}", pending.len(), method);
+            // eprintln!("[LSP-REQUEST] Pending requests before: {} | Adding: {}", pending.len(), method);
 
             pending.insert(request_id.clone(), PendingRequest {
                 sender: tx,
@@ -807,22 +808,22 @@ impl LanguageServer {
             std::time::Duration::from_secs(10)   // 10s for other requests
         };
 
-        eprintln!("[LSP-REQUEST] Waiting for response (timeout: {:?})", timeout_duration);
+        // eprintln!("[LSP-REQUEST] Waiting for response (timeout: {:?})", timeout_duration);
         let start_time = Instant::now();
 
         match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(result)) => {
                 let elapsed = start_time.elapsed();
-                eprintln!("[LSP-RESPONSE] Success: {} | Took: {:?} | Request ID: {:?}", method, elapsed, request_id);
+                // eprintln!("[LSP-RESPONSE] Success: {} | Took: {:?} | Request ID: {:?}", method, elapsed, request_id);
                 result.context(format!("LSP request '{}' failed", method))
             }
             Ok(Err(_)) => {
                 let elapsed = start_time.elapsed();
-                eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);
+                // eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);
                 Err(anyhow!("Response channel closed for method '{}'", method))
             }
             Err(_) => {
-                eprintln!("[LSP-ERROR] Timeout: {} | After: {:?}", method, timeout_duration);
+                // eprintln!("[LSP-ERROR] Timeout: {} | After: {:?}", method, timeout_duration);
                 // Timeout - remove pending request
                 let mut pending = self.inner.pending_requests.lock().await;
                 pending.remove(&request_id);

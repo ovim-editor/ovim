@@ -517,9 +517,12 @@ impl Picker {
             if max_len < 4 {
                 return "...".to_string();
             }
+            let chars: Vec<char> = path.chars().collect();
             let start_len = (max_len - 3) / 2;
             let end_len = max_len - 3 - start_len;
-            return format!("{}...{}", &path[..start_len], &path[path.len() - end_len..]);
+            let start: String = chars.iter().take(start_len).collect();
+            let end: String = chars.iter().skip(chars.len().saturating_sub(end_len)).collect();
+            return format!("{}...{}", start, end);
         }
 
         // Always keep the last component (filename)
@@ -534,7 +537,10 @@ impl Picker {
                 return "...".to_string();
             }
             let available = max_len - 3;
-            return format!("...{}", &last[last.len().saturating_sub(available)..]);
+            let chars: Vec<char> = last.chars().collect();
+            let skip_count = chars.len().saturating_sub(available);
+            let suffix: String = chars.iter().skip(skip_count).collect();
+            return format!("...{}", suffix);
         }
 
         // Try to include as many parts from the end as possible

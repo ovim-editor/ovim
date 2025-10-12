@@ -2002,8 +2002,14 @@ impl InputHandler {
             }
             // Line motions
             KeyCode::Char('0') => {
-                editor.buffer_mut().cursor_mut().set_col(0);
-                editor.clear_count();
+                // If there's already a count, treat this as a digit (e.g., "50j")
+                // Otherwise, treat it as a motion to column 0
+                if editor.count().is_some() {
+                    editor.append_count(0);
+                } else {
+                    editor.buffer_mut().cursor_mut().set_col(0);
+                    editor.clear_count();
+                }
             }
             KeyCode::Char('$') => {
                 let line_idx = editor.buffer().cursor().line();
@@ -2696,7 +2702,13 @@ impl InputHandler {
                 editor.clear_count();
             }
             KeyCode::Char('0') => {
-                editor.buffer_mut().cursor_mut().set_col(0);
+                // If there's already a count, treat this as a digit (e.g., "50j")
+                // Otherwise, treat it as a motion to column 0
+                if editor.count().is_some() {
+                    editor.append_count(0);
+                } else {
+                    editor.buffer_mut().cursor_mut().set_col(0);
+                }
             }
             KeyCode::Char('$') => {
                 let line_idx = editor.buffer().cursor().line();
@@ -2803,6 +2815,14 @@ impl InputHandler {
                 }
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Normal);
+            }
+            // Count prefix (for motions like 5j, 10w)
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                let digit = c.to_digit(10).unwrap() as usize;
+                // 0 is handled separately above as a motion
+                if digit != 0 || editor.count().is_some() {
+                    editor.append_count(digit);
+                }
             }
             _ => {}
         }
@@ -3314,12 +3334,16 @@ impl InputHandler {
                 if let Some(picker) = editor.picker_mut() {
                     picker.backspace_query();
                 }
+                // Mark query changed for debouncing
+                editor.mark_picker_query_changed();
             }
             // Delete - remove character at cursor
             KeyCode::Delete => {
                 if let Some(picker) = editor.picker_mut() {
                     picker.delete_char();
                 }
+                // Mark query changed for debouncing
+                editor.mark_picker_query_changed();
             }
             // Left arrow - move cursor left in query
             KeyCode::Left => {
@@ -3382,6 +3406,8 @@ impl InputHandler {
                 if let Some(picker) = editor.picker_mut() {
                     picker.insert_char(ch);
                 }
+                // Mark query changed for debouncing
+                editor.mark_picker_query_changed();
             }
             _ => {}
         }
@@ -3390,7 +3416,13 @@ impl InputHandler {
     }
 
     /// Preloads preview for the currently selected picker item
+    /// Respects debouncing - only loads if enough time has elapsed since last query change
     fn preload_picker_preview(editor: &mut Editor) {
+        // Check debounce timing (200ms delay)
+        if !editor.should_load_picker_preview(200) {
+            return;
+        }
+
         if let Some(picker) = editor.picker() {
             if let Some(result) = picker.selected_result() {
                 // Only preload for file picker modes (not custom, completion, or LSP locations)

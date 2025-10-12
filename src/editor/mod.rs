@@ -208,6 +208,12 @@ pub struct Editor {
     location_window_open: bool,
     /// Tab page manager
     tab_page_manager: TabPageManager,
+    /// Last time picker query changed (for debouncing preview loading)
+    last_picker_query_change: Option<std::time::Instant>,
+    /// Currently loading preview path (to avoid duplicate requests)
+    loading_preview: Option<String>,
+    /// Last successfully shown preview path (to show while new one loads)
+    last_shown_preview: Option<String>,
 }
 
 /// Cached preview data for the picker
@@ -319,6 +325,9 @@ impl Editor {
             quickfix_window_open: false,
             location_window_open: false,
             tab_page_manager: TabPageManager::new(),
+            last_picker_query_change: None,
+            loading_preview: None,
+            last_shown_preview: None,
         }
     }
 
@@ -388,6 +397,9 @@ impl Editor {
             quickfix_window_open: false,
             location_window_open: false,
             tab_page_manager: TabPageManager::new(),
+            last_picker_query_change: None,
+            loading_preview: None,
+            last_shown_preview: None,
         }
     }
 
@@ -1144,6 +1156,11 @@ impl Editor {
         self.needs_lsp_init = false;
     }
 
+    /// Requests LSP initialization for the current buffer
+    pub fn request_lsp_init(&mut self) {
+        self.needs_lsp_init = true;
+    }
+
     /// Starts building a composite change (e.g., when entering insert mode)
     pub fn start_change_building(&mut self, cursor_before: Position) {
         self.change_manager.start_building(cursor_before);
@@ -1220,6 +1237,66 @@ impl Editor {
         self.picker.as_mut()
     }
 
+    /// Marks that picker query was just changed (for debouncing preview loading)
+    pub fn mark_picker_query_changed(&mut self) {
+        self.last_picker_query_change = Some(std::time::Instant::now());
+        // Clear loading flag since query changed
+        self.loading_preview = None;
+    }
+
+    /// Checks if enough time has elapsed since picker query changed (for debouncing)
+    /// Returns true if we should load preview now
+    pub fn should_load_picker_preview(&self, debounce_ms: u64) -> bool {
+        match self.last_picker_query_change {
+            None => true, // No previous change, load immediately
+            Some(last_change) => {
+                let elapsed = last_change.elapsed();
+                elapsed.as_millis() >= debounce_ms as u128
+            }
+        }
+    }
+
+    /// Gets the path that should be loaded for preview (if any)
+    /// Returns None if already cached or already loading
+    pub fn get_preview_to_load(&mut self) -> Option<String> {
+        if let Some(picker) = self.picker() {
+            if let Some(result) = picker.selected_result() {
+                // Only for file picker modes
+                if *picker.mode() != crate::editor::PickerMode::Custom
+                    && *picker.mode() != crate::editor::PickerMode::Completion
+                    && *picker.mode() != crate::editor::PickerMode::LspLocations {
+                    let file_path = result.location.clone();
+
+                    // Skip if already cached
+                    if self.preview_cache.contains_key(&file_path) {
+                        return None;
+                    }
+
+                    // Skip if currently loading
+                    if self.loading_preview.as_ref() == Some(&file_path) {
+                        return None;
+                    }
+
+                    // Mark as loading
+                    self.loading_preview = Some(file_path.clone());
+                    return Some(file_path);
+                }
+            }
+        }
+        None
+    }
+
+    /// Inserts a loaded preview into the cache
+    pub fn insert_preview(&mut self, file_path: String, cache: PreviewCache) {
+        self.preview_cache.insert(file_path.clone(), cache);
+        // Clear loading flag
+        if self.loading_preview.as_ref() == Some(&file_path) {
+            self.loading_preview = None;
+        }
+        // Trim cache
+        self.trim_preview_cache(50);
+    }
+
     /// Closes the picker
     pub fn close_picker(&mut self) {
         self.picker = None;
@@ -1279,6 +1356,27 @@ impl Editor {
     /// Gets cached preview if available
     pub fn get_preview_cache(&self, file_path: &str) -> Option<&PreviewCache> {
         self.preview_cache.get(file_path)
+    }
+
+    /// Gets preview with fallback - prefers current file, but shows last preview if loading
+    /// This provides smooth transitions without "Loading..." flicker
+    pub fn get_preview_with_fallback(&mut self, file_path: &str) -> Option<(&PreviewCache, String)> {
+        // Try to get the requested preview
+        if let Some(preview) = self.preview_cache.get(file_path) {
+            // Update last shown
+            self.last_shown_preview = Some(file_path.to_string());
+            return Some((preview, file_path.to_string()));
+        }
+
+        // Fall back to last shown preview while new one loads
+        if let Some(last_path) = &self.last_shown_preview {
+            if let Some(preview) = self.preview_cache.get(last_path) {
+                // Return the old preview (with its path for reference)
+                return Some((preview, last_path.clone()));
+            }
+        }
+
+        None
     }
 
     /// Gets the current color scheme
@@ -1402,6 +1500,16 @@ impl Editor {
     /// Gets active LSP servers
     pub fn active_lsp_servers(&self) -> &HashMap<String, String> {
         &self.active_lsp_servers
+    }
+
+    /// Gets current LSP progress message
+    pub fn lsp_progress_message(&self) -> Option<String> {
+        if let Some(lsp_manager) = &self.lsp_manager {
+            if let Ok(lsp) = lsp_manager.try_lock() {
+                return lsp.get_progress_message();
+            }
+        }
+        None
     }
 
     /// Gets comprehensive LSP information for debugging
@@ -1781,6 +1889,29 @@ impl Editor {
         }
     }
 
+    /// Converts a column position to UTF-16 code units for LSP
+    ///
+    /// LSP spec requires character positions in UTF-16 code units, not byte offsets.
+    /// This is critical for correct positioning with rust-analyzer and other LSP servers.
+    fn col_to_utf16(&self, line: usize, col: usize) -> u32 {
+        let rope = self.buffer().rope();
+        if line >= rope.len_lines() {
+            return 0;
+        }
+
+        let line_text = rope.line(line);
+        let char_count = line_text.chars().count();
+
+        // Clamp col to valid range
+        let safe_col = col.min(char_count);
+
+        // Convert to UTF-16 code units
+        line_text.chars()
+            .take(safe_col)
+            .map(|c| c.len_utf16() as u32)
+            .sum()
+    }
+
     /// Go to definition at current cursor position via LSP (implementation)
     async fn goto_definition_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
@@ -1817,7 +1948,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -1931,7 +2062,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2045,7 +2176,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2159,7 +2290,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2422,7 +2553,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2548,7 +2679,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2674,7 +2805,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2812,7 +2943,9 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
+
+        crate::lsp_debug!("HOVER-DEBUG", "Cursor: line={}, col={} | UTF-16 char={}", cursor.line(), cursor.col(), character);
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -2850,7 +2983,8 @@ impl Editor {
             self.set_lsp_status("Hover window opened (q to close, j/k to scroll)".to_string());
             Ok(true)
         } else {
-            self.set_lsp_status("No hover information found".to_string());
+            // Provide helpful status message - LSP might still be indexing
+            self.set_lsp_status("No hover info (try again, LSP may be indexing...)".to_string());
             Ok(false)
         }
     }
@@ -2891,7 +3025,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -3061,7 +3195,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = cursor.col() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -3649,7 +3783,7 @@ impl Editor {
 
     /// Renders the editor to an in-memory buffer and returns ANSI output
     /// Used for headless mode to get pixel-perfect terminal representation
-    pub fn render_to_ansi(&self, width: u16, height: u16) -> Result<String> {
+    pub fn render_to_ansi(&mut self, width: u16, height: u16) -> Result<String> {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
         use crate::ui::buffer_to_ansi;

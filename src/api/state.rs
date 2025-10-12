@@ -44,6 +44,8 @@ pub struct EditorSnapshot {
     pub marks: HashMap<String, CursorPosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub picker: Option<PickerInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hover_info: Option<String>,
 }
 
 /// Picker state information

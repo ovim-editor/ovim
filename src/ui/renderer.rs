@@ -31,7 +31,7 @@ impl Renderer {
     }
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
-    pub fn render_to_frame(frame: &mut Frame, editor: &Editor) {
+    pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor) {
         // Get color scheme from editor, fall back to Tokyonight if not found
         let scheme = editor.get_color_scheme()
             .cloned()
@@ -55,11 +55,23 @@ impl Renderer {
             (None, main_area)
         };
 
-        // Second split: buffer + status line
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
-            .split(content_area);
+        // Second split: buffer + progress line (optional) + status line
+        let has_progress = editor.lsp_progress_message().is_some();
+        let chunks = if has_progress {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(1), // progress line
+                    Constraint::Length(1), // status line
+                ].as_ref())
+                .split(content_area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+                .split(content_area)
+        };
 
         // Render the file tree if visible
         if let Some(tree_area) = file_tree_area {
@@ -69,8 +81,15 @@ impl Renderer {
         // Render the main text area
         let viewport_start = Self::render_buffer(frame, editor, &theme, chunks[0]);
 
+        // Render progress line if present
+        if has_progress {
+            if let Some(progress_msg) = editor.lsp_progress_message() {
+                Self::render_progress_line(frame, &progress_msg, chunks[1]);
+            }
+        }
+
         // Render the status line or command line or search line
-        let status_chunk = chunks[1];
+        let status_chunk = if has_progress { chunks[2] } else { chunks[1] };
         if editor.mode() == crate::mode::Mode::Command {
             Self::render_command_line(frame, editor, status_chunk);
         } else if editor.mode() == crate::mode::Mode::Search {
@@ -102,10 +121,11 @@ impl Renderer {
             if let Some(picker) = editor.picker() {
                 let cursor_pos = picker.query_cursor();
                 let picker_area = Self::get_picker_area(frame.area());
-                frame.set_cursor_position((
-                    picker_area.x + 1 + 2 + cursor_pos as u16, // +1 for border, +2 for "> " prefix
-                    picker_area.y + 1, // +1 for border
-                ));
+                // +1 for border, +2 for " " prefix (icon + space)
+                let cursor_x = (picker_area.x + 1 + 2 + cursor_pos as u16)
+                    .min(picker_area.x + picker_area.width.saturating_sub(2)); // Keep within bounds
+                let cursor_y = picker_area.y + 1; // +1 for border
+                frame.set_cursor_position((cursor_x, cursor_y));
             }
         } else if editor.mode() == crate::mode::Mode::Command {
             // Position cursor in command line
@@ -150,7 +170,7 @@ impl Renderer {
     }
 
     /// Renders the editor state to the terminal
-    pub fn render(&mut self, editor: &Editor) -> Result<()> {
+    pub fn render(&mut self, editor: &mut Editor) -> Result<()> {
         // Set cursor style based on mode
         let cursor_style = match editor.mode() {
             crate::mode::Mode::Insert => SetCursorStyle::BlinkingBar,
@@ -312,6 +332,29 @@ impl Renderer {
         frame.render_widget(paragraph, text_area);
 
         start_line
+    }
+
+    /// Renders the LSP progress line (just above status line)
+    fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
+        use ratatui::text::{Line, Span};
+        use ratatui::style::{Color, Style, Modifier};
+        use ratatui::widgets::Paragraph;
+
+        // Right-align the progress message
+        let padding_len = area.width.saturating_sub(progress_msg.len() as u16 + 2);
+        let progress_line = Line::from(vec![
+            Span::raw(" ".repeat(padding_len as usize)),
+            Span::styled(
+                format!(" {} ", progress_msg),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]);
+
+        let paragraph = Paragraph::new(progress_line)
+            .style(Style::default().bg(Color::Black));
+        frame.render_widget(paragraph, area);
     }
 
     /// Renders the status line
@@ -699,25 +742,34 @@ impl Renderer {
     }
 
     /// Renders the picker overlay
-    fn render_picker(frame: &mut Frame, editor: &Editor, _full_area: Rect) {
+    fn render_picker(frame: &mut Frame, editor: &mut Editor, _full_area: Rect) {
         let Some(picker) = editor.picker() else { return };
 
         let picker_area = Self::get_picker_area(frame.area());
         let show_preview = Self::should_show_preview(picker_area);
 
-        // Create block with border
+        // Clear background to prevent bleed-through
+        frame.render_widget(ratatui::widgets::Clear, picker_area);
+
+        // Create block with rounded border and styled colors
         let mode_name = match picker.mode() {
-            crate::editor::PickerMode::FindFiles => "Find Files",
-            crate::editor::PickerMode::LiveGrep => "Live Grep",
-            crate::editor::PickerMode::Custom => "Select",
-            crate::editor::PickerMode::Completion => "Completion",
-            crate::editor::PickerMode::LspLocations => "LSP Navigation",
+            crate::editor::PickerMode::FindFiles => " 󰈞 Find Files ",
+            crate::editor::PickerMode::LiveGrep => " 󰺮 Live Grep ",
+            crate::editor::PickerMode::Custom => " 󰒉 Select ",
+            crate::editor::PickerMode::Completion => "  Completion ",
+            crate::editor::PickerMode::LspLocations => " 󰘧 Navigation ",
         };
 
+        // Richer background with gradient-like effect
         let block = Block::default()
             .title(mode_name)
+            .title_style(Style::default()
+                .fg(Color::Rgb(165, 180, 252))  // Soft indigo
+                .add_modifier(Modifier::BOLD))
             .borders(Borders::ALL)
-            .style(Style::default().bg(Color::Black).fg(Color::White));
+            .border_style(Style::default().fg(Color::Rgb(100, 116, 180)))  // Muted purple-blue
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .style(Style::default().bg(Color::Rgb(20, 24, 35)));  // Deep navy
 
         frame.render_widget(block.clone(), picker_area);
 
@@ -735,33 +787,80 @@ impl Renderer {
                 .split(inner_area)
         };
 
-        // Split left side into query line and results
+        // Split left side into query line + separator + results
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
+            .constraints([
+                Constraint::Length(1),  // Query line
+                Constraint::Length(1),  // Separator
+                Constraint::Min(1)      // Results
+            ].as_ref())
             .split(main_chunks[0]);
 
-        let chunks = left_chunks;
+        // Render query line with enhanced styling
+        let query_text = picker.query();
+        let cursor_pos = picker.query_cursor();
+        let prompt_icon = " ";
 
-        // Render query line
-        let query_text = format!("> {}", picker.query());
-        let query_line = Line::from(vec![
+        // Split query text at cursor position to render cursor in the right place
+        let chars: Vec<char> = query_text.chars().collect();
+        let before_cursor: String = chars.iter().take(cursor_pos).collect();
+        let after_cursor: String = chars.iter().skip(cursor_pos).collect();
+
+        let mut spans = vec![
             Span::styled(
-                query_text,
+                prompt_icon,
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(Color::Rgb(129, 250, 183))  // Soft green
                     .add_modifier(Modifier::BOLD),
             ),
-        ]);
+            Span::styled(
+                " ",
+                Style::default(),
+            ),
+            Span::styled(
+                before_cursor,
+                Style::default()
+                    .fg(Color::Rgb(220, 220, 230))  // Near white
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "▊",  // Cursor block
+                Style::default()
+                    .fg(Color::Rgb(165, 180, 252))
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+        ];
+
+        if !after_cursor.is_empty() {
+            spans.push(Span::styled(
+                after_cursor,
+                Style::default()
+                    .fg(Color::Rgb(220, 220, 230))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        let query_line = Line::from(spans);
         let query_paragraph = Paragraph::new(query_line)
-            .style(Style::default().bg(Color::Black));
-        frame.render_widget(query_paragraph, chunks[0]);
+            .style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        frame.render_widget(query_paragraph, left_chunks[0]);
+
+        // Render separator line
+        let separator = "─".repeat(left_chunks[1].width as usize);
+        let separator_line = Line::from(Span::styled(
+            separator,
+            Style::default().fg(Color::Rgb(60, 70, 100)),  // Subtle line
+        ));
+        let separator_paragraph = Paragraph::new(separator_line)
+            .style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        frame.render_widget(separator_paragraph, left_chunks[1]);
 
         // Render results
         let results = picker.filtered_results();
         let selected_idx = picker.selected_index();
-        let max_results = chunks[1].height as usize;
-        let result_width = chunks[1].width as usize;
+        let max_results = left_chunks[2].height as usize;
+        let result_width = left_chunks[2].width as usize;
 
         // Calculate scroll offset to keep selected item visible
         let scroll_offset = if selected_idx >= max_results {
@@ -780,24 +879,51 @@ impl Renderer {
                 let is_selected = actual_idx == selected_idx;
 
                 // Truncate the display path if needed
-                let max_display_len = result_width.saturating_sub(4); // Leave room for "  " prefix and padding
+                let max_display_len = result_width.saturating_sub(5); // Room for icon + prefix + padding
                 let display = crate::editor::Picker::truncate_path(&result.display, max_display_len);
-                let text = format!("  {}", display);
 
-                let style = if is_selected {
-                    Style::default()
-                        .bg(Color::Blue)
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
+                // Choose icon based on file type or result type
+                let icon = if result.line > 0 {
+                    " "  // Search result icon
+                } else if display.ends_with('/') {
+                    " "  // Directory icon
                 } else {
-                    Style::default().fg(Color::Gray).bg(Color::Black)
+                    " "  // File icon
                 };
 
-                // Pad line to fill width with background color
-                let padding = result_width.saturating_sub(text.len());
+                let (icon_style, text_style, bg_color) = if is_selected {
+                    (
+                        Style::default()
+                            .fg(Color::Rgb(129, 250, 183))  // Bright green for icon
+                            .add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Rgb(240, 240, 255))  // Bright text
+                            .bg(Color::Rgb(55, 65, 95))  // Highlighted background
+                            .add_modifier(Modifier::BOLD),
+                        Color::Rgb(55, 65, 95),
+                    )
+                } else {
+                    (
+                        Style::default()
+                            .fg(Color::Rgb(120, 130, 160)),  // Muted icon
+                        Style::default()
+                            .fg(Color::Rgb(180, 185, 200))  // Light gray text
+                            .bg(Color::Rgb(20, 24, 35)),
+                        Color::Rgb(20, 24, 35),
+                    )
+                };
+
+                let prefix = if is_selected { " ▸ " } else { "   " };
+                let text_content = format!("{}{}", prefix, display);
+
+                // Calculate padding
+                let content_len = icon.chars().count() + text_content.chars().count();
+                let padding = result_width.saturating_sub(content_len);
+
                 Line::from(vec![
-                    Span::styled(text, style),
-                    Span::styled(" ".repeat(padding), style),
+                    Span::styled(icon, icon_style),
+                    Span::styled(text_content, text_style),
+                    Span::styled(" ".repeat(padding), Style::default().bg(bg_color)),
                 ])
             })
             .collect();
@@ -807,31 +933,38 @@ impl Renderer {
 
         if results.is_empty() {
             // Truly no matches
-            let text = "  No matches";
-            let padding = result_width.saturating_sub(text.len());
+            let text = "  󰍉 No matches found";
+            let padding = result_width.saturating_sub(text.chars().count());
             all_lines.push(Line::from(vec![
                 Span::styled(
                     text,
-                    Style::default().fg(Color::Red).bg(Color::Black),
+                    Style::default()
+                        .fg(Color::Rgb(240, 120, 120))  // Soft red
+                        .bg(Color::Rgb(20, 24, 35)),
                 ),
                 Span::styled(
                     " ".repeat(padding),
-                    Style::default().bg(Color::Black),
+                    Style::default().bg(Color::Rgb(20, 24, 35)),
                 ),
             ]));
         } else {
-            // Add result count at the end if there's space
-            let result_count = format!("  {} matches", results.len());
+            // Add result count at the bottom if there's space
             if all_lines.len() < max_results {
+                let result_count = format!("  {} result{}",
+                    results.len(),
+                    if results.len() == 1 { "" } else { "s" });
                 let padding = result_width.saturating_sub(result_count.len());
                 all_lines.push(Line::from(vec![
                     Span::styled(
                         result_count,
-                        Style::default().fg(Color::DarkGray).bg(Color::Black),
+                        Style::default()
+                            .fg(Color::Rgb(100, 110, 140))  // Very muted
+                            .bg(Color::Rgb(20, 24, 35))
+                            .add_modifier(Modifier::ITALIC),
                     ),
                     Span::styled(
                         " ".repeat(padding),
-                        Style::default().bg(Color::Black),
+                        Style::default().bg(Color::Rgb(20, 24, 35)),
                     ),
                 ]));
             }
@@ -843,45 +976,65 @@ impl Renderer {
             all_lines.push(Line::from(vec![
                 Span::styled(
                     " ".repeat(result_width),
-                    Style::default().bg(Color::Black),
+                    Style::default().bg(Color::Rgb(20, 24, 35)),
                 ),
             ]));
         }
 
         let results_paragraph = Paragraph::new(all_lines)
-            .style(Style::default().bg(Color::Black));
-        frame.render_widget(results_paragraph, chunks[1]);
+            .style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        frame.render_widget(results_paragraph, left_chunks[2]);
 
-        // Render preview panel if enabled and we have a selection
+        // Get selected result (need to clone to release immutable borrow of picker)
+        let selected_result = picker.selected_result().cloned();
+
+        // Drop immutable borrow of picker before calling functions that need mutable borrow
+        drop(picker);
+
+        // Render preview panel if enabled
         if show_preview {
-            if let Some(selected) = picker.selected_result() {
-                Self::render_picker_preview(frame, editor, selected, main_chunks[1]);
+            if let Some(selected) = selected_result {
+                Self::render_picker_preview(frame, editor, &selected, main_chunks[1]);
+            } else {
+                // Render empty state when no selection
+                Self::render_picker_empty_state(frame, main_chunks[1]);
             }
         }
     }
 
     /// Renders the file preview for the picker
-    fn render_picker_preview(frame: &mut Frame, editor: &Editor, result: &crate::editor::PickerResult, area: Rect) {
-        use std::path::Path;
-
-        // Add border around preview
+    fn render_picker_preview(frame: &mut Frame, editor: &mut crate::editor::Editor, result: &crate::editor::PickerResult, area: Rect) {
+        // Add border around preview with enhanced styling
         let preview_block = Block::default()
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(Style::default().fg(Color::Rgb(60, 70, 100)))  // Subtle divider
+            .style(Style::default().bg(Color::Rgb(25, 29, 40)));  // Slightly different background
 
         let inner_area = preview_block.inner(area);
         frame.render_widget(preview_block, area);
 
-        // Try to get cached preview
+        // Try to get preview with fallback (keeps old preview while loading new one)
         let file_path = &result.location;
-        let preview = match editor.get_preview_cache(file_path) {
+        let (preview, _actual_path) = match editor.get_preview_with_fallback(file_path) {
             Some(p) => p,
             None => {
-                // Show loading message (cache miss, will be loaded on next frame)
-                let loading_msg = "Loading preview...";
+                // No preview available at all - show loading message
+                let loading_msg = " 󰦖  Loading preview...";
                 let paragraph = Paragraph::new(loading_msg)
-                    .style(Style::default().fg(Color::DarkGray).bg(Color::Black));
-                frame.render_widget(paragraph, inner_area);
+                    .style(Style::default()
+                        .fg(Color::Rgb(120, 130, 160))
+                        .bg(Color::Rgb(25, 29, 40))
+                        .add_modifier(Modifier::ITALIC))
+                    .alignment(ratatui::layout::Alignment::Center);
+
+                // Center vertically
+                let centered_area = Rect {
+                    x: inner_area.x,
+                    y: inner_area.y + inner_area.height / 2,
+                    width: inner_area.width,
+                    height: 1,
+                };
+                frame.render_widget(paragraph, centered_area);
                 return;
             }
         };
@@ -955,9 +1108,9 @@ impl Renderer {
                         // Add line number prefix
                         let line_num = format!("{:>4} │ ", line_idx + 1);
                         let line_num_style = if is_target_line {
-                            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                            Style::default().fg(Color::Rgb(129, 250, 183)).add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::DarkGray)
+                            Style::default().fg(Color::Rgb(100, 110, 140))
                         };
                         spans.push(Span::styled(line_num, line_num_style));
 
@@ -994,7 +1147,7 @@ impl Renderer {
 
                             // Highlight the target line
                             if is_target_line {
-                                style = style.bg(Color::Rgb(40, 40, 60));
+                                style = style.bg(Color::Rgb(55, 65, 95));
                             }
 
                             spans.push(Span::styled(text, style));
@@ -1015,7 +1168,7 @@ impl Renderer {
         }
 
         let paragraph = Paragraph::new(lines_to_render)
-            .style(Style::default().bg(Color::Black));
+            .style(Style::default().bg(Color::Rgb(25, 29, 40)));
         frame.render_widget(paragraph, inner_area);
     }
 
@@ -1046,15 +1199,15 @@ impl Renderer {
 
             let line_num = format!("{:>4} │ ", line_idx + 1);
             let line_num_style = if is_target_line {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Rgb(129, 250, 183)).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(Color::Rgb(100, 110, 140))
             };
 
             let text_style = if is_target_line {
-                Style::default().fg(Color::White).bg(Color::Rgb(40, 40, 60))
+                Style::default().fg(Color::White).bg(Color::Rgb(55, 65, 95))
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::Rgb(200, 205, 220))
             };
 
             lines.push(Line::from(vec![
@@ -1062,6 +1215,36 @@ impl Renderer {
                 Span::styled(line_text.to_string(), text_style),
             ]));
         }
+    }
+
+    /// Renders empty state for the picker preview panel
+    fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
+        // Add border around preview with enhanced styling
+        let preview_block = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(Color::Rgb(60, 70, 100)))  // Subtle divider
+            .style(Style::default().bg(Color::Rgb(25, 29, 40)));  // Slightly different background
+
+        let inner_area = preview_block.inner(area);
+        frame.render_widget(preview_block, area);
+
+        // Show centered empty state message
+        let empty_msg = " 󰈈  No file selected";
+        let paragraph = Paragraph::new(empty_msg)
+            .style(Style::default()
+                .fg(Color::Rgb(100, 110, 140))  // Muted color
+                .bg(Color::Rgb(25, 29, 40))
+                .add_modifier(Modifier::ITALIC))
+            .alignment(ratatui::layout::Alignment::Center);
+
+        // Center vertically
+        let centered_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y + inner_area.height / 2,
+            width: inner_area.width,
+            height: 1,
+        };
+        frame.render_widget(paragraph, centered_area);
     }
 
     /// Renders a single line with all highlighting (syntax, visual selection, search)

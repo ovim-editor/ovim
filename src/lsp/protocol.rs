@@ -119,6 +119,17 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
     let json = serde_json::to_string(message)?;
     let content_length = json.len();
 
+    // Debug log outgoing messages
+    if message.is_notification() {
+        if let Some(method) = &message.method {
+            crate::lsp_debug!("LSP-OUT", "Sending notification: {} | Body: {}", method, json);
+        }
+    } else if message.is_request() {
+        if let Some(method) = &message.method {
+            crate::lsp_debug!("LSP-OUT", "Sending request: {} | Body: {}", method, json);
+        }
+    }
+
     // Write headers
     writer
         .write_all(format!("Content-Length: {}\r\n\r\n", content_length).as_bytes())
