@@ -213,7 +213,7 @@ pub struct Editor {
     /// Currently loading preview path (to avoid duplicate requests)
     loading_preview: Option<String>,
     /// Last successfully shown preview path (to show while new one loads)
-    last_shown_preview: Option<String>,
+    pub last_shown_preview: Option<String>,
 }
 
 /// Cached preview data for the picker

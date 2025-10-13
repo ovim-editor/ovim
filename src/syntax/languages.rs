@@ -5,8 +5,20 @@ use std::path::Path;
 pub enum Language {
     Rust,
     JavaScript,
+    TypeScript,
     Python,
     Java,
+    Go,
+    C,
+    Cpp,
+    Ruby,
+    Bash,
+    Json,
+    Yaml,
+    Html,
+    Css,
+    Toml,
+    Markdown,
 }
 
 /// Registry for language detection and grammar access
@@ -39,9 +51,11 @@ impl LanguageRegistry {
             // Rust
             "rs" => Some(Language::Rust),
 
-            // JavaScript / TypeScript / JSX / TSX
-            "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" | "es7" |
-            "ts" | "tsx" | "mts" | "cts" => Some(Language::JavaScript),
+            // JavaScript
+            "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" | "es7" => Some(Language::JavaScript),
+
+            // TypeScript
+            "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
 
             // Python
             "py" | "pyw" | "pyi" | "pyx" | "pxd" | "pxi" |
@@ -50,6 +64,39 @@ impl LanguageRegistry {
 
             // Java
             "java" => Some(Language::Java),
+
+            // Go
+            "go" => Some(Language::Go),
+
+            // C
+            "c" | "h" => Some(Language::C),
+
+            // C++
+            "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" => Some(Language::Cpp),
+
+            // Ruby
+            "rb" | "rake" | "rbw" | "gemspec" => Some(Language::Ruby),
+
+            // Bash
+            "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "tcsh" => Some(Language::Bash),
+
+            // JSON
+            "json" | "jsonc" | "json5" => Some(Language::Json),
+
+            // YAML
+            "yaml" | "yml" => Some(Language::Yaml),
+
+            // HTML
+            "html" | "htm" | "xhtml" => Some(Language::Html),
+
+            // CSS
+            "css" | "scss" | "sass" | "less" => Some(Language::Css),
+
+            // TOML
+            "toml" => Some(Language::Toml),
+
+            // Markdown
+            "md" | "markdown" | "mdown" | "mkd" | "mkdn" => Some(Language::Markdown),
 
             _ => None,
         }
@@ -67,15 +114,51 @@ impl LanguageRegistry {
 
             // JavaScript/Node special files
             "jakefile" | "gulpfile.js" | "gruntfile.js" |
-            "webpack.config.js" | "rollup.config.js" |
-            ".eslintrc.js" | ".prettierrc.js" => Some(Language::JavaScript),
+            "webpack.config.js" | "rollup.config.js" => Some(Language::JavaScript),
+
+            // TypeScript special files
+            ".eslintrc.ts" | ".prettierrc.ts" => Some(Language::TypeScript),
+
+            // Bash special files
+            ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" |
+            ".zshrc" | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" |
+            "bashrc" | "zshrc" => Some(Language::Bash),
+
+            // Ruby special files
+            "rakefile" | "gemfile" | "gemfile.lock" | "guardfile" |
+            "capfile" | "vagrantfile" => Some(Language::Ruby),
+
+            // Go special files
+            "go.mod" | "go.sum" => Some(Language::Go),
+
+            // JSON special files
+            ".eslintrc" | ".prettierrc" | ".babelrc" |
+            "package.json" | "tsconfig.json" | "composer.json" => Some(Language::Json),
+
+            // YAML special files
+            ".travis.yml" | ".gitlab-ci.yml" | "docker-compose.yml" |
+            ".clang-format" | ".clang-tidy" => Some(Language::Yaml),
+
+            // Markdown special files
+            "readme" | "changelog" | "contributing" | "license" => Some(Language::Markdown),
+
+            // TOML special files
+            "cargo.toml" | "cargo.lock" | "pyproject.toml" => Some(Language::Toml),
 
             _ => {
                 // Check for common patterns
                 if lower.starts_with(".python") {
                     Some(Language::Python)
-                } else if lower.ends_with(".js") || lower.ends_with(".ts") {
+                } else if lower.ends_with(".js") {
                     Some(Language::JavaScript)
+                } else if lower.ends_with(".ts") {
+                    Some(Language::TypeScript)
+                } else if lower.starts_with(".bash") || lower.starts_with(".zsh") {
+                    Some(Language::Bash)
+                } else if lower.contains("dockerfile") {
+                    Some(Language::Bash)
+                } else if lower.ends_with("makefile") {
+                    Some(Language::Bash)
                 } else {
                     None
                 }
@@ -88,8 +171,22 @@ impl LanguageRegistry {
         match lang {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
+            Language::Go => tree_sitter_go::LANGUAGE.into(),
+            Language::C => tree_sitter_c::LANGUAGE.into(),
+            Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            Language::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Language::Json => tree_sitter_json::LANGUAGE.into(),
+            Language::Yaml => tree_sitter_yaml::language(),
+            Language::Html => tree_sitter_html::LANGUAGE.into(),
+            Language::Css => tree_sitter_css::LANGUAGE.into(),
+            // TOML and Markdown don't have compatible tree-sitter versions yet
+            // Return a dummy language (use Rust as fallback to avoid panics)
+            Language::Toml => tree_sitter_rust::LANGUAGE.into(),
+            Language::Markdown => tree_sitter_rust::LANGUAGE.into(),
         }
     }
 
@@ -98,8 +195,21 @@ impl LanguageRegistry {
         match lang {
             Language::Rust => include_str!("queries/rust.scm"),
             Language::JavaScript => include_str!("queries/javascript.scm"),
+            Language::TypeScript => include_str!("queries/typescript.scm"),
             Language::Python => include_str!("queries/python.scm"),
             Language::Java => include_str!("queries/java.scm"),
+            Language::Go => include_str!("queries/go.scm"),
+            Language::C => include_str!("queries/c.scm"),
+            Language::Cpp => include_str!("queries/cpp.scm"),
+            Language::Ruby => include_str!("queries/ruby.scm"),
+            Language::Bash => include_str!("queries/bash.scm"),
+            Language::Json => include_str!("queries/json.scm"),
+            Language::Yaml => include_str!("queries/yaml.scm"),
+            Language::Html => include_str!("queries/html.scm"),
+            Language::Css => include_str!("queries/css.scm"),
+            // TOML and Markdown use fallback (empty query, no highlighting)
+            Language::Toml => "",
+            Language::Markdown => "",
         }
     }
 
@@ -109,8 +219,20 @@ impl LanguageRegistry {
         Self::detect_from_path(file_path).and_then(|lang| match lang {
             Language::Rust => Some("rust"),
             Language::JavaScript => Some("javascript"),
+            Language::TypeScript => Some("typescript"),
             Language::Python => Some("python"),
             Language::Java => Some("java"),
+            Language::Go => Some("go"),
+            Language::C => Some("c"),
+            Language::Cpp => Some("cpp"),
+            Language::Ruby => Some("ruby"),
+            Language::Bash => Some("bash"),
+            Language::Json => Some("json"),
+            Language::Yaml => Some("yaml"),
+            Language::Html => Some("html"),
+            Language::Css => Some("css"),
+            Language::Toml => Some("toml"),
+            Language::Markdown => Some("markdown"),
         })
     }
 
