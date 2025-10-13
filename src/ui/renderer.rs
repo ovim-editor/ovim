@@ -1,8 +1,9 @@
 use crate::editor::Editor;
 use crate::LineStatus;
-use crate::syntax::Theme;
+use crate::syntax::{Theme, HighlightGroup};
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
+use std::ops::Range;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -32,6 +33,13 @@ impl Renderer {
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
     pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor) {
+        // Fill entire frame with blank lines to prevent artifacts from previous renders
+        let area = frame.area();
+        let blank_line = " ".repeat(area.width as usize);
+        let blank_lines: Vec<Line> = (0..area.height).map(|_| Line::from(blank_line.clone())).collect();
+        let bg_paragraph = Paragraph::new(blank_lines).style(Style::default().bg(Color::Reset));
+        frame.render_widget(bg_paragraph, area);
+
         // Get color scheme from editor, fall back to Tokyonight if not found
         let scheme = editor.get_color_scheme()
             .cloned()
@@ -142,10 +150,23 @@ impl Renderer {
                 chunks[1].y,
             ));
         } else {
-            // Position cursor in text buffer (accounting for gutter)
+            // Position cursor in text buffer (accounting for gutter, tabs, and wide chars)
             let screen_line = cursor_line.saturating_sub(viewport_start);
-            let cursor_x = cursor_col.min(chunks[0].width.saturating_sub(1) as usize);
             let cursor_y = screen_line.min(chunks[0].height.saturating_sub(1) as usize);
+
+            // Get the line text and convert character column to display column
+            let rope = editor.buffer().rope();
+            let line_text = if cursor_line < rope.len_lines() {
+                rope.line(cursor_line).to_string()
+            } else {
+                String::new()
+            };
+            let line_text = line_text.trim_end_matches('\n');
+
+            // Convert character column to display column (accounting for tabs and emojis)
+            let tab_width = editor.options.tab_width;
+            let display_col = Self::char_col_to_display_col(line_text, cursor_col, tab_width);
+            let cursor_x = display_col.min(chunks[0].width.saturating_sub(1) as usize);
 
             // Calculate gutter width for cursor offset
             let show_numbers = editor.options.number || editor.options.relative_number;
@@ -182,10 +203,125 @@ impl Renderer {
         };
         crossterm::execute!(io::stdout(), cursor_style)?;
 
+        // Force autoresize to clear internal buffer state
+        self.terminal.autoresize()?;
+
         self.terminal.draw(|frame| {
             Self::render_to_frame(frame, editor);
         })?;
+
+        // Flush to ensure all changes are written
+        use std::io::Write;
+        io::stdout().flush()?;
+
         Ok(())
+    }
+
+    /// Expands tabs to spaces based on display width (accounts for wide chars like emojis)
+    /// Returns both the expanded string and a mapping from original byte offsets to expanded byte offsets
+    fn expand_tabs_with_mapping(text: &str, tab_width: usize) -> (String, Vec<(usize, usize)>) {
+        use unicode_width::UnicodeWidthChar;
+
+        let mut result = String::with_capacity(text.len() * 2);
+        let mut display_col = 0;
+        let mut byte_mapping = Vec::new(); // original_byte_idx -> expanded_byte_idx
+
+        let mut expanded_byte_pos = 0;
+
+        for (orig_byte_idx, ch) in text.char_indices() {
+            // Record mapping from original position to expanded position
+            byte_mapping.push((orig_byte_idx, expanded_byte_pos));
+
+            if ch == '\t' {
+                // Calculate spaces needed to reach next tab stop
+                let spaces_to_add = tab_width - (display_col % tab_width);
+                result.push_str(&" ".repeat(spaces_to_add));
+                expanded_byte_pos += spaces_to_add;
+                display_col += spaces_to_add;
+            } else {
+                result.push(ch);
+                expanded_byte_pos += ch.len_utf8();
+                // Use display width (emojis = 2, most chars = 1, zero-width = 0)
+                display_col += ch.width().unwrap_or(1);
+            }
+        }
+
+        // Add final mapping for end position
+        byte_mapping.push((text.len(), expanded_byte_pos));
+
+        (result, byte_mapping)
+    }
+
+    /// Expands tabs to spaces (simple version without mapping)
+    fn expand_tabs(text: &str, tab_width: usize) -> String {
+        Self::expand_tabs_with_mapping(text, tab_width).0
+    }
+
+    /// Converts a character column index to a display column, accounting for tabs and wide characters
+    fn char_col_to_display_col(text: &str, char_col: usize, tab_width: usize) -> usize {
+        use unicode_width::UnicodeWidthChar;
+
+        let mut display_col = 0;
+        let mut current_char_idx = 0;
+
+        for ch in text.chars() {
+            if current_char_idx >= char_col {
+                break;
+            }
+
+            if ch == '\t' {
+                // Move to next tab stop
+                let spaces_to_add = tab_width - (display_col % tab_width);
+                display_col += spaces_to_add;
+            } else {
+                // Use display width (emojis = 2, most chars = 1, zero-width = 0)
+                display_col += ch.width().unwrap_or(1);
+            }
+
+            current_char_idx += 1;
+        }
+
+        display_col
+    }
+
+    /// Truncates text to fit within a display width, accounting for wide characters
+    fn truncate_to_width(text: &str, max_width: usize) -> String {
+        use unicode_width::UnicodeWidthChar;
+
+        let mut result = String::new();
+        let mut display_width = 0;
+
+        for ch in text.chars() {
+            let ch_width = ch.width().unwrap_or(1);
+            if display_width + ch_width > max_width {
+                break;
+            }
+            result.push(ch);
+            display_width += ch_width;
+        }
+
+        result
+    }
+
+    /// Adjusts syntax highlight ranges based on tab expansion mapping
+    fn remap_highlights(
+        highlights: &[(Range<usize>, HighlightGroup)],
+        byte_mapping: &[(usize, usize)]
+    ) -> Vec<(Range<usize>, HighlightGroup)> {
+        highlights.iter().map(|(range, group)| {
+            // Find mapped positions for start and end
+            let new_start = byte_mapping.iter()
+                .find(|(orig, _)| *orig >= range.start)
+                .map(|(_, expanded)| *expanded)
+                .unwrap_or(0);
+
+            let new_end = byte_mapping.iter()
+                .find(|(orig, _)| *orig >= range.end)
+                .map(|(_, expanded)| *expanded)
+                .unwrap_or(new_start);
+
+            (new_start..new_end, *group)
+        }).collect()
     }
 
     /// Renders the buffer content and returns the viewport start line
@@ -287,14 +423,21 @@ impl Renderer {
 
         // Build the visible text with syntax highlighting
         let mut lines = Vec::new();
+        let blank_line = " ".repeat(text_area.width as usize);
+        let tab_width = editor.options.tab_width;
+
         for line_idx in start_line..end_line {
             if line_idx < rope.len_lines() {
                 let line_text = rope.line(line_idx).to_string();
                 // Remove trailing newline if present
                 let line_text = line_text.trim_end_matches('\n');
 
-                // Get syntax highlights for this line
-                let syntax_highlights = buffer.highlights_for_line(line_idx);
+                // Expand tabs to spaces for proper rendering and get byte mapping
+                let (line_text, byte_mapping) = Self::expand_tabs_with_mapping(line_text, tab_width);
+
+                // Get syntax highlights for this line and remap them for expanded text
+                let original_highlights = buffer.highlights_for_line(line_idx);
+                let syntax_highlights = Self::remap_highlights(&original_highlights, &byte_mapping);
 
                 // Check if we need special highlighting (visual selection or search)
                 let has_visual_selection = visual_selection
@@ -302,7 +445,7 @@ impl Renderer {
                     .unwrap_or(false);
 
                 let search_matches = if let Some(search) = current_search {
-                    search.find_all_in_line(line_text)
+                    search.find_all_in_line(&line_text)
                 } else {
                     Vec::new()
                 };
@@ -311,24 +454,40 @@ impl Renderer {
                 let needs_detailed_rendering = has_visual_selection || !search_matches.is_empty() || !syntax_highlights.is_empty();
 
                 if needs_detailed_rendering {
-                    let line = Self::render_line_with_highlights(
+                    let mut line = Self::render_line_with_highlights(
                         theme,
-                        line_text,
+                        &line_text,
                         line_idx,
                         visual_selection,
                         editor.mode(),
                         &search_matches,
                         &syntax_highlights,
                     );
+                    // Pad line to clear previous content
+                    let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    if line_len < text_area.width as usize {
+                        line.spans.push(Span::raw(" ".repeat(text_area.width as usize - line_len)));
+                    }
                     lines.push(line);
                 } else {
-                    lines.push(Line::from(line_text.to_string()));
+                    // Pad simple lines too
+                    let line_len = line_text.chars().count();
+                    let line_text = if line_len < text_area.width as usize {
+                        format!("{}{}", line_text, " ".repeat(text_area.width as usize - line_len))
+                    } else {
+                        line_text.to_string()
+                    };
+                    lines.push(Line::from(line_text));
                 }
+            } else {
+                // Line beyond end of file - clear it
+                lines.push(Line::from(blank_line.clone()));
             }
         }
 
         let paragraph = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::NONE));
+            .block(Block::default().borders(Borders::NONE))
+            .style(Style::default().bg(Color::Reset));
         frame.render_widget(paragraph, text_area);
 
         start_line
@@ -542,6 +701,19 @@ impl Renderer {
         let cursor_col = cursor.col();
         let screen_line = cursor_line.saturating_sub(viewport_start);
 
+        // Get the line text and convert character column to display column
+        let rope = editor.buffer().rope();
+        let line_text = if cursor_line < rope.len_lines() {
+            rope.line(cursor_line).to_string()
+        } else {
+            String::new()
+        };
+        let line_text = line_text.trim_end_matches('\n');
+
+        // Convert character column to display column (accounting for tabs and emojis)
+        let tab_width = editor.options.tab_width;
+        let display_col = Self::char_col_to_display_col(line_text, cursor_col, tab_width);
+
         // Calculate gutter width
         let show_numbers = editor.options.number || editor.options.relative_number;
         let max_line_num = editor.buffer().rope().len_lines();
@@ -558,7 +730,7 @@ impl Renderer {
         };
 
         // Position menu below cursor
-        let menu_x = buffer_area.x + gutter_width as u16 + cursor_col as u16;
+        let menu_x = buffer_area.x + gutter_width as u16 + display_col as u16;
         let menu_y = buffer_area.y + screen_line as u16 + 1; // Below current line
 
         // Determine menu dimensions
@@ -747,9 +919,6 @@ impl Renderer {
 
         let picker_area = Self::get_picker_area(frame.area());
         let show_preview = Self::should_show_preview(picker_area);
-
-        // Clear background to prevent bleed-through
-        frame.render_widget(ratatui::widgets::Clear, picker_area);
 
         // Create block with rounded border and styled colors
         let mode_name = match picker.mode() {
@@ -1013,12 +1182,12 @@ impl Renderer {
         let inner_area = preview_block.inner(area);
         frame.render_widget(preview_block, area);
 
-        // Try to get preview with fallback (keeps old preview while loading new one)
+        // Try to get preview (only show exact match, no fallback to avoid scroll artifacts)
         let file_path = &result.location;
-        let (preview, _actual_path) = match editor.get_preview_with_fallback(file_path) {
+        let preview = match editor.get_preview_cache(file_path) {
             Some(p) => p,
             None => {
-                // No preview available at all - show loading message
+                // Not cached yet - show loading message
                 let loading_msg = " 󰦖  Loading preview...";
                 let paragraph = Paragraph::new(loading_msg)
                     .style(Style::default()
@@ -1098,8 +1267,16 @@ impl Renderer {
                             break;
                         }
 
-                        // Get highlights from cache
-                        let highlights = preview.highlighted_lines.borrow().get(&line_idx).cloned().unwrap_or_default();
+                        // Expand tabs in preview content and get byte mapping
+                        let (line_text, tab_mapping) = Self::expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
+
+                        // Truncate line to fit width (line number prefix is 7 chars: "  1 │ ")
+                        let content_width = inner_area.width.saturating_sub(7) as usize;
+                        let line_text = Self::truncate_to_width(&line_text, content_width);
+
+                        // Get highlights from cache and remap for expanded tabs
+                        let original_highlights = preview.highlighted_lines.borrow().get(&line_idx).cloned().unwrap_or_default();
+                        let highlights = Self::remap_highlights(&original_highlights, &tab_mapping);
                         let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
 
                         // Build the line with syntax highlighting
@@ -1116,19 +1293,30 @@ impl Renderer {
 
                         // Add syntax-highlighted content
                         let chars: Vec<char> = line_text.chars().collect();
+
+                        // Build a map from character index to byte index
+                        let mut byte_indices: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+                        byte_indices.push(0);
+                        for (byte_idx, _) in line_text.char_indices().skip(1) {
+                            byte_indices.push(byte_idx);
+                        }
+                        byte_indices.push(line_text.len());
+
                         let mut col_idx = 0;
 
                         while col_idx < chars.len() {
-                            // Find the syntax group for this character
+                            // Find the syntax group for this character (convert to byte index)
+                            let byte_idx = byte_indices[col_idx];
                             let syntax_group = highlights.iter()
-                                .find(|(range, _)| range.contains(&col_idx))
+                                .find(|(range, _)| range.contains(&byte_idx))
                                 .map(|(_, group)| *group);
 
                             // Find the end of this styled region
                             let mut end_col = col_idx + 1;
                             while end_col < chars.len() {
+                                let next_byte_idx = byte_indices[end_col];
                                 let next_group = highlights.iter()
-                                    .find(|(range, _)| range.contains(&end_col))
+                                    .find(|(range, _)| range.contains(&next_byte_idx))
                                     .map(|(_, group)| *group);
 
                                 if next_group != syntax_group {
@@ -1195,6 +1383,13 @@ impl Renderer {
                 break;
             }
 
+            // Expand tabs in plain preview
+            let line_text = Self::expand_tabs(line_text, 4);
+
+            // Truncate line to fit width (line number prefix is 7 chars: "  1 │ ")
+            let content_width = area.width.saturating_sub(7) as usize;
+            let line_text = Self::truncate_to_width(&line_text, content_width);
+
             let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
 
             let line_num = format!("{:>4} │ ", line_idx + 1);
@@ -1260,6 +1455,14 @@ impl Renderer {
         let chars: Vec<char> = line_text.chars().collect();
         let mut spans = Vec::new();
 
+        // Build a map from character index to byte index
+        let mut byte_indices: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+        byte_indices.push(0);
+        for (byte_idx, _) in line_text.char_indices().skip(1) {
+            byte_indices.push(byte_idx);
+        }
+        byte_indices.push(line_text.len()); // End position
+
         let mut col_idx = 0;
         while col_idx < chars.len() {
             // Check if this character is in visual selection
@@ -1294,9 +1497,10 @@ impl Renderer {
                 col_idx >= *start && col_idx < *end
             });
 
-            // Check if this character is in a syntax highlight
+            // Check if this character is in a syntax highlight (convert char index to byte index)
+            let byte_idx = byte_indices[col_idx];
             let syntax_group = syntax_highlights.iter()
-                .find(|(range, _)| range.contains(&col_idx))
+                .find(|(range, _)| range.contains(&byte_idx))
                 .map(|(_, group)| *group);
 
             // Determine how many characters share the same styling
@@ -1332,8 +1536,10 @@ impl Renderer {
                     end_col >= *start && end_col < *end
                 });
 
+                // Convert char index to byte index for syntax highlight lookup
+                let next_byte_idx = byte_indices[end_col];
                 let next_syntax_group = syntax_highlights.iter()
-                    .find(|(range, _)| range.contains(&end_col))
+                    .find(|(range, _)| range.contains(&next_byte_idx))
                     .map(|(_, group)| *group);
 
                 // If styling changes, break
