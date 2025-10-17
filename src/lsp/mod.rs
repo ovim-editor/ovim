@@ -30,6 +30,7 @@ pub use supervisor::{RestartPolicy, TaskSupervisor};
 pub use types::{LspPosition, LspRange};
 
 use anyhow::{anyhow, Result};
+use dashmap::DashMap;
 use lsp_types::{
     Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, PublishDiagnosticsParams,
@@ -41,7 +42,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 /// Maximum document size in bytes (10MB)
@@ -121,8 +122,8 @@ impl Drop for ChangeDebouncer {
 /// Central LSP manager coordinating all language servers
 pub struct LspManager {
     /// Active language servers (one per language)
-    /// Using RwLock to allow concurrent reads (most operations) while serializing writes
-    servers: RwLock<HashMap<String, LanguageServer>>,
+    /// Using DashMap for lock-free concurrent access
+    servers: DashMap<String, LanguageServer>,
 
     /// Diagnostics per file URI
     diagnostics: Mutex<HashMap<Url, Vec<Diagnostic>>>,
@@ -139,7 +140,7 @@ pub struct LspManager {
 
     /// Pending changes being debounced per document
     /// Coalesces rapid changes to reduce LSP traffic by ~1000x
-    change_debouncers: RwLock<HashMap<Url, Arc<Mutex<ChangeDebouncer>>>>,
+    change_debouncers: DashMap<Url, Arc<Mutex<ChangeDebouncer>>>,
 
     /// Channel for debounce flush requests (URI to flush)
     flush_tx: mpsc::Sender<Url>,
@@ -159,13 +160,13 @@ impl LspManager {
         let (notification_tx, notification_rx) = mpsc::channel(1000);
         let (flush_tx, flush_rx) = mpsc::channel(100);
         Self {
-            servers: RwLock::new(HashMap::new()),
+            servers: DashMap::new(),
             diagnostics: Mutex::new(HashMap::new()),
             next_request_id: AtomicU64::new(1),
             document_versions: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
-            change_debouncers: RwLock::new(HashMap::new()),
+            change_debouncers: DashMap::new(),
             flush_tx,
             flush_rx: Mutex::new(Some(flush_rx)),
             diagnostics_changed: AtomicBool::new(false),
@@ -206,13 +207,10 @@ impl LspManager {
         root_path: &Path,
     ) -> Result<()> {
         lsp_debug!("LspManager", "start_server called for language={}", language);
-        // Check if already running (short lock)
-        {
-            let servers = self.servers.read().await;
-            if servers.contains_key(language) {
-                lsp_debug!("LspManager", "Server already running for {}", language);
-                return Ok(()); // Already running
-            }
+        // Check if already running
+        if self.servers.contains_key(language) {
+            lsp_debug!("LspManager", "Server already running for {}", language);
+            return Ok(()); // Already running
         }
 
         lsp_debug!("LspManager", "Spawning server: {} {:?}", command, args);
@@ -228,18 +226,12 @@ impl LspManager {
         server.initialize(root_uri).await?;
         lsp_debug!("LspManager", "Initialize completed successfully");
 
-        // Insert into servers map (short lock)
-        {
-            let mut servers = self.servers.write().await;
-            // Double-check in case another task started the same server
-            if !servers.contains_key(language) {
-                servers.insert(language.to_string(), server);
-            } else {
-                // Another thread won the race - clean up our server
-                drop(servers); // Release lock before async operation
-                if let Err(e) = server.shutdown().await {
-                    lsp_warn!("LspManager", "Failed to shut down redundant server for {}: {}", language, e);
-                }
+        // Insert into servers map
+        // Double-check in case another task started the same server
+        if let Some(mut existing) = self.servers.insert(language.to_string(), server) {
+            // Another thread won the race - clean up the existing server
+            if let Err(e) = existing.shutdown().await {
+                lsp_warn!("LspManager", "Failed to shut down redundant server for {}: {}", language, e);
             }
         }
 
@@ -248,9 +240,7 @@ impl LspManager {
 
     /// Stops a language server
     pub async fn stop_server(&self, language: &str) -> Result<()> {
-        let mut servers = self.servers.write().await;
-
-        if let Some(mut server) = servers.remove(language) {
+        if let Some((_, mut server)) = self.servers.remove(language) {
             server.shutdown().await?;
         }
 
@@ -315,11 +305,10 @@ impl LspManager {
 
     /// Gets health information for all language servers
     pub async fn health_check(&self) -> Vec<LanguageServerHealth> {
-        let servers = self.servers.read().await;
         let mut health_infos = Vec::new();
 
-        for server in servers.values() {
-            health_infos.push(server.health_check().await);
+        for entry in self.servers.iter() {
+            health_infos.push(entry.value().health_check().await);
         }
 
         health_infos
@@ -341,8 +330,7 @@ impl LspManager {
 
     /// Gets a reference to a language server
     pub async fn get_server(&self, language: &str) -> Option<LanguageServer> {
-        let servers = self.servers.read().await;
-        servers.get(language).cloned()
+        self.servers.get(language).map(|entry| entry.value().clone())
     }
 
     /// Sends textDocument/didOpen notification
@@ -366,8 +354,7 @@ impl LspManager {
             ));
         }
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -402,9 +389,8 @@ impl LspManager {
         text: String,
         old_text: Option<String>,
     ) -> Result<()> {
-        // Acquire server lock first to establish critical section
-        let servers = self.servers.read().await;
-        let server = servers
+        // Get server reference
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -465,10 +451,7 @@ impl LspManager {
     /// Flushes pending changes for a document (sends immediately)
     pub async fn flush_pending_changes(&self, uri: &Url) -> Result<()> {
         // Remove debouncer and get pending change
-        let mut debouncers = self.change_debouncers.write().await;
-        if let Some(debouncer_arc) = debouncers.remove(uri) {
-            drop(debouncers); // Release write lock before sending
-
+        if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
             let mut debouncer = debouncer_arc.lock().await;
             debouncer.cancel_timer(); // Cancel timer
 
@@ -495,21 +478,17 @@ impl LspManager {
         old_text: Option<String>,
     ) -> Result<()> {
         // Get or create debouncer for this document
-        let debouncers = self.change_debouncers.read().await;
-        let debouncer_arc = if let Some(existing) = debouncers.get(&uri) {
-            existing.clone()
+        let debouncer_arc = if let Some(existing) = self.change_debouncers.get(&uri) {
+            existing.value().clone()
         } else {
-            drop(debouncers); // Release read lock
-
             // Create new debouncer
-            let mut debouncers = self.change_debouncers.write().await;
             let debouncer = Arc::new(Mutex::new(ChangeDebouncer::new(
                 uri.clone(),
                 language_id.to_string(),
                 text.clone(),
                 old_text.clone(),
             )));
-            debouncers.insert(uri.clone(), debouncer.clone());
+            self.change_debouncers.insert(uri.clone(), debouncer.clone());
             debouncer
         };
 
@@ -550,8 +529,7 @@ impl LspManager {
         // Flush any pending changes before saving
         self.flush_pending_changes(&uri).await?;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -572,8 +550,7 @@ impl LspManager {
         // Flush any pending changes before closing
         self.flush_pending_changes(&uri).await?;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -591,8 +568,7 @@ impl LspManager {
         drop(versions);
 
         // Remove debouncer for this document
-        let mut debouncers = self.change_debouncers.write().await;
-        debouncers.remove(&uri);
+        self.change_debouncers.remove(&uri);
 
         // Note: We keep diagnostics - they should remain visible even after file is closed
 
@@ -776,10 +752,7 @@ impl LspManager {
 
     /// Starts a background task to listen for notifications from a language server
     pub async fn start_notification_listener(&self, language_id: String) {
-        let server = {
-            let servers = self.servers.read().await;
-            servers.get(&language_id).cloned()
-        };
+        let server = self.servers.get(&language_id).map(|entry| entry.value().clone());
 
         if let Some(server) = server {
             let tx = self.notification_tx.clone();
@@ -818,8 +791,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::Location>> {
         use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -869,8 +841,7 @@ impl LspManager {
         use lsp_types::{request::GotoImplementationParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
         use lsp_types::GotoDefinitionResponse as GotoImplementationResponse;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -920,8 +891,7 @@ impl LspManager {
         use lsp_types::{request::GotoTypeDefinitionParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
         use lsp_types::GotoDefinitionResponse as GotoTypeDefinitionResponse;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -972,8 +942,7 @@ impl LspManager {
 
         lsp_debug!("LSP-HOVER", "hover() called | URI: {} | line: {}, char: {} | language: {}", uri, line, character, language_id);
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1044,8 +1013,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{CompletionParams, CompletionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1088,8 +1056,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::TextEdit>> {
         use lsp_types::{DocumentFormattingParams, FormattingOptions, TextDocumentIdentifier};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1133,8 +1100,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::TextEdit>> {
         use lsp_types::{DocumentRangeFormattingParams, FormattingOptions, Position, Range, TextDocumentIdentifier};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1187,8 +1153,7 @@ impl LspManager {
             CodeActionContext, CodeActionParams, Position, Range, TextDocumentIdentifier,
         };
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1238,8 +1203,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::Location>> {
         use lsp_types::{Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1282,8 +1246,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::PrepareRenameResponse>> {
         use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1319,8 +1282,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::WorkspaceEdit>> {
         use lsp_types::{Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1359,8 +1321,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::SignatureHelp>> {
         use lsp_types::{Position, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1399,8 +1360,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::SelectionRange>> {
         use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1436,8 +1396,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::DocumentSymbol>> {
         use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1496,8 +1455,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::DocumentHighlight>> {
         use lsp_types::{DocumentHighlightParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1534,8 +1492,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::SymbolInformation>> {
         use lsp_types::WorkspaceSymbolParams;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1597,8 +1554,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::FoldingRange>> {
         use lsp_types::{FoldingRangeParams, TextDocumentIdentifier};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1635,8 +1591,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyItem>>> {
         use lsp_types::{CallHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1671,8 +1626,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyIncomingCall>>> {
         use lsp_types::CallHierarchyIncomingCallsParams;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1705,8 +1659,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>> {
         use lsp_types::CallHierarchyOutgoingCallsParams;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1741,8 +1694,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::{TypeHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1777,8 +1729,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySupertypesParams;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1811,8 +1762,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySubtypesParams;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1846,8 +1796,7 @@ impl LspManager {
     ) -> Result<Option<serde_json::Value>> {
         use lsp_types::ExecuteCommandParams;
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1878,8 +1827,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::InlayHint>> {
         use lsp_types::{InlayHintParams, TextDocumentIdentifier, WorkDoneProgressParams};
 
-        let servers = self.servers.read().await;
-        let server = servers
+        let server = self.servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1908,17 +1856,18 @@ impl LspManager {
     /// Gets LSP status information for all active servers
     /// Returns a list of server info with language, command, state, and pending requests
     pub async fn get_lsp_status(&self) -> Vec<LspServerInfo> {
-        let servers = self.servers.read().await;
         let mut result = Vec::new();
 
-        for (language, server) in servers.iter() {
+        for entry in self.servers.iter() {
+            let language = entry.key().clone();
+            let server = entry.value();
             let state = server.get_state().await;
             let pending_count = server.pending_requests_count().await;
             let has_capabilities = server.has_capabilities().await;
             let command = server.get_command().await;
 
             result.push(LspServerInfo {
-                language: language.clone(),
+                language,
                 command,
                 state: format!("{:?}", state),
                 pending_requests: pending_count,
@@ -1931,8 +1880,7 @@ impl LspManager {
 
     /// Gets the list of active language server names
     pub async fn get_active_servers(&self) -> Vec<String> {
-        let servers = self.servers.read().await;
-        servers.keys().cloned().collect()
+        self.servers.iter().map(|entry| entry.key().clone()).collect()
     }
 }
 

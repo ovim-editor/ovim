@@ -61,12 +61,6 @@ pub enum ServerState {
         capabilities: ServerCapabilities,
     },
 
-    /// Server is degraded (experiencing errors but still running)
-    Degraded {
-        reason: String,
-        since: Instant,
-    },
-
     /// Server has failed and cannot recover
     Failed {
         error: String,
@@ -978,7 +972,6 @@ impl LanguageServer {
             ServerState::Spawning => Duration::from_secs(0),
             ServerState::Initializing { started_at, .. } => started_at.elapsed(),
             ServerState::Ready { initialized_at, .. } => initialized_at.elapsed(),
-            ServerState::Degraded { since, .. } => since.elapsed(),
             ServerState::Failed { at, .. } => at.elapsed(),
             ServerState::ShuttingDown | ServerState::Terminated => Duration::from_secs(0),
         };
@@ -998,7 +991,6 @@ impl LanguageServer {
             ServerState::Spawning => "Spawning".to_string(),
             ServerState::Initializing { .. } => "Initializing".to_string(),
             ServerState::Ready { .. } => "Ready".to_string(),
-            ServerState::Degraded { ref reason, .. } => format!("Degraded: {}", reason),
             ServerState::Failed { ref error, .. } => format!("Failed: {}", error),
             ServerState::ShuttingDown => "ShuttingDown".to_string(),
             ServerState::Terminated => "Terminated".to_string(),

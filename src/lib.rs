@@ -14,3 +14,4 @@ pub mod session;
 #[cfg(feature = "lua")]
 pub mod lua;
 pub mod config;
+pub mod commands;
