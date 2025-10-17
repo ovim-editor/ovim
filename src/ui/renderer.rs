@@ -976,6 +976,11 @@ impl Renderer {
         let before_cursor: String = chars.iter().take(cursor_pos).collect();
         let after_cursor: String = chars.iter().skip(cursor_pos).collect();
 
+        // Calculate padding before moving strings into spans
+        let query_line_width = left_chunks[0].width as usize;
+        let content_len = 2 + before_cursor.len() + 1 + after_cursor.len(); // icon + space + cursor + text
+        let padding = query_line_width.saturating_sub(content_len);
+
         let mut spans = vec![
             Span::styled(
                 prompt_icon,
@@ -1010,6 +1015,14 @@ impl Renderer {
             ));
         }
 
+        // Add padding to fill the rest of the line with background color
+        if padding > 0 {
+            spans.push(Span::styled(
+                " ".repeat(padding),
+                Style::default().bg(Color::Rgb(20, 24, 35)),
+            ));
+        }
+
         let query_line = Line::from(spans);
         let query_paragraph = Paragraph::new(query_line)
             .style(Style::default().bg(Color::Rgb(20, 24, 35)));
@@ -1019,7 +1032,9 @@ impl Renderer {
         let separator = "─".repeat(left_chunks[1].width as usize);
         let separator_line = Line::from(Span::styled(
             separator,
-            Style::default().fg(Color::Rgb(60, 70, 100)),  // Subtle line
+            Style::default()
+                .fg(Color::Rgb(60, 70, 100))  // Subtle line
+                .bg(Color::Rgb(20, 24, 35)),  // Background color
         ));
         let separator_paragraph = Paragraph::new(separator_line)
             .style(Style::default().bg(Color::Rgb(20, 24, 35)));

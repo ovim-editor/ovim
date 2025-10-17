@@ -37,26 +37,27 @@ pub struct Picker {
     selected_index: usize,
     /// Base directory for file search
     base_dir: PathBuf,
+    /// Whether file loading is still in progress
+    loading: bool,
+    /// Whether file loading task has been spawned
+    loading_spawned: bool,
 }
 
 impl Picker {
     /// Creates a new file finder picker
+    /// Files are loaded asynchronously - use add_file_result() to populate
     pub fn new_file_finder(base_dir: PathBuf) -> Self {
-        let mut picker = Self {
+        Self {
             mode: PickerMode::FindFiles,
             query: String::new(),
             query_cursor: 0,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
             selected_index: 0,
-            base_dir: base_dir.clone(),
-        };
-
-        // Load all files from base directory
-        picker.all_results = Self::find_files_recursive(&base_dir);
-        picker.filtered_results = picker.all_results.clone();
-
-        picker
+            base_dir,
+            loading: true,
+            loading_spawned: false,
+        }
     }
 
     /// Creates a new live grep picker
@@ -69,6 +70,8 @@ impl Picker {
             filtered_results: Vec::new(),
             selected_index: 0,
             base_dir,
+            loading: false,
+            loading_spawned: false,
         }
     }
 
@@ -93,6 +96,8 @@ impl Picker {
             filtered_results: results,
             selected_index: 0,
             base_dir,
+            loading: false,
+            loading_spawned: false,
         }
     }
 
@@ -117,6 +122,8 @@ impl Picker {
             filtered_results: results,
             selected_index: 0,
             base_dir,
+            loading: false,
+            loading_spawned: false,
         }
     }
 
@@ -142,6 +149,8 @@ impl Picker {
             filtered_results: results,
             selected_index: 0,
             base_dir,
+            loading: false,
+            loading_spawned: false,
         }
     }
 
@@ -492,6 +501,56 @@ impl Picker {
     /// Gets picker mode
     pub fn mode(&self) -> &PickerMode {
         &self.mode
+    }
+
+    /// Gets the base directory for file operations
+    pub fn base_dir(&self) -> &Path {
+        &self.base_dir
+    }
+
+    /// Adds a file result (for incremental loading)
+    pub fn add_file_result(&mut self, result: PickerResult) {
+        self.all_results.push(result.clone());
+
+        // If query is empty, add to filtered results too
+        if self.query.is_empty() {
+            self.filtered_results.push(result);
+        } else {
+            // Re-filter with the new result
+            if let Some(score) = Self::fuzzy_match(&self.query, &result.display) {
+                // Insert in sorted order
+                let mut insert_idx = self.filtered_results.len();
+                for (idx, existing) in self.filtered_results.iter().enumerate() {
+                    if let Some(existing_score) = Self::fuzzy_match(&self.query, &existing.display) {
+                        if score > existing_score {
+                            insert_idx = idx;
+                            break;
+                        }
+                    }
+                }
+                self.filtered_results.insert(insert_idx, result);
+            }
+        }
+    }
+
+    /// Marks file loading as complete
+    pub fn finish_loading(&mut self) {
+        self.loading = false;
+    }
+
+    /// Returns whether files are still being loaded
+    pub fn is_loading(&self) -> bool {
+        self.loading
+    }
+
+    /// Returns whether file loading should be spawned
+    pub fn should_spawn_file_loading(&self) -> bool {
+        self.mode == PickerMode::FindFiles && self.loading && !self.loading_spawned
+    }
+
+    /// Marks file loading as spawned
+    pub fn mark_loading_spawned(&mut self) {
+        self.loading_spawned = true;
     }
 
     /// Truncates a path in the middle if it's too long
