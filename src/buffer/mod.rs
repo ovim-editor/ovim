@@ -217,11 +217,12 @@ impl Buffer {
             git_status: GitStatus::new(),
         };
 
-        // Enable syntax highlighting based on file extension
-        buffer.enable_syntax_highlighting();
+        // Don't enable syntax highlighting immediately - defer for lazy loading
+        // This makes file loading instant even for large files
+        // Syntax highlighting will be triggered later when the buffer is displayed
 
-        // Load git status
-        buffer.refresh_git_status();
+        // Skip git status on load too - it can be loaded lazily
+        // buffer.refresh_git_status();
 
         Ok(buffer)
     }
@@ -373,17 +374,25 @@ impl Buffer {
         }
     }
 
-    /// Builds the highlight cache for all lines
-    fn build_highlight_cache(&mut self, highlighter: &SyntaxHighlighter, source: &str) {
-        let line_count = self.rope.len_lines();
-        let mut cache = Vec::with_capacity(line_count);
-
-        for line_idx in 0..line_count {
-            let highlights = highlighter.highlights_for_line(line_idx, source);
-            cache.push(highlights);
+    /// Checks if syntax highlighting should be initialized (lazy loading)
+    /// Returns true if the buffer has a file path with supported language but no syntax yet
+    pub fn should_init_syntax(&self) -> bool {
+        // Has file path, no syntax yet, and language is supported
+        if self.syntax.is_some() {
+            return false;
         }
 
-        self.cached_highlights = Some(cache);
+        if let Some(ref path) = self.file_path {
+            LanguageRegistry::detect_from_path(path).is_some()
+        } else {
+            false
+        }
+    }
+
+    /// Builds the highlight cache for all lines
+    fn build_highlight_cache(&mut self, highlighter: &SyntaxHighlighter, source: &str) {
+        // Use the efficient single-pass method that queries the tree once
+        self.cached_highlights = Some(highlighter.highlights_for_all_lines(source));
     }
 
     /// Invalidates the highlight cache (called on buffer edits)

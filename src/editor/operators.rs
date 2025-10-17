@@ -13,6 +13,7 @@ pub enum Operator {
     Uppercase,
     ToggleCase,
     ReplaceWithRegister,
+    Fold,
 }
 
 /// Handles operator commands (delete, change, yank)

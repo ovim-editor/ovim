@@ -693,8 +693,17 @@ impl Editor {
     /// Jumps to mark line (apostrophe - goes to first non-blank on line)
     pub fn jump_to_mark_line(&mut self, name: char) -> bool {
         if let Some(mark) = self.marks.get_mark(name) {
-            self.buffer_mut().cursor_mut().set_position(mark.line, 0);
-            // TODO: Move to first non-blank character
+            // Find first non-blank character on the line
+            let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
+                line_text
+                    .chars()
+                    .position(|c| !c.is_whitespace())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            self.buffer_mut().cursor_mut().set_position(mark.line, first_non_blank);
             true
         } else {
             false
@@ -977,6 +986,11 @@ impl Editor {
     /// Gets a mutable reference to the register manager
     pub fn registers_mut(&mut self) -> &mut RegisterManager {
         &mut self.registers
+    }
+
+    /// Gets a reference to the mark manager
+    pub fn marks(&self) -> &MarkManager {
+        &self.marks
     }
 
     /// Yanks text to the appropriate register (pending_register or default)
@@ -1573,14 +1587,8 @@ impl Editor {
             // Parse the content
             highlighter.parse(&content);
 
-            // Build highlights for all lines
-            let lines: Vec<&str> = content.lines().collect();
-            let mut all_highlights = Vec::with_capacity(lines.len());
-
-            for line_idx in 0..lines.len() {
-                let line_highlights = highlighter.highlights_for_line(line_idx, &content);
-                all_highlights.push(line_highlights);
-            }
+            // Build highlights for all lines using efficient single-pass method
+            let all_highlights = highlighter.highlights_for_all_lines(&content);
 
             Some(all_highlights)
         })
@@ -3866,6 +3874,166 @@ impl Editor {
             .as_ref()
             .map(|wm| wm.window_count())
             .unwrap_or(1)
+    }
+
+    // === Viewport Scrolling ===
+
+    /// Scrolls viewport down N lines
+    pub fn scroll_viewport_down(&mut self, lines: usize) {
+        let buffer_line_count = self.buffer().line_count();
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.scroll_down(lines, buffer_line_count);
+            }
+        }
+    }
+
+    /// Scrolls viewport up N lines
+    pub fn scroll_viewport_up(&mut self, lines: usize) {
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.scroll_up(lines);
+            }
+        }
+    }
+
+    /// Centers cursor in viewport
+    pub fn center_cursor_in_viewport(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.center_cursor();
+            }
+        }
+    }
+
+    /// Moves cursor line to top of viewport
+    pub fn move_cursor_line_to_top(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.move_cursor_to_top();
+            }
+        }
+    }
+
+    /// Moves cursor line to bottom of viewport
+    pub fn move_cursor_line_to_bottom(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.move_cursor_to_bottom();
+            }
+        }
+    }
+
+    /// Scrolls down half a page (both viewport and cursor)
+    pub fn scroll_half_page_down(&mut self) {
+        // Extract window info first to avoid borrowing conflicts
+        let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                (window.scroll_offset(), window.height() as usize)
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        // Now we can mutably borrow buffer
+        let new_viewport = Motions::scroll_half_page_down(
+            self.buffer_mut(),
+            viewport_start,
+            viewport_height,
+        );
+
+        // Finally update window scroll offset
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_offset(new_viewport);
+            }
+        }
+    }
+
+    /// Scrolls up half a page (both viewport and cursor)
+    pub fn scroll_half_page_up(&mut self) {
+        // Extract window info first to avoid borrowing conflicts
+        let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                (window.scroll_offset(), window.height() as usize)
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        // Now we can mutably borrow buffer
+        let new_viewport = Motions::scroll_half_page_up(
+            self.buffer_mut(),
+            viewport_start,
+            viewport_height,
+        );
+
+        // Finally update window scroll offset
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_offset(new_viewport);
+            }
+        }
+    }
+
+    /// Scrolls forward (down) one page (both viewport and cursor)
+    pub fn scroll_page_down(&mut self) {
+        // Extract window info first to avoid borrowing conflicts
+        let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                (window.scroll_offset(), window.height() as usize)
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        // Now we can mutably borrow buffer
+        let new_viewport = Motions::scroll_page_down(
+            self.buffer_mut(),
+            viewport_start,
+            viewport_height,
+        );
+
+        // Finally update window scroll offset
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_offset(new_viewport);
+            }
+        }
+    }
+
+    /// Scrolls backward (up) one page (both viewport and cursor)
+    pub fn scroll_page_up(&mut self) {
+        // Extract window info first to avoid borrowing conflicts
+        let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                (window.scroll_offset(), window.height() as usize)
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        // Now we can mutably borrow buffer
+        let new_viewport = Motions::scroll_page_up(
+            self.buffer_mut(),
+            viewport_start,
+            viewport_height,
+        );
+
+        // Finally update window scroll offset
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_offset(new_viewport);
+            }
+        }
     }
 
     /// Gets a reference to the completion menu

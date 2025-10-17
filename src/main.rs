@@ -173,6 +173,11 @@ async fn run_headless_loop(
             editor.clear_lsp_init_flag();
         }
 
+        // Initialize syntax highlighting lazily (after file is displayed)
+        if editor.buffer().should_init_syntax() {
+            editor.buffer_mut().enable_syntax_highlighting();
+        }
+
         // Process any pending LSP actions
         editor.process_pending_lsp_actions().await;
 
@@ -331,6 +336,11 @@ async fn run_event_loop(
                     editor.update_diagnostic_cache().await;
                 }
             }
+        }
+
+        // Initialize syntax highlighting lazily (after file is displayed)
+        if editor.buffer().should_init_syntax() {
+            editor.buffer_mut().enable_syntax_highlighting();
         }
 
         // Check if enough time has passed since last edit for re-highlighting
@@ -597,8 +607,14 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     }
 
     // Get marks
-    let marks = HashMap::new();
-    // TODO: Add marks iteration when MarkManager supports it
+    let mut marks = HashMap::new();
+    let mark_manager = editor.marks();
+    for (name, mark) in mark_manager.iter() {
+        marks.insert(name.to_string(), CursorPosition {
+            line: mark.line,
+            column: mark.col,
+        });
+    }
 
     // Get picker state if in picker mode
     let picker = editor.picker().map(|p| {
@@ -645,6 +661,36 @@ fn create_buffer_info(editor: &Editor) -> BufferInfo {
         content,
         line_count,
         file_path,
+    }
+}
+
+/// Helper function to jump to a quickfix entry
+fn jump_to_quickfix_entry(editor: &mut Editor, entry: &ovim::editor::QuickfixEntry) -> ApiResponse {
+    if let Some(ref path) = entry.filename {
+        // Load the file if needed
+        let path_str = path.to_string_lossy().to_string();
+        if let Err(e) = editor.load_file(&path_str) {
+            return ApiResponse::Error(ErrorResponse {
+                error: format!("Failed to load file: {}", e),
+            });
+        }
+
+        // Jump to line/column (convert from 1-indexed to 0-indexed)
+        let line = entry.lnum.saturating_sub(1);
+        let col = entry.col.saturating_sub(1);
+        editor.buffer_mut().cursor_mut().set_position(line, col);
+
+        ApiResponse::Success(SuccessResponse {
+            success: true,
+            message: Some(entry.display_text()),
+            line_count: None,
+        })
+    } else {
+        ApiResponse::Success(SuccessResponse {
+            success: true,
+            message: Some(entry.text.clone()),
+            line_count: None,
+        })
     }
 }
 
@@ -779,9 +825,225 @@ fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 line_count: None,
             })
         }
+        "copen" => {
+            // Open/show quickfix list
+            let qf_list = editor.quickfix_list();
+            if qf_list.is_empty() {
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Quickfix list is empty".to_string()),
+                    line_count: None,
+                })
+            } else {
+                let title = if qf_list.title().is_empty() {
+                    "Quickfix List"
+                } else {
+                    qf_list.title()
+                };
+                let entries: Vec<String> = qf_list
+                    .entries()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, entry)| {
+                        let marker = if i == qf_list.selected_index() { ">" } else { " " };
+                        format!("{} {}", marker, entry.display_text())
+                    })
+                    .collect();
+                let message = format!(
+                    "{} ({} items)\n{}",
+                    title,
+                    qf_list.len(),
+                    entries.join("\n")
+                );
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(message),
+                    line_count: None,
+                })
+            }
+        }
+        "cclose" | "ccl" => {
+            // Close/clear quickfix list
+            editor.quickfix_list_mut().clear();
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("Quickfix list cleared".to_string()),
+                line_count: None,
+            })
+        }
+        "cnext" | "cn" => {
+            // Jump to next quickfix entry
+            if editor.quickfix_list().is_empty() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "Quickfix list is empty".to_string(),
+                })
+            } else {
+                editor.quickfix_list_mut().next();
+                if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
+                    jump_to_quickfix_entry(editor, &entry)
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No current entry".to_string(),
+                    })
+                }
+            }
+        }
+        "cprev" | "cp" | "cprevious" => {
+            // Jump to previous quickfix entry
+            if editor.quickfix_list().is_empty() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "Quickfix list is empty".to_string(),
+                })
+            } else {
+                editor.quickfix_list_mut().previous();
+                if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
+                    jump_to_quickfix_entry(editor, &entry)
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No current entry".to_string(),
+                    })
+                }
+            }
+        }
+        "cfirst" | "cfir" => {
+            // Jump to first quickfix entry
+            if editor.quickfix_list().is_empty() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "Quickfix list is empty".to_string(),
+                })
+            } else {
+                editor.quickfix_list_mut().first();
+                if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
+                    jump_to_quickfix_entry(editor, &entry)
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No current entry".to_string(),
+                    })
+                }
+            }
+        }
+        "clast" | "cla" => {
+            // Jump to last quickfix entry
+            if editor.quickfix_list().is_empty() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "Quickfix list is empty".to_string(),
+                })
+            } else {
+                editor.quickfix_list_mut().last();
+                if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
+                    jump_to_quickfix_entry(editor, &entry)
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No current entry".to_string(),
+                    })
+                }
+            }
+        }
+        "tabnew" | "tabe" | "tabedit" => {
+            // Create new tab with default name
+            editor.new_tab(None);
+            let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Created tab {}", tab_index)),
+                line_count: None,
+            })
+        }
+        "tabnext" | "tabn" => {
+            // Switch to next tab
+            editor.next_tab();
+            let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Tab {}", tab_index)),
+                line_count: None,
+            })
+        }
+        "tabprev" | "tabp" | "tabprevious" => {
+            // Switch to previous tab
+            editor.previous_tab();
+            let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Tab {}", tab_index)),
+                line_count: None,
+            })
+        }
+        "tabfirst" | "tabfir" => {
+            // Switch to first tab
+            editor.first_tab();
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("Tab 1".to_string()),
+                line_count: None,
+            })
+        }
+        "tablast" | "tabl" => {
+            // Switch to last tab
+            editor.last_tab();
+            let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Tab {}", tab_index)),
+                line_count: None,
+            })
+        }
+        "tabclose" | "tabc" => {
+            // Close current tab
+            if editor.tab_page_manager().is_single_tab() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "Cannot close last tab".to_string(),
+                })
+            } else {
+                editor.close_current_tab();
+                let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Tab closed. Now on tab {}", tab_index)),
+                    line_count: None,
+                })
+            }
+        }
+        "tabs" => {
+            // List all tabs
+            let tabs = editor.tab_page_manager().tabs();
+            let current_index = editor.current_tab_index();
+            let tab_list: Vec<String> = tabs
+                .iter()
+                .enumerate()
+                .map(|(i, tab)| {
+                    let marker = if i == current_index { ">" } else { " " };
+                    format!("{} {} {}", marker, i + 1, tab.title())
+                })
+                .collect();
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(tab_list.join("\n")),
+                line_count: None,
+            })
+        }
         _ => {
+            // Handle :tabnew <filename>, :tabe <filename>, :tabedit <filename>
+            if let Some(filename) = command.strip_prefix("tabnew ")
+                .or_else(|| command.strip_prefix("tabe "))
+                .or_else(|| command.strip_prefix("tabedit ")) {
+                // Create new tab and load file
+                editor.new_tab(None);
+                match editor.load_file(filename) {
+                    Ok(_) => {
+                        let tab_index = editor.current_tab_index() + 1;
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("Opened {} in tab {}", filename, tab_index)),
+                            line_count: None,
+                        })
+                    }
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to load file: {}", e),
+                    }),
+                }
             // Handle :w <filename>
-            if let Some(filename) = command.strip_prefix("w ").or_else(|| command.strip_prefix("write ")) {
+            } else if let Some(filename) = command.strip_prefix("w ").or_else(|| command.strip_prefix("write ")) {
                 editor.buffer_mut().set_file_path(filename.to_string());
                 match editor.buffer_mut().save_as(filename) {
                     Ok(_) => {
