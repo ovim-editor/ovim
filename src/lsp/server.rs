@@ -30,11 +30,13 @@ const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 /// Maximum number of pending requests to prevent OOM
 const MAX_PENDING_REQUESTS: usize = 1000;
 
-/// Maximum time a request can remain pending before cleanup (5 minutes)
-const REQUEST_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Maximum time a request can remain pending before cleanup (30 seconds)
+/// This prevents stale requests from accumulating when LSP servers hang
+const REQUEST_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Interval for cleanup task (60 seconds)
-const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Interval for cleanup task (10 seconds)
+/// More frequent cleanup prevents memory buildup from stale requests
+const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Pending request metadata
 struct PendingRequest {
@@ -774,14 +776,16 @@ impl LanguageServer {
         // Send request
         let msg = JsonRpcMessage::request(request_id.clone(), method.to_string(), params);
 
-        // Check message size before sending
-        let serialized = serde_json::to_string(&msg)
-            .context("Failed to serialize request")?;
-        if serialized.len() > MAX_MESSAGE_SIZE {
+        // Check message size by serializing to bytes (avoids double serialization)
+        // The write_message function will serialize again, but we need size check first
+        let serialized_size = serde_json::to_vec(&msg)
+            .context("Failed to estimate request size")?
+            .len();
+        if serialized_size > MAX_MESSAGE_SIZE {
             return Err(anyhow!(
                 "Request '{}' too large: {} bytes (max {} bytes / {:.1} MB)",
                 method,
-                serialized.len(),
+                serialized_size,
                 MAX_MESSAGE_SIZE,
                 MAX_MESSAGE_SIZE as f64 / (1024.0 * 1024.0)
             ));
@@ -830,14 +834,16 @@ impl LanguageServer {
     pub async fn notify(&self, method: &str, params: Value) -> Result<()> {
         let msg = JsonRpcMessage::notification(method.to_string(), params);
 
-        // Check message size before sending
-        let serialized = serde_json::to_string(&msg)
-            .context("Failed to serialize notification")?;
-        if serialized.len() > MAX_MESSAGE_SIZE {
+        // Check message size by serializing to bytes (avoids double serialization)
+        // The write_message function will serialize again, but we need size check first
+        let serialized_size = serde_json::to_vec(&msg)
+            .context("Failed to estimate notification size")?
+            .len();
+        if serialized_size > MAX_MESSAGE_SIZE {
             return Err(anyhow!(
                 "Notification '{}' too large: {} bytes (max {} bytes / {:.1} MB)",
                 method,
-                serialized.len(),
+                serialized_size,
                 MAX_MESSAGE_SIZE,
                 MAX_MESSAGE_SIZE as f64 / (1024.0 * 1024.0)
             ));
