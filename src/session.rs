@@ -163,10 +163,20 @@ fn is_process_alive(pid: u32) -> bool {
         || kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn is_process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, System};
+
+    let mut system = System::new();
+    system.refresh_processes();
+    system.process(Pid::from_u32(pid)).is_some()
+}
+
+// Fallback for non-Windows, non-Unix systems (if any)
+#[cfg(not(any(unix, windows)))]
 fn is_process_alive(_pid: u32) -> bool {
-    // On non-Unix systems, assume process is alive
-    // TODO: Implement Windows process checking
+    // On other systems, conservatively assume process is alive
+    // to avoid accidentally deleting active session files
     true
 }
 

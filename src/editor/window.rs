@@ -94,6 +94,61 @@ impl Window {
         let visible_lines = self.height as usize;
         self.scroll_offset = cursor_line.saturating_sub(visible_lines / 2);
     }
+
+    /// Scrolls viewport down N lines
+    /// Returns whether cursor needed to be adjusted to stay visible
+    pub fn scroll_down(&mut self, lines: usize, buffer_line_count: usize) -> bool {
+        let max_scroll = buffer_line_count.saturating_sub(self.height as usize);
+        let new_scroll = (self.scroll_offset + lines).min(max_scroll);
+        let cursor_line = self.cursor.line();
+
+        // Check if cursor would be above viewport after scrolling
+        let needs_adjustment = cursor_line < new_scroll;
+
+        self.scroll_offset = new_scroll;
+
+        // Move cursor down if it would be above viewport
+        if needs_adjustment {
+            let col = self.cursor.col();
+            self.cursor.set_position(new_scroll, col);
+        }
+
+        needs_adjustment
+    }
+
+    /// Scrolls viewport up N lines
+    /// Returns whether cursor needed to be adjusted to stay visible
+    pub fn scroll_up(&mut self, lines: usize) -> bool {
+        let new_scroll = self.scroll_offset.saturating_sub(lines);
+        let cursor_line = self.cursor.line();
+        let last_visible = new_scroll + (self.height as usize).saturating_sub(1);
+
+        // Check if cursor would be below viewport after scrolling
+        let needs_adjustment = cursor_line > last_visible;
+
+        self.scroll_offset = new_scroll;
+
+        // Move cursor up if it would be below viewport
+        if needs_adjustment {
+            let col = self.cursor.col();
+            self.cursor.set_position(last_visible, col);
+        }
+
+        needs_adjustment
+    }
+
+    /// Moves cursor line to top of viewport
+    pub fn move_cursor_to_top(&mut self) {
+        let cursor_line = self.cursor.line();
+        self.scroll_offset = cursor_line;
+    }
+
+    /// Moves cursor line to bottom of viewport
+    pub fn move_cursor_to_bottom(&mut self) {
+        let cursor_line = self.cursor.line();
+        let visible_lines = self.height as usize;
+        self.scroll_offset = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+    }
 }
 
 /// Represents a split layout

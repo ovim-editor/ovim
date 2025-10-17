@@ -51,7 +51,82 @@ impl SyntaxHighlighter {
         }
     }
 
+    /// Gets highlights for all lines at once (more efficient than per-line)
+    /// This queries the syntax tree ONCE and distributes highlights to lines
+    pub fn highlights_for_all_lines(&self, source: &str) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+        let Some(ref tree) = self.tree else {
+            return Vec::new();
+        };
+
+        let lines: Vec<&str> = source.lines().collect();
+        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> = vec![Vec::new(); lines.len()];
+
+        // Calculate line byte offsets once
+        let mut line_start_bytes = Vec::with_capacity(lines.len());
+        let mut offset = 0;
+        for line in &lines {
+            line_start_bytes.push(offset);
+            offset += line.len() + 1; // +1 for newline
+        }
+
+        // Query the tree ONCE for all matches
+        let mut cursor = QueryCursor::new();
+        let matches = cursor.matches(
+            &self.query,
+            tree.root_node(),
+            source.as_bytes(),
+        );
+
+        // Distribute captures to lines in a single pass
+        for m in matches {
+            for capture in m.captures {
+                let node = capture.node;
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+
+                // Get capture name and highlight group
+                let capture_name = &self.capture_names[capture.index as usize];
+                let group = Self::capture_to_highlight_group(capture_name);
+
+                // Find which lines this capture spans
+                for (line_idx, &line_start_byte) in line_start_bytes.iter().enumerate() {
+                    if line_idx >= lines.len() {
+                        break;
+                    }
+
+                    let line_end_byte = line_start_byte + lines[line_idx].len();
+
+                    // Check if this capture overlaps with this line
+                    if start_byte < line_end_byte && end_byte > line_start_byte {
+                        // Convert to column range relative to line start
+                        let col_start = if start_byte >= line_start_byte {
+                            start_byte - line_start_byte
+                        } else {
+                            0
+                        };
+
+                        let col_end = if end_byte <= line_end_byte {
+                            end_byte - line_start_byte
+                        } else {
+                            line_end_byte - line_start_byte
+                        };
+
+                        line_highlights[line_idx].push((col_start..col_end, group));
+                    }
+                }
+            }
+        }
+
+        // Sort each line's highlights by start position
+        for highlights in &mut line_highlights {
+            highlights.sort_by_key(|(range, _)| range.start);
+        }
+
+        line_highlights
+    }
+
     /// Gets highlights for a specific line
+    /// Note: For bulk operations, use highlights_for_all_lines() which is much faster
     pub fn highlights_for_line(&self, line_idx: usize, source: &str) -> Vec<(Range<usize>, HighlightGroup)> {
         let Some(ref tree) = self.tree else {
             return Vec::new();

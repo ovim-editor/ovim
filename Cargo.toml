@@ -46,6 +46,9 @@ dirs = "5.0"
 nix = { version = "0.29", features = ["signal", "process"] }
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+sysinfo = "0.32"
+
 [features]
 default = []
 lua = ["mlua"]

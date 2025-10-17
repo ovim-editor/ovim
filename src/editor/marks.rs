@@ -41,6 +41,11 @@ impl MarkManager {
     pub fn clear(&mut self) {
         self.marks.clear();
     }
+
+    /// Returns an iterator over all marks
+    pub fn iter(&self) -> impl Iterator<Item = (char, Mark)> + '_ {
+        self.marks.iter().map(|(k, v)| (*k, *v))
+    }
 }
 
 /// Manages the jump list for navigating through cursor positions

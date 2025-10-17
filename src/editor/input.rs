@@ -241,6 +241,19 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                (Operator::Fold, KeyCode::Char('G')) => {
+                    // zfG - fold from current line to end of file (or specified line)
+                    editor.clear_pending_operator();
+                    let start_line = editor.buffer().cursor().line();
+                    let end_line = if let Some(cnt) = editor.count() {
+                        cnt.saturating_sub(1)
+                    } else {
+                        editor.buffer().line_count().saturating_sub(1)
+                    };
+                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor.clear_count();
+                    return Ok(());
+                }
                 (Operator::Indent, KeyCode::Char('g')) => {
                     // >gg - indent from current line to first line
                     editor.set_pending_command('g');
@@ -248,6 +261,11 @@ impl InputHandler {
                 }
                 (Operator::Dedent, KeyCode::Char('g')) => {
                     // <gg - dedent from current line to first line
+                    editor.set_pending_command('g');
+                    return Ok(());
+                }
+                (Operator::Fold, KeyCode::Char('g')) => {
+                    // zfgg - fold from current line to first line
                     editor.set_pending_command('g');
                     return Ok(());
                 }
@@ -288,6 +306,20 @@ impl InputHandler {
                         let tab_width = editor.options.tab_width;
 
                         Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                        editor.clear_count();
+                        return Ok(());
+                    }
+                    (Operator::Fold, KeyCode::Char('g')) => {
+                        // zfgg - fold from current line to first line (or specified line)
+                        editor.clear_pending_operator();
+                        editor.clear_pending_command();
+                        let end_line = editor.buffer().cursor().line();
+                        let start_line = if let Some(cnt) = editor.count() {
+                            cnt.saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
                         editor.clear_count();
                         return Ok(());
                     }
@@ -932,6 +964,22 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                (Operator::Fold, KeyCode::Char('j')) => {
+                    // zfj - fold current line and line below
+                    let start_line = editor.buffer().cursor().line();
+                    let end_line = (start_line + count).min(editor.buffer().line_count().saturating_sub(1));
+                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Fold, KeyCode::Char('k')) => {
+                    // zfk - fold current line and line above
+                    let end_line = editor.buffer().cursor().line() + 1;
+                    let start_line = editor.buffer().cursor().line().saturating_sub(count);
+                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor.clear_count();
+                    return Ok(());
+                }
                 // Paragraph motions with operators
                 (Operator::Delete, KeyCode::Char('}')) => {
                     // d} - delete to next paragraph
@@ -1056,6 +1104,69 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                (Operator::Fold, KeyCode::Char('%')) => {
+                    // zf% - fold to matching bracket
+                    let cursor = editor.buffer().cursor();
+                    let start_line = cursor.line();
+                    let start_col = cursor.col();
+
+                    // Find matching bracket position
+                    let rope = editor.buffer().rope();
+                    let text = rope.to_string();
+                    let chars: Vec<char> = text.chars().collect();
+
+                    // Convert line+col to absolute position
+                    let mut abs_start = 0;
+                    for i in 0..start_line {
+                        if i < rope.len_lines() {
+                            abs_start += rope.line(i).len_chars();
+                        }
+                    }
+                    abs_start += start_col;
+
+                    if abs_start >= chars.len() {
+                        editor.clear_count();
+                        return Ok(());
+                    }
+
+                    let current_char = chars[abs_start];
+
+                    // Determine if we're on a bracket
+                    let (is_opening, matching_char) = match current_char {
+                        '(' => (true, ')'),
+                        ')' => (false, '('),
+                        '[' => (true, ']'),
+                        ']' => (false, '['),
+                        '{' => (true, '}'),
+                        '}' => (false, '{'),
+                        '<' => (true, '>'),
+                        '>' => (false, '<'),
+                        _ => {
+                            // Not on a bracket, do nothing
+                            editor.clear_count();
+                            return Ok(());
+                        }
+                    };
+
+                    // Find matching bracket
+                    let match_abs_pos = if is_opening {
+                        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
+                    } else {
+                        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
+                    };
+
+                    if let Some(abs_end) = match_abs_pos {
+                        // Convert absolute positions to (line, col)
+                        let (fold_start_line, _) = Motions::abs_pos_to_line_col(&rope, abs_start.min(abs_end));
+                        let (fold_end_line, _) = Motions::abs_pos_to_line_col(&rope, abs_start.max(abs_end));
+
+                        // Create fold from start to end line
+                        editor.buffer_mut().fold_manager_mut().create_fold(fold_start_line, fold_end_line);
+                    }
+
+                    editor.clear_count();
+                    return Ok(());
+                }
                 (Operator::Yank, KeyCode::Char('}')) => {
                     // y} - yank to next paragraph
                     let start_line = editor.buffer().cursor().line();
@@ -1152,6 +1263,24 @@ impl InputHandler {
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.set_mode(Mode::Insert);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Fold, KeyCode::Char('}')) => {
+                    // zf} - fold to next paragraph
+                    let start_line = editor.buffer().cursor().line();
+                    Motions::paragraph_forward(editor.buffer_mut(), count);
+                    let end_line = editor.buffer().cursor().line();
+                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Fold, KeyCode::Char('{')) => {
+                    // zf{ - fold to previous paragraph
+                    let end_line = editor.buffer().cursor().line();
+                    Motions::paragraph_backward(editor.buffer_mut(), count);
+                    let start_line = editor.buffer().cursor().line();
+                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1503,6 +1632,12 @@ impl InputHandler {
                             // Position cursor at start of replaced text
                             editor.buffer_mut().cursor_mut().set_position(range.start_line, range.start_col);
                         }
+                        Operator::Fold => {
+                            // Create a fold from start_line to end_line (inclusive)
+                            let start_line = range.start_line.min(range.end_line);
+                            let end_line = range.start_line.max(range.end_line);
+                            editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                        }
                         // Indent/dedent don't make sense with text objects, just ignore
                         Operator::Indent | Operator::Dedent => {}
                     }
@@ -1698,6 +1833,11 @@ impl InputHandler {
                     editor.buffer_mut().clear_folds();
                     return Ok(());
                 }
+                ('z', KeyCode::Char('f')) => {
+                    // zf{motion} - create fold
+                    editor.set_pending_operator(Operator::Fold);
+                    return Ok(());
+                }
                 ('g', KeyCode::Char('t')) => {
                     // gt - go to next tab (or tab number if count specified)
                     if let Some(count) = editor.count() {
@@ -1814,6 +1954,24 @@ impl InputHandler {
                     editor.clear_pending_command();
                     return Ok(());
                 }
+                ('z', KeyCode::Char('z')) => {
+                    // zz - center cursor in viewport
+                    editor.center_cursor_in_viewport();
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('t')) => {
+                    // zt - move cursor line to top of viewport
+                    editor.move_cursor_line_to_top();
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('z', KeyCode::Char('b')) => {
+                    // zb - move cursor line to bottom of viewport
+                    editor.move_cursor_line_to_bottom();
+                    editor.clear_count();
+                    return Ok(());
+                }
                 _ => {
                     // Unknown command sequence, clear and continue
                     editor.clear_count();
@@ -1893,48 +2051,36 @@ impl InputHandler {
                 editor.clear_count();
             }
             // Scrolling commands
-            // Ctrl-E: Scroll down one line (move cursor down)
+            // Ctrl-E: Scroll viewport down one line (cursor follows if needed)
             KeyCode::Char('e') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 let count = editor.effective_count();
-                // TODO: Integrate with viewport scrolling once Window management is connected
-                // For now, just move cursor down
-                editor.buffer_mut().cursor_mut().move_down(count);
+                editor.scroll_viewport_down(count);
                 editor.clear_count();
             }
-            // Ctrl-Y: Scroll up one line (move cursor up)
+            // Ctrl-Y: Scroll viewport up one line (cursor follows if needed)
             KeyCode::Char('y') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 let count = editor.effective_count();
-                // TODO: Integrate with viewport scrolling once Window management is connected
-                // For now, just move cursor up
-                editor.buffer_mut().cursor_mut().move_up(count);
+                editor.scroll_viewport_up(count);
                 editor.clear_count();
             }
-            // Ctrl-D: Scroll down half page
+            // Ctrl-D: Scroll down half page (both viewport and cursor)
             KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
-                // For now, move down 10 lines as approximation
-                editor.buffer_mut().cursor_mut().move_down(10);
+                editor.scroll_half_page_down();
                 editor.clear_count();
             }
-            // Ctrl-U: Scroll up half page
+            // Ctrl-U: Scroll up half page (both viewport and cursor)
             KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
-                // For now, move up 10 lines as approximation
-                editor.buffer_mut().cursor_mut().move_up(10);
+                editor.scroll_half_page_up();
                 editor.clear_count();
             }
-            // Ctrl-F: Scroll forward (down) one page
+            // Ctrl-F: Scroll forward (down) one page (both viewport and cursor)
             KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
-                // For now, move down 20 lines as approximation
-                editor.buffer_mut().cursor_mut().move_down(20);
+                editor.scroll_page_down();
                 editor.clear_count();
             }
-            // Ctrl-B: Scroll backward (up) one page
+            // Ctrl-B: Scroll backward (up) one page (both viewport and cursor)
             KeyCode::Char('b') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                // TODO: Integrate with viewport scrolling - needs viewport_height from UI
-                // For now, move up 20 lines as approximation
-                editor.buffer_mut().cursor_mut().move_up(20);
+                editor.scroll_page_up();
                 editor.clear_count();
             }
             // Enter Insert mode
