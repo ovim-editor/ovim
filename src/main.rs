@@ -151,6 +151,9 @@ async fn run_headless_loop(
     // Create channel for async preview loading
     let (preview_tx, mut preview_rx) = tokio::sync::mpsc::unbounded_channel::<(String, ovim::editor::PreviewCache)>();
 
+    // Create channel for async file loading
+    let (file_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<ovim::editor::PickerResult>();
+
     loop {
         // Check for Java LSP status updates
         while let Ok(status) = java_status_rx.try_recv() {
@@ -188,11 +191,19 @@ async fn run_headless_loop(
         // Spawn async preview loading if needed (non-blocking!)
         if editor.mode() == ovim::mode::Mode::Picker {
             spawn_picker_preview_loading(editor, &preview_tx);
+            spawn_file_finder_loading(editor, &file_tx);
         }
 
         // Poll for completed previews (non-blocking)
         while let Ok((file_path, cache)) = preview_rx.try_recv() {
             editor.insert_preview(file_path, cache);
+        }
+
+        // Poll for file results (non-blocking)
+        while let Ok(result) = file_rx.try_recv() {
+            if let Some(picker) = editor.picker_mut() {
+                picker.add_file_result(result);
+            }
         }
 
         // Update diagnostic cache only if diagnostics changed
@@ -260,6 +271,66 @@ fn spawn_picker_preview_loading(
     }
 }
 
+/// Spawns a background task to load files for file finder picker
+/// Returns immediately without blocking - files are sent via channel as they're discovered
+fn spawn_file_finder_loading(
+    editor: &mut Editor,
+    file_tx: &tokio::sync::mpsc::UnboundedSender<ovim::editor::PickerResult>,
+) {
+    // Check if we should spawn file loading
+    if let Some(picker) = editor.picker() {
+        if !picker.should_spawn_file_loading() {
+            return;
+        }
+
+        // Get the base directory for file search
+        let base_dir = picker.base_dir().to_path_buf();
+
+        // Mark as spawned to avoid spawning multiple tasks
+        if let Some(picker_mut) = editor.picker_mut() {
+            picker_mut.mark_loading_spawned();
+        }
+
+        let tx = file_tx.clone();
+
+        // Spawn background task - doesn't block!
+        tokio::spawn(async move {
+            use ignore::WalkBuilder;
+
+            // Use ignore crate's WalkBuilder which respects .gitignore
+            let walker = WalkBuilder::new(&base_dir)
+                .hidden(false)  // Don't automatically skip hidden files
+                .git_ignore(true)  // Respect .gitignore files
+                .git_global(true)  // Respect global gitignore
+                .git_exclude(true)  // Respect .git/info/exclude
+                .build();
+
+            // Walk the directory tree and send files as we find them
+            for entry in walker.filter_map(|e| e.ok()) {
+                let path = entry.path();
+
+                if path.is_file() {
+                    if let Ok(relative_path) = path.strip_prefix(&base_dir) {
+                        let display_path = relative_path.to_string_lossy().to_string();
+                        let result = ovim::editor::PickerResult {
+                            display: display_path,
+                            location: path.to_string_lossy().to_string(),
+                            line: 0,
+                            col: 0,
+                        };
+
+                        // Send result back (non-blocking)
+                        // If channel is closed (picker was closed), task will exit
+                        if tx.send(result).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 /// Loads a file preview asynchronously (can be called from background task)
 async fn load_preview_async(file_path: &str) -> Option<ovim::editor::PreviewCache> {
     use std::collections::HashMap;
@@ -304,6 +375,9 @@ async fn run_event_loop(
 
     // Create channel for async preview loading
     let (preview_tx, mut preview_rx) = tokio::sync::mpsc::unbounded_channel::<(String, ovim::editor::PreviewCache)>();
+
+    // Create channel for async file loading
+    let (file_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<ovim::editor::PickerResult>();
 
     while !editor.should_quit() {
         // Check for Java LSP status updates
@@ -358,11 +432,19 @@ async fn run_event_loop(
         // Spawn async preview loading if needed (non-blocking!)
         if editor.mode() == ovim::mode::Mode::Picker {
             spawn_picker_preview_loading(editor, &preview_tx);
+            spawn_file_finder_loading(editor, &file_tx);
         }
 
         // Poll for completed previews (non-blocking)
         while let Ok((file_path, cache)) = preview_rx.try_recv() {
             editor.insert_preview(file_path, cache);
+        }
+
+        // Poll for file results (non-blocking)
+        while let Ok(result) = file_rx.try_recv() {
+            if let Some(picker) = editor.picker_mut() {
+                picker.add_file_result(result);
+            }
         }
 
         // Render the editor
