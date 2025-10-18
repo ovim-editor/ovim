@@ -1861,19 +1861,19 @@ impl InputHandler {
                     editor.set_pending_register(ch);
                     return Ok(());
                 }
-                ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
-                    // m{a-z} - set mark
+                ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
+                    // m{a-z} or m{A-Z} - set local or global mark
                     editor.set_mark(ch);
                     return Ok(());
                 }
-                ('\'', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
-                    // '{a-z} - jump to mark line
+                ('\'', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
+                    // '{a-z} or '{A-Z} - jump to mark line
                     editor.add_jump(); // Add current position to jump list before jumping
                     editor.jump_to_mark_line(ch);
                     return Ok(());
                 }
-                ('`', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
-                    // `{a-z} - jump to mark exact position
+                ('`', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
+                    // `{a-z} or `{A-Z} - jump to mark exact position
                     editor.add_jump(); // Add current position to jump list before jumping
                     editor.jump_to_mark(ch);
                     return Ok(());
@@ -2729,6 +2729,8 @@ impl InputHandler {
                     editor.last_insert_position = Some((cursor.line(), cursor.col()));
 
                     editor.finalize_change_building();
+                    // Update the . register with the last inserted text
+                    editor.update_last_inserted_register();
                     editor.mark_buffer_modified(); // Mark for LSP didChange notification
                     editor.set_mode(Mode::Normal);
                     // Move cursor left when exiting insert mode (unless at column 0)
@@ -2939,6 +2941,43 @@ impl InputHandler {
                 editor.set_visual_start(cursor.line(), 0);
                 editor.set_mode(Mode::VisualLine);
             }
+            // Visual block insert/append
+            KeyCode::Char('I') => {
+                if editor.mode() == Mode::VisualBlock {
+                    // Insert at beginning of block on each line
+                    if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
+                        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        editor.clear_visual_start();
+                        editor.set_mode(Mode::Insert);
+                        // TODO: Track that this is a visual block insert and repeat on other lines when exiting insert
+                    }
+                } else {
+                    // Regular visual mode - just enter insert at start of selection
+                    if let Some(((start_line, start_col), _)) = editor.visual_selection() {
+                        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        editor.clear_visual_start();
+                        editor.set_mode(Mode::Insert);
+                    }
+                }
+            }
+            KeyCode::Char('A') => {
+                if editor.mode() == Mode::VisualBlock {
+                    // Append at end of block on each line
+                    if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection() {
+                        editor.buffer_mut().cursor_mut().set_position(start_line, end_col + 1);
+                        editor.clear_visual_start();
+                        editor.set_mode(Mode::Insert);
+                        // TODO: Track that this is a visual block append and repeat on other lines when exiting insert
+                    }
+                } else {
+                    // Regular visual mode - just enter insert at end of selection
+                    if let Some((_, (end_line, end_col))) = editor.visual_selection() {
+                        editor.buffer_mut().cursor_mut().set_position(end_line, end_col + 1);
+                        editor.clear_visual_start();
+                        editor.set_mode(Mode::Insert);
+                    }
+                }
+            }
             // Indent/dedent in visual mode
             KeyCode::Char('>') => {
                 if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
@@ -2986,7 +3025,17 @@ impl InputHandler {
                 // Remove last character from command line
                 editor.backspace_command_line();
             }
+            KeyCode::Up => {
+                // Navigate to previous command in history
+                editor.history_prev();
+            }
+            KeyCode::Down => {
+                // Navigate to next command in history
+                editor.history_next();
+            }
             KeyCode::Enter => {
+                // Add to history before executing
+                editor.add_command_to_history();
                 // Execute the command
                 Self::execute_command(editor)?;
                 editor.clear_command_line();
@@ -3033,7 +3082,7 @@ impl InputHandler {
 
         // Parse flags
         let global = flags.contains('g');
-        let _ignore_case = flags.contains('i');
+        let ignore_case = flags.contains('i');
 
         // Determine the range using the new parser (returns inclusive range)
         let (start_line, end_line) = if let Some((start, end)) = Self::parse_range(editor, range_str) {
@@ -3041,6 +3090,19 @@ impl InputHandler {
         } else {
             // Invalid range
             return Ok(());
+        };
+
+        // Compile the regex pattern
+        use regex::RegexBuilder;
+        let regex = match RegexBuilder::new(pattern)
+            .case_insensitive(ignore_case)
+            .build()
+        {
+            Ok(r) => r,
+            Err(_) => {
+                editor.set_lsp_status(format!("Invalid regex pattern: {}", pattern));
+                return Ok(());
+            }
         };
 
         // Perform substitution with change tracking
@@ -3053,18 +3115,10 @@ impl InputHandler {
                 // Perform the substitution
                 let new_text = if global {
                     // Replace all occurrences
-                    line_text.replace(pattern, replacement)
+                    regex.replace_all(line_text, replacement).to_string()
                 } else {
                     // Replace first occurrence
-                    if let Some(pos) = line_text.find(pattern) {
-                        let mut result = String::new();
-                        result.push_str(&line_text[..pos]);
-                        result.push_str(replacement);
-                        result.push_str(&line_text[pos + pattern.len()..]);
-                        result
-                    } else {
-                        line_text.to_string()
-                    }
+                    regex.replace(line_text, replacement).to_string()
                 };
 
                 if new_text != line_text {
@@ -3080,6 +3134,211 @@ impl InputHandler {
                     editor.add_change(delete_change);
                     editor.add_change(insert_change);
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handles :global and :vglobal commands (:g/pattern/command, :v/pattern/command)
+    fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
+        // Parse the command: g/pattern/command or v/pattern/command or g!/pattern/command
+        // :g/pattern/command - execute command on lines matching pattern
+        // :v/pattern/command or :g!/pattern/command - execute command on lines NOT matching pattern
+
+        let invert = command.starts_with("v/") || command.starts_with("g!/");
+        let cmd_start = if command.starts_with("g!/") { 2 } else { 1 };
+
+        let rest = &command[cmd_start..];
+
+        // Extract pattern and command
+        if !rest.starts_with('/') {
+            editor.set_lsp_status("Invalid global command format".to_string());
+            return Ok(());
+        }
+
+        // Find the closing / for the pattern
+        let pattern_end = if let Some(idx) = rest[1..].find('/') {
+            idx + 1
+        } else {
+            editor.set_lsp_status("Invalid global command: missing closing /".to_string());
+            return Ok(());
+        };
+
+        let pattern = &rest[1..pattern_end];
+        let sub_command = if pattern_end + 1 < rest.len() {
+            rest[pattern_end + 1..].trim()
+        } else {
+            ""
+        };
+
+        // Default command is 'p' (print) if none specified
+        let sub_command = if sub_command.is_empty() { "p" } else { sub_command };
+
+        // Compile regex
+        use regex::Regex;
+        let regex = match Regex::new(pattern) {
+            Ok(r) => r,
+            Err(_) => {
+                editor.set_lsp_status(format!("Invalid regex pattern: {}", pattern));
+                return Ok(());
+            }
+        };
+
+        // Find all matching lines
+        let line_count = editor.buffer().line_count();
+        let mut matching_lines = Vec::new();
+
+        for line_idx in 0..line_count {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let matches = regex.is_match(line_text);
+
+                // Include line if: (matches && !invert) || (!matches && invert)
+                if matches != invert {
+                    matching_lines.push(line_idx);
+                }
+            }
+        }
+
+        if matching_lines.is_empty() {
+            editor.set_lsp_status("No matching lines found".to_string());
+            return Ok(());
+        }
+
+        // Execute the command on matching lines
+        match sub_command {
+            "d" | "delete" => {
+                // Delete all matching lines (in reverse order to avoid index shifts)
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let mut all_deleted = Vec::new();
+
+                for &line_idx in matching_lines.iter().rev() {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        all_deleted.push(line.to_string());
+
+                        let line_len = line.trim_end_matches('\n').chars().count();
+
+                        // Calculate character range
+                        let start_char = editor.buffer().rope().line_to_char(line_idx);
+                        let end_char = if line_idx + 1 < editor.buffer().line_count() {
+                            editor.buffer().rope().line_to_char(line_idx + 1)
+                        } else {
+                            editor.buffer().rope().len_chars()
+                        };
+
+                        // Delete the line
+                        editor.buffer_mut().rope_mut().remove(start_char..end_char);
+                    }
+                }
+
+                // Store in register
+                all_deleted.reverse(); // Restore original order
+                let deleted_text = all_deleted.join("");
+                editor.delete_to_register(deleted_text.clone());
+
+                // Position cursor at first deleted line
+                let new_cursor_line = matching_lines[0].min(editor.buffer().line_count().saturating_sub(1));
+                editor.buffer_mut().cursor_mut().set_position(new_cursor_line, 0);
+
+                // Record change
+                let range = Range::new((matching_lines[0], 0), (matching_lines[matching_lines.len() - 1] + 1, 0));
+                let change = Change::delete(range, deleted_text, cursor_before);
+                editor.add_change(change);
+
+                editor.set_lsp_status(format!("Deleted {} line(s)", matching_lines.len()));
+            }
+            "p" | "print" => {
+                // Print all matching lines to status
+                let mut output = Vec::new();
+                for &line_idx in &matching_lines {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        output.push(format!("{}: {}", line_idx + 1, line_text));
+                    }
+                }
+
+                let result = if output.len() > 10 {
+                    // Limit output to first 10 lines
+                    let mut limited = output.into_iter().take(10).collect::<Vec<_>>();
+                    limited.push(format!("... and {} more lines", matching_lines.len() - 10));
+                    limited.join("\n")
+                } else {
+                    output.join("\n")
+                };
+
+                editor.set_lsp_status(result);
+            }
+            "y" | "yank" => {
+                // Yank all matching lines
+                let mut yanked_lines = Vec::new();
+                for &line_idx in &matching_lines {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        yanked_lines.push(line.to_string());
+                    }
+                }
+                let yanked_text = yanked_lines.join("");
+                editor.yank_to_register(yanked_text);
+
+                editor.set_lsp_status(format!("Yanked {} line(s)", matching_lines.len()));
+            }
+            _ if sub_command.starts_with("s/") => {
+                // Run substitute on matching lines
+                for &line_idx in &matching_lines {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+
+                        // Parse substitute pattern: s/pattern/replacement/flags
+                        let parts: Vec<&str> = sub_command.splitn(4, '/').collect();
+                        if parts.len() < 3 {
+                            continue;
+                        }
+
+                        let sub_pattern = parts[1];
+                        let replacement = parts[2];
+                        let flags = if parts.len() >= 4 { parts[3] } else { "" };
+
+                        let global = flags.contains('g');
+                        let ignore_case = flags.contains('i');
+
+                        // Compile regex
+                        use regex::RegexBuilder;
+                        let sub_regex = match RegexBuilder::new(sub_pattern)
+                            .case_insensitive(ignore_case)
+                            .build()
+                        {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        };
+
+                        // Perform substitution
+                        let new_text = if global {
+                            sub_regex.replace_all(line_text, replacement).to_string()
+                        } else {
+                            sub_regex.replace(line_text, replacement).to_string()
+                        };
+
+                        if new_text != line_text {
+                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let line_len = line_text.chars().count();
+
+                            let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                            let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
+                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+                            let insert_change = Change::insert((line_idx, 0), new_text, cursor_before);
+                            insert_change.apply(editor.buffer_mut());
+
+                            editor.add_change(delete_change);
+                            editor.add_change(insert_change);
+                        }
+                    }
+                }
+
+                editor.set_lsp_status(format!("Substituted on {} line(s)", matching_lines.len()));
+            }
+            _ => {
+                editor.set_lsp_status(format!("Unsupported global command: {}", sub_command));
             }
         }
 
@@ -3115,8 +3374,8 @@ impl InputHandler {
 
         // Handle ranges with comma (e.g., "1,5", ".,$ ", "'a,'b")
         if let Some(comma_idx) = range_str.find(',') {
-            let start_part = &range_str[..comma_idx].trim();
-            let end_part = &range_str[comma_idx + 1..].trim();
+            let start_part = range_str[..comma_idx].trim();
+            let end_part = range_str[comma_idx + 1..].trim();
 
             let start = Self::parse_range_endpoint(editor, start_part)?;
             let end = Self::parse_range_endpoint(editor, end_part)?;
@@ -3190,6 +3449,9 @@ impl InputHandler {
     /// Internal command execution implementation
     fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
         let command = command.trim();
+
+        // Update the : register with the command
+        editor.registers_mut().set_last_command(command.to_string());
 
         // First, try to parse range from command
         // Format: :[range]command
@@ -3290,6 +3552,12 @@ impl InputHandler {
             return Ok(());
         }
 
+        // Handle :global and :vglobal commands (:g/pattern/command, :v/pattern/command)
+        if command.starts_with("g/") || command.starts_with("g!/") || command.starts_with("v/") {
+            Self::handle_global_command(editor, command)?;
+            return Ok(());
+        }
+
         // Handle commands without arguments
         match command {
             "q" | "quit" => {
@@ -3344,6 +3612,23 @@ impl InputHandler {
                 let info = editor.get_lsp_info();
                 editor.set_lsp_status(info);
             }
+            _ if command.starts_with("LspRename ") || command.starts_with("lsprename ") => {
+                // Extract new name from command
+                let new_name = if let Some(name) = command.strip_prefix("LspRename ") {
+                    name.trim()
+                } else if let Some(name) = command.strip_prefix("lsprename ") {
+                    name.trim()
+                } else {
+                    ""
+                };
+
+                if new_name.is_empty() {
+                    editor.set_lsp_status("Usage: :LspRename <newname>".to_string());
+                } else {
+                    editor.request_rename(new_name.to_string());
+                }
+                return Ok(());
+            }
             "colorscheme" | "colo" => {
                 // Show current color scheme and available schemes
                 let current = editor.current_color_scheme_name();
@@ -3351,7 +3636,81 @@ impl InputHandler {
                 let message = format!("Current: {}\nAvailable: {}", current, schemes);
                 editor.set_lsp_status(message);
             }
+            "ls" | "buffers" | "files" => {
+                // List all buffers
+                let buffer_list = editor.list_buffers();
+                editor.set_lsp_status(buffer_list);
+            }
+            "bn" | "bnext" => {
+                // Switch to next buffer
+                editor.next_buffer();
+            }
+            "bp" | "bprev" | "bprevious" => {
+                // Switch to previous buffer
+                editor.prev_buffer();
+            }
+            "bd" | "bdelete" => {
+                // Delete current buffer
+                if !editor.delete_current_buffer() {
+                    // Last buffer can't be deleted
+                    editor.set_lsp_status("Cannot delete last buffer".to_string());
+                }
+            }
+            "bf" | "bfirst" => {
+                // Switch to first buffer
+                editor.switch_to_buffer(0);
+            }
+            "bl" | "blast" => {
+                // Switch to last buffer
+                let last_idx = editor.buffer_count().saturating_sub(1);
+                editor.switch_to_buffer(last_idx);
+            }
+            "wqa" | "wqall" | "xa" | "xall" => {
+                // Write all and quit
+                // For now just save current buffer and quit
+                editor.buffer_mut().save()?;
+                editor.mark_saved();
+                editor.quit();
+            }
+            "only" => {
+                // Close all windows except current
+                // For now this is a no-op since window management is minimal
+                // TODO: Implement when multi-window support is more robust
+            }
             _ => {
+                // Check if it's a :r or :read command
+                if let Some(filename) = command.strip_prefix("r ").or_else(|| command.strip_prefix("read ")) {
+                    let filename = filename.trim();
+                    if !filename.is_empty() {
+                        // Read file contents
+                        match std::fs::read_to_string(filename) {
+                            Ok(contents) => {
+                                // Insert contents at current cursor position
+                                let cursor = editor.buffer().cursor();
+                                let line = cursor.line() + 1; // Insert after current line
+                                let col = 0;
+                                editor.buffer_mut().insert_text_at(line, col, &contents);
+                                editor.set_lsp_status(format!("Read {} lines from {}", contents.lines().count(), filename));
+                            }
+                            Err(e) => {
+                                editor.set_lsp_status(format!("Error reading file: {}", e));
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+
+                // Check if it's a :b <n> or :buffer <n> command
+                if let Some(buffer_num_str) = command.strip_prefix("b ").or_else(|| command.strip_prefix("buffer ")) {
+                    if let Ok(buffer_num) = buffer_num_str.trim().parse::<usize>() {
+                        if buffer_num > 0 {
+                            // Convert from 1-indexed to 0-indexed
+                            editor.switch_to_buffer(buffer_num - 1);
+                        }
+                    }
+                    return Ok(());
+                }
+
                 // Check if it's a :colorscheme <name> or :colo <name> command
                 if let Some(scheme_name) = command.strip_prefix("colorscheme ").or_else(|| command.strip_prefix("colo ")) {
                     match editor.set_color_scheme(scheme_name.trim()) {
@@ -3408,6 +3767,13 @@ impl InputHandler {
 
     /// Handles input in Picker mode
     fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        // Ctrl-C - cancel picker (same as Escape)
+        if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+            editor.close_picker();
+            editor.set_mode(Mode::Normal);
+            return Ok(());
+        }
+
         match key_event.code {
             // Escape - cancel picker
             KeyCode::Esc => {

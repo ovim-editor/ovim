@@ -7,6 +7,7 @@ use ropey::Rope;
 use std::path::{Path, PathBuf};
 use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
 use crate::GitStatus;
+use crate::editor::ChangeManager;
 use std::ops::Range;
 use std::collections::HashSet;
 
@@ -32,6 +33,8 @@ pub struct Buffer {
     fold_manager: crate::editor::FoldManager,
     /// Git status for this buffer
     git_status: GitStatus,
+    /// Change manager for undo/redo (per-buffer)
+    change_manager: ChangeManager,
 }
 
 impl Buffer {
@@ -48,6 +51,7 @@ impl Buffer {
             pending_rehighlight: false,
             fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
+            change_manager: ChangeManager::new(),
         }
     }
 
@@ -64,6 +68,7 @@ impl Buffer {
             pending_rehighlight: false,
             fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
+            change_manager: ChangeManager::new(),
         }
     }
 
@@ -215,6 +220,7 @@ impl Buffer {
             pending_rehighlight: false,
             fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
+            change_manager: ChangeManager::new(),
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
@@ -656,6 +662,61 @@ impl Buffer {
     /// Gets the git status for this buffer
     pub fn git_status(&self) -> &GitStatus {
         &self.git_status
+    }
+
+    /// Gets a reference to the change manager
+    pub fn change_manager(&self) -> &ChangeManager {
+        &self.change_manager
+    }
+
+    /// Gets a mutable reference to the change manager
+    pub fn change_manager_mut(&mut self) -> &mut ChangeManager {
+        &mut self.change_manager
+    }
+
+    /// Undoes the last change
+    pub fn undo(&mut self) -> bool {
+        // Pop change from undo stack
+        if let Some(change) = self.change_manager.undo_stack.pop() {
+            // Apply the undo
+            change.undo(self);
+            // Push to redo stack
+            self.change_manager.redo_stack.push(change);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Redoes the next change
+    pub fn redo(&mut self) -> bool {
+        // Pop change from redo stack
+        if let Some(change) = self.change_manager.redo_stack.pop() {
+            // Re-apply the change
+            change.apply(self);
+            // Push to undo stack
+            self.change_manager.undo_stack.push(change);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Repeats the last change
+    pub fn repeat_last_change(&mut self) -> bool {
+        // Clone the last change
+        if let Some(ref change) = self.change_manager.last_change {
+            let repeated_change = change.clone();
+            // Repeat it
+            repeated_change.repeat(self);
+            // Push to undo stack as a new change
+            self.change_manager.undo_stack.push(repeated_change.clone());
+            self.change_manager.redo_stack.clear();
+            self.change_manager.last_change = Some(repeated_change);
+            true
+        } else {
+            false
+        }
     }
 }
 

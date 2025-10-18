@@ -136,18 +136,18 @@ impl Renderer {
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
         } else if editor.mode() == crate::mode::Mode::Command {
-            // Position cursor in command line
-            let cmd_cursor_x = (editor.command_line().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
+            // Position cursor in command line (use status_chunk, not chunks[1])
+            let cmd_cursor_x = (editor.command_line().len() + 1).min(status_chunk.width.saturating_sub(1) as usize);
             frame.set_cursor_position((
-                chunks[1].x + cmd_cursor_x as u16,
-                chunks[1].y,
+                status_chunk.x + cmd_cursor_x as u16,
+                status_chunk.y,
             ));
         } else if editor.mode() == crate::mode::Mode::Search {
-            // Position cursor in search line
-            let search_cursor_x = (editor.search_buffer().len() + 1).min(chunks[1].width.saturating_sub(1) as usize);
+            // Position cursor in search line (use status_chunk, not chunks[1])
+            let search_cursor_x = (editor.search_buffer().len() + 1).min(status_chunk.width.saturating_sub(1) as usize);
             frame.set_cursor_position((
-                chunks[1].x + search_cursor_x as u16,
-                chunks[1].y,
+                status_chunk.x + search_cursor_x as u16,
+                status_chunk.y,
             ));
         } else {
             // Position cursor in text buffer (accounting for gutter, tabs, and wide chars)
@@ -524,6 +524,15 @@ impl Renderer {
 
         // Build status line content
         let mode_indicator = format!(" {} ", mode.display_name());
+        let recording_indicator = if editor.is_recording_macro() {
+            if let Some(reg) = editor.recording_register() {
+                format!(" recording @{} ", reg)
+            } else {
+                " recording ".to_string()
+            }
+        } else {
+            String::new()
+        };
         let position = format!(" {}:{} ", cursor.line() + 1, cursor.col() + 1);
         let modified = if buffer.is_modified() { " [+] " } else { " " };
         let file = buffer.file_path().unwrap_or("[No Name]");
@@ -545,14 +554,21 @@ impl Renderer {
             String::new()
         };
 
+        // Calculate padding accounting for all elements including recording indicator
+        let recording_len = if !recording_indicator.is_empty() {
+            recording_indicator.len() + 1 // +1 for space after mode
+        } else {
+            1 // just the space after mode
+        };
+
         let padding_len = (area.width as usize)
             .saturating_sub(mode_indicator.len())
+            .saturating_sub(recording_len)
             .saturating_sub(file.len())
             .saturating_sub(modified.len())
             .saturating_sub(diagnostics.len())
             .saturating_sub(lsp_status.len())
-            .saturating_sub(position.len())
-            .saturating_sub(1);
+            .saturating_sub(position.len());
 
         let mut spans = vec![
             Span::styled(
@@ -562,11 +578,25 @@ impl Renderer {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" "),
-            Span::raw(file),
-            Span::raw(modified),
-            Span::raw(" ".repeat(padding_len)),
         ];
+
+        // Add recording indicator if recording
+        if !recording_indicator.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                &recording_indicator,
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::raw(" "));
+        }
+
+        spans.push(Span::raw(file));
+        spans.push(Span::raw(modified));
+        spans.push(Span::raw(" ".repeat(padding_len)));
 
         // Add diagnostics indicator if present
         if !diagnostics.is_empty() {

@@ -7,11 +7,21 @@ pub struct Mark {
     pub col: usize,
 }
 
-/// Manages marks (a-z for buffer-local marks)
+/// Represents a global mark (includes file path)
+#[derive(Clone, Debug)]
+pub struct GlobalMark {
+    pub file_path: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// Manages marks (a-z for buffer-local marks, A-Z for global marks)
 #[derive(Clone, Debug)]
 pub struct MarkManager {
     /// Buffer-local marks (a-z)
     marks: HashMap<char, Mark>,
+    /// Global marks (A-Z) - persist across files
+    global_marks: HashMap<char, GlobalMark>,
 }
 
 impl MarkManager {
@@ -19,32 +29,65 @@ impl MarkManager {
     pub fn new() -> Self {
         Self {
             marks: HashMap::new(),
+            global_marks: HashMap::new(),
         }
     }
 
-    /// Sets a mark at the given position
-    pub fn set_mark(&mut self, name: char, line: usize, col: usize) -> bool {
+    /// Sets a mark at the given position (buffer-local for a-z, global for A-Z)
+    pub fn set_mark(&mut self, name: char, line: usize, col: usize, file_path: Option<&str>) -> bool {
         if name.is_ascii_lowercase() {
             self.marks.insert(name, Mark { line, col });
             true
+        } else if name.is_ascii_uppercase() {
+            // Global marks require a file path
+            if let Some(path) = file_path {
+                self.global_marks.insert(name, GlobalMark {
+                    file_path: path.to_string(),
+                    line,
+                    col,
+                });
+                true
+            } else {
+                false
+            }
         } else {
             false
         }
     }
 
-    /// Gets a mark by name
+    /// Gets a local mark by name (a-z)
     pub fn get_mark(&self, name: char) -> Option<Mark> {
         self.marks.get(&name).copied()
     }
 
-    /// Clears all marks
+    /// Gets a global mark by name (A-Z)
+    pub fn get_global_mark(&self, name: char) -> Option<&GlobalMark> {
+        if name.is_ascii_uppercase() {
+            self.global_marks.get(&name)
+        } else {
+            None
+        }
+    }
+
+    /// Clears all local marks (a-z) - global marks are preserved
     pub fn clear(&mut self) {
         self.marks.clear();
     }
 
-    /// Returns an iterator over all marks
+    /// Clears all marks including global marks
+    pub fn clear_all(&mut self) {
+        self.marks.clear();
+        self.global_marks.clear();
+    }
+
+    /// Returns an iterator over all local marks
     pub fn iter(&self) -> impl Iterator<Item = (char, Mark)> + '_ {
         self.marks.iter().map(|(k, v)| (*k, *v))
+    }
+
+    /// Returns an iterator over all global marks
+    pub fn iter_global(&self) -> impl Iterator<Item = (char, &GlobalMark)> + '_ {
+        self.global_marks.iter().map(|(k, v)| (*k, v))
     }
 }
 
@@ -82,6 +125,8 @@ impl JumpList {
         // Limit size
         if self.jumps.len() > self.max_size {
             self.jumps.drain(0..1);
+            // After draining first element, update current index
+            self.current = self.jumps.len().saturating_sub(1);
         } else {
             self.current = self.jumps.len().saturating_sub(1);
         }
