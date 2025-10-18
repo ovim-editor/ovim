@@ -109,6 +109,8 @@ pub struct Editor {
     registers: RegisterManager,
     /// Visual mode selection start (line, col)
     visual_start: Option<(usize, usize)>,
+    /// Visual block insert/append state: (start_line, end_line, col, is_append)
+    visual_block_insert_state: Option<(usize, usize, usize, bool)>,
     /// Command line buffer (for : commands)
     command_line: String,
     /// Command history for command line mode
@@ -278,6 +280,7 @@ impl Editor {
             pending_register: None,
             registers: RegisterManager::new(),
             visual_start: None,
+            visual_block_insert_state: None,
             command_line: String::new(),
             command_history: Vec::new(),
             command_history_index: None,
@@ -351,6 +354,7 @@ impl Editor {
             pending_register: None,
             registers: RegisterManager::new(),
             visual_start: None,
+            visual_block_insert_state: None,
             command_line: String::new(),
             command_history: Vec::new(),
             command_history_index: None,
