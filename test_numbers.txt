@@ -1,0 +1,4 @@
+value: 42
+count: 0xff
+perms: 0755
+binary: 0b1010
