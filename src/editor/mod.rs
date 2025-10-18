@@ -22,7 +22,7 @@ pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
 pub use macros::MacroManager;
-pub use marks::{JumpList, Mark, MarkManager};
+pub use marks::{GlobalMark, JumpList, Mark, MarkManager};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use picker::{Picker, PickerMode, PickerResult};
@@ -111,14 +111,16 @@ pub struct Editor {
     visual_start: Option<(usize, usize)>,
     /// Command line buffer (for : commands)
     command_line: String,
+    /// Command history for command line mode
+    command_history: Vec<String>,
+    /// Current position in command history (for up/down navigation)
+    command_history_index: Option<usize>,
     /// Search buffer (for / and ? commands)
     search_buffer: String,
     /// Search direction: true for forward (/), false for backward (?)
     search_forward: bool,
     /// Current search state
     current_search: Option<Search>,
-    /// Change manager for undo/redo and repeat
-    change_manager: ChangeManager,
     /// Mark manager for buffer marks
     marks: MarkManager,
     /// Jump list for Ctrl-O and Ctrl-I
@@ -228,7 +230,7 @@ pub struct PreviewCache {
     pub language: Option<crate::syntax::Language>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LspAction {
     GoToDefinition,
     GoToImplementation,
@@ -244,6 +246,7 @@ pub enum LspAction {
     DocumentSymbols,
     WorkspaceSymbols,
     OrganizeImports,
+    Rename(String), // New name for the symbol
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -276,10 +279,11 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
+            command_history: Vec::new(),
+            command_history_index: None,
             search_buffer: String::new(),
             search_forward: true,
             current_search: None,
-            change_manager: ChangeManager::new(),
             marks: MarkManager::new(),
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
@@ -348,10 +352,11 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             command_line: String::new(),
+            command_history: Vec::new(),
+            command_history_index: None,
             search_buffer: String::new(),
             search_forward: true,
             current_search: None,
-            change_manager: ChangeManager::new(),
             marks: MarkManager::new(),
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
@@ -565,6 +570,82 @@ impl Editor {
         self.command_line.pop();
     }
 
+    /// Adds current command to history
+    pub fn add_command_to_history(&mut self) {
+        let cmd = self.command_line.trim().to_string();
+        if !cmd.is_empty() {
+            // Don't add duplicate if it's the same as the last command
+            if self.command_history.last() != Some(&cmd) {
+                self.command_history.push(cmd);
+                // Limit history size to 100 commands
+                if self.command_history.len() > 100 {
+                    self.command_history.drain(0..1);
+                }
+            }
+        }
+        self.command_history_index = None;
+    }
+
+    /// Navigate to previous command in history (up arrow)
+    pub fn history_prev(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+
+        let new_index = match self.command_history_index {
+            None => {
+                // First time pressing up - go to last command
+                Some(self.command_history.len() - 1)
+            }
+            Some(idx) if idx > 0 => {
+                // Go to previous command
+                Some(idx - 1)
+            }
+            Some(_) => {
+                // Already at oldest command
+                return;
+            }
+        };
+
+        if let Some(idx) = new_index {
+            if let Some(cmd) = self.command_history.get(idx) {
+                self.command_line = cmd.clone();
+                self.command_history_index = Some(idx);
+            }
+        }
+    }
+
+    /// Navigate to next command in history (down arrow)
+    pub fn history_next(&mut self) {
+        if self.command_history.is_empty() {
+            return;
+        }
+
+        let new_index = match self.command_history_index {
+            None => {
+                // Not navigating history, do nothing
+                return;
+            }
+            Some(idx) if idx < self.command_history.len() - 1 => {
+                // Go to next command
+                Some(idx + 1)
+            }
+            Some(_) => {
+                // At newest command, clear to empty line
+                self.command_line.clear();
+                self.command_history_index = None;
+                return;
+            }
+        };
+
+        if let Some(idx) = new_index {
+            if let Some(cmd) = self.command_history.get(idx) {
+                self.command_line = cmd.clone();
+                self.command_history_index = Some(idx);
+            }
+        }
+    }
+
     /// Gets the search buffer
     pub fn search_buffer(&self) -> &str {
         &self.search_buffer
@@ -615,6 +696,9 @@ impl Editor {
         if self.search_buffer.is_empty() {
             return;
         }
+
+        // Update the / register with the search pattern
+        self.registers.set_last_search(self.search_buffer.clone());
 
         let mut search = Search::new(self.search_buffer.clone(), self.search_forward);
         let cursor = self.buffer().cursor();
@@ -676,38 +760,110 @@ impl Editor {
 
     /// Sets a mark at the current cursor position
     pub fn set_mark(&mut self, name: char) -> bool {
-        let cursor = self.buffer().cursor();
-        self.marks.set_mark(name, cursor.line(), cursor.col())
+        let cursor_line = self.buffer().cursor().line();
+        let cursor_col = self.buffer().cursor().col();
+        let file_path = self.buffer().file_path().map(|s| s.to_string());
+        self.marks.set_mark(name, cursor_line, cursor_col, file_path.as_deref())
     }
 
     /// Jumps to a mark (exact position with backtick)
     pub fn jump_to_mark(&mut self, name: char) -> bool {
-        if let Some(mark) = self.marks.get_mark(name) {
-            self.buffer_mut().cursor_mut().set_position(mark.line, mark.col);
-            true
-        } else {
-            false
+        // Try local mark first (a-z)
+        if name.is_ascii_lowercase() {
+            if let Some(mark) = self.marks.get_mark(name) {
+                self.buffer_mut().cursor_mut().set_position(mark.line, mark.col);
+                return true;
+            }
         }
+
+        // Try global mark (A-Z)
+        if name.is_ascii_uppercase() {
+            if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
+                // Load the file if it's different from current file
+                let current_file = self.buffer().file_path().map(|s| s.to_string());
+                if current_file.as_deref() != Some(&global_mark.file_path) {
+                    // Load the file (synchronously for now)
+                    if let Ok(_) = self.load_file(&global_mark.file_path) {
+                        // File loaded successfully
+                    } else {
+                        return false; // Failed to load file
+                    }
+                }
+
+                // Validate and clamp mark position to buffer bounds
+                let max_line = self.buffer().line_count().saturating_sub(1);
+                let clamped_line = global_mark.line.min(max_line);
+
+                let line_len = if let Some(line) = self.buffer().line(clamped_line) {
+                    line.trim_end_matches('\n').chars().count()
+                } else {
+                    0
+                };
+                let clamped_col = global_mark.col.min(line_len);
+
+                // Jump to the validated position
+                self.buffer_mut().cursor_mut().set_position(clamped_line, clamped_col);
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Jumps to mark line (apostrophe - goes to first non-blank on line)
     pub fn jump_to_mark_line(&mut self, name: char) -> bool {
-        if let Some(mark) = self.marks.get_mark(name) {
-            // Find first non-blank character on the line
-            let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
-                line_text
-                    .chars()
-                    .position(|c| !c.is_whitespace())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+        // Try local mark first (a-z)
+        if name.is_ascii_lowercase() {
+            if let Some(mark) = self.marks.get_mark(name) {
+                // Find first non-blank character on the line
+                let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
+                    line_text
+                        .chars()
+                        .position(|c| !c.is_whitespace())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
 
-            self.buffer_mut().cursor_mut().set_position(mark.line, first_non_blank);
-            true
-        } else {
-            false
+                self.buffer_mut().cursor_mut().set_position(mark.line, first_non_blank);
+                return true;
+            }
         }
+
+        // Try global mark (A-Z)
+        if name.is_ascii_uppercase() {
+            if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
+                // Load the file if it's different from current file
+                let current_file = self.buffer().file_path().map(|s| s.to_string());
+                if current_file.as_deref() != Some(&global_mark.file_path) {
+                    // Load the file (synchronously for now)
+                    if let Ok(_) = self.load_file(&global_mark.file_path) {
+                        // File loaded successfully
+                    } else {
+                        return false; // Failed to load file
+                    }
+                }
+
+                // Validate and clamp mark line to buffer bounds
+                let max_line = self.buffer().line_count().saturating_sub(1);
+                let clamped_line = global_mark.line.min(max_line);
+
+                // Find first non-blank character on the line
+                let first_non_blank = if let Some(line_text) = self.buffer().line(clamped_line) {
+                    line_text
+                        .chars()
+                        .position(|c| !c.is_whitespace())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
+                self.buffer_mut().cursor_mut().set_position(clamped_line, first_non_blank);
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Adds current position to jump list
@@ -798,23 +954,100 @@ impl Editor {
             .collect()
     }
 
+    /// Lists all buffers with their index and status
+    pub fn list_buffers(&self) -> String {
+        let mut result = String::new();
+        for (i, buf) in self.buffers.iter().enumerate() {
+            let current_marker = if i == self.current_buffer_index { "%" } else { " " };
+            let modified_marker = if buf.is_modified() { "+" } else { " " };
+            let name = buf.file_path().unwrap_or("[No Name]");
+            result.push_str(&format!("{}{} {}: {}\n", current_marker, modified_marker, i + 1, name));
+        }
+        result
+    }
+
+    /// Switches to a buffer by index (0-based)
+    pub fn switch_to_buffer(&mut self, index: usize) {
+        if index < self.buffers.len() && index != self.current_buffer_index {
+            // Save current file to alternate file register
+            if let Some(current_path) = self.buffer().file_path() {
+                self.registers.set_alternate_file(current_path.to_string());
+            }
+
+            self.current_buffer_index = index;
+            self.needs_lsp_init = true;
+
+            // Clear buffer-local marks (a-z) when switching files
+            self.marks.clear();
+
+            // Reset LSP sync state for new buffer
+            self.last_synced_content = None;
+
+            // Clear LSP UI state (hover, completions, etc.)
+            self.clear_lsp_state();
+
+            // Update current file register
+            if let Some(new_path) = self.buffer().file_path() {
+                self.registers.set_current_file(new_path.to_string());
+            }
+        }
+    }
+
     /// Switches to the next buffer
     pub fn next_buffer(&mut self) {
         if self.buffers.len() > 1 {
+            // Save current file to alternate file register
+            if let Some(current_path) = self.buffer().file_path() {
+                self.registers.set_alternate_file(current_path.to_string());
+            }
+
             self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
             self.needs_lsp_init = true;
+
+            // Clear buffer-local marks (a-z) when switching files
+            self.marks.clear();
+
+            // Reset LSP sync state for new buffer
+            self.last_synced_content = None;
+
+            // Clear LSP UI state (hover, completions, etc.)
+            self.clear_lsp_state();
+
+            // Update current file register
+            if let Some(new_path) = self.buffer().file_path() {
+                self.registers.set_current_file(new_path.to_string());
+            }
         }
     }
 
     /// Switches to the previous buffer
     pub fn prev_buffer(&mut self) {
         if self.buffers.len() > 1 {
+            // Save current file to alternate file register
+            if let Some(current_path) = self.buffer().file_path() {
+                self.registers.set_alternate_file(current_path.to_string());
+            }
+
             self.current_buffer_index = if self.current_buffer_index == 0 {
                 self.buffers.len() - 1
             } else {
                 self.current_buffer_index - 1
             };
             self.needs_lsp_init = true;
+
+            // Clear buffer-local marks (a-z) when switching files
+            self.marks.clear();
+
+            // Reset LSP sync state for new buffer
+            self.last_synced_content = None;
+
+            // Clear LSP UI state (hover, completions, etc.)
+            self.clear_lsp_state();
+
+            // Update current file register
+            if let Some(new_path) = self.buffer().file_path() {
+                self.registers.set_current_file(new_path.to_string());
+            }
         }
     }
 
@@ -842,8 +1075,46 @@ impl Editor {
     pub fn add_buffer(&mut self, buffer: Buffer) {
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
-        self.change_manager = ChangeManager::new();
         self.needs_lsp_init = true;
+    }
+
+    /// Finds the index of a buffer with the given file path
+    /// Returns None if no buffer has that file path
+    fn find_buffer_by_path(&self, file_path: &str) -> Option<usize> {
+        // Normalize paths for comparison
+        let target_path = std::path::Path::new(file_path)
+            .canonicalize()
+            .ok()?;
+
+        for (index, buffer) in self.buffers.iter().enumerate() {
+            if let Some(buf_path) = buffer.file_path() {
+                if let Ok(buf_canonical) = std::path::Path::new(buf_path).canonicalize() {
+                    if target_path == buf_canonical {
+                        return Some(index);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Opens a file, switching to existing buffer if already open
+    /// or creating a new buffer if not
+    pub fn open_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        let path_str = path.as_ref().to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
+
+        // Check if file is already open
+        if let Some(index) = self.find_buffer_by_path(path_str) {
+            // Just switch to existing buffer
+            self.current_buffer_index = index;
+            return Ok(());
+        }
+
+        // File not open, load it
+        let buffer = Buffer::load_file(path)?;
+        self.add_buffer(buffer);
+        Ok(())
     }
 
     /// Gets the current mode
@@ -858,6 +1129,12 @@ impl Editor {
         self.count = None;
         self.pending_operator = None;
         self.pending_command = None;
+        self.pending_register = None;
+
+        // Clear visual selection when leaving visual modes
+        if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
+            self.visual_start = None;
+        }
     }
 
     /// Gets the pending command
@@ -1129,7 +1406,13 @@ impl Editor {
         for (i, buf) in self.buffers.iter().enumerate() {
             if buf.file_path() == Some(&path_str) {
                 // File already open - just switch to it
+                // Save current file to alternate file register
+                if let Some(current_path) = self.buffer().file_path() {
+                    self.registers.set_alternate_file(current_path.to_string());
+                }
                 self.current_buffer_index = i;
+                // Update current file register
+                self.registers.set_current_file(path_str);
                 return Ok(());
             }
         }
@@ -1137,9 +1420,17 @@ impl Editor {
         // Store old file path before loading new file
         let old_file_path = self.buffer().file_path().map(|s| s.to_string());
 
+        // Save current file to alternate file register
+        if let Some(current_path) = old_file_path.as_ref() {
+            self.registers.set_alternate_file(current_path.to_string());
+        }
+
         // Load new buffer
         let new_buffer = Buffer::load_file_async(path).await?;
         self.add_buffer(new_buffer);
+
+        // Update current file register
+        self.registers.set_current_file(path_str);
 
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {
@@ -1177,46 +1468,53 @@ impl Editor {
 
     /// Starts building a composite change (e.g., when entering insert mode)
     pub fn start_change_building(&mut self, cursor_before: Position) {
-        self.change_manager.start_building(cursor_before);
+        self.buffer_mut().change_manager_mut().start_building(cursor_before);
     }
 
     /// Adds a change to the change manager
     pub fn add_change(&mut self, change: Change) {
-        self.change_manager.add_change(change);
+        self.buffer_mut().change_manager_mut().add_change(change);
         self.mark_buffer_modified(); // Mark for LSP didChange notification
     }
 
     /// Finalizes the current composite change
     pub fn finalize_change_building(&mut self) {
-        self.change_manager.finalize_building();
+        self.buffer_mut().change_manager_mut().finalize_building();
     }
 
     /// Undoes the last change
     pub fn undo(&mut self) {
-        let buffer = &mut self.buffers[self.current_buffer_index];
-        self.change_manager.undo(buffer);
+        self.buffer_mut().undo();
     }
 
     /// Redoes the next change
     pub fn redo(&mut self) {
-        let buffer = &mut self.buffers[self.current_buffer_index];
-        self.change_manager.redo(buffer);
+        self.buffer_mut().redo();
     }
 
     /// Repeats the last change
     pub fn repeat_last_change(&mut self) {
-        let buffer = &mut self.buffers[self.current_buffer_index];
-        self.change_manager.repeat_last(buffer);
+        self.buffer_mut().repeat_last_change();
+    }
+
+    /// Updates the . register with the last inserted text
+    pub fn update_last_inserted_register(&mut self) {
+        if let Some(change) = self.buffer().change_manager().last_change() {
+            let inserted_text = change.get_inserted_text();
+            if !inserted_text.is_empty() {
+                self.registers.set_last_inserted(inserted_text);
+            }
+        }
     }
 
     /// Checks if buffer is modified relative to last save
     pub fn is_modified(&self) -> bool {
-        !self.change_manager.is_at_save_point()
+        !self.buffer().change_manager().is_at_save_point()
     }
 
     /// Marks current state as saved
     pub fn mark_saved(&mut self) {
-        self.change_manager.mark_saved();
+        self.buffer_mut().change_manager_mut().mark_saved();
         self.buffer_mut().mark_clean();
     }
 
@@ -1511,6 +1809,17 @@ impl Editor {
         }
     }
 
+    /// Clears LSP UI state (hover, completions, code actions)
+    /// Should be called when switching buffers or when state becomes stale
+    fn clear_lsp_state(&mut self) {
+        self.hover_info = None;
+        self.hover_scroll = 0;
+        self.available_code_actions.clear();
+        self.available_completions.clear();
+        self.pending_lsp_action = None;
+        // Don't clear lsp_status - it's useful to keep for user feedback
+    }
+
     /// Gets active LSP servers
     pub fn active_lsp_servers(&self) -> &HashMap<String, String> {
         &self.active_lsp_servers
@@ -1668,6 +1977,11 @@ impl Editor {
     /// Requests workspace-wide symbol search
     pub fn request_workspace_symbols(&mut self) {
         self.pending_lsp_action = Some(LspAction::WorkspaceSymbols);
+    }
+
+    /// Requests to rename the symbol at cursor
+    pub fn request_rename(&mut self, new_name: String) {
+        self.pending_lsp_action = Some(LspAction::Rename(new_name));
     }
 
     /// Gets the current hover information (if any)
@@ -1842,7 +2156,7 @@ impl Editor {
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.pending_lsp_action.take() {
-            let result = match action {
+            let result = match &action {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
                 LspAction::GoToType => self.goto_type_impl().await,
@@ -1857,6 +2171,7 @@ impl Editor {
                 LspAction::DocumentSymbols => self.document_symbols_impl().await,
                 LspAction::WorkspaceSymbols => self.workspace_symbols_impl().await,
                 LspAction::OrganizeImports => self.organize_imports_impl().await,
+                LspAction::Rename(new_name) => self.rename_impl(new_name.clone()).await,
             };
 
             // Handle errors: update status and optionally retry
@@ -1874,7 +2189,7 @@ impl Editor {
                         self.pending_lsp_action = Some(action);
                     } else {
                         // Permanent error - update status to show the error
-                        let action_name = match action {
+                        let action_name = match &action {
                             LspAction::GoToDefinition => "Go to definition",
                             LspAction::GoToImplementation => "Go to implementation",
                             LspAction::GoToType => "Go to type",
@@ -1889,6 +2204,7 @@ impl Editor {
                             LspAction::DocumentSymbols => "Document symbols",
                             LspAction::WorkspaceSymbols => "Workspace symbols",
                             LspAction::OrganizeImports => "Organize imports",
+                            LspAction::Rename(_) => "Rename",
                         };
                         self.set_lsp_status(format!("{} failed: {}", action_name, error_msg));
                     }
@@ -1918,6 +2234,31 @@ impl Editor {
             .take(safe_col)
             .map(|c| c.len_utf16() as u32)
             .sum()
+    }
+
+    /// Converts UTF-16 code units (from LSP) back to character column position
+    ///
+    /// LSP responses provide positions in UTF-16 code units. This converts them
+    /// back to character positions for rope operations.
+    fn utf16_to_col(&self, line: usize, utf16_col: u32) -> usize {
+        let rope = self.buffer().rope();
+        if line >= rope.len_lines() {
+            return 0;
+        }
+
+        let line_text = rope.line(line);
+        let mut utf16_offset = 0u32;
+        let mut char_position = 0usize;
+
+        for ch in line_text.chars() {
+            if utf16_offset >= utf16_col {
+                break;
+            }
+            utf16_offset += ch.len_utf16() as u32;
+            char_position += 1;
+        }
+
+        char_position
     }
 
     /// Go to definition at current cursor position via LSP (implementation)
@@ -3273,9 +3614,10 @@ impl Editor {
 
         for edit in sorted_edits {
             let start_line = edit.range.start.line as usize;
-            let start_col = edit.range.start.character as usize;
+            // Convert UTF-16 positions to character positions
+            let start_col = self.utf16_to_col(start_line, edit.range.start.character);
             let end_line = edit.range.end.line as usize;
-            let end_col = edit.range.end.character as usize;
+            let end_col = self.utf16_to_col(end_line, edit.range.end.character);
 
             // Delete the range
             if start_line != end_line || start_col != end_col {
@@ -3649,6 +3991,94 @@ impl Editor {
             }
             Err(e) => {
                 self.set_lsp_status(format!("Failed to organize imports: {}", e));
+                Ok(false)
+            }
+        }
+    }
+
+    /// Performs LSP rename operation on the symbol at cursor
+    async fn rename_impl(&mut self, new_name: String) -> Result<bool> {
+        // Check if LSP is enabled and clone the Arc to avoid borrow issues
+        let lsp = match &self.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Get current file URI - must be absolute path
+        let Some(file_path) = self.buffer().file_path() else {
+            self.set_lsp_status("Save file first to use rename".to_string());
+            return Ok(false);
+        };
+
+        // Convert to absolute path if needed
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => {
+                    self.set_lsp_status("Failed to resolve file path".to_string());
+                    return Ok(false);
+                }
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        // Get cursor position (convert to UTF-16 for LSP)
+        let cursor = self.buffer().cursor();
+        let line = cursor.line() as u32;
+        let character = self.col_to_utf16(cursor.line(), cursor.col());
+
+        // Detect language from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => {
+                self.set_lsp_status("Language not supported for LSP".to_string());
+                return Ok(false);
+            }
+        };
+
+        // Request rename
+        self.set_lsp_status("Renaming...".to_string());
+
+        // Try to get lock without blocking
+        let lsp_guard = match lsp.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // LSP manager is busy, will retry next iteration
+                return Err(anyhow::anyhow!("LSP busy"));
+            }
+        };
+
+        // Call the rename method with individual parameters (using UTF-16 character position)
+        let result = lsp_guard.rename(&uri, line, character, language_id, new_name.clone()).await;
+
+        drop(lsp_guard);
+
+        match result {
+            Ok(Some(workspace_edit)) => {
+                // Apply the workspace edit
+                let applied = self.apply_workspace_edit(workspace_edit).await?;
+
+                if applied {
+                    self.set_lsp_status(format!("Renamed to '{}'", new_name));
+                    Ok(true)
+                } else {
+                    self.set_lsp_status("Failed to apply rename edits".to_string());
+                    Ok(false)
+                }
+            }
+            Ok(None) => {
+                self.set_lsp_status("No rename edits returned".to_string());
+                Ok(false)
+            }
+            Err(e) => {
+                self.set_lsp_status(format!("Rename failed: {}", e));
                 Ok(false)
             }
         }
@@ -4135,10 +4565,10 @@ impl Editor {
     pub fn toggle_file_tree(&mut self) {
         if !self.file_tree.is_visible() {
             self.open_file_tree();
-            self.mode = Mode::FileTree;
+            self.set_mode(Mode::FileTree);
         } else {
             self.file_tree.toggle();
-            self.mode = Mode::Normal;
+            self.set_mode(Mode::Normal);
         }
     }
 
@@ -4149,17 +4579,11 @@ impl Editor {
                 // Toggle directory expansion
                 self.file_tree.toggle_selected();
             } else {
-                // Open file
+                // Open file (checks for existing buffer)
                 let path = node.path().to_path_buf();
-                // Load file into buffer (reuse existing buffer loading logic)
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let mut buffer = Buffer::from_str(&content);
-                    buffer.set_file_path(path.to_str().unwrap_or("").to_string());
-                    self.buffers.push(buffer);
-                    self.current_buffer_index = self.buffers.len() - 1;
-                    self.needs_lsp_init = true;
+                if let Ok(()) = self.open_file(&path) {
                     // Switch back to Normal mode and keep file tree visible
-                    self.mode = Mode::Normal;
+                    self.set_mode(Mode::Normal);
                 }
             }
         }
@@ -4202,26 +4626,21 @@ impl Editor {
 
     /// Jumps to the current quickfix entry
     pub fn jump_to_quickfix_entry(&mut self) {
-        if let Some(entry) = self.quickfix_list.current_entry() {
-            if let Some(ref path) = entry.filename {
-                // Load the file if needed
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    let mut buffer = Buffer::from_str(&content);
-                    buffer.set_file_path(path.to_str().unwrap_or("").to_string());
-                    self.buffers.push(buffer);
-                    self.current_buffer_index = self.buffers.len() - 1;
-                    self.needs_lsp_init = true;
+        // Extract values first to avoid borrow issues
+        let (path, lnum, qcol) = if let Some(entry) = self.quickfix_list.current_entry() {
+            (entry.filename.clone(), entry.lnum, entry.col)
+        } else {
+            return;
+        };
 
-                    // Move cursor to the location
-                    if entry.lnum > 0 {
-                        let line = entry.lnum.saturating_sub(1);
-                        let col = if entry.col > 0 {
-                            entry.col.saturating_sub(1)
-                        } else {
-                            0
-                        };
-                        self.buffer_mut().cursor_mut().set_position(line, col);
-                    }
+        if let Some(path) = path {
+            // Open file (checks for existing buffer)
+            if let Ok(()) = self.open_file(&path) {
+                // Move cursor to the location
+                if lnum > 0 {
+                    let line = lnum.saturating_sub(1);
+                    let col = if qcol > 0 { qcol.saturating_sub(1) } else { 0 };
+                    self.buffer_mut().cursor_mut().set_position(line, col);
                 }
             }
         }
@@ -4264,26 +4683,21 @@ impl Editor {
 
     /// Jumps to the current location list entry
     pub fn jump_to_location_entry(&mut self) {
-        if let Some(entry) = self.location_list.current_entry() {
-            if let Some(ref path) = entry.filename {
-                // Load the file if needed
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    let mut buffer = Buffer::from_str(&content);
-                    buffer.set_file_path(path.to_str().unwrap_or("").to_string());
-                    self.buffers.push(buffer);
-                    self.current_buffer_index = self.buffers.len() - 1;
-                    self.needs_lsp_init = true;
+        // Extract values first to avoid borrow issues
+        let (path, lnum, lcol) = if let Some(entry) = self.location_list.current_entry() {
+            (entry.filename.clone(), entry.lnum, entry.col)
+        } else {
+            return;
+        };
 
-                    // Move cursor to the location
-                    if entry.lnum > 0 {
-                        let line = entry.lnum.saturating_sub(1);
-                        let col = if entry.col > 0 {
-                            entry.col.saturating_sub(1)
-                        } else {
-                            0
-                        };
-                        self.buffer_mut().cursor_mut().set_position(line, col);
-                    }
+        if let Some(path) = path {
+            // Open file (checks for existing buffer)
+            if let Ok(()) = self.open_file(&path) {
+                // Move cursor to the location
+                if lnum > 0 {
+                    let line = lnum.saturating_sub(1);
+                    let col = if lcol > 0 { lcol.saturating_sub(1) } else { 0 };
+                    self.buffer_mut().cursor_mut().set_position(line, col);
                 }
             }
         }

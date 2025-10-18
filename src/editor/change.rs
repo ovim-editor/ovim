@@ -201,6 +201,22 @@ impl Change {
 
         (line, col)
     }
+
+    /// Extracts the inserted text from this change (for the . register)
+    pub fn get_inserted_text(&self) -> String {
+        match self {
+            Self::InsertText { text, .. } => text.clone(),
+            Self::Composite { changes, .. } => {
+                // Concatenate all inserted text from sub-changes
+                let mut result = String::new();
+                for change in changes {
+                    result.push_str(&change.get_inserted_text());
+                }
+                result
+            }
+            Self::DeleteText { .. } => String::new(),
+        }
+    }
 }
 
 /// Builder for accumulating changes during insert mode
@@ -246,12 +262,12 @@ impl ChangeBuilder {
 /// Manages undo/redo history and change tracking
 #[derive(Debug)]
 pub struct ChangeManager {
-    undo_stack: Vec<Change>,
-    redo_stack: Vec<Change>,
-    current_builder: Option<ChangeBuilder>,
-    last_change: Option<Change>,
+    pub(crate) undo_stack: Vec<Change>,
+    pub(crate) redo_stack: Vec<Change>,
+    pub(crate) current_builder: Option<ChangeBuilder>,
+    pub(crate) last_change: Option<Change>,
     /// Tracks the undo stack size at last save (None if never saved)
-    save_point: Option<usize>,
+    pub(crate) save_point: Option<usize>,
 }
 
 impl ChangeManager {
@@ -349,5 +365,10 @@ impl ChangeManager {
     /// Clears the save point (when loading a new file)
     pub fn clear_save_point(&mut self) {
         self.save_point = None;
+    }
+
+    /// Gets a reference to the last change
+    pub fn last_change(&self) -> Option<&Change> {
+        self.last_change.as_ref()
     }
 }
