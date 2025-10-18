@@ -2732,6 +2732,37 @@ impl InputHandler {
                     // Update the . register with the last inserted text
                     editor.update_last_inserted_register();
                     editor.mark_buffer_modified(); // Mark for LSP didChange notification
+
+                    // If we were in visual block insert/append mode, replay the changes on all other lines
+                    if let Some((start_line, end_line, col, is_append)) = editor.visual_block_insert_state() {
+                        // Get the text that was inserted
+                        if let Some(last_change) = editor.last_change() {
+                            let inserted_text = last_change.get_inserted_text();
+
+                            // Replay on lines start_line+1 through end_line
+                            for line_idx in (start_line + 1)..=end_line {
+                                if is_append {
+                                    // Append mode: insert at end of line
+                                    if let Some(line) = editor.buffer().line(line_idx) {
+                                        let line_text = line.trim_end_matches('\n');
+                                        let line_len = line_text.chars().count();
+                                        editor.buffer_mut().insert_text_at(line_idx, line_len, &inserted_text);
+                                    }
+                                } else {
+                                    // Insert mode: insert at column
+                                    if let Some(line) = editor.buffer().line(line_idx) {
+                                        let line_text = line.trim_end_matches('\n');
+                                        let insert_col = col.min(line_text.chars().count());
+                                        editor.buffer_mut().insert_text_at(line_idx, insert_col, &inserted_text);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Clear the visual block insert state
+                        editor.set_visual_block_insert_state(None);
+                    }
+
                     editor.set_mode(Mode::Normal);
                     // Move cursor left when exiting insert mode (unless at column 0)
                     let cursor = editor.buffer_mut().cursor_mut();
@@ -2946,10 +2977,13 @@ impl InputHandler {
                 if editor.mode() == Mode::VisualBlock {
                     // Insert at beginning of block on each line
                     if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
+                        let cursor_before = (start_line, start_col);
                         editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        // Track visual block insert state: (start_line, end_line, col, is_append)
+                        editor.set_visual_block_insert_state(Some((start_line, end_line, start_col, false)));
                         editor.clear_visual_start();
+                        editor.start_change_building(cursor_before);
                         editor.set_mode(Mode::Insert);
-                        // TODO: Track that this is a visual block insert and repeat on other lines when exiting insert
                     }
                 } else {
                     // Regular visual mode - just enter insert at start of selection
@@ -2964,10 +2998,13 @@ impl InputHandler {
                 if editor.mode() == Mode::VisualBlock {
                     // Append at end of block on each line
                     if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection() {
+                        let cursor_before = (start_line, end_col + 1);
                         editor.buffer_mut().cursor_mut().set_position(start_line, end_col + 1);
+                        // Track visual block append state: (start_line, end_line, col, is_append)
+                        editor.set_visual_block_insert_state(Some((start_line, end_line, end_col + 1, true)));
                         editor.clear_visual_start();
+                        editor.start_change_building(cursor_before);
                         editor.set_mode(Mode::Insert);
-                        // TODO: Track that this is a visual block append and repeat on other lines when exiting insert
                     }
                 } else {
                     // Regular visual mode - just enter insert at end of selection
@@ -4775,6 +4812,9 @@ impl InputHandler {
 
             // Find number at or after cursor position
             if let Some((start_col, end_col, number_str)) = Self::find_number_at_or_after(line_text, col) {
+                // Check if number has explicit '+' sign
+                let has_plus_sign = number_str.starts_with('+');
+
                 // Parse the number with base detection
                 let (value, base, prefix_len) = Self::parse_number(&number_str)?;
 
@@ -4782,7 +4822,12 @@ impl InputHandler {
                 let new_value = value.wrapping_add(delta);
 
                 // Format the new number with the same base
-                let new_number_str = Self::format_number(new_value, base, prefix_len);
+                let mut new_number_str = Self::format_number(new_value, base, prefix_len);
+
+                // Preserve explicit '+' sign for positive numbers
+                if has_plus_sign && new_value >= 0 && !new_number_str.starts_with('+') {
+                    new_number_str = format!("+{}", new_number_str);
+                }
 
                 // Replace the number in the buffer
                 let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
@@ -4792,8 +4837,9 @@ impl InputHandler {
                 let insert_change = Change::insert((line_idx, start_col), new_number_str.clone(), cursor_before);
                 insert_change.apply(editor.buffer_mut());
 
-                editor.add_change(delete_change);
-                editor.add_change(insert_change);
+                // Create a composite change for undo/redo/dot-repeat to work correctly
+                let composite = Change::composite(vec![delete_change, insert_change], cursor_before);
+                editor.add_change(composite);
 
                 // Position cursor on the first digit of the number
                 editor.buffer_mut().cursor_mut().set_col(start_col);
@@ -4814,8 +4860,8 @@ impl InputHandler {
         // Skip non-digit/non-hex characters to find start of number
         while search_col < chars.len() {
             let ch = chars[search_col];
-            // Check if this could be the start of a number
-            if ch.is_ascii_digit() || (search_col + 1 < chars.len() && ch == '0' &&
+            // Check if this could be the start of a number (including sign)
+            if ch.is_ascii_digit() || ch == '-' || ch == '+' || (search_col + 1 < chars.len() && ch == '0' &&
                 (chars[search_col + 1] == 'x' || chars[search_col + 1] == 'X' ||
                  chars[search_col + 1] == 'b' || chars[search_col + 1] == 'B' ||
                  chars[search_col + 1] == 'o' || chars[search_col + 1] == 'O')) {
@@ -4828,7 +4874,20 @@ impl InputHandler {
             return None;
         }
 
-        let start_col = search_col;
+        let mut start_col = search_col;
+
+        // Check if we're on a sign, and if so, verify there's a digit after it
+        if (chars[start_col] == '-' || chars[start_col] == '+') {
+            if start_col + 1 < chars.len() && chars[start_col + 1].is_ascii_digit() {
+                // Keep the sign as part of the number
+            } else {
+                // Not a number, just a sign
+                start_col += 1;
+                if start_col >= chars.len() {
+                    return None;
+                }
+            }
+        }
         let mut end_col = start_col;
 
         // Check for hex (0x), binary (0b), or octal (0o) prefix
@@ -4861,8 +4920,15 @@ impl InputHandler {
             }
         }
 
-        // Regular decimal number
+        // Regular decimal number (may have sign)
         end_col = start_col;
+
+        // Skip optional sign
+        if end_col < chars.len() && (chars[end_col] == '-' || chars[end_col] == '+') {
+            end_col += 1;
+        }
+
+        // Collect digits
         while end_col < chars.len() && chars[end_col].is_ascii_digit() {
             end_col += 1;
         }

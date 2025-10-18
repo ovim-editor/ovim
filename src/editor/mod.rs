@@ -1335,6 +1335,16 @@ impl Editor {
         self.visual_start = None;
     }
 
+    /// Sets visual block insert/append state for replay on insert mode exit
+    pub fn set_visual_block_insert_state(&mut self, state: Option<(usize, usize, usize, bool)>) {
+        self.visual_block_insert_state = state;
+    }
+
+    /// Gets visual block insert/append state
+    pub fn visual_block_insert_state(&self) -> Option<(usize, usize, usize, bool)> {
+        self.visual_block_insert_state
+    }
+
     /// Gets the visual selection range (start and end positions)
     /// Returns ((start_line, start_col), (end_line, end_col))
     /// Note: For VisualBlock, this returns the corners of the rectangle
@@ -1484,6 +1494,11 @@ impl Editor {
     /// Finalizes the current composite change
     pub fn finalize_change_building(&mut self) {
         self.buffer_mut().change_manager_mut().finalize_building();
+    }
+
+    /// Gets a reference to the last change
+    pub fn last_change(&self) -> Option<&Change> {
+        self.buffer().change_manager().last_change()
     }
 
     /// Undoes the last change
