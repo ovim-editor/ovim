@@ -3060,6 +3060,33 @@ impl InputHandler {
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Insert);
             }
+            // Join lines
+            KeyCode::Char('J') => {
+                if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
+                    // Calculate expected cursor position after join
+                    // The cursor should be at the last space inserted (before the last line)
+                    let mut cursor_col = 0;
+                    for line_idx in start_line..end_line {  // Note: end_line not included
+                        if let Some(line) = editor.buffer().line(line_idx) {
+                            let line_text = line.trim_end_matches('\n');
+                            cursor_col += line_text.chars().count();
+                            if line_idx < end_line - 1 {
+                                cursor_col += 1; // Space after this line
+                            }
+                        }
+                    }
+
+                    // Join all lines in the selection
+                    let count = (end_line - start_line) + 1;
+                    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                    Self::join_lines(editor, count)?;
+
+                    // Position cursor at the last inserted space
+                    editor.buffer_mut().cursor_mut().set_position(start_line, cursor_col);
+                }
+                editor.clear_visual_start();
+                editor.set_mode(Mode::Normal);
+            }
             // Move to other end of selection
             KeyCode::Char('o') => {
                 if let Some(visual_start) = editor.visual_start() {
@@ -3073,6 +3100,23 @@ impl InputHandler {
                         editor.set_visual_start(cursor_pos.0, visual_start.1);
                     } else {
                         // For other visual modes, swap positions normally
+                        editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
+                        editor.set_visual_start(cursor_pos.0, cursor_pos.1);
+                    }
+                }
+            }
+            // Flip horizontally (uppercase O) - swap columns only
+            KeyCode::Char('O') => {
+                if let Some(visual_start) = editor.visual_start() {
+                    let cursor = editor.buffer().cursor();
+                    let cursor_pos = (cursor.line(), cursor.col());
+
+                    if editor.mode() == Mode::VisualBlock {
+                        // For visual block mode, flip horizontally (swap columns only, keep line)
+                        editor.buffer_mut().cursor_mut().set_position(cursor_pos.0, visual_start.1);
+                        editor.set_visual_start(visual_start.0, cursor_pos.1);
+                    } else {
+                        // For other visual modes, same as 'o'
                         editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
                         editor.set_visual_start(cursor_pos.0, cursor_pos.1);
                     }
