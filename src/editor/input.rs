@@ -5080,7 +5080,97 @@ impl InputHandler {
     fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, String)> {
         let chars: Vec<char> = line.chars().collect();
 
-        // Start searching from cursor position
+        if chars.is_empty() {
+            return None;
+        }
+
+        // First, check if we're currently inside a number by searching backward
+        let cursor_col = col.min(chars.len().saturating_sub(1));
+
+        // If we're on a digit, search backward to find the start of the number
+        if cursor_col < chars.len() && chars[cursor_col].is_ascii_digit() {
+            let mut start_col = cursor_col;
+
+            // Search backward to find the start of the number
+            while start_col > 0 {
+                let prev_ch = chars[start_col - 1];
+                if prev_ch.is_ascii_digit() {
+                    start_col -= 1;
+                } else if prev_ch == '-' || prev_ch == '+' {
+                    // Check if this sign is part of the number
+                    if start_col > 1 && !chars[start_col - 2].is_whitespace() && chars[start_col - 2] != '(' && chars[start_col - 2] != '[' {
+                        // Not a sign, just adjacent character
+                        break;
+                    }
+                    start_col -= 1;
+                    break;
+                } else if start_col >= 2 && prev_ch == 'x' && chars[start_col - 2] == '0' {
+                    // Hex prefix
+                    start_col -= 2;
+                    break;
+                } else if start_col >= 2 && (prev_ch == 'b' || prev_ch == 'o') && chars[start_col - 2] == '0' {
+                    // Binary or octal prefix
+                    start_col -= 2;
+                    break;
+                } else {
+                    break;
+                }
+            }
+
+            // Now find the end of the number
+            let mut end_col = cursor_col + 1;
+            while end_col < chars.len() && chars[end_col].is_ascii_digit() {
+                end_col += 1;
+            }
+
+            let number_str: String = chars[start_col..end_col].iter().collect();
+            return Some((start_col, end_col, number_str));
+        }
+
+        // Not on a digit, so search backward first, then forward
+        // This matches Vim behavior: search backward on current line, then forward
+
+        // Try searching backward from cursor
+        if cursor_col > 0 {
+            let mut back_col = cursor_col;
+            while back_col > 0 {
+                back_col -= 1;
+                if chars[back_col].is_ascii_digit() {
+                    // Found a digit backward, now find the start and end of this number
+                    let mut start_col = back_col;
+                    while start_col > 0 {
+                        let prev_ch = chars[start_col - 1];
+                        if prev_ch.is_ascii_digit() {
+                            start_col -= 1;
+                        } else if prev_ch == '-' || prev_ch == '+' {
+                            if start_col > 1 && !chars[start_col - 2].is_whitespace() && chars[start_col - 2] != '(' && chars[start_col - 2] != '[' {
+                                break;
+                            }
+                            start_col -= 1;
+                            break;
+                        } else if start_col >= 2 && prev_ch == 'x' && chars[start_col - 2] == '0' {
+                            start_col -= 2;
+                            break;
+                        } else if start_col >= 2 && (prev_ch == 'b' || prev_ch == 'o') && chars[start_col - 2] == '0' {
+                            start_col -= 2;
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    let mut end_col = back_col + 1;
+                    while end_col < chars.len() && chars[end_col].is_ascii_digit() {
+                        end_col += 1;
+                    }
+
+                    let number_str: String = chars[start_col..end_col].iter().collect();
+                    return Some((start_col, end_col, number_str));
+                }
+            }
+        }
+
+        // No number found backward, search forward from cursor position
         let mut search_col = col;
 
         // Skip non-digit/non-hex characters to find start of number
