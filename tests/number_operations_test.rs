@@ -14,7 +14,8 @@ fn test_ctrl_a_increment_decimal() {
         .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "count: 43\n");
-    test.assert_cursor(0, 7);
+    // ovim: cursor on last digit for consistency
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -36,7 +37,8 @@ fn test_ctrl_a_negative_number() {
         .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "temp: -4\n");
-    test.assert_cursor(0, 6);
+    // ovim: cursor on last digit (the '4')
+    test.assert_cursor(0, 7);
 }
 
 #[test]
@@ -164,7 +166,8 @@ fn test_ctrl_x_decrement_decimal() {
         .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "count: 41\n");
-    test.assert_cursor(0, 7);
+    // ovim: cursor on last digit for consistency
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -197,7 +200,8 @@ fn test_ctrl_x_negative_number() {
         .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "temp: -6\n");
-    test.assert_cursor(0, 6);
+    // ovim: cursor on last digit
+    test.assert_cursor(0, 7);
 }
 
 #[test]
@@ -209,7 +213,8 @@ fn test_ctrl_x_with_count() {
         .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: 13\n");
-    test.assert_cursor(0, 6);
+    // ovim: cursor on last digit
+    test.assert_cursor(0, 6);  // "13" last digit at 6
 }
 
 #[test]
@@ -258,6 +263,8 @@ fn test_ctrl_a_undo() {
         .press('u');      // Undo
 
     assert_eq!(test.buffer_content(), "value: 10\n");
+    // ovim: after undo, cursor returns to where it was before operation
+    // "10" starts at position 7, so cursor should be on first digit after undo
     test.assert_cursor(0, 7);
 }
 
@@ -270,6 +277,7 @@ fn test_ctrl_x_undo() {
         .press('u');
 
     assert_eq!(test.buffer_content(), "value: 10\n");
+    // ovim: undo restores cursor to pre-operation position
     test.assert_cursor(0, 7);
 }
 
@@ -431,7 +439,8 @@ fn test_ctrl_a_signed_number() {
         .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "delta: +6\n");
-    test.assert_cursor(0, 7);
+    // ovim: cursor on last digit (the '6')
+    test.assert_cursor(0, 8);
 }
 
 #[test]
