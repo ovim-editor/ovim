@@ -1681,7 +1681,7 @@ impl InputHandler {
 
                             let delete_change = Change::delete(range, deleted, cursor_before);
                             let insert_change = Change::insert((line_idx, col), replacement, cursor_before);
-                            let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                            let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
 
                             editor.add_change(change);
 
@@ -2734,7 +2734,7 @@ impl InputHandler {
                     editor.mark_buffer_modified(); // Mark for LSP didChange notification
 
                     // If we were in visual block insert/append mode, replay the changes on all other lines
-                    if let Some((start_line, end_line, col, is_append)) = editor.visual_block_insert_state() {
+                    let should_move_to_end_line = if let Some((start_line, end_line, col, is_append)) = editor.visual_block_insert_state() {
                         // Get the text that was inserted
                         if let Some(last_change) = editor.last_change() {
                             let inserted_text = last_change.get_inserted_text();
@@ -2761,13 +2761,38 @@ impl InputHandler {
 
                         // Clear the visual block insert state
                         editor.set_visual_block_insert_state(None);
-                    }
+                        Some((end_line, col, is_append))
+                    } else {
+                        None
+                    };
 
                     editor.set_mode(Mode::Normal);
+
                     // Move cursor left when exiting insert mode (unless at column 0)
-                    let cursor = editor.buffer_mut().cursor_mut();
-                    if cursor.col() > 0 {
-                        cursor.move_left(1);
+
+                    // If we were in visual block mode, move cursor to the end line
+                    if let Some((end_line, col, is_append)) = should_move_to_end_line {
+                        // For visual block, calculate the correct final cursor position based on the last line
+                        if is_append {
+                            // For append mode, position cursor on the last character of the last line
+                            if let Some(line) = editor.buffer().line(end_line) {
+                                let line_text = line.trim_end_matches('\n');
+                                let line_len = line_text.chars().count();
+                                let final_col = if line_len > 0 { line_len - 1 } else { 0 };
+                                editor.buffer_mut().cursor_mut().set_position(end_line, final_col);
+                            }
+                        } else {
+                            // For insert mode, use the same column as on the first line
+                            let cursor = editor.buffer().cursor();
+                            let current_col = cursor.col();
+                            let inserted_col = if current_col > 0 { current_col - 1 } else { 0 };
+                            editor.buffer_mut().cursor_mut().set_position(end_line, inserted_col);
+                        }
+                    } else {
+                        let cursor = editor.buffer_mut().cursor_mut();
+                        if cursor.col() > 0 {
+                            cursor.move_left(1);
+                        }
                     }
                 }
             }
@@ -2882,7 +2907,7 @@ impl InputHandler {
                                             cursor_before
                                         );
                                         let insert_change = Change::insert((line_idx, line_start), replacement, cursor_before);
-                                        let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                        let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
                                         editor.add_change(change);
                                     }
                                 }
@@ -3007,9 +3032,16 @@ impl InputHandler {
                     let cursor = editor.buffer().cursor();
                     let cursor_pos = (cursor.line(), cursor.col());
 
-                    // Swap cursor and visual_start
-                    editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
-                    editor.set_visual_start(cursor_pos.0, cursor_pos.1);
+                    if editor.mode() == Mode::VisualBlock {
+                        // For visual block mode, flip to diagonally opposite corner
+                        // Swap line from one with column from the other
+                        editor.buffer_mut().cursor_mut().set_position(visual_start.0, cursor_pos.1);
+                        editor.set_visual_start(cursor_pos.0, visual_start.1);
+                    } else {
+                        // For other visual modes, swap positions normally
+                        editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
+                        editor.set_visual_start(cursor_pos.0, cursor_pos.1);
+                    }
                 }
             }
             // Switch to other visual modes
@@ -3118,7 +3150,7 @@ impl InputHandler {
                                         cursor_before
                                     );
                                     let insert_change = Change::insert((line_idx, line_start), toggled, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
                                     editor.add_change(change);
                                 }
                             }
@@ -3156,7 +3188,7 @@ impl InputHandler {
                                         cursor_before
                                     );
                                     let insert_change = Change::insert((start_line, start_col), toggled, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
                                     editor.add_change(change);
                                 }
                             }
@@ -3193,7 +3225,7 @@ impl InputHandler {
                                         cursor_before
                                     );
                                     let insert_change = Change::insert((line_idx, line_start), uppercased, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
                                     editor.add_change(change);
                                 }
                             }
@@ -3230,7 +3262,7 @@ impl InputHandler {
                                         cursor_before
                                     );
                                     let insert_change = Change::insert((line_idx, line_start), lowercased, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
                                     editor.add_change(change);
                                 }
                             }
@@ -3246,8 +3278,16 @@ impl InputHandler {
                     let cursor = editor.buffer().cursor();
                     let cursor_before = (cursor.line(), cursor.col());
                     let tab_width = editor.options.tab_width;
+                    let is_visual_block = editor.mode() == Mode::VisualBlock;
+                    let original_col = cursor_before.1;
 
                     Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+
+                    // For visual block mode, move cursor to end line at adjusted column
+                    if is_visual_block {
+                        let cursor = editor.buffer_mut().cursor_mut();
+                        cursor.set_position(end_line, original_col + tab_width);
+                    }
                 }
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Normal);
@@ -3257,8 +3297,14 @@ impl InputHandler {
                     let cursor = editor.buffer().cursor();
                     let cursor_before = (cursor.line(), cursor.col());
                     let tab_width = editor.options.tab_width;
+                    let is_visual_block = editor.mode() == Mode::VisualBlock;
 
                     Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+
+                    // For visual block mode, move cursor to start position (start_line, 0)
+                    if is_visual_block {
+                        editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                    }
                 }
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Normal);
@@ -4240,10 +4286,21 @@ impl InputHandler {
     fn move_right(editor: &mut Editor) {
         let count = editor.effective_count();
         let line_idx = editor.buffer().cursor().line();
+        let mode = editor.mode();
         if let Some(line) = editor.buffer().line(line_idx) {
             let line_len = line.trim_end_matches('\n').chars().count();
             let cursor = editor.buffer_mut().cursor_mut();
-            let new_col = (cursor.col() + count).min(line_len.saturating_sub(1).max(0));
+            let old_col = cursor.col();
+
+            // In VisualBlock mode, allow cursor beyond line end for rectangular selection
+            let new_col = if mode == Mode::VisualBlock {
+                cursor.col() + count
+            } else {
+                (cursor.col() + count).min(line_len.saturating_sub(1).max(0))
+            };
+
+            eprintln!("[DEBUG move_right] line={}, line_len={}, old_col={}, new_col={}, mode={:?}",
+                line_idx, line_len, old_col, new_col, mode);
             cursor.set_col(new_col);
         }
         editor.clear_count();
@@ -4293,19 +4350,26 @@ impl InputHandler {
 
     fn clamp_cursor_with_goal_column(editor: &mut Editor) {
         let line_idx = editor.buffer().cursor().line();
+        let mode = editor.mode();
         if let Some(line) = editor.buffer().line(line_idx) {
             let line_len = line.trim_end_matches('\n').chars().count();
             let max_col = if line_len > 0 { line_len - 1 } else { 0 };
             let cursor = editor.buffer_mut().cursor_mut();
             let desired = cursor.desired_col();
+            let old_col = cursor.col();
 
-            // usize::MAX is a sentinel value meaning "always end of line"
-            let target_col = if desired == usize::MAX {
+            // In VisualBlock mode, preserve desired column even if beyond line end
+            let target_col = if mode == Mode::VisualBlock {
+                desired
+            } else if desired == usize::MAX {
+                // usize::MAX is a sentinel value meaning "always end of line"
                 max_col
             } else {
                 desired.min(max_col)
             };
 
+            eprintln!("[DEBUG clamp_cursor_with_goal_column] line={}, line_len={}, max_col={}, desired={}, old_col={}, target_col={}, mode={:?}",
+                line_idx, line_len, max_col, desired, old_col, target_col, mode);
             cursor.set_col_preserve_desired(target_col);
         }
     }
@@ -4667,6 +4731,7 @@ impl InputHandler {
     fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
         let mode = editor.mode();
         let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+        eprintln!("[DEBUG delete_visual_selection] cursor_before=({},{})", cursor_before.0, cursor_before.1);
 
         if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
             match mode {
@@ -4691,21 +4756,27 @@ impl InputHandler {
                 }
                 Mode::VisualBlock => {
                     // Delete rectangular block
+                    eprintln!("[DEBUG] VisualBlock delete: start=({},{}), end=({},{})", start_line, start_col, end_line, end_col);
                     let mut deleted_lines = Vec::new();
 
                     // Delete from bottom to top to avoid line number shifting
                     for line_idx in (start_line..=end_line).rev() {
                         if let Some(line_text) = editor.buffer().line(line_idx) {
                             let line_len = line_text.trim_end_matches('\n').chars().count();
+                            eprintln!("[DEBUG] Line {}: len={}, text={:?}", line_idx, line_len, line_text.trim_end_matches('\n'));
                             // Only delete if the line is long enough
                             if start_col < line_len {
                                 let actual_end_col = (end_col + 1).min(line_len);
+                                eprintln!("[DEBUG] Line {}: deleting cols {}..{} (end_col={}, actual_end_col={})",
+                                    line_idx, start_col, actual_end_col, end_col, actual_end_col);
                                 let deleted = editor.buffer_mut().delete_range(
                                     line_idx, start_col,
                                     line_idx, actual_end_col
                                 );
+                                eprintln!("[DEBUG] Line {}: deleted={:?}", line_idx, deleted);
                                 deleted_lines.push(deleted);
-                            } else {
+                            } else{
+                                eprintln!("[DEBUG] Line {}: start_col >= line_len, skipping", line_idx);
                                 deleted_lines.push(String::new());
                             }
                         }
@@ -5062,13 +5133,14 @@ impl InputHandler {
                 let insert_change = Change::insert((line_idx, start_col), new_number_str.clone(), cursor_before);
                 insert_change.apply(editor.buffer_mut());
 
-                // Create a composite change for undo/redo/dot-repeat to work correctly
-                let composite = Change::composite(vec![delete_change, insert_change], cursor_before);
-                editor.add_change(composite);
-
                 // Position cursor on the last digit of the modified number
                 let new_end_col = start_col + new_number_str.len() - 1;
                 editor.buffer_mut().cursor_mut().set_col(new_end_col);
+                let cursor_after = (line_idx, new_end_col);
+
+                // Create a composite change for undo/redo/dot-repeat to work correctly
+                let composite = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_after);
+                editor.add_change(composite);
             }
         }
 

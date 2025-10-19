@@ -43,6 +43,7 @@ pub enum Change {
     Composite {
         changes: Vec<Change>,
         cursor_before: Position,
+        cursor_after: Position,
     },
 }
 
@@ -62,8 +63,8 @@ impl Change {
     }
 
     /// Creates a Composite change
-    pub fn composite(changes: Vec<Change>, cursor_before: Position) -> Self {
-        Self::Composite { changes, cursor_before }
+    pub fn composite(changes: Vec<Change>, cursor_before: Position, cursor_after: Position) -> Self {
+        Self::Composite { changes, cursor_before, cursor_after }
     }
 
     /// Applies this change to the buffer
@@ -83,10 +84,12 @@ impl Change {
                 // Position cursor at deletion start
                 buffer.cursor_mut().set_position(start_line, start_col);
             }
-            Self::Composite { changes, .. } => {
+            Self::Composite { changes, cursor_after, .. } => {
                 for change in changes {
                     change.apply(buffer);
                 }
+                // Restore cursor to final position after composite operation
+                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
             }
         }
     }
@@ -130,7 +133,7 @@ impl Change {
                 // Restore cursor to where it was before the change
                 buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
             }
-            Self::Composite { changes, cursor_before } => {
+            Self::Composite { changes, cursor_before, .. } => {
                 // Undo changes in reverse order
                 for change in changes.iter().rev() {
                     change.undo(buffer);
@@ -224,6 +227,7 @@ impl Change {
 pub struct ChangeBuilder {
     changes: Vec<Change>,
     cursor_before: Position,
+    cursor_after: Option<Position>,
 }
 
 impl ChangeBuilder {
@@ -231,6 +235,7 @@ impl ChangeBuilder {
         Self {
             changes: Vec::new(),
             cursor_before,
+            cursor_after: None,
         }
     }
 
@@ -239,16 +244,24 @@ impl ChangeBuilder {
         self.changes.push(change);
     }
 
+    /// Sets the final cursor position after all changes
+    pub fn set_cursor_after(&mut self, cursor_after: Position) {
+        self.cursor_after = Some(cursor_after);
+    }
+
     /// Finalizes the builder into a Change
-    pub fn build(self) -> Option<Change> {
+    pub fn build(self, buffer_cursor: Position) -> Option<Change> {
         if self.changes.is_empty() {
             None
         } else if self.changes.len() == 1 {
             Some(self.changes.into_iter().next().unwrap())
         } else {
+            // Use explicitly set cursor_after, or fall back to current buffer cursor
+            let cursor_after = self.cursor_after.unwrap_or(buffer_cursor);
             Some(Change::Composite {
                 changes: self.changes,
                 cursor_before: self.cursor_before,
+                cursor_after,
             })
         }
     }
@@ -297,9 +310,9 @@ impl ChangeManager {
     }
 
     /// Finalizes the current builder and pushes the composite change
-    pub fn finalize_building(&mut self) {
+    pub fn finalize_building_at(&mut self, cursor_pos: Position) {
         if let Some(builder) = self.current_builder.take() {
-            if let Some(change) = builder.build() {
+            if let Some(change) = builder.build(cursor_pos) {
                 self.push_change(change);
             }
         }
