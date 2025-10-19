@@ -109,8 +109,9 @@ pub struct Editor {
     registers: RegisterManager,
     /// Visual mode selection start (line, col)
     visual_start: Option<(usize, usize)>,
-    /// Visual block insert/append state: (start_line, end_line, col, is_append)
-    visual_block_insert_state: Option<(usize, usize, usize, bool)>,
+    /// Visual block insert/append state: (start_line, end_line, col, is_append, move_to_end)
+    /// move_to_end: true for I/A (cursor at end_line), false for c (cursor at start_line)
+    visual_block_insert_state: Option<(usize, usize, usize, bool, bool)>,
     /// Command line buffer (for : commands)
     command_line: String,
     /// Command history for command line mode
@@ -1336,12 +1337,12 @@ impl Editor {
     }
 
     /// Sets visual block insert/append state for replay on insert mode exit
-    pub fn set_visual_block_insert_state(&mut self, state: Option<(usize, usize, usize, bool)>) {
+    pub fn set_visual_block_insert_state(&mut self, state: Option<(usize, usize, usize, bool, bool)>) {
         self.visual_block_insert_state = state;
     }
 
     /// Gets visual block insert/append state
-    pub fn visual_block_insert_state(&self) -> Option<(usize, usize, usize, bool)> {
+    pub fn visual_block_insert_state(&self) -> Option<(usize, usize, usize, bool, bool)> {
         self.visual_block_insert_state
     }
 

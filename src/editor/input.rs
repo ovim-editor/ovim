@@ -2734,7 +2734,7 @@ impl InputHandler {
                     editor.mark_buffer_modified(); // Mark for LSP didChange notification
 
                     // If we were in visual block insert/append mode, replay the changes on all other lines
-                    let should_move_to_end_line = if let Some((start_line, end_line, col, is_append)) = editor.visual_block_insert_state() {
+                    let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) = editor.visual_block_insert_state() {
                         // Get the text that was inserted
                         if let Some(last_change) = editor.last_change() {
                             let inserted_text = last_change.get_inserted_text();
@@ -2761,7 +2761,7 @@ impl InputHandler {
 
                         // Clear the visual block insert state
                         editor.set_visual_block_insert_state(None);
-                        Some((end_line, col, is_append))
+                        Some((start_line, end_line, col, is_append, move_to_end))
                     } else {
                         None
                     };
@@ -2770,23 +2770,25 @@ impl InputHandler {
 
                     // Move cursor left when exiting insert mode (unless at column 0)
 
-                    // If we were in visual block mode, move cursor to the end line
-                    if let Some((end_line, col, is_append)) = should_move_to_end_line {
-                        // For visual block, calculate the correct final cursor position based on the last line
+                    // If we were in visual block mode, move cursor to appropriate line
+                    if let Some((start_line, end_line, col, is_append, move_to_end)) = should_move_to_end_line {
+                        // For visual block, calculate the correct final cursor position
+                        let target_line = if move_to_end { end_line } else { start_line };
+
                         if is_append {
-                            // For append mode, position cursor on the last character of the last line
-                            if let Some(line) = editor.buffer().line(end_line) {
+                            // For append mode, position cursor on the last character of target line
+                            if let Some(line) = editor.buffer().line(target_line) {
                                 let line_text = line.trim_end_matches('\n');
                                 let line_len = line_text.chars().count();
                                 let final_col = if line_len > 0 { line_len - 1 } else { 0 };
-                                editor.buffer_mut().cursor_mut().set_position(end_line, final_col);
+                                editor.buffer_mut().cursor_mut().set_position(target_line, final_col);
                             }
                         } else {
                             // For insert mode, use the same column as on the first line
                             let cursor = editor.buffer().cursor();
                             let current_col = cursor.col();
                             let inserted_col = if current_col > 0 { current_col - 1 } else { 0 };
-                            editor.buffer_mut().cursor_mut().set_position(end_line, inserted_col);
+                            editor.buffer_mut().cursor_mut().set_position(target_line, inserted_col);
                         }
                     } else {
                         let cursor = editor.buffer_mut().cursor_mut();
@@ -2872,10 +2874,24 @@ impl InputHandler {
 
     /// Handles input in Visual mode
     fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        // Handle pending command for visual block replace
+        // Handle pending command for visual block replace and g prefix
         if let Some(pending) = editor.pending_command() {
             editor.clear_pending_command();
             match (pending, key_event.code) {
+                ('g', KeyCode::Char('a')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // g Ctrl-A: Sequential increment in visual selection
+                    Self::sequential_modify_numbers(editor, 1)?;
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Normal);
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('x')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    // g Ctrl-X: Sequential decrement in visual selection
+                    Self::sequential_modify_numbers(editor, -1)?;
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Normal);
+                    return Ok(());
+                }
                 ('r', KeyCode::Char(ch)) => {
                     // r{char} in visual block - replace all characters in selection with ch
                     if editor.mode() == Mode::VisualBlock {
@@ -3022,7 +3038,25 @@ impl InputHandler {
             }
             // Change selection
             KeyCode::Char('c') => {
+                // For visual block mode, need to track the block for multi-line insert
+                let visual_block_state = if editor.mode() == Mode::VisualBlock {
+                    editor.visual_selection().map(|((start_line, start_col), (end_line, _))| {
+                        (start_line, end_line, start_col)
+                    })
+                } else {
+                    None
+                };
+
                 Self::delete_visual_selection(editor)?;
+
+                if let Some((start_line, end_line, start_col)) = visual_block_state {
+                    // Set visual block insert state for multi-line replication
+                    // For 'c', move cursor to start_line (move_to_end = false)
+                    let cursor_before = (start_line, start_col);
+                    editor.set_visual_block_insert_state(Some((start_line, end_line, start_col, false, false)));
+                    editor.start_change_building(cursor_before);
+                }
+
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Insert);
             }
@@ -3063,8 +3097,9 @@ impl InputHandler {
                     if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
                         let cursor_before = (start_line, start_col);
                         editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
-                        // Track visual block insert state: (start_line, end_line, col, is_append)
-                        editor.set_visual_block_insert_state(Some((start_line, end_line, start_col, false)));
+                        // Track visual block insert state: (start_line, end_line, col, is_append, move_to_end)
+                        // For 'I', move cursor to end_line (move_to_end = true)
+                        editor.set_visual_block_insert_state(Some((start_line, end_line, start_col, false, true)));
                         editor.clear_visual_start();
                         editor.start_change_building(cursor_before);
                         editor.set_mode(Mode::Insert);
@@ -3082,10 +3117,18 @@ impl InputHandler {
                 if editor.mode() == Mode::VisualBlock {
                     // Append at end of block on each line
                     if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection() {
-                        let cursor_before = (start_line, end_col + 1);
-                        editor.buffer_mut().cursor_mut().set_position(start_line, end_col + 1);
-                        // Track visual block append state: (start_line, end_line, col, is_append)
-                        editor.set_visual_block_insert_state(Some((start_line, end_line, end_col + 1, true)));
+                        // Get actual end column - clamp to line length to avoid overflow
+                        let line_len = editor.buffer().line(start_line)
+                            .map(|l| l.trim_end_matches('\n').chars().count())
+                            .unwrap_or(0);
+                        let actual_end_col = end_col.min(line_len.saturating_sub(1));
+                        let append_col = actual_end_col.saturating_add(1);
+
+                        let cursor_before = (start_line, append_col);
+                        editor.buffer_mut().cursor_mut().set_position(start_line, append_col);
+                        // Track visual block append state: (start_line, end_line, col, is_append, move_to_end)
+                        // For 'A', move cursor to end_line (move_to_end = true)
+                        editor.set_visual_block_insert_state(Some((start_line, end_line, append_col, true, true)));
                         editor.clear_visual_start();
                         editor.start_change_building(cursor_before);
                         editor.set_mode(Mode::Insert);
@@ -5096,6 +5139,81 @@ impl InputHandler {
         Self::modify_number(editor, -(count as i64))
     }
 
+    /// Sequential modify numbers in visual selection (g Ctrl-A / g Ctrl-X)
+    /// delta: 1 for increment, -1 for decrement
+    fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> {
+        // Get visual selection range
+        let selection = editor.visual_selection();
+        if selection.is_none() {
+            return Ok(());
+        }
+
+        let ((start_line, _), (end_line, _)) = selection.unwrap();
+        let cursor_before = (start_line, editor.buffer().cursor().col());
+
+        // Track all changes for composite undo
+        let mut changes = Vec::new();
+
+        // For each line in selection, find and modify number
+        for line_idx in start_line..=end_line {
+            let line_offset = (line_idx - start_line) as i64;
+            let total_delta = delta * line_offset;
+
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+
+                // Find number on this line (start from beginning)
+                if let Some((start_col, end_col, number_str)) = Self::find_number_at_or_after(line_text, 0) {
+                    // Parse the number
+                    if let Ok((value, base, prefix_len)) = Self::parse_number(&number_str) {
+                        // Apply the sequential delta
+                        let new_value = value.wrapping_add(total_delta);
+
+                        // Format the new number
+                        let mut new_number_str = Self::format_number(new_value, base, prefix_len);
+
+                        // Preserve explicit '+' sign if original had it
+                        let has_plus_sign = number_str.starts_with('+');
+                        if has_plus_sign && new_value >= 0 && !new_number_str.starts_with('+') {
+                            new_number_str = format!("+{}", new_number_str);
+                        }
+
+                        // Store the old text and range for undo
+                        let old_text = number_str.clone();
+                        let old_range = Range::new((line_idx, start_col), (line_idx, end_col));
+
+                        // Delete and insert
+                        let _deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
+                        editor.buffer_mut().insert_text_at(line_idx, start_col, &new_number_str);
+
+                        // Create a NumberOperation for this line
+                        let line_cursor_after = (line_idx, start_col + new_number_str.len() - 1);
+                        let number_op = Change::number_operation(
+                            total_delta,
+                            cursor_before,
+                            line_cursor_after,
+                            old_text,
+                            old_range,
+                        );
+                        changes.push(number_op);
+                    }
+                }
+            }
+        }
+
+        // Position cursor back at start of selection
+        editor.buffer_mut().cursor_mut().set_position(start_line, cursor_before.1);
+
+        // Create a composite change for all the sequential modifications
+        if !changes.is_empty() {
+            let cursor_after = (start_line, cursor_before.1);
+            let composite = Change::composite(changes, cursor_before, cursor_after);
+            editor.add_change(composite);
+        }
+
+        Ok(())
+    }
+
     /// Modifies (increments or decrements) the number under/after the cursor
     fn modify_number(editor: &mut Editor, delta: i64) -> Result<()> {
         let cursor = editor.buffer().cursor();
@@ -5126,21 +5244,27 @@ impl InputHandler {
                 }
 
                 // Replace the number in the buffer
-                let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
-                let delete_range = Range::new((line_idx, start_col), (line_idx, end_col));
-                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                // Store old text before deleting for undo
+                let old_text = number_str.clone();
+                let old_range = Range::new((line_idx, start_col), (line_idx, end_col));
 
-                let insert_change = Change::insert((line_idx, start_col), new_number_str.clone(), cursor_before);
-                insert_change.apply(editor.buffer_mut());
+                let _deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
+                editor.buffer_mut().insert_text_at(line_idx, start_col, &new_number_str);
 
                 // Position cursor on the last digit of the modified number
                 let new_end_col = start_col + new_number_str.len() - 1;
                 editor.buffer_mut().cursor_mut().set_col(new_end_col);
                 let cursor_after = (line_idx, new_end_col);
 
-                // Create a composite change for undo/redo/dot-repeat to work correctly
-                let composite = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_after);
-                editor.add_change(composite);
+                // Create a NumberOperation change for proper dot-repeat behavior
+                let number_op = Change::number_operation(
+                    delta,
+                    cursor_before,
+                    cursor_after,
+                    old_text,
+                    old_range,
+                );
+                editor.add_change(number_op);
             }
         }
 
