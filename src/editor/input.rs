@@ -2847,6 +2847,58 @@ impl InputHandler {
 
     /// Handles input in Visual mode
     fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        // Handle pending command for visual block replace
+        if let Some(pending) = editor.pending_command() {
+            editor.clear_pending_command();
+            match (pending, key_event.code) {
+                ('r', KeyCode::Char(ch)) => {
+                    // r{char} in visual block - replace all characters in selection with ch
+                    if editor.mode() == Mode::VisualBlock {
+                        if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                            let cursor = editor.buffer().cursor();
+                            let cursor_before = (cursor.line(), cursor.col());
+
+                            for line_idx in start_line..=end_line {
+                                if let Some(line) = editor.buffer().line(line_idx) {
+                                    let line_text = line.trim_end_matches('\n');
+                                    let chars: Vec<char> = line_text.chars().collect();
+
+                                    let line_start = start_col.min(chars.len());
+                                    let line_end = (end_col + 1).min(chars.len());
+
+                                    if line_start < line_end {
+                                        // Delete the range
+                                        let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+
+                                        // Replace with the same number of replacement characters
+                                        let replace_count = deleted.chars().count();
+                                        let replacement = ch.to_string().repeat(replace_count);
+                                        editor.buffer_mut().insert_text_at(line_idx, line_start, &replacement);
+
+                                        // Track change
+                                        let delete_change = Change::delete(
+                                            Range::new((line_idx, line_start), (line_idx, line_end)),
+                                            deleted,
+                                            cursor_before
+                                        );
+                                        let insert_change = Change::insert((line_idx, line_start), replacement, cursor_before);
+                                        let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                        editor.add_change(change);
+                                    }
+                                }
+                            }
+                        }
+                        editor.clear_visual_start();
+                        editor.set_mode(Mode::Normal);
+                        return Ok(());
+                    }
+                }
+                _ => {
+                    // Unknown pending command, ignore
+                }
+            }
+        }
+
         match key_event.code {
             KeyCode::Esc => {
                 editor.clear_visual_start();
@@ -3013,6 +3065,179 @@ impl InputHandler {
                         editor.clear_visual_start();
                         editor.set_mode(Mode::Insert);
                     }
+                }
+            }
+            // Replace in visual block mode
+            KeyCode::Char('r') => {
+                if editor.mode() == Mode::VisualBlock {
+                    // r{char} in visual block - wait for next char to replace selection
+                    editor.set_pending_command('r');
+                } else {
+                    // Regular visual mode - not supported in standard vim, just delete and enter insert
+                    Self::delete_visual_selection(editor)?;
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Insert);
+                }
+            }
+            // Case operations in visual mode
+            KeyCode::Char('~') => {
+                if editor.mode() == Mode::VisualBlock {
+                    // Toggle case for visual block selection
+                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+
+                        for line_idx in start_line..=end_line {
+                            if let Some(line) = editor.buffer().line(line_idx) {
+                                let line_text = line.trim_end_matches('\n');
+                                let chars: Vec<char> = line_text.chars().collect();
+
+                                let line_start = start_col.min(chars.len());
+                                let line_end = (end_col + 1).min(chars.len());
+
+                                if line_start < line_end {
+                                    // Delete the range
+                                    let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+
+                                    // Toggle case
+                                    let toggled: String = deleted.chars().map(|ch| {
+                                        if ch.is_uppercase() {
+                                            ch.to_lowercase().to_string()
+                                        } else {
+                                            ch.to_uppercase().to_string()
+                                        }
+                                    }).collect();
+
+                                    // Insert the toggled text
+                                    editor.buffer_mut().insert_text_at(line_idx, line_start, &toggled);
+
+                                    // Track change
+                                    let delete_change = Change::delete(
+                                        Range::new((line_idx, line_start), (line_idx, line_end)),
+                                        deleted,
+                                        cursor_before
+                                    );
+                                    let insert_change = Change::insert((line_idx, line_start), toggled, cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    editor.add_change(change);
+                                }
+                            }
+                        }
+                    }
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Normal);
+                } else {
+                    // Regular visual mode - toggle case of selection
+                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+
+                        // Handle simple case: same line
+                        if start_line == end_line {
+                            if let Some(line) = editor.buffer().line(start_line) {
+                                let line_text = line.trim_end_matches('\n');
+                                let chars: Vec<char> = line_text.chars().collect();
+                                let line_end = (end_col + 1).min(chars.len());
+
+                                if start_col < line_end {
+                                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, start_line, line_end);
+                                    let toggled: String = deleted.chars().map(|ch| {
+                                        if ch.is_uppercase() {
+                                            ch.to_lowercase().to_string()
+                                        } else {
+                                            ch.to_uppercase().to_string()
+                                        }
+                                    }).collect();
+                                    editor.buffer_mut().insert_text_at(start_line, start_col, &toggled);
+
+                                    let delete_change = Change::delete(
+                                        Range::new((start_line, start_col), (start_line, line_end)),
+                                        deleted,
+                                        cursor_before
+                                    );
+                                    let insert_change = Change::insert((start_line, start_col), toggled, cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    editor.add_change(change);
+                                }
+                            }
+                        }
+                    }
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Normal);
+                }
+            }
+            // Uppercase in visual mode
+            KeyCode::Char('U') => {
+                if editor.mode() == Mode::VisualBlock {
+                    // Convert to uppercase for visual block selection
+                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+
+                        for line_idx in start_line..=end_line {
+                            if let Some(line) = editor.buffer().line(line_idx) {
+                                let line_text = line.trim_end_matches('\n');
+                                let chars: Vec<char> = line_text.chars().collect();
+
+                                let line_start = start_col.min(chars.len());
+                                let line_end = (end_col + 1).min(chars.len());
+
+                                if line_start < line_end {
+                                    let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+                                    let uppercased = deleted.to_uppercase();
+                                    editor.buffer_mut().insert_text_at(line_idx, line_start, &uppercased);
+
+                                    let delete_change = Change::delete(
+                                        Range::new((line_idx, line_start), (line_idx, line_end)),
+                                        deleted,
+                                        cursor_before
+                                    );
+                                    let insert_change = Change::insert((line_idx, line_start), uppercased, cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    editor.add_change(change);
+                                }
+                            }
+                        }
+                    }
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Normal);
+                }
+            }
+            // Lowercase in visual mode
+            KeyCode::Char('u') => {
+                if editor.mode() == Mode::VisualBlock {
+                    // Convert to lowercase for visual block selection
+                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+
+                        for line_idx in start_line..=end_line {
+                            if let Some(line) = editor.buffer().line(line_idx) {
+                                let line_text = line.trim_end_matches('\n');
+                                let chars: Vec<char> = line_text.chars().collect();
+
+                                let line_start = start_col.min(chars.len());
+                                let line_end = (end_col + 1).min(chars.len());
+
+                                if line_start < line_end {
+                                    let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+                                    let lowercased = deleted.to_lowercase();
+                                    editor.buffer_mut().insert_text_at(line_idx, line_start, &lowercased);
+
+                                    let delete_change = Change::delete(
+                                        Range::new((line_idx, line_start), (line_idx, line_end)),
+                                        deleted,
+                                        cursor_before
+                                    );
+                                    let insert_change = Change::insert((line_idx, line_start), lowercased, cursor_before);
+                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before);
+                                    editor.add_change(change);
+                                }
+                            }
+                        }
+                    }
+                    editor.clear_visual_start();
+                    editor.set_mode(Mode::Normal);
                 }
             }
             // Indent/dedent in visual mode
