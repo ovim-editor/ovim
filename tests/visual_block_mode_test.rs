@@ -58,7 +58,8 @@ fn test_ctrl_v_change_block() {
         .type_text("X")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "Xllo world\nXst line\nfoo bar\n");
+    // 'll' selects columns 0,1,2 (3 chars total) - visual mode is inclusive
+    assert_eq!(test.buffer_content(), "Xlo world\nXt line\nfoo bar\n");
     test.assert_cursor(0, 0);
 }
 
@@ -114,7 +115,8 @@ fn test_ctrl_v_empty_lines() {
         .keys("ll")
         .press('d');
 
-    assert_eq!(test.buffer_content(), "lo\n\nrld\n");
+    // Visual block deletes same columns on all lines - 'll' selects cols 0,1,2 (3 chars)
+    assert_eq!(test.buffer_content(), "lo\n\nld\n");
     test.assert_cursor(0, 0);
 }
 
@@ -365,7 +367,8 @@ fn test_ctrl_v_at_eof() {
         .keys("ll")
         .press('d');
 
-    assert_eq!(test.buffer_content(), "hello\nrld\n");
+    // 'll' selects columns 0,1,2 (3 chars total) - visual mode is inclusive
+    assert_eq!(test.buffer_content(), "hello\nld\n");
     test.assert_cursor(1, 0);
 }
 
