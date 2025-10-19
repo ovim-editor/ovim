@@ -24,10 +24,10 @@ fn test_ctrl_v_delete_block() {
 
     test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
         .keys("jj")       // Select 3 lines
-        .keys("lll")      // Select 4 columns
+        .keys("llll")      // Select 5 columns
         .press('d');      // Delete block
 
-    assert_eq!(test.buffer_content(), " world\n line\nar\n");
+    assert_eq!(test.buffer_content(), " world\nline\nar\n");
     test.assert_cursor(0, 0);
 }
 

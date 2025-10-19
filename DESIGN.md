@@ -236,10 +236,18 @@ When implementing new features:
 - **Number operations: 34/42 passing (81.0%), up from 24/42 (57.1%)**
 - **+10 tests fixed in this session!**
 
-**Remaining failures (8 tests)**:
-- Dot repeat (3 tests): Architectural - needs `Change::NumberOperation` variant
-- g Ctrl-A/X (4 tests): Feature not implemented (sequential increment/decrement)
-- Redo cursor (1 test): Minor bug - cursor at position 9 instead of 8
+### 2025-10-19: Session 5 - Ultrathink & Agent-Driven Fixes
+- **Redo cursor positioning**: Fixed `Change::Composite` to track `cursor_after` (+1 test)
+- **Visual block cursor positioning**: Fixed 6 cursor placement issues after operations (+6 tests)
+- **Visual block selection boundaries**: Allowed cursor beyond line end in VisualBlock mode (+6 tests)
+- **Progress: 54/74 tests passing (73.0%), up from 37/74 (50%)**
+- **Number operations: 35/42 passing (83.3%)**
+- **Visual block: 19/32 passing (59.4%)**
+- **+17 tests fixed total across both sessions!**
+
+**Remaining failures (20 tests)**:
+- Number ops (7 tests): Dot repeat (3), g Ctrl-A/X (4) - architectural/unimplemented
+- Visual block (13 tests): Complex operations (change, undo, paste, dollar motion, etc.)
 
 ---
 
