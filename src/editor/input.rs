@@ -5066,8 +5066,9 @@ impl InputHandler {
                 let composite = Change::composite(vec![delete_change, insert_change], cursor_before);
                 editor.add_change(composite);
 
-                // Position cursor on the first digit of the number
-                editor.buffer_mut().cursor_mut().set_col(start_col);
+                // Position cursor on the last digit of the modified number
+                let new_end_col = start_col + new_number_str.len() - 1;
+                editor.buffer_mut().cursor_mut().set_col(new_end_col);
             }
         }
 
