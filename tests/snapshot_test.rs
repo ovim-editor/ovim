@@ -6,9 +6,7 @@ use insta::assert_snapshot;
 fn test_o_command_snapshot() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('o')
-        .type_text("new line")
-        .press_esc();
+    test.press('o').type_text("new line").press_esc();
 
     assert_snapshot!(test.snapshot_state());
 }

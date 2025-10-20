@@ -49,7 +49,7 @@ pub enum Change {
     /// Number operation (increment/decrement) - stores the operation, not the text change
     /// This allows dot-repeat to work correctly on different numbers
     NumberOperation {
-        delta: i64,          // +1 for Ctrl-A, -1 for Ctrl-X (multiplied by count)
+        delta: i64, // +1 for Ctrl-A, -1 for Ctrl-X (multiplied by count)
         cursor_before: Position,
         cursor_after: Position,
         // Store the original change for undo (the actual text that was changed)
@@ -61,7 +61,11 @@ pub enum Change {
 impl Change {
     /// Creates an InsertText change
     pub fn insert(position: Position, text: String, cursor_before: Position) -> Self {
-        Self::InsertText { position, text, cursor_before }
+        Self::InsertText {
+            position,
+            text,
+            cursor_before,
+        }
     }
 
     /// Creates a DeleteText change
@@ -74,8 +78,16 @@ impl Change {
     }
 
     /// Creates a Composite change
-    pub fn composite(changes: Vec<Change>, cursor_before: Position, cursor_after: Position) -> Self {
-        Self::Composite { changes, cursor_before, cursor_after }
+    pub fn composite(
+        changes: Vec<Change>,
+        cursor_before: Position,
+        cursor_after: Position,
+    ) -> Self {
+        Self::Composite {
+            changes,
+            cursor_before,
+            cursor_after,
+        }
     }
 
     /// Creates a NumberOperation change
@@ -112,21 +124,34 @@ impl Change {
                 // Position cursor at deletion start
                 buffer.cursor_mut().set_position(start_line, start_col);
             }
-            Self::Composite { changes, cursor_after, .. } => {
+            Self::Composite {
+                changes,
+                cursor_after,
+                ..
+            } => {
                 for change in changes {
                     change.apply(buffer);
                 }
                 // Restore cursor to final position after composite operation
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
-            Self::NumberOperation { delta, cursor_after, old_range, .. } => {
+            Self::NumberOperation {
+                delta,
+                cursor_after,
+                old_range,
+                ..
+            } => {
                 // For apply (redo), we need to re-execute the number operation
                 let (line_idx, _col) = cursor_after;
                 if let Some(line) = buffer.line(*line_idx) {
                     let line_text = line.trim_end_matches('\n');
                     let col = old_range.start.1;
 
-                    if let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, col) {
+                    if let Some((start_col, end_col, number_str)) =
+                        find_number_at_or_after(line_text, col)
+                    {
                         if let Ok((mut value, base, prefix_len)) = parse_number(&number_str) {
                             value += delta;
                             let new_number_str = format_number(value, base, prefix_len);
@@ -148,7 +173,11 @@ impl Change {
     /// Undoes this change on the buffer
     pub fn undo(&self, buffer: &mut Buffer) {
         match self {
-            Self::InsertText { position, text, cursor_before } => {
+            Self::InsertText {
+                position,
+                text,
+                cursor_before,
+            } => {
                 // To undo an insert, delete the inserted text
                 // We need to use the rope state AFTER the insert to find the correct positions
                 let (start_line, start_col) = *position;
@@ -171,7 +200,9 @@ impl Change {
 
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 // Restore cursor to where it was before the change
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
             Self::DeleteText {
                 range,
@@ -182,17 +213,31 @@ impl Change {
                 let (line, col) = range.start;
                 buffer.insert_text_at(line, col, deleted_text);
                 // Restore cursor to where it was before the change
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
-            Self::Composite { changes, cursor_before, .. } => {
+            Self::Composite {
+                changes,
+                cursor_before,
+                ..
+            } => {
                 // Undo changes in reverse order
                 for change in changes.iter().rev() {
                     change.undo(buffer);
                 }
                 // Restore cursor to where it was before the composite change
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
-            Self::NumberOperation { delta, cursor_before, old_range, old_text, .. } => {
+            Self::NumberOperation {
+                delta,
+                cursor_before,
+                old_range,
+                old_text,
+                ..
+            } => {
                 // To undo a number operation, apply the negative delta
                 // Or more reliably: restore the old text
                 let (line_idx, start_col) = old_range.start;
@@ -203,7 +248,9 @@ impl Change {
                 buffer.insert_text_at(line_idx, start_col, old_text);
 
                 // Restore cursor to where it was before
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
         }
     }
@@ -257,7 +304,9 @@ impl Change {
                 if let Some(line) = buffer.line(line_idx) {
                     let line_text = line.trim_end_matches('\n');
 
-                    if let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, col) {
+                    if let Some((start_col, end_col, number_str)) =
+                        find_number_at_or_after(line_text, col)
+                    {
                         if let Ok((mut value, base, prefix_len)) = parse_number(&number_str) {
                             value += delta;
                             let new_number_str = format_number(value, base, prefix_len);
@@ -307,6 +356,16 @@ impl Change {
             }
             Self::DeleteText { .. } => String::new(),
             Self::NumberOperation { .. } => String::new(),
+        }
+    }
+
+    /// Gets the cursor position before this change
+    pub fn cursor_before(&self) -> Position {
+        match self {
+            Self::InsertText { cursor_before, .. } => *cursor_before,
+            Self::DeleteText { cursor_before, .. } => *cursor_before,
+            Self::Composite { cursor_before, .. } => *cursor_before,
+            Self::NumberOperation { cursor_before, .. } => *cursor_before,
         }
     }
 }
@@ -473,6 +532,12 @@ impl ChangeManager {
     pub fn last_change(&self) -> Option<&Change> {
         self.last_change.as_ref()
     }
+
+    /// Pops the last change from the undo stack (without applying undo)
+    /// Used when replacing a change with a composite version
+    pub fn pop_last_change(&mut self) -> Option<Change> {
+        self.undo_stack.pop()
+    }
 }
 
 // ==============================================================================
@@ -502,7 +567,11 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                 start_col -= 1;
             } else if prev_ch == '-' || prev_ch == '+' {
                 // Check if this sign is part of the number
-                if start_col > 1 && !chars[start_col - 2].is_whitespace() && chars[start_col - 2] != '(' && chars[start_col - 2] != '[' {
+                if start_col > 1
+                    && !chars[start_col - 2].is_whitespace()
+                    && chars[start_col - 2] != '('
+                    && chars[start_col - 2] != '['
+                {
                     // Not a sign, just adjacent character
                     break;
                 }
@@ -512,7 +581,10 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                 // Hex prefix
                 start_col -= 2;
                 break;
-            } else if start_col >= 2 && (prev_ch == 'b' || prev_ch == 'o') && chars[start_col - 2] == '0' {
+            } else if start_col >= 2
+                && (prev_ch == 'b' || prev_ch == 'o')
+                && chars[start_col - 2] == '0'
+            {
                 // Binary or octal prefix
                 start_col -= 2;
                 break;
@@ -547,7 +619,11 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                     if prev_ch.is_ascii_digit() {
                         start_col -= 1;
                     } else if prev_ch == '-' || prev_ch == '+' {
-                        if start_col > 1 && !chars[start_col - 2].is_whitespace() && chars[start_col - 2] != '(' && chars[start_col - 2] != '[' {
+                        if start_col > 1
+                            && !chars[start_col - 2].is_whitespace()
+                            && chars[start_col - 2] != '('
+                            && chars[start_col - 2] != '['
+                        {
                             break;
                         }
                         start_col -= 1;
@@ -555,7 +631,10 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                     } else if start_col >= 2 && prev_ch == 'x' && chars[start_col - 2] == '0' {
                         start_col -= 2;
                         break;
-                    } else if start_col >= 2 && (prev_ch == 'b' || prev_ch == 'o') && chars[start_col - 2] == '0' {
+                    } else if start_col >= 2
+                        && (prev_ch == 'b' || prev_ch == 'o')
+                        && chars[start_col - 2] == '0'
+                    {
                         start_col -= 2;
                         break;
                     } else {
@@ -578,7 +657,11 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
     let mut search_col = col;
 
     // Skip non-digit/non-hex characters to find start of number
-    while search_col < chars.len() && !chars[search_col].is_ascii_digit() && chars[search_col] != '-' && chars[search_col] != '+' {
+    while search_col < chars.len()
+        && !chars[search_col].is_ascii_digit()
+        && chars[search_col] != '-'
+        && chars[search_col] != '+'
+    {
         search_col += 1;
     }
 
@@ -649,18 +732,15 @@ pub fn parse_number(s: &str) -> Result<(i64, u32, usize)> {
 
         match prefix {
             "0x" | "0X" => {
-                let value = i64::from_str_radix(digits, 16)
-                    .unwrap_or(0);
+                let value = i64::from_str_radix(digits, 16).unwrap_or(0);
                 return Ok((value, 16, 2));
             }
             "0b" | "0B" => {
-                let value = i64::from_str_radix(digits, 2)
-                    .unwrap_or(0);
+                let value = i64::from_str_radix(digits, 2).unwrap_or(0);
                 return Ok((value, 2, 2));
             }
             "0o" | "0O" => {
-                let value = i64::from_str_radix(digits, 8)
-                    .unwrap_or(0);
+                let value = i64::from_str_radix(digits, 8).unwrap_or(0);
                 return Ok((value, 8, 2));
             }
             _ => {}

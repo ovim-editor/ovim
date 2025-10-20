@@ -37,7 +37,10 @@ fn test_p_linewise_middle() {
         .keys("yy") // Yank line 2
         .keys("p"); // Paste after
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 2\nline 3\nline 4\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 2\nline 2\nline 3\nline 4\n"
+    );
     test.assert_cursor(2, 0);
 }
 
@@ -170,7 +173,10 @@ fn test_p_then_P() {
         .keys("p") // Paste after
         .keys("P"); // Paste before
 
-    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 1\nline 2\nline 3\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 1\nline 1\nline 2\nline 3\n"
+    );
     test.assert_cursor(2, 0);
 }
 

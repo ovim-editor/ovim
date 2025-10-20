@@ -38,7 +38,12 @@ impl Search {
 
     /// Finds the next match starting from the given position
     /// Returns (line, col, match_text) if found
-    pub fn find_next(&mut self, buffer: &Buffer, from_line: usize, from_col: usize) -> Option<(usize, usize, String)> {
+    pub fn find_next(
+        &mut self,
+        buffer: &Buffer,
+        from_line: usize,
+        from_col: usize,
+    ) -> Option<(usize, usize, String)> {
         let regex = self.regex.as_ref()?;
         let forward = self.forward;
 
@@ -56,7 +61,13 @@ impl Search {
     }
 
     /// Finds next match in forward direction
-    fn find_forward(&self, buffer: &Buffer, regex: &Regex, from_line: usize, from_col: usize) -> Option<(usize, usize, String)> {
+    fn find_forward(
+        &self,
+        buffer: &Buffer,
+        regex: &Regex,
+        from_line: usize,
+        from_col: usize,
+    ) -> Option<(usize, usize, String)> {
         let line_count = buffer.line_count();
 
         // Start from the current position
@@ -88,7 +99,13 @@ impl Search {
     }
 
     /// Finds next match in backward direction
-    fn find_backward(&self, buffer: &Buffer, regex: &Regex, from_line: usize, from_col: usize) -> Option<(usize, usize, String)> {
+    fn find_backward(
+        &self,
+        buffer: &Buffer,
+        regex: &Regex,
+        from_line: usize,
+        from_col: usize,
+    ) -> Option<(usize, usize, String)> {
         // Search backward from current position
         // First, search the current line up to from_col
         if let Some(line_text) = buffer.line(from_line) {

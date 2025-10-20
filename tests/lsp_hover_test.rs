@@ -50,7 +50,7 @@ async fn test_hover_on_struct_field_bug_reproduction() -> Result<()> {
 async fn test_hover_current_behavior() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 
-    send!(session, "20Gww");  // Go to "pid"
+    send!(session, "20Gww"); // Go to "pid"
     send!(session, "K");
     wait!(500);
 
@@ -58,7 +58,10 @@ async fn test_hover_current_behavior() -> Result<()> {
     println!("Current hover result: {:?}", hover);
 
     // Document that it currently returns None
-    assert!(hover.is_none(), "Hover currently returns None (this is the bug)");
+    assert!(
+        hover.is_none(),
+        "Hover currently returns None (this is the bug)"
+    );
 
     session.cleanup().await?;
     Ok(())
@@ -96,8 +99,8 @@ async fn test_hover_on_function_parameter() -> Result<()> {
     send!(session, "gg");
     send!(session, "/impl SessionInfo<CR>");
     send!(session, "n"); // Find first match
-    send!(session, "j");  // Go to next line
-    send!(session, "w");  // Move to parameter
+    send!(session, "j"); // Go to next line
+    send!(session, "w"); // Move to parameter
 
     // Trigger hover
     send!(session, "K");

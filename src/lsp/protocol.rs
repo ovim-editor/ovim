@@ -122,7 +122,12 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
     // Debug log outgoing messages
     if message.is_notification() {
         if let Some(method) = &message.method {
-            crate::lsp_debug!("LSP-OUT", "Sending notification: {} | Body: {}", method, json);
+            crate::lsp_debug!(
+                "LSP-OUT",
+                "Sending notification: {} | Body: {}",
+                method,
+                json
+            );
         }
     } else if message.is_request() {
         if let Some(method) = &message.method {

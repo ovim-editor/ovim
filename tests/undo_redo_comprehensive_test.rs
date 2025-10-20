@@ -10,8 +10,8 @@ use insta::assert_snapshot;
 fn test_undo_single_change() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete
-        .press('u');      // Undo
+    test.press('x') // Delete
+        .press('u'); // Undo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -20,12 +20,12 @@ fn test_undo_single_change() {
 fn test_redo_single_change() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete
-        .press('u')       // Undo
+    test.press('x') // Delete
+        .press('u') // Undo
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );                // Redo
+            crossterm::event::KeyModifiers::CONTROL,
+        ); // Redo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -34,11 +34,11 @@ fn test_redo_single_change() {
 fn test_undo_multiple_changes() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete 'h'
-        .press('x')       // Delete 'e'
-        .press('x')       // Delete 'l'
-        .press('u')       // Undo last
-        .press('u');      // Undo second
+    test.press('x') // Delete 'h'
+        .press('x') // Delete 'e'
+        .press('x') // Delete 'l'
+        .press('u') // Undo last
+        .press('u'); // Undo second
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -53,11 +53,11 @@ fn test_redo_multiple_changes() {
         .press('u')
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         )
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         );
 
     assert_snapshot!(test.snapshot_state());
@@ -71,10 +71,10 @@ fn test_redo_multiple_changes() {
 fn test_undo_branch_new_change() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete 'h' (change 1)
-        .press('u')       // Undo
-        .press('x')       // Delete 'h' again (change 2 - creates branch)
-        .press('x');      // Delete 'e' (change 3)
+    test.press('x') // Delete 'h' (change 1)
+        .press('u') // Undo
+        .press('x') // Delete 'h' again (change 2 - creates branch)
+        .press('x'); // Delete 'e' (change 3)
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -83,15 +83,15 @@ fn test_undo_branch_new_change() {
 fn test_undo_redo_branch() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x')       // Change 1
-        .press('x')       // Change 2
-        .press('u')       // Undo change 2
-        .keys("dw")       // New branch
-        .press('u')       // Undo dw
+    test.press('x') // Change 1
+        .press('x') // Change 2
+        .press('u') // Undo change 2
+        .keys("dw") // New branch
+        .press('u') // Undo dw
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );                // Redo dw
+            crossterm::event::KeyModifiers::CONTROL,
+        ); // Redo dw
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -104,10 +104,7 @@ fn test_undo_redo_branch() {
 fn test_undo_insert() {
     let mut test = EditorTest::new("hello");
 
-    test.press('i')
-        .type_text("START ")
-        .press_esc()
-        .press('u');      // Undo insert
+    test.press('i').type_text("START ").press_esc().press('u'); // Undo insert
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -116,10 +113,7 @@ fn test_undo_insert() {
 fn test_undo_append() {
     let mut test = EditorTest::new("hello");
 
-    test.press('a')
-        .type_text(" END")
-        .press_esc()
-        .press('u');
+    test.press('a').type_text(" END").press_esc().press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -128,8 +122,7 @@ fn test_undo_append() {
 fn test_undo_delete_word() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("dw")
-        .press('u');
+    test.keys("dw").press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -138,8 +131,7 @@ fn test_undo_delete_word() {
 fn test_undo_delete_line() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("dd")
-        .press('u');
+    test.keys("dd").press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -148,10 +140,7 @@ fn test_undo_delete_line() {
 fn test_undo_change_word() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("ciw")
-        .type_text("goodbye")
-        .press_esc()
-        .press('u');
+    test.keys("ciw").type_text("goodbye").press_esc().press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -160,10 +149,7 @@ fn test_undo_change_word() {
 fn test_undo_visual_delete() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('v')
-        .keys("e")
-        .press('d')
-        .press('u');
+    test.press('v').keys("e").press('d').press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -172,8 +158,7 @@ fn test_undo_visual_delete() {
 fn test_undo_line_join() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('J')
-        .press('u');
+    test.press('J').press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -186,10 +171,10 @@ fn test_undo_line_join() {
 fn test_undo_paste() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank
+    test.keys("yiw") // Yank
         .keys("$")
-        .press('p')       // Paste
-        .press('u');      // Undo paste
+        .press('p') // Paste
+        .press('u'); // Undo paste
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -200,7 +185,7 @@ fn test_undo_paste_before() {
 
     test.keys("yiw")
         .keys("$")
-        .press('P')       // Paste before
+        .press('P') // Paste before
         .press('u');
 
     assert_snapshot!(test.snapshot_state());
@@ -210,14 +195,10 @@ fn test_undo_paste_before() {
 fn test_redo_paste() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")
-        .keys("$")
-        .press('p')
-        .press('u')
-        .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );
+    test.keys("yiw").keys("$").press('p').press('u').press_with(
+        crossterm::event::KeyCode::Char('r'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -230,10 +211,7 @@ fn test_redo_paste() {
 fn test_undo_o_command() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('o')
-        .type_text("new line")
-        .press_esc()
-        .press('u');
+    test.press('o').type_text("new line").press_esc().press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -242,10 +220,7 @@ fn test_undo_o_command() {
 fn test_undo_O_command() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('O')
-        .type_text("new line")
-        .press_esc()
-        .press('u');
+    test.press('O').type_text("new line").press_esc().press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -258,14 +233,14 @@ fn test_undo_O_command() {
 fn test_undo_sequence_of_different_operations() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x')       // Delete char
-        .keys("dw")       // Delete word
+    test.press('x') // Delete char
+        .keys("dw") // Delete word
         .press('i')
         .type_text("NEW ")
         .press_esc()
-        .press('u')       // Undo insert
-        .press('u')       // Undo dw
-        .press('u');      // Undo x
+        .press('u') // Undo insert
+        .press('u') // Undo dw
+        .press('u'); // Undo x
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -282,15 +257,15 @@ fn test_redo_sequence() {
         .press('u')
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         )
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         )
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         );
 
     assert_snapshot!(test.snapshot_state());
@@ -304,7 +279,7 @@ fn test_redo_sequence() {
 fn test_undo_at_beginning() {
     let mut test = EditorTest::new("hello");
 
-    test.press('u');      // Nothing to undo
+    test.press('u'); // Nothing to undo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -315,8 +290,8 @@ fn test_redo_at_end() {
 
     test.press_with(
         crossterm::event::KeyCode::Char('r'),
-        crossterm::event::KeyModifiers::CONTROL
-    );                    // Nothing to redo
+        crossterm::event::KeyModifiers::CONTROL,
+    ); // Nothing to redo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -330,19 +305,19 @@ fn test_undo_all_then_redo_all() {
         .press('x')
         .press('u')
         .press('u')
-        .press('u')       // Undo all
+        .press('u') // Undo all
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         )
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
+            crossterm::event::KeyModifiers::CONTROL,
         )
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );                // Redo all
+            crossterm::event::KeyModifiers::CONTROL,
+        ); // Redo all
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -355,10 +330,7 @@ fn test_undo_all_then_redo_all() {
 fn test_undo_with_count() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')
-        .press('x')
-        .press('x')
-        .keys("3u");      // Undo 3 times
+    test.press('x').press('x').press('x').keys("3u"); // Undo 3 times
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -374,8 +346,8 @@ fn test_redo_with_count() {
         .keys("3")
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );                // Redo 3 times
+            crossterm::event::KeyModifiers::CONTROL,
+        ); // Redo 3 times
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -384,9 +356,7 @@ fn test_redo_with_count() {
 fn test_undo_count_exceeds_history() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')
-        .press('x')
-        .keys("99u");     // Try to undo 99 times
+    test.press('x').press('x').keys("99u"); // Try to undo 99 times
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -413,10 +383,7 @@ fn test_undo_visual_change() {
 fn test_undo_visual_line_delete() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('V')
-        .press('j')
-        .press('d')
-        .press('u');
+    test.press('V').press('j').press('d').press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -431,12 +398,12 @@ fn test_undo_after_macro() {
 
     test.press('q')
         .press('a')
-        .press('x')       // Record delete
+        .press('x') // Record delete
         .press('j')
         .press('q')
         .press('@')
-        .press('a')       // Play macro
-        .press('u');      // Undo macro
+        .press('a') // Play macro
+        .press('u'); // Undo macro
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -450,8 +417,8 @@ fn test_undo_macro_multiple_times() {
         .press('x')
         .press('j')
         .press('q')
-        .keys("3@a")      // Play 3 times
-        .press('u');      // Should undo all 3?
+        .keys("3@a") // Play 3 times
+        .press('u'); // Should undo all 3?
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -464,8 +431,7 @@ fn test_undo_macro_multiple_times() {
 fn test_undo_diw() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("diw")
-        .press('u');
+    test.keys("diw").press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -474,8 +440,7 @@ fn test_undo_diw() {
 fn test_undo_daw() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("daw")
-        .press('u');
+    test.keys("daw").press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -501,9 +466,9 @@ fn test_undo_ci_quote() {
 fn test_undo_after_movement() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x')       // Change
-        .keys("w")        // Move
-        .press('u');      // Should undo x, not movement
+    test.press('x') // Change
+        .keys("w") // Move
+        .press('u'); // Should undo x, not movement
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -516,7 +481,7 @@ fn test_undo_after_search() {
         .press('/')
         .type_text("world")
         .press_enter()
-        .press('u');      // Should undo x
+        .press('u'); // Should undo x
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -530,11 +495,11 @@ fn test_undo_preserves_marks() {
     let mut test = EditorTest::new("hello world");
 
     test.press('m')
-        .press('a')       // Set mark
-        .press('x')       // Change
-        .press('u')       // Undo change
+        .press('a') // Set mark
+        .press('x') // Change
+        .press('u') // Undo change
         .press('`')
-        .press('a');      // Jump to mark (should still work)
+        .press('a'); // Jump to mark (should still work)
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -547,9 +512,7 @@ fn test_undo_preserves_marks() {
 fn test_undo_replace_char() {
     let mut test = EditorTest::new("hello");
 
-    test.press('r')
-        .press('X')
-        .press('u');
+    test.press('r').press('X').press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -558,10 +521,7 @@ fn test_undo_replace_char() {
 fn test_undo_replace_mode() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('R')
-        .type_text("HELLO")
-        .press_esc()
-        .press('u');
+    test.press('R').type_text("HELLO").press_esc().press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -574,7 +534,7 @@ fn test_undo_replace_mode() {
 fn test_undo_indent() {
     let mut test = EditorTest::new("hello");
 
-    test.keys(">>")       // Indent
+    test.keys(">>") // Indent
         .press('u');
 
     assert_snapshot!(test.snapshot_state());
@@ -584,7 +544,7 @@ fn test_undo_indent() {
 fn test_undo_dedent() {
     let mut test = EditorTest::new("    hello");
 
-    test.keys("<<")       // Dedent
+    test.keys("<<") // Dedent
         .press('u');
 
     assert_snapshot!(test.snapshot_state());
@@ -594,10 +554,7 @@ fn test_undo_dedent() {
 fn test_undo_visual_indent() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('V')
-        .press('j')
-        .press('>')
-        .press('u');
+    test.press('V').press('j').press('>').press('u');
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -612,10 +569,10 @@ fn test_insert_mode_undo_granularity() {
 
     test.press('i')
         .type_text("one")
-        .press(' ')       // Space might break undo
+        .press(' ') // Space might break undo
         .type_text("two")
         .press_esc()
-        .press('u');      // Should undo entire insert?
+        .press('u'); // Should undo entire insert?
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -630,8 +587,8 @@ fn test_multiple_insert_sessions() {
         .press('i')
         .type_text("B")
         .press_esc()
-        .press('u')       // Undo B
-        .press('u');      // Undo A
+        .press('u') // Undo B
+        .press('u'); // Undo A
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -660,10 +617,10 @@ fn test_undo_substitute() {
 fn test_U_undo_line() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x')       // Change 1
-        .press('x')       // Change 2
-        .press('x')       // Change 3
-        .press('U');      // Undo all changes on line
+    test.press('x') // Change 1
+        .press('x') // Change 2
+        .press('x') // Change 3
+        .press('U'); // Undo all changes on line
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -672,10 +629,10 @@ fn test_U_undo_line() {
 fn test_U_different_line() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('x')       // Change on line 1
-        .press('j')       // Move to line 2
-        .press('x')       // Change on line 2
-        .press('U');      // Should only undo line 2
+    test.press('x') // Change on line 1
+        .press('j') // Move to line 2
+        .press('x') // Change on line 2
+        .press('U'); // Should only undo line 2
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -684,10 +641,10 @@ fn test_U_different_line() {
 fn test_U_after_leaving_line() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('x')       // Change line 1
-        .press('j')       // Leave line
-        .press('k')       // Return to line 1
-        .press('U');      // Should still work?
+    test.press('x') // Change line 1
+        .press('j') // Leave line
+        .press('k') // Return to line 1
+        .press('U'); // Should still work?
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -700,12 +657,10 @@ fn test_U_after_leaving_line() {
 fn test_ctrl_r_redo() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')
-        .press('u')
-        .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );
+    test.press('x').press('u').press_with(
+        crossterm::event::KeyCode::Char('r'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -718,21 +673,21 @@ fn test_ctrl_r_redo() {
 fn test_complex_undo_redo_sequence() {
     let mut test = EditorTest::new("one two three four");
 
-    test.press('x')       // 1. Delete 'o'
-        .keys("dw")       // 2. Delete "ne "
-        .press('i')       // 3. Insert
+    test.press('x') // 1. Delete 'o'
+        .keys("dw") // 2. Delete "ne "
+        .press('i') // 3. Insert
         .type_text("START ")
         .press_esc()
-        .press('u')       // Undo 3
-        .press('u')       // Undo 2
-        .keys("ciw")      // New change (branches)
+        .press('u') // Undo 3
+        .press('u') // Undo 2
+        .keys("ciw") // New change (branches)
         .type_text("NEW")
         .press_esc()
-        .press('u')       // Undo new change
+        .press('u') // Undo new change
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        );                // Redo
+            crossterm::event::KeyModifiers::CONTROL,
+        ); // Redo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -741,11 +696,11 @@ fn test_complex_undo_redo_sequence() {
 fn test_undo_after_dot_repeat() {
     let mut test = EditorTest::new("hello world test");
 
-    test.press('x')       // Delete
+    test.press('x') // Delete
         .press('w')
-        .press('.')       // Repeat
-        .press('u')       // Undo repeat
-        .press('u');      // Undo original
+        .press('.') // Repeat
+        .press('u') // Undo repeat
+        .press('u'); // Undo original
 
     assert_snapshot!(test.snapshot_state());
 }

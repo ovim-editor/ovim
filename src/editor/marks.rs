@@ -34,18 +34,27 @@ impl MarkManager {
     }
 
     /// Sets a mark at the given position (buffer-local for a-z, global for A-Z)
-    pub fn set_mark(&mut self, name: char, line: usize, col: usize, file_path: Option<&str>) -> bool {
+    pub fn set_mark(
+        &mut self,
+        name: char,
+        line: usize,
+        col: usize,
+        file_path: Option<&str>,
+    ) -> bool {
         if name.is_ascii_lowercase() {
             self.marks.insert(name, Mark { line, col });
             true
         } else if name.is_ascii_uppercase() {
             // Global marks require a file path
             if let Some(path) = file_path {
-                self.global_marks.insert(name, GlobalMark {
-                    file_path: path.to_string(),
-                    line,
-                    col,
-                });
+                self.global_marks.insert(
+                    name,
+                    GlobalMark {
+                        file_path: path.to_string(),
+                        line,
+                        col,
+                    },
+                );
                 true
             } else {
                 false

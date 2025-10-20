@@ -77,10 +77,11 @@ impl GitStatus {
         diff_opts.pathspec(relative_path);
         diff_opts.context_lines(0); // We only need the changed lines
 
-        let diff = match repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts)) {
-            Ok(diff) => diff,
-            Err(_) => return Ok(Self::new()),
-        };
+        let diff =
+            match repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts)) {
+                Ok(diff) => diff,
+                Err(_) => return Ok(Self::new()),
+            };
 
         // Parse the diff
         let mut line_status = HashMap::new();
@@ -116,7 +117,8 @@ impl GitStatus {
                 }
                 true
             }),
-        ).ok();
+        )
+        .ok();
 
         // Detect modified lines (lines that have both additions and deletions nearby)
         // This is a simple heuristic - in a real implementation you'd want more sophisticated detection

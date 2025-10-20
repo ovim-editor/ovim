@@ -1,5 +1,8 @@
 use crate::buffer::Buffer;
-use crate::editor::{Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, Search, TextObjects};
+use crate::editor::{
+    Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, RegisterType,
+    Search, TextObjects,
+};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -99,7 +102,8 @@ impl InputHandler {
             match key_event.code {
                 KeyCode::Char('f') => {
                     // <Space>sf - Find files
-                    let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let base_dir =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let picker = crate::editor::Picker::new_file_finder(base_dir);
                     editor.set_picker(picker);
                     editor.set_mode(Mode::Picker);
@@ -109,7 +113,8 @@ impl InputHandler {
                 }
                 KeyCode::Char('g') => {
                     // <Space>sg - Live grep
-                    let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let base_dir =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                     let picker = crate::editor::Picker::new_live_grep(base_dir);
                     editor.set_picker(picker);
                     editor.set_mode(Mode::Picker);
@@ -190,7 +195,13 @@ impl InputHandler {
                     };
                     let tab_width = editor.options.tab_width;
 
-                    Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                    Self::indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -206,7 +217,13 @@ impl InputHandler {
                     };
                     let tab_width = editor.options.tab_width;
 
-                    Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                    Self::dedent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -226,10 +243,9 @@ impl InputHandler {
                     let start_pos = (start_line, 0);
                     let end_pos = (end_line + 1, 0);
 
-                    let deleted = editor.buffer_mut().delete_range(
-                        start_line, 0,
-                        end_line + 1, 0
-                    );
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, 0, end_line + 1, 0);
 
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
@@ -250,7 +266,10 @@ impl InputHandler {
                     } else {
                         editor.buffer().line_count().saturating_sub(1)
                     };
-                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor
+                        .buffer_mut()
+                        .fold_manager_mut()
+                        .create_fold(start_line, end_line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -288,7 +307,13 @@ impl InputHandler {
                         };
                         let tab_width = editor.options.tab_width;
 
-                        Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                        Self::indent_lines_with_tracking(
+                            editor,
+                            start_line,
+                            end_line + 1,
+                            tab_width,
+                            cursor_before,
+                        )?;
                         editor.clear_count();
                         return Ok(());
                     }
@@ -305,7 +330,13 @@ impl InputHandler {
                         };
                         let tab_width = editor.options.tab_width;
 
-                        Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                        Self::dedent_lines_with_tracking(
+                            editor,
+                            start_line,
+                            end_line + 1,
+                            tab_width,
+                            cursor_before,
+                        )?;
                         editor.clear_count();
                         return Ok(());
                     }
@@ -319,7 +350,10 @@ impl InputHandler {
                         } else {
                             0
                         };
-                        editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                        editor
+                            .buffer_mut()
+                            .fold_manager_mut()
+                            .create_fold(start_line, end_line);
                         editor.clear_count();
                         return Ok(());
                     }
@@ -346,26 +380,29 @@ impl InputHandler {
                     // Special handling for deleting to/past end of file
                     // When deleting the last line(s), also delete the newline from the previous line
                     // This moves the cursor up to the new last line
-                    let (delete_start_line, delete_start_col) = if end_line >= line_count && start_line > 0 {
-                        // Deleting to end of file, and there's a previous line
-                        // Delete from end of previous line (including its newline)
-                        if let Some(prev_line) = editor.buffer().line(start_line - 1) {
-                            let prev_line_text = prev_line.trim_end_matches('\n');
-                            let prev_line_len = prev_line_text.chars().count();
-                            (start_line - 1, prev_line_len)
+                    let (delete_start_line, delete_start_col) =
+                        if end_line >= line_count && start_line > 0 {
+                            // Deleting to end of file, and there's a previous line
+                            // Delete from end of previous line (including its newline)
+                            if let Some(prev_line) = editor.buffer().line(start_line - 1) {
+                                let prev_line_text = prev_line.trim_end_matches('\n');
+                                let prev_line_len = prev_line_text.chars().count();
+                                (start_line - 1, prev_line_len)
+                            } else {
+                                (start_line, 0)
+                            }
                         } else {
                             (start_line, 0)
-                        }
-                    } else {
-                        (start_line, 0)
-                    };
+                        };
 
                     let start_pos = (delete_start_line, delete_start_col);
                     let end_pos = (end_line, 0);
 
                     let deleted = editor.buffer_mut().delete_range(
-                        delete_start_line, delete_start_col,
-                        end_line, 0
+                        delete_start_line,
+                        delete_start_col,
+                        end_line,
+                        0,
                     );
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
@@ -405,12 +442,17 @@ impl InputHandler {
                     let start_pos = (start_line, start_col);
                     let end_pos = (end_line, end_col);
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
                     // Position cursor at deletion start
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
 
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
@@ -436,7 +478,9 @@ impl InputHandler {
                             let start_pos = (line_idx, col);
                             let end_pos = (line_idx, line_len);
 
-                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, col, line_idx, line_len);
                             let range = Range::new(start_pos, end_pos);
                             let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -490,7 +534,10 @@ impl InputHandler {
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.clear_count();
-                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_before = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     Self::insert_line_above(editor)?;
@@ -513,19 +560,27 @@ impl InputHandler {
                     let start_pos = (start_line, start_col);
                     let end_pos = (end_line, end_col);
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
                     // Position cursor at deletion start
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
 
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
 
                     // Don't clamp cursor for c$ - we want to insert at end of line
                     editor.clear_count();
-                    let insert_cursor = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let insert_cursor = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(insert_cursor);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
@@ -545,7 +600,9 @@ impl InputHandler {
                             let start_pos = (line_idx, col);
                             let end_pos = (line_idx, line_len);
 
-                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, col, line_idx, line_len);
                             let range = Range::new(start_pos, end_pos);
                             let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -554,14 +611,20 @@ impl InputHandler {
 
                             // Don't clamp cursor - we want to insert at end of line (col position)
                             editor.clear_count();
-                            let insert_cursor = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let insert_cursor = (
+                                editor.buffer().cursor().line(),
+                                editor.buffer().cursor().col(),
+                            );
                             editor.start_change_building(insert_cursor);
                             editor.set_mode(Mode::Insert);
                             return Ok(());
                         }
                     }
                     editor.clear_count();
-                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_before = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
@@ -641,12 +704,17 @@ impl InputHandler {
                         let line_text = line.trim_end_matches('\n');
                         if col < line_text.chars().count() {
                             // Delete one character
-                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
+                            let deleted =
+                                editor
+                                    .buffer_mut()
+                                    .delete_range(line_idx, col, line_idx, col + 1);
                             let delete_range = Range::new((line_idx, col), (line_idx, col + 1));
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
                             // Insert register content
-                            let insert_change = Change::insert((line_idx, col), register_content, cursor_before);
+                            let insert_change =
+                                Change::insert((line_idx, col), register_content, cursor_before);
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -656,7 +724,10 @@ impl InputHandler {
                             editor.buffer_mut().cursor_mut().set_position(line_idx, col);
                         }
                     }
-                    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_after = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_after);
                     editor.set_mode(Mode::Insert);
                     editor.clear_count();
@@ -676,12 +747,20 @@ impl InputHandler {
                             let register_content = editor.get_from_register();
 
                             // Delete one character
-                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
+                            let deleted =
+                                editor
+                                    .buffer_mut()
+                                    .delete_range(line_idx, col, line_idx, col + 1);
                             let delete_range = Range::new((line_idx, col), (line_idx, col + 1));
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
                             // Insert register content
-                            let insert_change = Change::insert((line_idx, col), register_content.clone(), cursor_before);
+                            let insert_change = Change::insert(
+                                (line_idx, col),
+                                register_content.clone(),
+                                cursor_before,
+                            );
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -689,10 +768,16 @@ impl InputHandler {
 
                             // Enter insert mode after the replaced content
                             let new_col = col + register_content.chars().count();
-                            editor.buffer_mut().cursor_mut().set_position(line_idx, new_col);
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(line_idx, new_col);
                         }
                     }
-                    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_after = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_after);
                     editor.set_mode(Mode::Insert);
                     editor.clear_count();
@@ -711,12 +796,15 @@ impl InputHandler {
                             let register_content = editor.get_from_register();
 
                             // Delete first character
-                            let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, 1);
+                            let deleted =
+                                editor.buffer_mut().delete_range(line_idx, 0, line_idx, 1);
                             let delete_range = Range::new((line_idx, 0), (line_idx, 1));
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
                             // Insert register content at column 0
-                            let insert_change = Change::insert((line_idx, 0), register_content, cursor_before);
+                            let insert_change =
+                                Change::insert((line_idx, 0), register_content, cursor_before);
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -726,7 +814,10 @@ impl InputHandler {
                             editor.buffer_mut().cursor_mut().set_position(line_idx, 0);
                         }
                     }
-                    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_after = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_after);
                     editor.set_mode(Mode::Insert);
                     editor.clear_count();
@@ -747,12 +838,20 @@ impl InputHandler {
                             let last_col = line_len - 1;
 
                             // Delete last character
-                            let deleted = editor.buffer_mut().delete_range(line_idx, last_col, line_idx, line_len);
-                            let delete_range = Range::new((line_idx, last_col), (line_idx, line_len));
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, last_col, line_idx, line_len);
+                            let delete_range =
+                                Range::new((line_idx, last_col), (line_idx, line_len));
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
                             // Insert register content
-                            let insert_change = Change::insert((line_idx, last_col), register_content.clone(), cursor_before);
+                            let insert_change = Change::insert(
+                                (line_idx, last_col),
+                                register_content.clone(),
+                                cursor_before,
+                            );
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -760,10 +859,16 @@ impl InputHandler {
 
                             // Enter insert mode after the replaced content
                             let new_col = last_col + register_content.chars().count();
-                            editor.buffer_mut().cursor_mut().set_position(line_idx, new_col);
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(line_idx, new_col);
                         }
                     }
-                    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_after = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_after);
                     editor.set_mode(Mode::Insert);
                     editor.clear_count();
@@ -785,11 +890,15 @@ impl InputHandler {
                             let start_pos = (line_idx, 0);
                             let end_pos = (line_idx, line_len);
 
-                            let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, 0, line_idx, line_len);
                             let delete_range = Range::new(start_pos, end_pos);
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
-                            let insert_change = Change::insert((line_idx, 0), register_content, cursor_before);
+                            let insert_change =
+                                Change::insert((line_idx, 0), register_content, cursor_before);
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -830,18 +939,24 @@ impl InputHandler {
                     let start_pos = (start_line, start_col);
                     let end_pos = (end_line, end_col);
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let delete_range = Range::new(start_pos, end_pos);
                     let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
-                    let insert_change = Change::insert((start_line, start_col), register_content, cursor_before);
+                    let insert_change =
+                        Change::insert((start_line, start_col), register_content, cursor_before);
                     insert_change.apply(editor.buffer_mut());
 
                     editor.add_change(delete_change);
                     editor.add_change(insert_change);
 
                     // Position cursor at start of replacement
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
 
                     editor.clear_count();
                     editor.clear_pending_operator();
@@ -863,11 +978,15 @@ impl InputHandler {
                             let start_pos = (line_idx, col);
                             let end_pos = (line_idx, line_len);
 
-                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, col, line_idx, line_len);
                             let delete_range = Range::new(start_pos, end_pos);
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
-                            let insert_change = Change::insert((line_idx, col), register_content, cursor_before);
+                            let insert_change =
+                                Change::insert((line_idx, col), register_content, cursor_before);
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -967,8 +1086,12 @@ impl InputHandler {
                 (Operator::Fold, KeyCode::Char('j')) => {
                     // zfj - fold current line and line below
                     let start_line = editor.buffer().cursor().line();
-                    let end_line = (start_line + count).min(editor.buffer().line_count().saturating_sub(1));
-                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    let end_line =
+                        (start_line + count).min(editor.buffer().line_count().saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .fold_manager_mut()
+                        .create_fold(start_line, end_line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -976,7 +1099,10 @@ impl InputHandler {
                     // zfk - fold current line and line above
                     let end_line = editor.buffer().cursor().line() + 1;
                     let start_line = editor.buffer().cursor().line().saturating_sub(count);
-                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor
+                        .buffer_mut()
+                        .fold_manager_mut()
+                        .create_fold(start_line, end_line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -993,11 +1119,16 @@ impl InputHandler {
                     let end_line = editor.buffer().cursor().line();
                     let end_col = 0;
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let range = Range::new((start_line, start_col), (end_line, end_col));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
                     Self::clamp_cursor_to_buffer(editor);
@@ -1016,7 +1147,9 @@ impl InputHandler {
                     let start_line = editor.buffer().cursor().line();
                     let start_col = 0;
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let range = Range::new((start_line, start_col), (end_line, end_col));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -1073,9 +1206,19 @@ impl InputHandler {
 
                     // Find matching bracket
                     let match_abs_pos = if is_opening {
-                        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
+                        Motions::find_matching_bracket_forward(
+                            &chars,
+                            abs_start,
+                            current_char,
+                            matching_char,
+                        )
                     } else {
-                        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
+                        Motions::find_matching_bracket_backward(
+                            &chars,
+                            abs_start,
+                            matching_char,
+                            current_char,
+                        )
                     };
 
                     if let Some(abs_end) = match_abs_pos {
@@ -1087,15 +1230,21 @@ impl InputHandler {
                         };
 
                         // Convert absolute positions to (line, col)
-                        let (start_line, start_col) = Motions::abs_pos_to_line_col(&rope, delete_start);
+                        let (start_line, start_col) =
+                            Motions::abs_pos_to_line_col(&rope, delete_start);
                         let (end_line, end_col) = Motions::abs_pos_to_line_col(&rope, delete_end);
 
                         // Delete the range
-                        let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(start_line, start_col, end_line, end_col);
                         let range = Range::new((start_line, start_col), (end_line, end_col));
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(start_line, start_col);
                         editor.delete_to_register(deleted);
                         editor.add_change(change);
                         Self::clamp_cursor_to_buffer(editor);
@@ -1150,18 +1299,33 @@ impl InputHandler {
 
                     // Find matching bracket
                     let match_abs_pos = if is_opening {
-                        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
+                        Motions::find_matching_bracket_forward(
+                            &chars,
+                            abs_start,
+                            current_char,
+                            matching_char,
+                        )
                     } else {
-                        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
+                        Motions::find_matching_bracket_backward(
+                            &chars,
+                            abs_start,
+                            matching_char,
+                            current_char,
+                        )
                     };
 
                     if let Some(abs_end) = match_abs_pos {
                         // Convert absolute positions to (line, col)
-                        let (fold_start_line, _) = Motions::abs_pos_to_line_col(&rope, abs_start.min(abs_end));
-                        let (fold_end_line, _) = Motions::abs_pos_to_line_col(&rope, abs_start.max(abs_end));
+                        let (fold_start_line, _) =
+                            Motions::abs_pos_to_line_col(&rope, abs_start.min(abs_end));
+                        let (fold_end_line, _) =
+                            Motions::abs_pos_to_line_col(&rope, abs_start.max(abs_end));
 
                         // Create fold from start to end line
-                        editor.buffer_mut().fold_manager_mut().create_fold(fold_start_line, fold_end_line);
+                        editor
+                            .buffer_mut()
+                            .fold_manager_mut()
+                            .create_fold(fold_start_line, fold_end_line);
                     }
 
                     editor.clear_count();
@@ -1195,7 +1359,10 @@ impl InputHandler {
                     }
 
                     editor.yank_to_register(yanked);
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1212,7 +1379,11 @@ impl InputHandler {
                         if let Some(line) = editor.buffer().line(line_idx) {
                             if line_idx == end_line {
                                 let chars: Vec<char> = line.chars().collect();
-                                yanked.push_str(&chars[..=end_col.min(chars.len().saturating_sub(1))].iter().collect::<String>());
+                                yanked.push_str(
+                                    &chars[..=end_col.min(chars.len().saturating_sub(1))]
+                                        .iter()
+                                        .collect::<String>(),
+                                );
                             } else {
                                 yanked.push_str(&line);
                             }
@@ -1220,7 +1391,10 @@ impl InputHandler {
                     }
 
                     editor.yank_to_register(yanked);
-                    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(end_line, end_col);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1235,11 +1409,16 @@ impl InputHandler {
                     let end_line = editor.buffer().cursor().line();
                     let end_col = 0;
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let range = Range::new((start_line, start_col), (end_line, end_col));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.set_mode(Mode::Insert);
@@ -1256,7 +1435,9 @@ impl InputHandler {
                     let start_line = editor.buffer().cursor().line();
                     let start_col = 0;
 
-                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col);
                     let range = Range::new((start_line, start_col), (end_line, end_col));
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -1271,7 +1452,10 @@ impl InputHandler {
                     let start_line = editor.buffer().cursor().line();
                     Motions::paragraph_forward(editor.buffer_mut(), count);
                     let end_line = editor.buffer().cursor().line();
-                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor
+                        .buffer_mut()
+                        .fold_manager_mut()
+                        .create_fold(start_line, end_line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1280,7 +1464,10 @@ impl InputHandler {
                     let end_line = editor.buffer().cursor().line();
                     Motions::paragraph_backward(editor.buffer_mut(), count);
                     let start_line = editor.buffer().cursor().line();
-                    editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                    editor
+                        .buffer_mut()
+                        .fold_manager_mut()
+                        .create_fold(start_line, end_line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1293,7 +1480,13 @@ impl InputHandler {
                     let end_line = start_line + count;
                     let tab_width = editor.options.tab_width;
 
-                    Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    Self::indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1305,7 +1498,13 @@ impl InputHandler {
                     let end_line = start_line + count + 1;
                     let tab_width = editor.options.tab_width;
 
-                    Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    Self::indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1318,7 +1517,13 @@ impl InputHandler {
                     let end_line = current_line + 1;
                     let tab_width = editor.options.tab_width;
 
-                    Self::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    Self::indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1331,7 +1536,13 @@ impl InputHandler {
                     let end_line = start_line + count;
                     let tab_width = editor.options.tab_width;
 
-                    Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    Self::dedent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1343,7 +1554,13 @@ impl InputHandler {
                     let end_line = start_line + count + 1;
                     let tab_width = editor.options.tab_width;
 
-                    Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    Self::dedent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1356,7 +1573,13 @@ impl InputHandler {
                     let end_line = current_line + 1;
                     let tab_width = editor.options.tab_width;
 
-                    Self::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+                    Self::dedent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1369,7 +1592,8 @@ impl InputHandler {
 
         // Handle text objects after 'i' or 'a' with an operator
         if let Some(text_obj_type) = editor.pending_command() {
-            if (text_obj_type == 'i' || text_obj_type == 'a') && editor.pending_operator().is_some() {
+            if (text_obj_type == 'i' || text_obj_type == 'a') && editor.pending_operator().is_some()
+            {
                 let operator = editor.pending_operator().unwrap();
                 editor.clear_pending_command();
                 editor.clear_pending_operator();
@@ -1410,19 +1634,39 @@ impl InputHandler {
                     }
                     KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
                         // i( or a( or ib or ab - parentheses
-                        TextObjects::paired_delimiters(editor.buffer(), '(', ')', text_obj_type == 'a')
+                        TextObjects::paired_delimiters(
+                            editor.buffer(),
+                            '(',
+                            ')',
+                            text_obj_type == 'a',
+                        )
                     }
                     KeyCode::Char('[') | KeyCode::Char(']') => {
                         // i[ or a[ - brackets
-                        TextObjects::paired_delimiters(editor.buffer(), '[', ']', text_obj_type == 'a')
+                        TextObjects::paired_delimiters(
+                            editor.buffer(),
+                            '[',
+                            ']',
+                            text_obj_type == 'a',
+                        )
                     }
                     KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
                         // i{ or a{ or iB or aB - braces
-                        TextObjects::paired_delimiters(editor.buffer(), '{', '}', text_obj_type == 'a')
+                        TextObjects::paired_delimiters(
+                            editor.buffer(),
+                            '{',
+                            '}',
+                            text_obj_type == 'a',
+                        )
                     }
                     KeyCode::Char('<') | KeyCode::Char('>') => {
                         // i< or a< or i> or a> - angle brackets
-                        TextObjects::paired_delimiters(editor.buffer(), '<', '>', text_obj_type == 'a')
+                        TextObjects::paired_delimiters(
+                            editor.buffer(),
+                            '<',
+                            '>',
+                            text_obj_type == 'a',
+                        )
                     }
                     KeyCode::Char('t') => {
                         // it or at - HTML/XML tag
@@ -1446,9 +1690,10 @@ impl InputHandler {
                             // Create Change (range.end_col is already exclusive)
                             let change_range = Range::new(
                                 (range.start_line, range.start_col),
-                                (range.end_line, range.end_col)
+                                (range.end_line, range.end_col),
                             );
-                            let change = Change::delete(change_range, deleted.clone(), cursor_before);
+                            let change =
+                                Change::delete(change_range, deleted.clone(), cursor_before);
 
                             // Apply the change to actually delete the text
                             change.apply(editor.buffer_mut());
@@ -1473,9 +1718,10 @@ impl InputHandler {
                             // Create Change (range.end_col is already exclusive)
                             let change_range = Range::new(
                                 (range.start_line, range.start_col),
-                                (range.end_line, range.end_col)
+                                (range.end_line, range.end_col),
                             );
-                            let change = Change::delete(change_range, deleted.clone(), cursor_before);
+                            let change =
+                                Change::delete(change_range, deleted.clone(), cursor_before);
 
                             // Apply the change to actually delete the text
                             change.apply(editor.buffer_mut());
@@ -1494,7 +1740,10 @@ impl InputHandler {
                             editor.set_mode(Mode::Insert);
                         }
                         Operator::Lowercase => {
-                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let cursor_before = (
+                                editor.buffer().cursor().line(),
+                                editor.buffer().cursor().col(),
+                            );
 
                             // Get the text in the range
                             let text = TextObjects::yank_range(editor.buffer(), range)?;
@@ -1505,20 +1754,23 @@ impl InputHandler {
                             if transformed != text {
                                 // Delete the old text (range.end_col is already exclusive)
                                 let deleted = editor.buffer_mut().delete_range(
-                                    range.start_line, range.start_col,
-                                    range.end_line, range.end_col
+                                    range.start_line,
+                                    range.start_col,
+                                    range.end_line,
+                                    range.end_col,
                                 );
                                 let delete_range = Range::new(
                                     (range.start_line, range.start_col),
-                                    (range.end_line, range.end_col)
+                                    (range.end_line, range.end_col),
                                 );
-                                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                                let delete_change =
+                                    Change::delete(delete_range, deleted, cursor_before);
 
                                 // Insert the transformed text
                                 let insert_change = Change::insert(
                                     (range.start_line, range.start_col),
                                     transformed,
-                                    cursor_before
+                                    cursor_before,
                                 );
                                 insert_change.apply(editor.buffer_mut());
 
@@ -1527,7 +1779,10 @@ impl InputHandler {
                             }
                         }
                         Operator::Uppercase => {
-                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let cursor_before = (
+                                editor.buffer().cursor().line(),
+                                editor.buffer().cursor().col(),
+                            );
 
                             // Get the text in the range
                             let text = TextObjects::yank_range(editor.buffer(), range)?;
@@ -1538,20 +1793,23 @@ impl InputHandler {
                             if transformed != text {
                                 // Delete the old text (range.end_col is already exclusive)
                                 let deleted = editor.buffer_mut().delete_range(
-                                    range.start_line, range.start_col,
-                                    range.end_line, range.end_col
+                                    range.start_line,
+                                    range.start_col,
+                                    range.end_line,
+                                    range.end_col,
                                 );
                                 let delete_range = Range::new(
                                     (range.start_line, range.start_col),
-                                    (range.end_line, range.end_col)
+                                    (range.end_line, range.end_col),
                                 );
-                                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                                let delete_change =
+                                    Change::delete(delete_range, deleted, cursor_before);
 
                                 // Insert the transformed text
                                 let insert_change = Change::insert(
                                     (range.start_line, range.start_col),
                                     transformed,
-                                    cursor_before
+                                    cursor_before,
                                 );
                                 insert_change.apply(editor.buffer_mut());
 
@@ -1560,37 +1818,46 @@ impl InputHandler {
                             }
                         }
                         Operator::ToggleCase => {
-                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let cursor_before = (
+                                editor.buffer().cursor().line(),
+                                editor.buffer().cursor().col(),
+                            );
 
                             // Get the text in the range
                             let text = TextObjects::yank_range(editor.buffer(), range)?;
 
                             // Toggle case
-                            let transformed: String = text.chars().map(|ch| {
-                                if ch.is_lowercase() {
-                                    ch.to_uppercase().to_string()
-                                } else {
-                                    ch.to_lowercase().to_string()
-                                }
-                            }).collect();
+                            let transformed: String = text
+                                .chars()
+                                .map(|ch| {
+                                    if ch.is_lowercase() {
+                                        ch.to_uppercase().to_string()
+                                    } else {
+                                        ch.to_lowercase().to_string()
+                                    }
+                                })
+                                .collect();
 
                             if transformed != text {
                                 // Delete the old text (range.end_col is already exclusive)
                                 let deleted = editor.buffer_mut().delete_range(
-                                    range.start_line, range.start_col,
-                                    range.end_line, range.end_col
+                                    range.start_line,
+                                    range.start_col,
+                                    range.end_line,
+                                    range.end_col,
                                 );
                                 let delete_range = Range::new(
                                     (range.start_line, range.start_col),
-                                    (range.end_line, range.end_col)
+                                    (range.end_line, range.end_col),
                                 );
-                                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                                let delete_change =
+                                    Change::delete(delete_range, deleted, cursor_before);
 
                                 // Insert the transformed text
                                 let insert_change = Change::insert(
                                     (range.start_line, range.start_col),
                                     transformed,
-                                    cursor_before
+                                    cursor_before,
                                 );
                                 insert_change.apply(editor.buffer_mut());
 
@@ -1599,7 +1866,10 @@ impl InputHandler {
                             }
                         }
                         Operator::ReplaceWithRegister => {
-                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let cursor_before = (
+                                editor.buffer().cursor().line(),
+                                editor.buffer().cursor().col(),
+                            );
 
                             // Get the register content
                             let register_content = editor.get_from_register();
@@ -1609,20 +1879,23 @@ impl InputHandler {
 
                             // Delete the old text (range.end_col is already exclusive)
                             editor.buffer_mut().delete_range(
-                                range.start_line, range.start_col,
-                                range.end_line, range.end_col
+                                range.start_line,
+                                range.start_col,
+                                range.end_line,
+                                range.end_col,
                             );
                             let delete_range = Range::new(
                                 (range.start_line, range.start_col),
-                                (range.end_line, range.end_col)
+                                (range.end_line, range.end_col),
                             );
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
                             // Insert the register content
                             let insert_change = Change::insert(
                                 (range.start_line, range.start_col),
                                 register_content,
-                                cursor_before
+                                cursor_before,
                             );
                             insert_change.apply(editor.buffer_mut());
 
@@ -1630,13 +1903,19 @@ impl InputHandler {
                             editor.add_change(insert_change);
 
                             // Position cursor at start of replaced text
-                            editor.buffer_mut().cursor_mut().set_position(range.start_line, range.start_col);
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(range.start_line, range.start_col);
                         }
                         Operator::Fold => {
                             // Create a fold from start_line to end_line (inclusive)
                             let start_line = range.start_line.min(range.end_line);
                             let end_line = range.start_line.max(range.end_line);
-                            editor.buffer_mut().fold_manager_mut().create_fold(start_line, end_line);
+                            editor
+                                .buffer_mut()
+                                .fold_manager_mut()
+                                .create_fold(start_line, end_line);
                         }
                         // Indent/dedent don't make sense with text objects, just ignore
                         Operator::Indent | Operator::Dedent => {}
@@ -1668,11 +1947,15 @@ impl InputHandler {
                             let end_col = col + replace_count;
 
                             // Delete the characters
-                            let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, end_col);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, col, line_idx, end_col);
 
                             // Insert the replacement character(s)
                             let replacement = ch.to_string().repeat(replace_count);
-                            editor.buffer_mut().insert_text_at(line_idx, col, &replacement);
+                            editor
+                                .buffer_mut()
+                                .insert_text_at(line_idx, col, &replacement);
 
                             // Create composite change for undo/redo
                             let start_pos = (line_idx, col);
@@ -1680,8 +1963,13 @@ impl InputHandler {
                             let range = Range::new(start_pos, end_pos);
 
                             let delete_change = Change::delete(range, deleted, cursor_before);
-                            let insert_change = Change::insert((line_idx, col), replacement, cursor_before);
-                            let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+                            let insert_change =
+                                Change::insert((line_idx, col), replacement, cursor_before);
+                            let change = Change::composite(
+                                vec![delete_change, insert_change],
+                                cursor_before,
+                                cursor_before,
+                            );
 
                             editor.add_change(change);
 
@@ -1694,7 +1982,10 @@ impl InputHandler {
                 ('g', KeyCode::Char('g')) => {
                     // gg - go to first line
                     let target_line = editor.count().unwrap_or(1).saturating_sub(1);
-                    editor.buffer_mut().cursor_mut().set_position(target_line, 0);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(target_line, 0);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1781,7 +2072,10 @@ impl InputHandler {
                         editor.buffer_mut().cursor_mut().set_position(line, col);
                     }
                     // Enter insert mode regardless of whether position was saved
-                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_before = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
@@ -1789,7 +2083,10 @@ impl InputHandler {
                 ('g', KeyCode::Char('I')) => {
                     // gI - insert at column 0 (before any indentation)
                     editor.buffer_mut().cursor_mut().set_col(0);
-                    let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                    let cursor_before = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
                     editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
@@ -2085,12 +2382,18 @@ impl InputHandler {
             }
             // Enter Insert mode
             KeyCode::Char('i') => {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
             }
             KeyCode::Char('a') => {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Move cursor right (insert after)
@@ -2098,14 +2401,20 @@ impl InputHandler {
                 cursor.move_right(1);
             }
             KeyCode::Char('I') => {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Move to first non-blank character
                 Motions::first_non_blank(editor.buffer_mut());
             }
             KeyCode::Char('A') => {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Move to end of line
@@ -2116,14 +2425,20 @@ impl InputHandler {
                 }
             }
             KeyCode::Char('o') => {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Insert new line below and move to it
                 Self::insert_line_below(editor)?;
             }
             KeyCode::Char('O') => {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 // Insert new line above and move to it
@@ -2233,7 +2548,9 @@ impl InputHandler {
                     let cursor = editor.buffer().cursor();
 
                     // Find next occurrence (skip current one)
-                    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), cursor.col() + 1) {
+                    if let Some((line, col, _)) =
+                        search.find_next(editor.buffer(), cursor.line(), cursor.col() + 1)
+                    {
                         editor.buffer_mut().cursor_mut().set_position(line, col);
                     }
                     editor.set_current_search(search);
@@ -2248,8 +2565,14 @@ impl InputHandler {
                     let cursor = editor.buffer().cursor();
 
                     // Find previous occurrence
-                    let search_col = if cursor.col() > 0 { cursor.col() - 1 } else { 0 };
-                    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
+                    let search_col = if cursor.col() > 0 {
+                        cursor.col() - 1
+                    } else {
+                        0
+                    };
+                    if let Some((line, col, _)) =
+                        search.find_next(editor.buffer(), cursor.line(), search_col)
+                    {
                         editor.buffer_mut().cursor_mut().set_position(line, col);
                     }
                     editor.set_current_search(search);
@@ -2358,7 +2681,10 @@ impl InputHandler {
                     }
                     last_line
                 };
-                editor.buffer_mut().cursor_mut().set_position(target_line, 0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, 0);
                 editor.clear_count();
             }
             // Fold commands
@@ -2491,7 +2817,9 @@ impl InputHandler {
                         let start_pos = (line_idx, col);
                         let end_pos = (line_idx, end_col);
 
-                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, end_col);
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(line_idx, col, line_idx, end_col);
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -2522,7 +2850,9 @@ impl InputHandler {
                         let start_pos = (line_idx, start_col);
                         let end_pos = (line_idx, col);
 
-                        let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, col);
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(line_idx, start_col, line_idx, col);
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -2553,7 +2883,9 @@ impl InputHandler {
                         let start_pos = (line_idx, col);
                         let end_pos = (line_idx, line_len);
 
-                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(line_idx, col, line_idx, line_len);
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -2581,7 +2913,9 @@ impl InputHandler {
                         let start_pos = (line_idx, col);
                         let end_pos = (line_idx, line_len);
 
-                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(line_idx, col, line_idx, line_len);
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -2590,14 +2924,20 @@ impl InputHandler {
 
                         // Don't clamp cursor - we want to insert at end of line
                         editor.clear_count();
-                        let insert_cursor = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                        let insert_cursor = (
+                            editor.buffer().cursor().line(),
+                            editor.buffer().cursor().col(),
+                        );
                         editor.start_change_building(insert_cursor); // C enters insert mode, start building
                         editor.set_mode(Mode::Insert);
                         return Ok(());
                     }
                 }
                 editor.clear_count();
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before); // C enters insert mode, start building
                 editor.set_mode(Mode::Insert);
             }
@@ -2644,7 +2984,9 @@ impl InputHandler {
                         let start_pos = (line_idx, col);
                         let end_pos = (line_idx, end_col);
 
-                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, end_col);
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(line_idx, col, line_idx, end_col);
                         let range = Range::new(start_pos, end_pos);
                         let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -2656,7 +2998,10 @@ impl InputHandler {
                     }
                 }
                 editor.clear_count();
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
             }
@@ -2678,7 +3023,10 @@ impl InputHandler {
                 editor.delete_to_register(deleted);
                 editor.add_change(change);
                 editor.clear_count();
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 editor.start_change_building(cursor_before);
                 editor.set_mode(Mode::Insert);
                 Self::insert_line_above(editor)?;
@@ -2734,44 +3082,102 @@ impl InputHandler {
                     editor.mark_buffer_modified(); // Mark for LSP didChange notification
 
                     // If we were in visual block insert/append mode, replay the changes on all other lines
-                    let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) = editor.visual_block_insert_state() {
-                        // Get the text that was inserted
-                        if let Some(last_change) = editor.last_change() {
-                            let inserted_text = last_change.get_inserted_text();
+                    let should_move_to_end_line =
+                        if let Some((start_line, end_line, col, is_append, move_to_end)) =
+                            editor.visual_block_insert_state()
+                        {
+                            // Get the text that was inserted and the first line's change
+                            if let Some(last_change) = editor.last_change() {
+                                let inserted_text = last_change.get_inserted_text();
+                                let mut all_changes = vec![last_change.clone()];
 
-                            // Replay on lines start_line+1 through end_line
-                            for line_idx in (start_line + 1)..=end_line {
-                                if is_append {
-                                    // Append mode: insert at end of line
-                                    if let Some(line) = editor.buffer().line(line_idx) {
-                                        let line_text = line.trim_end_matches('\n');
-                                        let line_len = line_text.chars().count();
-                                        editor.buffer_mut().insert_text_at(line_idx, line_len, &inserted_text);
+                                // Get cursor_before from first change
+                                let cursor_before = last_change.cursor_before();
+
+                                // Replay on lines start_line+1 through end_line
+                                for line_idx in (start_line + 1)..=end_line {
+                                    if is_append {
+                                        // Append mode: insert at end of line
+                                        if let Some(line) = editor.buffer().line(line_idx) {
+                                            let line_text = line.trim_end_matches('\n');
+                                            let line_len = line_text.chars().count();
+                                            editor.buffer_mut().insert_text_at(
+                                                line_idx,
+                                                line_len,
+                                                &inserted_text,
+                                            );
+                                            // Track this insertion as a change
+                                            let change = Change::insert(
+                                                (line_idx, line_len),
+                                                inserted_text.clone(),
+                                                cursor_before,
+                                            );
+                                            all_changes.push(change);
+                                        }
+                                    } else {
+                                        // Insert mode: insert at column
+                                        if let Some(line) = editor.buffer().line(line_idx) {
+                                            let line_text = line.trim_end_matches('\n');
+                                            let insert_col = col.min(line_text.chars().count());
+                                            editor.buffer_mut().insert_text_at(
+                                                line_idx,
+                                                insert_col,
+                                                &inserted_text,
+                                            );
+                                            // Track this insertion as a change
+                                            let change = Change::insert(
+                                                (line_idx, insert_col),
+                                                inserted_text.clone(),
+                                                cursor_before,
+                                            );
+                                            all_changes.push(change);
+                                        }
                                     }
-                                } else {
-                                    // Insert mode: insert at column
-                                    if let Some(line) = editor.buffer().line(line_idx) {
-                                        let line_text = line.trim_end_matches('\n');
-                                        let insert_col = col.min(line_text.chars().count());
-                                        editor.buffer_mut().insert_text_at(line_idx, insert_col, &inserted_text);
+                                }
+
+                                // If multiple lines were affected, wrap in composite for proper undo
+                                if all_changes.len() > 1 {
+                                    // Remove the last change (first line's change) from undo stack
+                                    editor.pop_last_change();
+
+                                    // Create composite for all insert changes
+                                    let insert_composite =
+                                        Change::composite(all_changes, cursor_before, cursor_before);
+
+                                    // Check if there's a delete composite on the stack (from visual block 'c')
+                                    // If so, combine delete + insert into a super-composite
+                                    if let Some(prev_change) = editor.pop_last_change() {
+                                        // Check if previous change looks like a visual block delete
+                                        // (it would be a composite or delete change)
+                                        // Combine them into a super-composite
+                                        let super_composite = Change::composite(
+                                            vec![prev_change, insert_composite],
+                                            cursor_before,
+                                            cursor_before,
+                                        );
+                                        editor.add_change(super_composite);
+                                    } else {
+                                        // No previous change, just add the insert composite
+                                        editor.add_change(insert_composite);
                                     }
                                 }
                             }
-                        }
 
-                        // Clear the visual block insert state
-                        editor.set_visual_block_insert_state(None);
-                        Some((start_line, end_line, col, is_append, move_to_end))
-                    } else {
-                        None
-                    };
+                            // Clear the visual block insert state
+                            editor.set_visual_block_insert_state(None);
+                            Some((start_line, end_line, col, is_append, move_to_end))
+                        } else {
+                            None
+                        };
 
                     editor.set_mode(Mode::Normal);
 
                     // Move cursor left when exiting insert mode (unless at column 0)
 
                     // If we were in visual block mode, move cursor to appropriate line
-                    if let Some((start_line, end_line, col, is_append, move_to_end)) = should_move_to_end_line {
+                    if let Some((start_line, end_line, col, is_append, move_to_end)) =
+                        should_move_to_end_line
+                    {
                         // For visual block, calculate the correct final cursor position
                         let target_line = if move_to_end { end_line } else { start_line };
 
@@ -2781,14 +3187,20 @@ impl InputHandler {
                                 let line_text = line.trim_end_matches('\n');
                                 let line_len = line_text.chars().count();
                                 let final_col = if line_len > 0 { line_len - 1 } else { 0 };
-                                editor.buffer_mut().cursor_mut().set_position(target_line, final_col);
+                                editor
+                                    .buffer_mut()
+                                    .cursor_mut()
+                                    .set_position(target_line, final_col);
                             }
                         } else {
                             // For insert mode, use the same column as on the first line
                             let cursor = editor.buffer().cursor();
                             let current_col = cursor.col();
                             let inserted_col = if current_col > 0 { current_col - 1 } else { 0 };
-                            editor.buffer_mut().cursor_mut().set_position(target_line, inserted_col);
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(target_line, inserted_col);
                         }
                     } else {
                         let cursor = editor.buffer_mut().cursor_mut();
@@ -2878,14 +3290,18 @@ impl InputHandler {
         if let Some(pending) = editor.pending_command() {
             editor.clear_pending_command();
             match (pending, key_event.code) {
-                ('g', KeyCode::Char('a')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                ('g', KeyCode::Char('a'))
+                    if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     // g Ctrl-A: Sequential increment in visual selection
                     Self::sequential_modify_numbers(editor, 1)?;
                     editor.clear_visual_start();
                     editor.set_mode(Mode::Normal);
                     return Ok(());
                 }
-                ('g', KeyCode::Char('x')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                ('g', KeyCode::Char('x'))
+                    if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
                     // g Ctrl-X: Sequential decrement in visual selection
                     Self::sequential_modify_numbers(editor, -1)?;
                     editor.clear_visual_start();
@@ -2895,7 +3311,9 @@ impl InputHandler {
                 ('r', KeyCode::Char(ch)) => {
                     // r{char} in visual block - replace all characters in selection with ch
                     if editor.mode() == Mode::VisualBlock {
-                        if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                        if let Some(((start_line, start_col), (end_line, end_col))) =
+                            editor.visual_selection()
+                        {
                             let cursor = editor.buffer().cursor();
                             let cursor_before = (cursor.line(), cursor.col());
 
@@ -2909,21 +3327,38 @@ impl InputHandler {
 
                                     if line_start < line_end {
                                         // Delete the range
-                                        let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+                                        let deleted = editor
+                                            .buffer_mut()
+                                            .delete_range(line_idx, line_start, line_idx, line_end);
 
                                         // Replace with the same number of replacement characters
                                         let replace_count = deleted.chars().count();
                                         let replacement = ch.to_string().repeat(replace_count);
-                                        editor.buffer_mut().insert_text_at(line_idx, line_start, &replacement);
+                                        editor.buffer_mut().insert_text_at(
+                                            line_idx,
+                                            line_start,
+                                            &replacement,
+                                        );
 
                                         // Track change
                                         let delete_change = Change::delete(
-                                            Range::new((line_idx, line_start), (line_idx, line_end)),
+                                            Range::new(
+                                                (line_idx, line_start),
+                                                (line_idx, line_end),
+                                            ),
                                             deleted,
-                                            cursor_before
+                                            cursor_before,
                                         );
-                                        let insert_change = Change::insert((line_idx, line_start), replacement, cursor_before);
-                                        let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+                                        let insert_change = Change::insert(
+                                            (line_idx, line_start),
+                                            replacement,
+                                            cursor_before,
+                                        );
+                                        let change = Change::composite(
+                                            vec![delete_change, insert_change],
+                                            cursor_before,
+                                            cursor_before,
+                                        );
                                         editor.add_change(change);
                                     }
                                 }
@@ -2983,14 +3418,32 @@ impl InputHandler {
                 }
             }
             KeyCode::Char('$') => {
-                let line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    let line_len = line.trim_end_matches('\n').chars().count();
-                    let col = if line_len > 0 { line_len - 1 } else { 0 };
-                    let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_col(col);
-                    // Set desired_col to usize::MAX to indicate "always end of line"
-                    cursor.update_desired_col(usize::MAX);
+                if editor.mode() == Mode::VisualBlock {
+                    // In visual block mode, $ should extend to the end of the longest line in the selection
+                    if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
+                        let mut max_len = 0;
+                        for line_idx in start_line..=end_line {
+                            if let Some(line) = editor.buffer().line(line_idx) {
+                                let line_len = line.trim_end_matches('\n').chars().count();
+                                max_len = max_len.max(line_len);
+                            }
+                        }
+                        let col = if max_len > 0 { max_len - 1 } else { 0 };
+                        let cursor = editor.buffer_mut().cursor_mut();
+                        cursor.set_col(col);
+                        cursor.update_desired_col(usize::MAX);
+                    }
+                } else {
+                    // Normal visual mode: move to end of current line
+                    let line_idx = editor.buffer().cursor().line();
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_len = line.trim_end_matches('\n').chars().count();
+                        let col = if line_len > 0 { line_len - 1 } else { 0 };
+                        let cursor = editor.buffer_mut().cursor_mut();
+                        cursor.set_col(col);
+                        // Set desired_col to usize::MAX to indicate "always end of line"
+                        cursor.update_desired_col(usize::MAX);
+                    }
                 }
             }
             KeyCode::Char('G') => {
@@ -3040,9 +3493,11 @@ impl InputHandler {
             KeyCode::Char('c') => {
                 // For visual block mode, need to track the block for multi-line insert
                 let visual_block_state = if editor.mode() == Mode::VisualBlock {
-                    editor.visual_selection().map(|((start_line, start_col), (end_line, _))| {
-                        (start_line, end_line, start_col)
-                    })
+                    editor
+                        .visual_selection()
+                        .map(|((start_line, start_col), (end_line, _))| {
+                            (start_line, end_line, start_col)
+                        })
                 } else {
                     None
                 };
@@ -3053,7 +3508,9 @@ impl InputHandler {
                     // Set visual block insert state for multi-line replication
                     // For 'c', move cursor to start_line (move_to_end = false)
                     let cursor_before = (start_line, start_col);
-                    editor.set_visual_block_insert_state(Some((start_line, end_line, start_col, false, false)));
+                    editor.set_visual_block_insert_state(Some((
+                        start_line, end_line, start_col, false, false,
+                    )));
                     editor.start_change_building(cursor_before);
                 }
 
@@ -3066,7 +3523,8 @@ impl InputHandler {
                     // Calculate expected cursor position after join
                     // The cursor should be at the last space inserted (before the last line)
                     let mut cursor_col = 0;
-                    for line_idx in start_line..end_line {  // Note: end_line not included
+                    for line_idx in start_line..end_line {
+                        // Note: end_line not included
                         if let Some(line) = editor.buffer().line(line_idx) {
                             let line_text = line.trim_end_matches('\n');
                             cursor_col += line_text.chars().count();
@@ -3082,7 +3540,10 @@ impl InputHandler {
                     Self::join_lines(editor, count)?;
 
                     // Position cursor at the last inserted space
-                    editor.buffer_mut().cursor_mut().set_position(start_line, cursor_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, cursor_col);
                 }
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Normal);
@@ -3096,11 +3557,17 @@ impl InputHandler {
                     if editor.mode() == Mode::VisualBlock {
                         // For visual block mode, flip to diagonally opposite corner
                         // Swap line from one with column from the other
-                        editor.buffer_mut().cursor_mut().set_position(visual_start.0, cursor_pos.1);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(visual_start.0, cursor_pos.1);
                         editor.set_visual_start(cursor_pos.0, visual_start.1);
                     } else {
                         // For other visual modes, swap positions normally
-                        editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(visual_start.0, visual_start.1);
                         editor.set_visual_start(cursor_pos.0, cursor_pos.1);
                     }
                 }
@@ -3113,11 +3580,17 @@ impl InputHandler {
 
                     if editor.mode() == Mode::VisualBlock {
                         // For visual block mode, flip horizontally (swap columns only, keep line)
-                        editor.buffer_mut().cursor_mut().set_position(cursor_pos.0, visual_start.1);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(cursor_pos.0, visual_start.1);
                         editor.set_visual_start(visual_start.0, cursor_pos.1);
                     } else {
                         // For other visual modes, same as 'o'
-                        editor.buffer_mut().cursor_mut().set_position(visual_start.0, visual_start.1);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(visual_start.0, visual_start.1);
                         editor.set_visual_start(cursor_pos.0, cursor_pos.1);
                     }
                 }
@@ -3138,12 +3611,19 @@ impl InputHandler {
             KeyCode::Char('I') => {
                 if editor.mode() == Mode::VisualBlock {
                     // Insert at beginning of block on each line
-                    if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
+                    if let Some(((start_line, start_col), (end_line, _))) =
+                        editor.visual_selection()
+                    {
                         let cursor_before = (start_line, start_col);
-                        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(start_line, start_col);
                         // Track visual block insert state: (start_line, end_line, col, is_append, move_to_end)
                         // For 'I', move cursor to end_line (move_to_end = true)
-                        editor.set_visual_block_insert_state(Some((start_line, end_line, start_col, false, true)));
+                        editor.set_visual_block_insert_state(Some((
+                            start_line, end_line, start_col, false, true,
+                        )));
                         editor.clear_visual_start();
                         editor.start_change_building(cursor_before);
                         editor.set_mode(Mode::Insert);
@@ -3151,7 +3631,10 @@ impl InputHandler {
                 } else {
                     // Regular visual mode - just enter insert at start of selection
                     if let Some(((start_line, start_col), _)) = editor.visual_selection() {
-                        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(start_line, start_col);
                         editor.clear_visual_start();
                         editor.set_mode(Mode::Insert);
                     }
@@ -3160,19 +3643,27 @@ impl InputHandler {
             KeyCode::Char('A') => {
                 if editor.mode() == Mode::VisualBlock {
                     // Append at end of block on each line
-                    if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection() {
+                    if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection()
+                    {
                         // Get actual end column - clamp to line length to avoid overflow
-                        let line_len = editor.buffer().line(start_line)
+                        let line_len = editor
+                            .buffer()
+                            .line(start_line)
                             .map(|l| l.trim_end_matches('\n').chars().count())
                             .unwrap_or(0);
                         let actual_end_col = end_col.min(line_len.saturating_sub(1));
                         let append_col = actual_end_col.saturating_add(1);
 
                         let cursor_before = (start_line, append_col);
-                        editor.buffer_mut().cursor_mut().set_position(start_line, append_col);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(start_line, append_col);
                         // Track visual block append state: (start_line, end_line, col, is_append, move_to_end)
                         // For 'A', move cursor to end_line (move_to_end = true)
-                        editor.set_visual_block_insert_state(Some((start_line, end_line, append_col, true, true)));
+                        editor.set_visual_block_insert_state(Some((
+                            start_line, end_line, append_col, true, true,
+                        )));
                         editor.clear_visual_start();
                         editor.start_change_building(cursor_before);
                         editor.set_mode(Mode::Insert);
@@ -3180,7 +3671,10 @@ impl InputHandler {
                 } else {
                     // Regular visual mode - just enter insert at end of selection
                     if let Some((_, (end_line, end_col))) = editor.visual_selection() {
-                        editor.buffer_mut().cursor_mut().set_position(end_line, end_col + 1);
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(end_line, end_col + 1);
                         editor.clear_visual_start();
                         editor.set_mode(Mode::Insert);
                     }
@@ -3202,7 +3696,9 @@ impl InputHandler {
             KeyCode::Char('~') => {
                 if editor.mode() == Mode::VisualBlock {
                     // Toggle case for visual block selection
-                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                    if let Some(((start_line, start_col), (end_line, end_col))) =
+                        editor.visual_selection()
+                    {
                         let cursor = editor.buffer().cursor();
                         let cursor_before = (cursor.line(), cursor.col());
 
@@ -3216,28 +3712,43 @@ impl InputHandler {
 
                                 if line_start < line_end {
                                     // Delete the range
-                                    let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+                                    let deleted = editor
+                                        .buffer_mut()
+                                        .delete_range(line_idx, line_start, line_idx, line_end);
 
                                     // Toggle case
-                                    let toggled: String = deleted.chars().map(|ch| {
-                                        if ch.is_uppercase() {
-                                            ch.to_lowercase().to_string()
-                                        } else {
-                                            ch.to_uppercase().to_string()
-                                        }
-                                    }).collect();
+                                    let toggled: String = deleted
+                                        .chars()
+                                        .map(|ch| {
+                                            if ch.is_uppercase() {
+                                                ch.to_lowercase().to_string()
+                                            } else {
+                                                ch.to_uppercase().to_string()
+                                            }
+                                        })
+                                        .collect();
 
                                     // Insert the toggled text
-                                    editor.buffer_mut().insert_text_at(line_idx, line_start, &toggled);
+                                    editor
+                                        .buffer_mut()
+                                        .insert_text_at(line_idx, line_start, &toggled);
 
                                     // Track change
                                     let delete_change = Change::delete(
                                         Range::new((line_idx, line_start), (line_idx, line_end)),
                                         deleted,
-                                        cursor_before
+                                        cursor_before,
                                     );
-                                    let insert_change = Change::insert((line_idx, line_start), toggled, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+                                    let insert_change = Change::insert(
+                                        (line_idx, line_start),
+                                        toggled,
+                                        cursor_before,
+                                    );
+                                    let change = Change::composite(
+                                        vec![delete_change, insert_change],
+                                        cursor_before,
+                                        cursor_before,
+                                    );
                                     editor.add_change(change);
                                 }
                             }
@@ -3247,7 +3758,9 @@ impl InputHandler {
                     editor.set_mode(Mode::Normal);
                 } else {
                     // Regular visual mode - toggle case of selection
-                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                    if let Some(((start_line, start_col), (end_line, end_col))) =
+                        editor.visual_selection()
+                    {
                         let cursor = editor.buffer().cursor();
                         let cursor_before = (cursor.line(), cursor.col());
 
@@ -3259,23 +3772,38 @@ impl InputHandler {
                                 let line_end = (end_col + 1).min(chars.len());
 
                                 if start_col < line_end {
-                                    let deleted = editor.buffer_mut().delete_range(start_line, start_col, start_line, line_end);
-                                    let toggled: String = deleted.chars().map(|ch| {
-                                        if ch.is_uppercase() {
-                                            ch.to_lowercase().to_string()
-                                        } else {
-                                            ch.to_uppercase().to_string()
-                                        }
-                                    }).collect();
-                                    editor.buffer_mut().insert_text_at(start_line, start_col, &toggled);
+                                    let deleted = editor
+                                        .buffer_mut()
+                                        .delete_range(start_line, start_col, start_line, line_end);
+                                    let toggled: String = deleted
+                                        .chars()
+                                        .map(|ch| {
+                                            if ch.is_uppercase() {
+                                                ch.to_lowercase().to_string()
+                                            } else {
+                                                ch.to_uppercase().to_string()
+                                            }
+                                        })
+                                        .collect();
+                                    editor
+                                        .buffer_mut()
+                                        .insert_text_at(start_line, start_col, &toggled);
 
                                     let delete_change = Change::delete(
                                         Range::new((start_line, start_col), (start_line, line_end)),
                                         deleted,
-                                        cursor_before
+                                        cursor_before,
                                     );
-                                    let insert_change = Change::insert((start_line, start_col), toggled, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+                                    let insert_change = Change::insert(
+                                        (start_line, start_col),
+                                        toggled,
+                                        cursor_before,
+                                    );
+                                    let change = Change::composite(
+                                        vec![delete_change, insert_change],
+                                        cursor_before,
+                                        cursor_before,
+                                    );
                                     editor.add_change(change);
                                 }
                             }
@@ -3289,7 +3817,9 @@ impl InputHandler {
             KeyCode::Char('U') => {
                 if editor.mode() == Mode::VisualBlock {
                     // Convert to uppercase for visual block selection
-                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                    if let Some(((start_line, start_col), (end_line, end_col))) =
+                        editor.visual_selection()
+                    {
                         let cursor = editor.buffer().cursor();
                         let cursor_before = (cursor.line(), cursor.col());
 
@@ -3302,17 +3832,31 @@ impl InputHandler {
                                 let line_end = (end_col + 1).min(chars.len());
 
                                 if line_start < line_end {
-                                    let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+                                    let deleted = editor
+                                        .buffer_mut()
+                                        .delete_range(line_idx, line_start, line_idx, line_end);
                                     let uppercased = deleted.to_uppercase();
-                                    editor.buffer_mut().insert_text_at(line_idx, line_start, &uppercased);
+                                    editor.buffer_mut().insert_text_at(
+                                        line_idx,
+                                        line_start,
+                                        &uppercased,
+                                    );
 
                                     let delete_change = Change::delete(
                                         Range::new((line_idx, line_start), (line_idx, line_end)),
                                         deleted,
-                                        cursor_before
+                                        cursor_before,
                                     );
-                                    let insert_change = Change::insert((line_idx, line_start), uppercased, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+                                    let insert_change = Change::insert(
+                                        (line_idx, line_start),
+                                        uppercased,
+                                        cursor_before,
+                                    );
+                                    let change = Change::composite(
+                                        vec![delete_change, insert_change],
+                                        cursor_before,
+                                        cursor_before,
+                                    );
                                     editor.add_change(change);
                                 }
                             }
@@ -3326,7 +3870,9 @@ impl InputHandler {
             KeyCode::Char('u') => {
                 if editor.mode() == Mode::VisualBlock {
                     // Convert to lowercase for visual block selection
-                    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                    if let Some(((start_line, start_col), (end_line, end_col))) =
+                        editor.visual_selection()
+                    {
                         let cursor = editor.buffer().cursor();
                         let cursor_before = (cursor.line(), cursor.col());
 
@@ -3339,17 +3885,31 @@ impl InputHandler {
                                 let line_end = (end_col + 1).min(chars.len());
 
                                 if line_start < line_end {
-                                    let deleted = editor.buffer_mut().delete_range(line_idx, line_start, line_idx, line_end);
+                                    let deleted = editor
+                                        .buffer_mut()
+                                        .delete_range(line_idx, line_start, line_idx, line_end);
                                     let lowercased = deleted.to_lowercase();
-                                    editor.buffer_mut().insert_text_at(line_idx, line_start, &lowercased);
+                                    editor.buffer_mut().insert_text_at(
+                                        line_idx,
+                                        line_start,
+                                        &lowercased,
+                                    );
 
                                     let delete_change = Change::delete(
                                         Range::new((line_idx, line_start), (line_idx, line_end)),
                                         deleted,
-                                        cursor_before
+                                        cursor_before,
                                     );
-                                    let insert_change = Change::insert((line_idx, line_start), lowercased, cursor_before);
-                                    let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+                                    let insert_change = Change::insert(
+                                        (line_idx, line_start),
+                                        lowercased,
+                                        cursor_before,
+                                    );
+                                    let change = Change::composite(
+                                        vec![delete_change, insert_change],
+                                        cursor_before,
+                                        cursor_before,
+                                    );
                                     editor.add_change(change);
                                 }
                             }
@@ -3368,7 +3928,13 @@ impl InputHandler {
                     let is_visual_block = editor.mode() == Mode::VisualBlock;
                     let original_col = cursor_before.1;
 
-                    Self::indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                    Self::indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                        cursor_before,
+                    )?;
 
                     // For visual block mode, move cursor to end line at adjusted column
                     if is_visual_block {
@@ -3386,7 +3952,13 @@ impl InputHandler {
                     let tab_width = editor.options.tab_width;
                     let is_visual_block = editor.mode() == Mode::VisualBlock;
 
-                    Self::dedent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, cursor_before)?;
+                    Self::dedent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                        cursor_before,
+                    )?;
 
                     // For visual block mode, move cursor to start position (start_line, 0)
                     if is_visual_block {
@@ -3456,7 +4028,7 @@ impl InputHandler {
         // :1,5s/pattern/replacement/[flags]
 
         let (range_str, substitute_part) = if let Some(s_idx) = command.rfind('s') {
-            (&command[..s_idx], &command[s_idx+1..])
+            (&command[..s_idx], &command[s_idx + 1..])
         } else {
             return Ok(()); // No 's' found
         };
@@ -3480,12 +4052,13 @@ impl InputHandler {
         let ignore_case = flags.contains('i');
 
         // Determine the range using the new parser (returns inclusive range)
-        let (start_line, end_line) = if let Some((start, end)) = Self::parse_range(editor, range_str) {
-            (start, end)
-        } else {
-            // Invalid range
-            return Ok(());
-        };
+        let (start_line, end_line) =
+            if let Some((start, end)) = Self::parse_range(editor, range_str) {
+                (start, end)
+            } else {
+                // Invalid range
+                return Ok(());
+            };
 
         // Compile the regex pattern
         use regex::RegexBuilder;
@@ -3501,7 +4074,10 @@ impl InputHandler {
         };
 
         // Perform substitution with change tracking
-        let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+        let cursor_before = (
+            editor.buffer().cursor().line(),
+            editor.buffer().cursor().col(),
+        );
 
         for line_idx in start_line..=end_line.min(editor.buffer().line_count().saturating_sub(1)) {
             if let Some(line) = editor.buffer().line(line_idx) {
@@ -3519,7 +4095,9 @@ impl InputHandler {
                 if new_text != line_text {
                     // Delete old line content and insert new
                     let line_len = line_text.chars().count();
-                    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(line_idx, 0, line_idx, line_len);
                     let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
                     let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
@@ -3568,7 +4146,11 @@ impl InputHandler {
         };
 
         // Default command is 'p' (print) if none specified
-        let sub_command = if sub_command.is_empty() { "p" } else { sub_command };
+        let sub_command = if sub_command.is_empty() {
+            "p"
+        } else {
+            sub_command
+        };
 
         // Compile regex
         use regex::Regex;
@@ -3605,7 +4187,10 @@ impl InputHandler {
         match sub_command {
             "d" | "delete" => {
                 // Delete all matching lines (in reverse order to avoid index shifts)
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
                 let mut all_deleted = Vec::new();
 
                 for &line_idx in matching_lines.iter().rev() {
@@ -3633,11 +4218,18 @@ impl InputHandler {
                 editor.delete_to_register(deleted_text.clone());
 
                 // Position cursor at first deleted line
-                let new_cursor_line = matching_lines[0].min(editor.buffer().line_count().saturating_sub(1));
-                editor.buffer_mut().cursor_mut().set_position(new_cursor_line, 0);
+                let new_cursor_line =
+                    matching_lines[0].min(editor.buffer().line_count().saturating_sub(1));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(new_cursor_line, 0);
 
                 // Record change
-                let range = Range::new((matching_lines[0], 0), (matching_lines[matching_lines.len() - 1] + 1, 0));
+                let range = Range::new(
+                    (matching_lines[0], 0),
+                    (matching_lines[matching_lines.len() - 1] + 1, 0),
+                );
                 let change = Change::delete(range, deleted_text, cursor_before);
                 editor.add_change(change);
 
@@ -3714,14 +4306,21 @@ impl InputHandler {
                         };
 
                         if new_text != line_text {
-                            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                            let cursor_before = (
+                                editor.buffer().cursor().line(),
+                                editor.buffer().cursor().col(),
+                            );
                             let line_len = line_text.chars().count();
 
-                            let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, 0, line_idx, line_len);
                             let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
-                            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+                            let delete_change =
+                                Change::delete(delete_range, deleted, cursor_before);
 
-                            let insert_change = Change::insert((line_idx, 0), new_text, cursor_before);
+                            let insert_change =
+                                Change::insert((line_idx, 0), new_text, cursor_before);
                             insert_change.apply(editor.buffer_mut());
 
                             editor.add_change(delete_change);
@@ -3850,7 +4449,9 @@ impl InputHandler {
 
         // First, try to parse range from command
         // Format: :[range]command
-        let (range_str, cmd_part) = if let Some(first_alpha) = command.chars().position(|c| c.is_alphabetic() || c == '!') {
+        let (range_str, cmd_part) = if let Some(first_alpha) =
+            command.chars().position(|c| c.is_alphabetic() || c == '!')
+        {
             (&command[..first_alpha], &command[first_alpha..])
         } else {
             // No command part, might be just a line number (goto)
@@ -3868,7 +4469,10 @@ impl InputHandler {
         // Handle ranged delete command (:d or :delete)
         if cmd_part == "d" || cmd_part == "delete" {
             if let Some((start_line, end_line)) = Self::parse_range(editor, range_str) {
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
 
                 // Calculate character range to delete
                 let start_char = editor.buffer().rope().line_to_char(start_line);
@@ -3879,7 +4483,11 @@ impl InputHandler {
                 };
 
                 // Store deleted text
-                let deleted_text = editor.buffer().rope().slice(start_char..end_char).to_string();
+                let deleted_text = editor
+                    .buffer()
+                    .rope()
+                    .slice(start_char..end_char)
+                    .to_string();
 
                 // Remove the lines
                 editor.buffer_mut().rope_mut().remove(start_char..end_char);
@@ -3888,8 +4496,12 @@ impl InputHandler {
                 editor.delete_to_register(deleted_text.clone());
 
                 // Position cursor at start of deleted range
-                let new_cursor_line = start_line.min(editor.buffer().line_count().saturating_sub(1));
-                editor.buffer_mut().cursor_mut().set_position(new_cursor_line, 0);
+                let new_cursor_line =
+                    start_line.min(editor.buffer().line_count().saturating_sub(1));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(new_cursor_line, 0);
 
                 // Record change for undo
                 let range = Range::new((start_line, 0), (end_line + 1, 0));
@@ -4074,7 +4686,10 @@ impl InputHandler {
             }
             _ => {
                 // Check if it's a :r or :read command
-                if let Some(filename) = command.strip_prefix("r ").or_else(|| command.strip_prefix("read ")) {
+                if let Some(filename) = command
+                    .strip_prefix("r ")
+                    .or_else(|| command.strip_prefix("read "))
+                {
                     let filename = filename.trim();
                     if !filename.is_empty() {
                         // Read file contents
@@ -4085,7 +4700,11 @@ impl InputHandler {
                                 let line = cursor.line() + 1; // Insert after current line
                                 let col = 0;
                                 editor.buffer_mut().insert_text_at(line, col, &contents);
-                                editor.set_lsp_status(format!("Read {} lines from {}", contents.lines().count(), filename));
+                                editor.set_lsp_status(format!(
+                                    "Read {} lines from {}",
+                                    contents.lines().count(),
+                                    filename
+                                ));
                             }
                             Err(e) => {
                                 editor.set_lsp_status(format!("Error reading file: {}", e));
@@ -4096,7 +4715,10 @@ impl InputHandler {
                 }
 
                 // Check if it's a :b <n> or :buffer <n> command
-                if let Some(buffer_num_str) = command.strip_prefix("b ").or_else(|| command.strip_prefix("buffer ")) {
+                if let Some(buffer_num_str) = command
+                    .strip_prefix("b ")
+                    .or_else(|| command.strip_prefix("buffer "))
+                {
                     if let Ok(buffer_num) = buffer_num_str.trim().parse::<usize>() {
                         if buffer_num > 0 {
                             // Convert from 1-indexed to 0-indexed
@@ -4107,7 +4729,10 @@ impl InputHandler {
                 }
 
                 // Check if it's a :colorscheme <name> or :colo <name> command
-                if let Some(scheme_name) = command.strip_prefix("colorscheme ").or_else(|| command.strip_prefix("colo ")) {
+                if let Some(scheme_name) = command
+                    .strip_prefix("colorscheme ")
+                    .or_else(|| command.strip_prefix("colo "))
+                {
                     match editor.set_color_scheme(scheme_name.trim()) {
                         Ok(_) => {
                             let message = format!("Color scheme set to '{}'", scheme_name.trim());
@@ -4163,7 +4788,9 @@ impl InputHandler {
     /// Handles input in Picker mode
     fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         // Ctrl-C - cancel picker (same as Escape)
-        if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+        if key_event.code == KeyCode::Char('c')
+            && key_event.modifiers.contains(KeyModifiers::CONTROL)
+        {
             editor.close_picker();
             editor.set_mode(Mode::Normal);
             return Ok(());
@@ -4335,7 +4962,8 @@ impl InputHandler {
                 // Only preload for file picker modes (not custom, completion, or LSP locations)
                 if *picker.mode() != crate::editor::PickerMode::Custom
                     && *picker.mode() != crate::editor::PickerMode::Completion
-                    && *picker.mode() != crate::editor::PickerMode::LspLocations {
+                    && *picker.mode() != crate::editor::PickerMode::LspLocations
+                {
                     let file_path = result.location.clone();
                     // This will load the file if not cached
                     editor.get_or_load_preview(&file_path);
@@ -4350,7 +4978,8 @@ impl InputHandler {
     pub fn poll_event() -> Result<Option<Event>> {
         // Use a very short timeout to keep the event loop responsive
         // This allows status updates and rendering to happen frequently
-        if event::poll(std::time::Duration::from_millis(16))? {  // ~60 FPS
+        if event::poll(std::time::Duration::from_millis(16))? {
+            // ~60 FPS
             Ok(Some(event::read()?))
         } else {
             Ok(None)
@@ -4386,8 +5015,10 @@ impl InputHandler {
                 (cursor.col() + count).min(line_len.saturating_sub(1).max(0))
             };
 
-            eprintln!("[DEBUG move_right] line={}, line_len={}, old_col={}, new_col={}, mode={:?}",
-                line_idx, line_len, old_col, new_col, mode);
+            eprintln!(
+                "[DEBUG move_right] line={}, line_len={}, old_col={}, new_col={}, mode={:?}",
+                line_idx, line_len, old_col, new_col, mode
+            );
             cursor.set_col(new_col);
         }
         editor.clear_count();
@@ -4455,8 +5086,8 @@ impl InputHandler {
                 desired.min(max_col)
             };
 
-            eprintln!("[DEBUG clamp_cursor_with_goal_column] line={}, line_len={}, max_col={}, desired={}, old_col={}, target_col={}, mode={:?}",
-                line_idx, line_len, max_col, desired, old_col, target_col, mode);
+            // eprintln!("[DEBUG clamp_cursor_with_goal_column] line={}, line_len={}, max_col={}, desired={}, old_col={}, target_col={}, mode={:?}",
+            //   line_idx, line_len, max_col, desired, old_col, target_col, mode);
             cursor.set_col_preserve_desired(target_col);
         }
     }
@@ -4500,7 +5131,9 @@ impl InputHandler {
 
         let (start_pos, end_pos, deleted_text) = if col == 0 {
             // Delete newline at end of previous line
-            let prev_line_len = editor.buffer().line(line_idx - 1)
+            let prev_line_len = editor
+                .buffer()
+                .line(line_idx - 1)
                 .map(|s| s.trim_end_matches('\n').chars().count())
                 .unwrap_or(0);
             (
@@ -4513,9 +5146,7 @@ impl InputHandler {
             // Get the actual character to delete
             let line_start = editor.buffer().rope().line_to_char(line_idx);
             let delete_pos = line_start + col - 1;
-            let deleted_char = editor.buffer().rope()
-                .get_char(delete_pos)
-                .unwrap_or(' ');
+            let deleted_char = editor.buffer().rope().get_char(delete_pos).unwrap_or(' ');
             (
                 (line_idx, col - 1),
                 (line_idx, col),
@@ -4544,7 +5175,9 @@ impl InputHandler {
 
         // If at start of line, delete the newline character
         if col == 0 {
-            let prev_line_len = editor.buffer().line(line_idx - 1)
+            let prev_line_len = editor
+                .buffer()
+                .line(line_idx - 1)
                 .map(|s| s.trim_end_matches('\n').chars().count())
                 .unwrap_or(0);
             let start_pos = (line_idx - 1, prev_line_len);
@@ -4565,7 +5198,11 @@ impl InputHandler {
         let mut start_col = col;
 
         // Skip trailing whitespace
-        while start_col > 0 && chars.get(start_col - 1).map_or(false, |c| c.is_whitespace()) {
+        while start_col > 0
+            && chars
+                .get(start_col - 1)
+                .map_or(false, |c| c.is_whitespace())
+        {
             start_col -= 1;
         }
 
@@ -4580,12 +5217,18 @@ impl InputHandler {
                 if let Some(&ch) = char_at_cursor {
                     if is_word_char(ch) {
                         // Delete word characters
-                        while start_col > 0 && chars.get(start_col - 1).map_or(false, |&c| is_word_char(c)) {
+                        while start_col > 0
+                            && chars.get(start_col - 1).map_or(false, |&c| is_word_char(c))
+                        {
                             start_col -= 1;
                         }
                     } else {
                         // Delete punctuation/special characters
-                        while start_col > 0 && chars.get(start_col - 1).map_or(false, |&c| !is_word_char(c) && !c.is_whitespace()) {
+                        while start_col > 0
+                            && chars
+                                .get(start_col - 1)
+                                .map_or(false, |&c| !is_word_char(c) && !c.is_whitespace())
+                        {
                             start_col -= 1;
                         }
                     }
@@ -4595,7 +5238,9 @@ impl InputHandler {
 
         // Delete the range
         if start_col < col {
-            let deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, col);
+            let deleted = editor
+                .buffer_mut()
+                .delete_range(line_idx, start_col, line_idx, col);
             let range = Range::new((line_idx, start_col), (line_idx, col));
             let change = Change::delete(range, deleted, cursor_before);
             editor.add_change(change);
@@ -4687,7 +5332,9 @@ impl InputHandler {
         }
 
         // Delete the leading whitespace
-        let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, spaces_to_remove);
+        let deleted = editor
+            .buffer_mut()
+            .delete_range(line_idx, 0, line_idx, spaces_to_remove);
 
         // Update cursor position - move column left by spaces_to_remove
         let new_col = col.saturating_sub(spaces_to_remove);
@@ -4709,7 +5356,8 @@ impl InputHandler {
 
         // Get indentation from current line
         let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-        let indent = line_text.chars()
+        let indent = line_text
+            .chars()
             .take_while(|c| c.is_whitespace() && *c != '\n')
             .collect::<String>();
 
@@ -4725,11 +5373,21 @@ impl InputHandler {
         // If we added a newline, insert_pos moved by 1, so insert at insert_pos + 1
         // If line already had newline, insert_pos is at start of next line, so insert there
         let text_to_insert = format!("{}\n", indent);
-        let final_insert_pos = if added_newline { insert_pos + 1 } else { insert_pos };
-        editor.buffer_mut().rope_mut().insert(final_insert_pos, &text_to_insert);
+        let final_insert_pos = if added_newline {
+            insert_pos + 1
+        } else {
+            insert_pos
+        };
+        editor
+            .buffer_mut()
+            .rope_mut()
+            .insert(final_insert_pos, &text_to_insert);
 
         // Position cursor at end of indentation on new line
-        editor.buffer_mut().cursor_mut().set_position(line_idx + 1, indent.len());
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line_idx + 1, indent.len());
         Ok(())
     }
 
@@ -4739,13 +5397,17 @@ impl InputHandler {
 
         // Get indentation from current line
         let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-        let indent = line_text.chars()
+        let indent = line_text
+            .chars()
             .take_while(|c| c.is_whitespace() && *c != '\n')
             .collect::<String>();
 
         // Insert indented line above
         let text_to_insert = format!("{}\n", indent);
-        editor.buffer_mut().rope_mut().insert(line_start, &text_to_insert);
+        editor
+            .buffer_mut()
+            .rope_mut()
+            .insert(line_start, &text_to_insert);
 
         // Cursor stays at same line index, positioned at end of indentation
         editor.buffer_mut().cursor_mut().set_col(indent.len());
@@ -4753,7 +5415,7 @@ impl InputHandler {
     }
 
     fn paste_after(editor: &mut Editor) -> Result<()> {
-        let text = editor.get_from_register();
+        let (text, reg_type) = editor.get_from_register_with_type();
         if text.is_empty() {
             return Ok(());
         }
@@ -4763,21 +5425,77 @@ impl InputHandler {
         let line_idx = cursor.line();
         let col = cursor.col();
 
-        // Check if text contains newline (line paste vs character paste)
-        let position = if text.contains('\n') {
-            // Line paste - insert after current line
-            let line_len = editor.buffer().rope().line(line_idx).len_chars();
-            // For line paste, we insert at the end of current line (after newline if exists)
-            (line_idx, line_len)
-        } else {
-            // Character paste - insert after cursor (col + 1)
-            (line_idx, col + 1)
-        };
+        match reg_type {
+            RegisterType::Block => {
+                // Block paste - insert each line at the same column on consecutive lines
+                let block_lines: Vec<&str> = text.split('\n').collect();
+                let paste_col = col + 1; // Paste after cursor
+                let mut last_pasted_line = line_idx;
+                let mut last_pasted_text = "";
 
-        // Create and apply the change
-        let change = Change::insert(position, text, cursor_before);
-        change.apply(editor.buffer_mut());
-        editor.add_change(change);
+                for (i, block_line) in block_lines.iter().enumerate() {
+                    let target_line = line_idx + i;
+                    if target_line >= editor.buffer().line_count() {
+                        break; // Don't create new lines for block paste
+                    }
+
+                    // Get current line and check if it's the final empty line (from trailing newline)
+                    if let Some(line_text) = editor.buffer().line(target_line) {
+                        let line_content = line_text.trim_end_matches('\n');
+
+                        // Skip the final empty line (implicit from trailing newline)
+                        if line_content.is_empty() && target_line == editor.buffer().line_count() - 1 {
+                            break;
+                        }
+
+                        let line_len = line_content.chars().count();
+
+                        // Calculate insertion position
+                        let insert_col = if paste_col > line_len {
+                            // Pad the line with spaces if needed
+                            let padding = " ".repeat(paste_col - line_len);
+                            let padded_text = format!("{}{}", padding, block_line);
+                            let change =
+                                Change::insert((target_line, line_len), padded_text, cursor_before);
+                            change.apply(editor.buffer_mut());
+                            editor.add_change(change);
+                            last_pasted_line = target_line;
+                            last_pasted_text = block_line;
+                            continue;
+                        } else {
+                            paste_col
+                        };
+
+                        // Insert the block line at the column
+                        let change =
+                            Change::insert((target_line, insert_col), block_line.to_string(), cursor_before);
+                        change.apply(editor.buffer_mut());
+                        editor.add_change(change);
+                        last_pasted_line = target_line;
+                        last_pasted_text = block_line;
+                    }
+                }
+
+                // Position cursor at the end of the last pasted block line
+                let new_col = paste_col + last_pasted_text.chars().count();
+                editor.buffer_mut().cursor_mut().set_position(last_pasted_line, new_col);
+            }
+            RegisterType::Line => {
+                // Line paste - insert after current line
+                let line_len = editor.buffer().rope().line(line_idx).len_chars();
+                let position = (line_idx, line_len);
+                let change = Change::insert(position, text, cursor_before);
+                change.apply(editor.buffer_mut());
+                editor.add_change(change);
+            }
+            RegisterType::Character => {
+                // Character paste - insert after cursor
+                let position = (line_idx, col + 1);
+                let change = Change::insert(position, text, cursor_before);
+                change.apply(editor.buffer_mut());
+                editor.add_change(change);
+            }
+        }
 
         Ok(())
     }
@@ -4817,8 +5535,14 @@ impl InputHandler {
 
     fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
         let mode = editor.mode();
-        let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
-        eprintln!("[DEBUG delete_visual_selection] cursor_before=({},{})", cursor_before.0, cursor_before.1);
+        let cursor_before = (
+            editor.buffer().cursor().line(),
+            editor.buffer().cursor().col(),
+        );
+        eprintln!(
+            "[DEBUG delete_visual_selection] cursor_before=({},{})",
+            cursor_before.0, cursor_before.1
+        );
 
         if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
             match mode {
@@ -4827,10 +5551,9 @@ impl InputHandler {
                     let start_pos = (start_line, 0);
                     let end_pos = (end_line + 1, 0);
 
-                    let deleted = editor.buffer_mut().delete_range(
-                        start_line, 0,
-                        end_line + 1, 0
-                    );
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, 0, end_line + 1, 0);
 
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
@@ -4843,27 +5566,46 @@ impl InputHandler {
                 }
                 Mode::VisualBlock => {
                     // Delete rectangular block
-                    eprintln!("[DEBUG] VisualBlock delete: start=({},{}), end=({},{})", start_line, start_col, end_line, end_col);
+                    eprintln!(
+                        "[DEBUG] VisualBlock delete: start=({},{}), end=({},{})",
+                        start_line, start_col, end_line, end_col
+                    );
                     let mut deleted_lines = Vec::new();
+                    let mut changes = Vec::new();
 
                     // Delete from bottom to top to avoid line number shifting
                     for line_idx in (start_line..=end_line).rev() {
                         if let Some(line_text) = editor.buffer().line(line_idx) {
                             let line_len = line_text.trim_end_matches('\n').chars().count();
-                            eprintln!("[DEBUG] Line {}: len={}, text={:?}", line_idx, line_len, line_text.trim_end_matches('\n'));
+                            eprintln!(
+                                "[DEBUG] Line {}: len={}, text={:?}",
+                                line_idx,
+                                line_len,
+                                line_text.trim_end_matches('\n')
+                            );
                             // Only delete if the line is long enough
                             if start_col < line_len {
                                 let actual_end_col = (end_col + 1).min(line_len);
                                 eprintln!("[DEBUG] Line {}: deleting cols {}..{} (end_col={}, actual_end_col={})",
                                     line_idx, start_col, actual_end_col, end_col, actual_end_col);
                                 let deleted = editor.buffer_mut().delete_range(
-                                    line_idx, start_col,
-                                    line_idx, actual_end_col
+                                    line_idx,
+                                    start_col,
+                                    line_idx,
+                                    actual_end_col,
                                 );
                                 eprintln!("[DEBUG] Line {}: deleted={:?}", line_idx, deleted);
+
+                                // Create individual Change for each line deletion
+                                let range = Range::new((line_idx, start_col), (line_idx, actual_end_col));
+                                let change = Change::delete(range, deleted.clone(), cursor_before);
+                                changes.push(change);
                                 deleted_lines.push(deleted);
-                            } else{
-                                eprintln!("[DEBUG] Line {}: start_col >= line_len, skipping", line_idx);
+                            } else {
+                                eprintln!(
+                                    "[DEBUG] Line {}: start_col >= line_len, skipping",
+                                    line_idx
+                                );
                                 deleted_lines.push(String::new());
                             }
                         }
@@ -4871,16 +5613,29 @@ impl InputHandler {
 
                     // Reverse to get original order
                     deleted_lines.reverse();
+                    changes.reverse();
                     let deleted = deleted_lines.join("\n");
 
-                    // Record the change
-                    let range = Range::new((start_line, start_col), (end_line, end_col + 1));
-                    let change = Change::delete(range, deleted.clone(), cursor_before);
-                    editor.add_change(change);
+                    // Record as composite change for proper undo
+                    let composite = Change::composite(changes, cursor_before, cursor_before);
+                    editor.add_change(composite);
                     editor.delete_to_register(deleted);
 
-                    // Position cursor at start of block
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    // Position cursor at start of block, clamped to line length
+                    let line_len = if let Some(line) = editor.buffer().line(start_line) {
+                        line.trim_end_matches('\n').chars().count()
+                    } else {
+                        0
+                    };
+                    let clamped_col = if line_len > 0 {
+                        start_col.min(line_len - 1)
+                    } else {
+                        0
+                    };
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, clamped_col);
                 }
                 _ => {
                     // Character-wise visual mode
@@ -4888,8 +5643,10 @@ impl InputHandler {
                     let end_pos = (end_line, end_col + 1);
 
                     let deleted = editor.buffer_mut().delete_range(
-                        start_line, start_col,
-                        end_line, end_col + 1
+                        start_line,
+                        start_col,
+                        end_line,
+                        end_col + 1,
                     );
 
                     let range = Range::new(start_pos, end_pos);
@@ -4898,7 +5655,10 @@ impl InputHandler {
                     editor.delete_to_register(deleted);
 
                     // Position cursor at start of selection
-                    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, start_col);
                 }
             }
         }
@@ -4920,8 +5680,12 @@ impl InputHandler {
                         editor.buffer().rope().len_chars()
                     };
 
-                    let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
-                    editor.yank_to_register(yanked);
+                    let yanked = editor
+                        .buffer()
+                        .rope()
+                        .slice(start_char..end_char)
+                        .to_string();
+                    editor.yank_to_register_with_type(yanked, RegisterType::Line);
                 }
                 Mode::VisualBlock => {
                     // Yank rectangular block
@@ -4932,9 +5696,15 @@ impl InputHandler {
                             let line_len = line_text.trim_end_matches('\n').chars().count();
                             if start_col < line_len {
                                 let actual_end_col = (end_col + 1).min(line_len);
-                                let start_char = editor.buffer().rope().line_to_char(line_idx) + start_col;
-                                let end_char = editor.buffer().rope().line_to_char(line_idx) + actual_end_col;
-                                let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
+                                let start_char =
+                                    editor.buffer().rope().line_to_char(line_idx) + start_col;
+                                let end_char =
+                                    editor.buffer().rope().line_to_char(line_idx) + actual_end_col;
+                                let yanked = editor
+                                    .buffer()
+                                    .rope()
+                                    .slice(start_char..end_char)
+                                    .to_string();
                                 yanked_lines.push(yanked);
                             } else {
                                 yanked_lines.push(String::new());
@@ -4943,15 +5713,19 @@ impl InputHandler {
                     }
 
                     let yanked = yanked_lines.join("\n");
-                    editor.yank_to_register(yanked);
+                    editor.yank_to_register_with_type(yanked, RegisterType::Block);
                 }
                 _ => {
                     // Character-wise visual mode
                     let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
                     let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
 
-                    let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
-                    editor.yank_to_register(yanked);
+                    let yanked = editor
+                        .buffer()
+                        .rope()
+                        .slice(start_char..end_char)
+                        .to_string();
+                    editor.yank_to_register_with_type(yanked, RegisterType::Character);
                 }
             }
         }
@@ -4967,7 +5741,13 @@ impl InputHandler {
         Operators::join_lines_no_space(editor.buffer_mut(), count)
     }
 
-    fn indent_lines_with_tracking(editor: &mut Editor, start_line: usize, end_line: usize, tab_width: usize, cursor_before: (usize, usize)) -> Result<()> {
+    fn indent_lines_with_tracking(
+        editor: &mut Editor,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+        cursor_before: (usize, usize),
+    ) -> Result<()> {
         for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
             let indent_str = " ".repeat(tab_width);
             let change = Change::insert((line_idx, 0), indent_str.clone(), cursor_before);
@@ -4977,7 +5757,13 @@ impl InputHandler {
         Ok(())
     }
 
-    fn dedent_lines_with_tracking(editor: &mut Editor, start_line: usize, end_line: usize, tab_width: usize, cursor_before: (usize, usize)) -> Result<()> {
+    fn dedent_lines_with_tracking(
+        editor: &mut Editor,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+        cursor_before: (usize, usize),
+    ) -> Result<()> {
         for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
             if let Some(line) = editor.buffer().line(line_idx) {
                 let line_text = line.trim_end_matches('\n');
@@ -4996,7 +5782,10 @@ impl InputHandler {
                 }
 
                 if spaces_to_remove > 0 {
-                    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, spaces_to_remove);
+                    let deleted =
+                        editor
+                            .buffer_mut()
+                            .delete_range(line_idx, 0, line_idx, spaces_to_remove);
                     let range = Range::new((line_idx, 0), (line_idx, spaces_to_remove));
                     let change = Change::delete(range, deleted, cursor_before);
                     editor.add_change(change);
@@ -5027,7 +5816,9 @@ impl InputHandler {
                 // Delete the character
                 let start_pos = (line_idx, col);
                 let end_pos = (line_idx, col + 1);
-                let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
+                let deleted = editor
+                    .buffer_mut()
+                    .delete_range(line_idx, col, line_idx, col + 1);
                 let range = Range::new(start_pos, end_pos);
                 let delete_change = Change::delete(range, deleted, cursor_before);
 
@@ -5063,7 +5854,9 @@ impl InputHandler {
 
                 if transformed != line_text {
                     let line_len = line_text.chars().count();
-                    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_len);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(line_idx, 0, line_idx, line_len);
                     let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
                     let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
@@ -5080,9 +5873,14 @@ impl InputHandler {
     }
 
     /// Changes case using a motion
-    fn change_case_motion<F>(editor: &mut Editor, count: usize, case_change: CaseChange, motion: F) -> Result<()>
+    fn change_case_motion<F>(
+        editor: &mut Editor,
+        count: usize,
+        case_change: CaseChange,
+        motion: F,
+    ) -> Result<()>
     where
-        F: FnOnce(&mut Buffer, usize)
+        F: FnOnce(&mut Buffer, usize),
     {
         let start_cursor = editor.buffer().cursor().clone();
         let cursor_before = (start_cursor.line(), start_cursor.col());
@@ -5099,14 +5897,20 @@ impl InputHandler {
         // Get the text in the range
         let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
         let end_char = editor.buffer().rope().line_to_char(end_line) + end_col;
-        let text = editor.buffer().rope().slice(start_char..end_char).to_string();
+        let text = editor
+            .buffer()
+            .rope()
+            .slice(start_char..end_char)
+            .to_string();
 
         // Transform the case
         let transformed = Self::apply_case_change(&text, &case_change);
 
         if transformed != text {
             // Delete the old text
-            let deleted = editor.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+            let deleted = editor
+                .buffer_mut()
+                .delete_range(start_line, start_col, end_line, end_col);
             let delete_range = Range::new((start_line, start_col), (end_line, end_col));
             let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
@@ -5119,7 +5923,10 @@ impl InputHandler {
         }
 
         // Reset cursor to start position
-        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(start_line, start_col);
 
         Ok(())
     }
@@ -5140,7 +5947,9 @@ impl InputHandler {
                 let transformed = Self::apply_case_change(&text_to_end, &case_change);
 
                 if transformed != text_to_end {
-                    let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, line_len);
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(line_idx, col, line_idx, line_len);
                     let delete_range = Range::new((line_idx, col), (line_idx, line_len));
                     let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
@@ -5161,15 +5970,16 @@ impl InputHandler {
         match case_change {
             CaseChange::Lowercase => text.to_lowercase(),
             CaseChange::Uppercase => text.to_uppercase(),
-            CaseChange::Toggle => {
-                text.chars().map(|ch| {
+            CaseChange::Toggle => text
+                .chars()
+                .map(|ch| {
                     if ch.is_lowercase() {
                         ch.to_uppercase().to_string()
                     } else {
                         ch.to_lowercase().to_string()
                     }
-                }).collect()
-            }
+                })
+                .collect(),
         }
     }
 
@@ -5207,7 +6017,9 @@ impl InputHandler {
                 let line_text = line.trim_end_matches('\n');
 
                 // Find number on this line (start from beginning)
-                if let Some((start_col, end_col, number_str)) = Self::find_number_at_or_after(line_text, 0) {
+                if let Some((start_col, end_col, number_str)) =
+                    Self::find_number_at_or_after(line_text, 0)
+                {
                     // Parse the number
                     if let Ok((value, base, prefix_len)) = Self::parse_number(&number_str) {
                         // Apply the sequential delta
@@ -5227,8 +6039,12 @@ impl InputHandler {
                         let old_range = Range::new((line_idx, start_col), (line_idx, end_col));
 
                         // Delete and insert
-                        let _deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
-                        editor.buffer_mut().insert_text_at(line_idx, start_col, &new_number_str);
+                        let _deleted = editor
+                            .buffer_mut()
+                            .delete_range(line_idx, start_col, line_idx, end_col);
+                        editor
+                            .buffer_mut()
+                            .insert_text_at(line_idx, start_col, &new_number_str);
 
                         // Create a NumberOperation for this line
                         let line_cursor_after = (line_idx, start_col + new_number_str.len() - 1);
@@ -5246,7 +6062,10 @@ impl InputHandler {
         }
 
         // Position cursor back at start of selection
-        editor.buffer_mut().cursor_mut().set_position(start_line, cursor_before.1);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(start_line, cursor_before.1);
 
         // Create a composite change for all the sequential modifications
         if !changes.is_empty() {
@@ -5269,7 +6088,9 @@ impl InputHandler {
             let line_text = line.trim_end_matches('\n');
 
             // Find number at or after cursor position
-            if let Some((start_col, end_col, number_str)) = Self::find_number_at_or_after(line_text, col) {
+            if let Some((start_col, end_col, number_str)) =
+                Self::find_number_at_or_after(line_text, col)
+            {
                 // Check if number has explicit '+' sign
                 let has_plus_sign = number_str.starts_with('+');
 
@@ -5292,8 +6113,12 @@ impl InputHandler {
                 let old_text = number_str.clone();
                 let old_range = Range::new((line_idx, start_col), (line_idx, end_col));
 
-                let _deleted = editor.buffer_mut().delete_range(line_idx, start_col, line_idx, end_col);
-                editor.buffer_mut().insert_text_at(line_idx, start_col, &new_number_str);
+                let _deleted = editor
+                    .buffer_mut()
+                    .delete_range(line_idx, start_col, line_idx, end_col);
+                editor
+                    .buffer_mut()
+                    .insert_text_at(line_idx, start_col, &new_number_str);
 
                 // Position cursor on the last digit of the modified number
                 let new_end_col = start_col + new_number_str.len() - 1;
@@ -5338,7 +6163,11 @@ impl InputHandler {
                     start_col -= 1;
                 } else if prev_ch == '-' || prev_ch == '+' {
                     // Check if this sign is part of the number
-                    if start_col > 1 && !chars[start_col - 2].is_whitespace() && chars[start_col - 2] != '(' && chars[start_col - 2] != '[' {
+                    if start_col > 1
+                        && !chars[start_col - 2].is_whitespace()
+                        && chars[start_col - 2] != '('
+                        && chars[start_col - 2] != '['
+                    {
                         // Not a sign, just adjacent character
                         break;
                     }
@@ -5348,7 +6177,10 @@ impl InputHandler {
                     // Hex prefix
                     start_col -= 2;
                     break;
-                } else if start_col >= 2 && (prev_ch == 'b' || prev_ch == 'o') && chars[start_col - 2] == '0' {
+                } else if start_col >= 2
+                    && (prev_ch == 'b' || prev_ch == 'o')
+                    && chars[start_col - 2] == '0'
+                {
                     // Binary or octal prefix
                     start_col -= 2;
                     break;
@@ -5383,7 +6215,11 @@ impl InputHandler {
                         if prev_ch.is_ascii_digit() {
                             start_col -= 1;
                         } else if prev_ch == '-' || prev_ch == '+' {
-                            if start_col > 1 && !chars[start_col - 2].is_whitespace() && chars[start_col - 2] != '(' && chars[start_col - 2] != '[' {
+                            if start_col > 1
+                                && !chars[start_col - 2].is_whitespace()
+                                && chars[start_col - 2] != '('
+                                && chars[start_col - 2] != '['
+                            {
                                 break;
                             }
                             start_col -= 1;
@@ -5391,7 +6227,10 @@ impl InputHandler {
                         } else if start_col >= 2 && prev_ch == 'x' && chars[start_col - 2] == '0' {
                             start_col -= 2;
                             break;
-                        } else if start_col >= 2 && (prev_ch == 'b' || prev_ch == 'o') && chars[start_col - 2] == '0' {
+                        } else if start_col >= 2
+                            && (prev_ch == 'b' || prev_ch == 'o')
+                            && chars[start_col - 2] == '0'
+                        {
                             start_col -= 2;
                             break;
                         } else {
@@ -5417,10 +6256,18 @@ impl InputHandler {
         while search_col < chars.len() {
             let ch = chars[search_col];
             // Check if this could be the start of a number (including sign)
-            if ch.is_ascii_digit() || ch == '-' || ch == '+' || (search_col + 1 < chars.len() && ch == '0' &&
-                (chars[search_col + 1] == 'x' || chars[search_col + 1] == 'X' ||
-                 chars[search_col + 1] == 'b' || chars[search_col + 1] == 'B' ||
-                 chars[search_col + 1] == 'o' || chars[search_col + 1] == 'O')) {
+            if ch.is_ascii_digit()
+                || ch == '-'
+                || ch == '+'
+                || (search_col + 1 < chars.len()
+                    && ch == '0'
+                    && (chars[search_col + 1] == 'x'
+                        || chars[search_col + 1] == 'X'
+                        || chars[search_col + 1] == 'b'
+                        || chars[search_col + 1] == 'B'
+                        || chars[search_col + 1] == 'o'
+                        || chars[search_col + 1] == 'O'))
+            {
                 break;
             }
             search_col += 1;
@@ -5449,7 +6296,13 @@ impl InputHandler {
         // Check for hex (0x), binary (0b), or octal (0o) prefix
         if chars[end_col] == '0' && end_col + 1 < chars.len() {
             let next = chars[end_col + 1];
-            if next == 'x' || next == 'X' || next == 'b' || next == 'B' || next == 'o' || next == 'O' {
+            if next == 'x'
+                || next == 'X'
+                || next == 'b'
+                || next == 'B'
+                || next == 'o'
+                || next == 'O'
+            {
                 end_col += 2;
 
                 // Collect hex/binary/octal digits
@@ -5506,18 +6359,15 @@ impl InputHandler {
 
             match prefix {
                 "0x" | "0X" => {
-                    let value = i64::from_str_radix(digits, 16)
-                        .unwrap_or(0);
+                    let value = i64::from_str_radix(digits, 16).unwrap_or(0);
                     return Ok((value, 16, 2));
                 }
                 "0b" | "0B" => {
-                    let value = i64::from_str_radix(digits, 2)
-                        .unwrap_or(0);
+                    let value = i64::from_str_radix(digits, 2).unwrap_or(0);
                     return Ok((value, 2, 2));
                 }
                 "0o" | "0O" => {
-                    let value = i64::from_str_radix(digits, 8)
-                        .unwrap_or(0);
+                    let value = i64::from_str_radix(digits, 8).unwrap_or(0);
                     return Ok((value, 8, 2));
                 }
                 _ => {}

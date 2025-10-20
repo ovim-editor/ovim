@@ -88,7 +88,10 @@ impl ColorScheme {
 
     /// Gets the color for a syntax highlight group
     pub fn get_syntax_color(&self, group: HighlightGroup) -> Color {
-        self.syntax_colors.get(&group).copied().unwrap_or(Color::White)
+        self.syntax_colors
+            .get(&group)
+            .copied()
+            .unwrap_or(Color::White)
     }
 
     /// Gets the color for a UI element group
@@ -471,23 +474,23 @@ impl ColorScheme {
         let mut scheme = Self::new("tokyonight");
 
         // Tokyonight night palette
-        let bg = Color::Rgb(26, 27, 38);           // #1a1b26
-        let bg_dark = Color::Rgb(22, 22, 30);      // #16161e
+        let bg = Color::Rgb(26, 27, 38); // #1a1b26
+        let bg_dark = Color::Rgb(22, 22, 30); // #16161e
         let bg_highlight = Color::Rgb(41, 46, 66); // #292e42
-        let fg = Color::Rgb(192, 202, 245);        // #c0caf5
-        let fg_dark = Color::Rgb(169, 177, 214);   // #a9b1d6
-        let comment = Color::Rgb(86, 95, 137);     // #565f89
+        let fg = Color::Rgb(192, 202, 245); // #c0caf5
+        let fg_dark = Color::Rgb(169, 177, 214); // #a9b1d6
+        let comment = Color::Rgb(86, 95, 137); // #565f89
 
         // Accent colors
-        let blue = Color::Rgb(122, 162, 247);      // #7aa2f7
-        let cyan = Color::Rgb(42, 195, 222);       // #2ac3de
-        let green = Color::Rgb(158, 206, 106);     // #9ece6a
-        let yellow = Color::Rgb(224, 175, 104);    // #e0af68
-        let orange = Color::Rgb(255, 158, 100);    // #ff9e64
-        let red = Color::Rgb(247, 118, 142);       // #f7768e
-        let purple = Color::Rgb(187, 154, 247);    // #bb9af7
-        let magenta = Color::Rgb(187, 154, 247);   // #bb9af7
-        let teal = Color::Rgb(26, 188, 156);       // #1abc9c
+        let blue = Color::Rgb(122, 162, 247); // #7aa2f7
+        let cyan = Color::Rgb(42, 195, 222); // #2ac3de
+        let green = Color::Rgb(158, 206, 106); // #9ece6a
+        let yellow = Color::Rgb(224, 175, 104); // #e0af68
+        let orange = Color::Rgb(255, 158, 100); // #ff9e64
+        let red = Color::Rgb(247, 118, 142); // #f7768e
+        let purple = Color::Rgb(187, 154, 247); // #bb9af7
+        let magenta = Color::Rgb(187, 154, 247); // #bb9af7
+        let teal = Color::Rgb(26, 188, 156); // #1abc9c
 
         // Syntax colors - following Tokyonight's style
         scheme.set_syntax(HighlightGroup::Keyword, purple);
@@ -576,7 +579,10 @@ impl ColorSchemeRegistry {
         schemes.insert("gruvbox-dark".to_string(), ColorScheme::gruvbox_dark());
         schemes.insert("gruvbox-light".to_string(), ColorScheme::gruvbox_light());
         schemes.insert("solarized-dark".to_string(), ColorScheme::solarized_dark());
-        schemes.insert("solarized-light".to_string(), ColorScheme::solarized_light());
+        schemes.insert(
+            "solarized-light".to_string(),
+            ColorScheme::solarized_light(),
+        );
         schemes.insert("monokai".to_string(), ColorScheme::monokai());
         schemes.insert("dracula".to_string(), ColorScheme::dracula());
 

@@ -1,5 +1,5 @@
-use ovim::editor::{Editor, InputHandler};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -179,7 +179,11 @@ fn test_diw_deletes_word() {
 
     // "hello" should be deleted, leaving " world" or something similar
     let line = editor.buffer().line(0).unwrap();
-    assert!(!line.contains("hello"), "Expected 'hello' to be deleted, got: {}", line);
+    assert!(
+        !line.contains("hello"),
+        "Expected 'hello' to be deleted, got: {}",
+        line
+    );
 
     // Cursor should be at start of deletion
     assert_eq!(editor.buffer().cursor().line(), 0);

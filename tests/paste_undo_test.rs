@@ -1,5 +1,5 @@
-use ovim::editor::{Editor, InputHandler};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -102,7 +102,11 @@ fn test_character_paste_after_undo() {
 
     // Buffer should now be "hello worldhello  test" (note: yiw yanks "hello " with space)
     let line = editor.buffer().line(0).unwrap();
-    assert!(line.contains("worldhello "), "Expected 'worldhello ' in: {}", line);
+    assert!(
+        line.contains("worldhello "),
+        "Expected 'worldhello ' in: {}",
+        line
+    );
 
     // Undo the paste
     press(&mut editor, KeyCode::Char('u'));
@@ -136,7 +140,11 @@ fn test_character_paste_before_undo() {
 
     // Buffer should now be "hello world world test" (yiw yanks "world " with space)
     let line = editor.buffer().line(0).unwrap();
-    assert!(line.contains("world world "), "Expected 'world world ' in: {}", line);
+    assert!(
+        line.contains("world world "),
+        "Expected 'world world ' in: {}",
+        line
+    );
 
     // Undo the paste
     press(&mut editor, KeyCode::Char('u'));

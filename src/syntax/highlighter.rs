@@ -1,7 +1,7 @@
-use super::theme::HighlightGroup;
 use super::languages::{Language, LanguageRegistry};
-use tree_sitter::{Parser, Tree, Query, QueryCursor};
+use super::theme::HighlightGroup;
 use std::ops::Range;
+use tree_sitter::{Parser, Query, QueryCursor, Tree};
 
 /// Syntax highlighter using tree-sitter
 pub struct SyntaxHighlighter {
@@ -19,13 +19,18 @@ impl SyntaxHighlighter {
         let query_source = LanguageRegistry::get_highlight_query(language);
 
         let mut parser = Parser::new();
-        parser.set_language(&ts_language)
+        parser
+            .set_language(&ts_language)
             .map_err(|e| format!("Failed to set language: {}", e))?;
 
         let query = Query::new(&ts_language, query_source)
             .map_err(|e| format!("Failed to create query: {}", e))?;
 
-        let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let capture_names = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         Ok(Self {
             language,
@@ -53,13 +58,17 @@ impl SyntaxHighlighter {
 
     /// Gets highlights for all lines at once (more efficient than per-line)
     /// This queries the syntax tree ONCE and distributes highlights to lines
-    pub fn highlights_for_all_lines(&self, source: &str) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+    pub fn highlights_for_all_lines(
+        &self,
+        source: &str,
+    ) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
         let Some(ref tree) = self.tree else {
             return Vec::new();
         };
 
         let lines: Vec<&str> = source.lines().collect();
-        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> = vec![Vec::new(); lines.len()];
+        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> =
+            vec![Vec::new(); lines.len()];
 
         // Calculate line byte offsets once
         let mut line_start_bytes = Vec::with_capacity(lines.len());
@@ -71,11 +80,7 @@ impl SyntaxHighlighter {
 
         // Query the tree ONCE for all matches
         let mut cursor = QueryCursor::new();
-        let matches = cursor.matches(
-            &self.query,
-            tree.root_node(),
-            source.as_bytes(),
-        );
+        let matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
         // Distribute captures to lines in a single pass
         for m in matches {
@@ -127,7 +132,11 @@ impl SyntaxHighlighter {
 
     /// Gets highlights for a specific line
     /// Note: For bulk operations, use highlights_for_all_lines() which is much faster
-    pub fn highlights_for_line(&self, line_idx: usize, source: &str) -> Vec<(Range<usize>, HighlightGroup)> {
+    pub fn highlights_for_line(
+        &self,
+        line_idx: usize,
+        source: &str,
+    ) -> Vec<(Range<usize>, HighlightGroup)> {
         let Some(ref tree) = self.tree else {
             return Vec::new();
         };
@@ -145,11 +154,7 @@ impl SyntaxHighlighter {
         let line_end_byte = line_start_byte + lines[line_idx].len();
 
         // Query captures in this line
-        let matches = cursor.matches(
-            &self.query,
-            tree.root_node(),
-            source.as_bytes(),
-        );
+        let matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
         for m in matches {
             for capture in m.captures {

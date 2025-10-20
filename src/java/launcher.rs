@@ -51,11 +51,7 @@ impl JdtlsLauncher {
                 "/System/Library/Java/JavaVirtualMachines/",
             ]
         } else if cfg!(target_os = "linux") {
-            vec![
-                "/usr/lib/jvm/",
-                "/usr/java/",
-                "/opt/java/",
-            ]
+            vec!["/usr/lib/jvm/", "/usr/java/", "/opt/java/"]
         } else {
             vec![] // Windows uses registry
         };
@@ -157,11 +153,9 @@ impl JdtlsLauncher {
         // Build command
         let mut args = vec![
             java_bin.to_string_lossy().to_string(),
-
             // Memory settings (optimized for speed)
             "-Xms256m".to_string(),
             "-Xmx2G".to_string(),
-
             // Performance flags
             "-XX:+UseG1GC".to_string(),
             "-XX:+UseStringDeduplication".to_string(),
@@ -176,11 +170,9 @@ impl JdtlsLauncher {
         args.extend(vec![
             "-jar".to_string(),
             jdtls_launcher.to_string_lossy().to_string(),
-
             // Configuration
             "-configuration".to_string(),
             config_dir.to_string_lossy().to_string(),
-
             // Workspace data
             "-data".to_string(),
             self.config.workspace_dir.to_string_lossy().to_string(),

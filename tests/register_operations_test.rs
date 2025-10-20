@@ -9,9 +9,9 @@ use helpers::EditorTest;
 fn test_yank_to_named_register() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("\"ayiw")   // Yank word to register 'a'
-        .keys("$")        // End of line
-        .keys("\"ap");    // Paste from register 'a'
+    test.keys("\"ayiw") // Yank word to register 'a'
+        .keys("$") // End of line
+        .keys("\"ap"); // Paste from register 'a'
 
     assert_eq!(test.buffer_content(), "hello worldhello \n");
     test.assert_cursor(0, 17);
@@ -21,9 +21,9 @@ fn test_yank_to_named_register() {
 fn test_delete_to_named_register() {
     let mut test = EditorTest::new("hello world test");
 
-    test.keys("\"adw")    // Delete word to register 'a'
+    test.keys("\"adw") // Delete word to register 'a'
         .keys("$")
-        .keys("\"ap");    // Paste from register 'a'
+        .keys("\"ap"); // Paste from register 'a'
 
     assert_eq!(test.buffer_content(), "world testhello \n");
     test.assert_cursor(0, 16);
@@ -33,11 +33,11 @@ fn test_delete_to_named_register() {
 fn test_change_to_named_register() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("\"aciw")   // Change word to register 'a'
+    test.keys("\"aciw") // Change word to register 'a'
         .type_text("goodbye")
         .press_esc()
         .keys("$")
-        .keys("\"ap");    // Paste original word
+        .keys("\"ap"); // Paste original word
 
     assert_eq!(test.buffer_content(), "goodbye worldhello \n");
     test.assert_cursor(0, 18);
@@ -47,15 +47,15 @@ fn test_change_to_named_register() {
 fn test_multiple_named_registers() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("\"ayiw")   // Yank "one" to register 'a'
+    test.keys("\"ayiw") // Yank "one" to register 'a'
         .keys("w")
-        .keys("\"byiw")   // Yank "two" to register 'b'
+        .keys("\"byiw") // Yank "two" to register 'b'
         .keys("w")
-        .keys("\"cyiw")   // Yank "three" to register 'c'
+        .keys("\"cyiw") // Yank "three" to register 'c'
         .keys("$")
-        .keys("\"ap")     // Paste from 'a'
-        .keys("\"bp")     // Paste from 'b'
-        .keys("\"cp");    // Paste from 'c'
+        .keys("\"ap") // Paste from 'a'
+        .keys("\"bp") // Paste from 'b'
+        .keys("\"cp"); // Paste from 'c'
 
     assert_eq!(test.buffer_content(), "one two three fourone two three \n");
     test.assert_cursor(0, 31);
@@ -65,11 +65,11 @@ fn test_multiple_named_registers() {
 fn test_overwrite_named_register() {
     let mut test = EditorTest::new("first second third");
 
-    test.keys("\"ayiw")   // Yank "first" to 'a'
+    test.keys("\"ayiw") // Yank "first" to 'a'
         .keys("w")
-        .keys("\"ayiw")   // Overwrite with "second"
+        .keys("\"ayiw") // Overwrite with "second"
         .keys("$")
-        .keys("\"ap");    // Should paste "second"
+        .keys("\"ap"); // Should paste "second"
 
     assert_eq!(test.buffer_content(), "first second thirdsecond \n");
     test.assert_cursor(0, 25);
@@ -80,8 +80,8 @@ fn test_all_lowercase_registers() {
     let mut test = EditorTest::new("word");
 
     // Test that we can use all lowercase letters
-    test.keys("\"ayiw")   // register a
-        .keys("\"zyiw");  // register z
+    test.keys("\"ayiw") // register a
+        .keys("\"zyiw"); // register z
 
     assert_eq!(test.buffer_content(), "word\n");
     test.assert_cursor(0, 0);
@@ -95,11 +95,11 @@ fn test_all_lowercase_registers() {
 fn test_append_to_register() {
     let mut test = EditorTest::new("hello world test");
 
-    test.keys("\"ayiw")   // Yank "hello" to 'a'
+    test.keys("\"ayiw") // Yank "hello" to 'a'
         .keys("w")
-        .keys("\"Ayiw")   // Append "world" to 'a'
+        .keys("\"Ayiw") // Append "world" to 'a'
         .keys("$")
-        .keys("\"ap");    // Paste both
+        .keys("\"ap"); // Paste both
 
     assert_eq!(test.buffer_content(), "hello world testhelloworld \n");
     test.assert_cursor(0, 26);
@@ -109,13 +109,13 @@ fn test_append_to_register() {
 fn test_append_multiple_times() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("\"ayiw")   // "one"
+    test.keys("\"ayiw") // "one"
         .keys("w")
-        .keys("\"Ayiw")   // Append "two"
+        .keys("\"Ayiw") // Append "two"
         .keys("w")
-        .keys("\"Ayiw")   // Append "three"
+        .keys("\"Ayiw") // Append "three"
         .keys("$")
-        .keys("\"ap");    // Paste all
+        .keys("\"ap"); // Paste all
 
     assert_eq!(test.buffer_content(), "one two three fouronetwo three \n");
     test.assert_cursor(0, 31);
@@ -125,9 +125,9 @@ fn test_append_multiple_times() {
 fn test_append_with_delete() {
     let mut test = EditorTest::new("hello world test");
 
-    test.keys("\"adw")    // Delete "hello " to 'a'
-        .keys("\"Adw")    // Append delete "world " to 'a'
-        .keys("\"ap");    // Paste both
+    test.keys("\"adw") // Delete "hello " to 'a'
+        .keys("\"Adw") // Append delete "world " to 'a'
+        .keys("\"ap"); // Paste both
 
     assert_eq!(test.buffer_content(), "testhello world \n");
     test.assert_cursor(0, 16);
@@ -141,9 +141,9 @@ fn test_append_with_delete() {
 fn test_unnamed_register_yank() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank to unnamed register
+    test.keys("yiw") // Yank to unnamed register
         .keys("$")
-        .press('p');      // Paste from unnamed
+        .press('p'); // Paste from unnamed
 
     assert_eq!(test.buffer_content(), "hello worldhello \n");
     test.assert_cursor(0, 17);
@@ -153,8 +153,8 @@ fn test_unnamed_register_yank() {
 fn test_unnamed_register_delete() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("dw")       // Delete to unnamed
-        .press('p');      // Paste from unnamed
+    test.keys("dw") // Delete to unnamed
+        .press('p'); // Paste from unnamed
 
     assert_eq!(test.buffer_content(), "worldhello \n");
     test.assert_cursor(0, 10);
@@ -164,11 +164,11 @@ fn test_unnamed_register_delete() {
 fn test_unnamed_register_change() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("ciw")      // Change puts old text in unnamed
+    test.keys("ciw") // Change puts old text in unnamed
         .type_text("X")
         .press_esc()
         .keys("$")
-        .press('p');      // Paste original word
+        .press('p'); // Paste original word
 
     assert_eq!(test.buffer_content(), "X worldhello \n");
     test.assert_cursor(0, 13);
@@ -182,9 +182,9 @@ fn test_unnamed_register_change() {
 fn test_register_0_yank() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank "hello" (goes to "0)
-        .keys("dw")       // Delete word (goes to "1, doesn't affect "0)
-        .keys("\"0p");    // Paste from "0 (should be "hello")
+    test.keys("yiw") // Yank "hello" (goes to "0)
+        .keys("dw") // Delete word (goes to "1, doesn't affect "0)
+        .keys("\"0p"); // Paste from "0 (should be "hello")
 
     assert_eq!(test.buffer_content(), "worldhello \n");
     test.assert_cursor(0, 10);
@@ -194,12 +194,12 @@ fn test_register_0_yank() {
 fn test_numbered_delete_history() {
     let mut test = EditorTest::new("one two three four five");
 
-    test.keys("dw")       // Delete "one " -> "1
-        .keys("dw")       // Delete "two " -> "1, "one " -> "2
-        .keys("dw")       // Delete "three " -> "1, "two " -> "2, "one " -> "3
-        .keys("\"1p")     // Paste most recent delete
-        .keys("\"2p")     // Paste second most recent
-        .keys("\"3p");    // Paste third most recent
+    test.keys("dw") // Delete "one " -> "1
+        .keys("dw") // Delete "two " -> "1, "one " -> "2
+        .keys("dw") // Delete "three " -> "1, "two " -> "2, "one " -> "3
+        .keys("\"1p") // Paste most recent delete
+        .keys("\"2p") // Paste second most recent
+        .keys("\"3p"); // Paste third most recent
 
     assert_eq!(test.buffer_content(), "four fivethree two one \n");
     test.assert_cursor(0, 23);
@@ -209,10 +209,10 @@ fn test_numbered_delete_history() {
 fn test_register_0_only_yanks() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank to "0
-        .keys("x")        // Delete (doesn't affect "0)
-        .keys("x")        // Delete again
-        .keys("\"0p");    // Paste from "0 (should still be "hello")
+    test.keys("yiw") // Yank to "0
+        .keys("x") // Delete (doesn't affect "0)
+        .keys("x") // Delete again
+        .keys("\"0p"); // Paste from "0 (should still be "hello")
 
     assert_eq!(test.buffer_content(), "llhello o world\n");
     test.assert_cursor(0, 7);
@@ -226,8 +226,8 @@ fn test_register_0_only_yanks() {
 fn test_small_delete_register() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x')       // Delete single char (goes to "-)
-        .keys("\"-p");    // Paste from small delete register
+    test.press('x') // Delete single char (goes to "-)
+        .keys("\"-p"); // Paste from small delete register
 
     assert_eq!(test.buffer_content(), "ehllo world\n");
     test.assert_cursor(0, 1);
@@ -237,10 +237,10 @@ fn test_small_delete_register() {
 fn test_small_delete_vs_numbered() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('x')       // Small delete (to "-)
-        .keys("dw")       // Line delete (to "1, not "-)
-        .keys("\"-p")     // Paste small delete
-        .keys("\"1p");    // Paste line delete
+    test.press('x') // Small delete (to "-)
+        .keys("dw") // Line delete (to "1, not "-)
+        .keys("\"-p") // Paste small delete
+        .keys("\"1p"); // Paste line delete
 
     assert_eq!(test.buffer_content(), "whorldello \n");
     test.assert_cursor(0, 10);
@@ -254,8 +254,7 @@ fn test_small_delete_vs_numbered() {
 fn test_percent_register_filename() {
     let mut test = EditorTest::new("test content");
 
-    test.set_file_path("test.txt".to_string())
-        .keys("\"%p");    // Paste filename
+    test.set_file_path("test.txt".to_string()).keys("\"%p"); // Paste filename
 
     assert_eq!(test.buffer_content(), "ttest.txtest content\n");
     test.assert_cursor(0, 8);
@@ -265,10 +264,7 @@ fn test_percent_register_filename() {
 fn test_colon_register_last_command() {
     let mut test = EditorTest::new("test");
 
-    test.press(':')
-        .type_text("w")
-        .press_esc()
-        .keys("\":p");    // Paste last command
+    test.press(':').type_text("w").press_esc().keys("\":p"); // Paste last command
 
     assert_eq!(test.buffer_content(), "twest\n");
     test.assert_cursor(0, 1);
@@ -281,7 +277,7 @@ fn test_dot_register_last_insert() {
     test.press('i')
         .type_text("INSERTED")
         .press_esc()
-        .keys("$.p");     // Paste last inserted text
+        .keys("$.p"); // Paste last inserted text
 
     assert_eq!(test.buffer_content(), "INSERTEDlineINSERTED\n");
     test.assert_cursor(0, 20);
@@ -295,10 +291,10 @@ fn test_dot_register_last_insert() {
 fn test_blackhole_register_delete() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank "hello"
+    test.keys("yiw") // Yank "hello"
         .keys("w")
-        .keys("\"_dw")    // Delete to black hole
-        .press('p');      // Paste should still be "hello"
+        .keys("\"_dw") // Delete to black hole
+        .press('p'); // Paste should still be "hello"
 
     assert_eq!(test.buffer_content(), "hello hello \n");
     test.assert_cursor(0, 11);
@@ -308,13 +304,13 @@ fn test_blackhole_register_delete() {
 fn test_blackhole_register_change() {
     let mut test = EditorTest::new("one two three");
 
-    test.keys("yiw")      // Yank "one"
+    test.keys("yiw") // Yank "one"
         .keys("w")
-        .keys("\"_ciw")   // Change to black hole
+        .keys("\"_ciw") // Change to black hole
         .type_text("X")
         .press_esc()
         .keys("$")
-        .press('p');      // Should paste "one", not "two"
+        .press('p'); // Should paste "one", not "two"
 
     assert_eq!(test.buffer_content(), "one X threeone \n");
     test.assert_cursor(0, 15);
@@ -331,7 +327,7 @@ fn test_slash_register_search_pattern() {
     test.press('/')
         .type_text("world")
         .press_enter()
-        .keys("\"/p");    // Paste search pattern
+        .keys("\"/p"); // Paste search pattern
 
     assert_eq!(test.buffer_content(), "hello wworlorld\n");
     test.assert_cursor(0, 11);
@@ -345,10 +341,10 @@ fn test_slash_register_search_pattern() {
 fn test_expression_register() {
     let mut test = EditorTest::new("test");
 
-    test.keys("\"=")      // Expression register
+    test.keys("\"=") // Expression register
         .type_text("2+2")
         .press_enter()
-        .press('p');      // Should paste "4"
+        .press('p'); // Should paste "4"
 
     assert_eq!(test.buffer_content(), "t4est\n");
     test.assert_cursor(0, 1);
@@ -362,9 +358,9 @@ fn test_expression_register() {
 fn test_clipboard_register_yank() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("\"+yiw")   // Yank to system clipboard
+    test.keys("\"+yiw") // Yank to system clipboard
         .keys("$")
-        .keys("\"+p");    // Paste from clipboard
+        .keys("\"+p"); // Paste from clipboard
 
     assert_eq!(test.buffer_content(), "hello worldhello \n");
     test.assert_cursor(0, 17);
@@ -374,9 +370,9 @@ fn test_clipboard_register_yank() {
 fn test_selection_register() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("\"*yiw")   // Yank to selection
+    test.keys("\"*yiw") // Yank to selection
         .keys("$")
-        .keys("\"*p");    // Paste from selection
+        .keys("\"*p"); // Paste from selection
 
     assert_eq!(test.buffer_content(), "hello worldhello \n");
     test.assert_cursor(0, 17);
@@ -391,11 +387,11 @@ fn test_visual_yank_to_register() {
     let mut test = EditorTest::new("hello world test");
 
     test.press('v')
-        .keys("e")        // Select "hello"
-        .keys("\"ay")     // Yank to register 'a'
+        .keys("e") // Select "hello"
+        .keys("\"ay") // Yank to register 'a'
         .press_esc()
         .keys("$")
-        .keys("\"ap");    // Paste
+        .keys("\"ap"); // Paste
 
     assert_eq!(test.buffer_content(), "hello world testhello\n");
     test.assert_cursor(0, 21);
@@ -407,7 +403,7 @@ fn test_visual_delete_to_register() {
 
     test.press('v')
         .keys("e")
-        .keys("\"ad")     // Delete to register 'a'
+        .keys("\"ad") // Delete to register 'a'
         .keys("$")
         .keys("\"ap");
 
@@ -419,14 +415,17 @@ fn test_visual_delete_to_register() {
 fn test_visual_line_to_register() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('V')       // Visual line
-        .press('j')       // Select 2 lines
-        .keys("\"ay")     // Yank to 'a'
+    test.press('V') // Visual line
+        .press('j') // Select 2 lines
+        .keys("\"ay") // Yank to 'a'
         .press_esc()
         .keys("G")
-        .keys("\"ap");    // Paste
+        .keys("\"ap"); // Paste
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\nline 2\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 2\nline 3\nline 1\nline 2\n"
+    );
     test.assert_cursor(3, 0);
 }
 
@@ -438,10 +437,10 @@ fn test_visual_line_to_register() {
 fn test_register_survives_undo() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("\"ayiw")   // Yank to 'a'
-        .keys("dw")       // Delete something
-        .press('u')       // Undo delete
-        .keys("\"ap");    // Register 'a' should still work
+    test.keys("\"ayiw") // Yank to 'a'
+        .keys("dw") // Delete something
+        .press('u') // Undo delete
+        .keys("\"ap"); // Register 'a' should still work
 
     assert_eq!(test.buffer_content(), "hello worldhello \n");
     test.assert_cursor(0, 17);
@@ -451,7 +450,7 @@ fn test_register_survives_undo() {
 fn test_empty_register() {
     let mut test = EditorTest::new("test");
 
-    test.keys("\"zp");    // Paste from unused register
+    test.keys("\"zp"); // Paste from unused register
 
     assert_eq!(test.buffer_content(), "test\n");
     test.assert_cursor(0, 0);
@@ -461,9 +460,9 @@ fn test_empty_register() {
 fn test_register_with_newlines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("\"ayy")    // Yank line to 'a' (includes newline)
+    test.keys("\"ayy") // Yank line to 'a' (includes newline)
         .keys("G")
-        .keys("\"ap");    // Paste with newline
+        .keys("\"ap"); // Paste with newline
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\n");
     test.assert_cursor(3, 0);
@@ -473,12 +472,12 @@ fn test_register_with_newlines() {
 fn test_register_linewise_vs_charwise() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("\"ayy")    // Yank line (linewise)
+    test.keys("\"ayy") // Yank line (linewise)
         .keys("w")
-        .keys("\"byiw")   // Yank word (charwise)
+        .keys("\"byiw") // Yank word (charwise)
         .keys("G")
-        .keys("\"ap")     // Paste line
-        .keys("\"bp");    // Paste word
+        .keys("\"ap") // Paste line
+        .keys("\"bp"); // Paste word
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\n1\n");
     test.assert_cursor(4, 1);
@@ -492,7 +491,7 @@ fn test_register_linewise_vs_charwise() {
 fn test_register_with_count_yank() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("\"a3yiw")  // Yank 3 words to 'a'
+    test.keys("\"a3yiw") // Yank 3 words to 'a'
         .keys("$")
         .keys("\"ap");
 
@@ -504,7 +503,7 @@ fn test_register_with_count_yank() {
 fn test_register_with_count_delete() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.keys("\"a2dd")   // Delete 2 lines to 'a'
+    test.keys("\"a2dd") // Delete 2 lines to 'a'
         .keys("G")
         .keys("\"ap");
 
@@ -516,9 +515,9 @@ fn test_register_with_count_delete() {
 fn test_register_paste_with_count() {
     let mut test = EditorTest::new("word");
 
-    test.keys("\"ayiw")   // Yank to 'a'
+    test.keys("\"ayiw") // Yank to 'a'
         .keys("$")
-        .keys("3\"ap");   // Paste 3 times from 'a'
+        .keys("3\"ap"); // Paste 3 times from 'a'
 
     assert_eq!(test.buffer_content(), "wordword word word \n");
     test.assert_cursor(0, 19);
@@ -532,9 +531,9 @@ fn test_register_paste_with_count() {
 fn test_delete_updates_both_unnamed_and_numbered() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("dw")       // Delete word
-        .press('p')       // Paste from unnamed
-        .keys("\"1p");    // Paste from "1 (should be same)
+    test.keys("dw") // Delete word
+        .press('p') // Paste from unnamed
+        .keys("\"1p"); // Paste from "1 (should be same)
 
     assert_eq!(test.buffer_content(), "worldhello hello \n");
     test.assert_cursor(0, 17);
@@ -544,10 +543,10 @@ fn test_delete_updates_both_unnamed_and_numbered() {
 fn test_yank_updates_unnamed_and_0() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank word
+    test.keys("yiw") // Yank word
         .keys("$")
-        .press('p')       // Paste from unnamed
-        .keys("\"0p");    // Paste from "0 (should be same)
+        .press('p') // Paste from unnamed
+        .keys("\"0p"); // Paste from "0 (should be same)
 
     assert_eq!(test.buffer_content(), "hello worldhello hello \n");
     test.assert_cursor(0, 23);
@@ -557,13 +556,13 @@ fn test_yank_updates_unnamed_and_0() {
 fn test_change_updates_unnamed_but_not_0() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw")      // Yank "hello" to "0
-        .keys("ciw")      // Change word (deleted text to unnamed, not "0)
+    test.keys("yiw") // Yank "hello" to "0
+        .keys("ciw") // Change word (deleted text to unnamed, not "0)
         .type_text("X")
         .press_esc()
         .keys("$")
-        .press('p')       // Paste from unnamed ("hello")
-        .keys("\"0p");    // Paste from "0 (should still be "hello")
+        .press('p') // Paste from unnamed ("hello")
+        .keys("\"0p"); // Paste from "0 (should still be "hello")
 
     assert_eq!(test.buffer_content(), "X worldhello hello \n");
     test.assert_cursor(0, 19);
@@ -577,8 +576,8 @@ fn test_change_updates_unnamed_but_not_0() {
 fn test_invalid_register_name() {
     let mut test = EditorTest::new("test");
 
-    test.keys("\"!")      // Invalid register
-        .press('p');      // Should handle gracefully
+    test.keys("\"!") // Invalid register
+        .press('p'); // Should handle gracefully
 
     assert_eq!(test.buffer_content(), "test\n");
     test.assert_cursor(0, 0);
@@ -588,11 +587,11 @@ fn test_invalid_register_name() {
 fn test_register_case_sensitivity() {
     let mut test = EditorTest::new("hello world test");
 
-    test.keys("\"ayiw")   // Lowercase 'a'
+    test.keys("\"ayiw") // Lowercase 'a'
         .keys("w")
-        .keys("\"Ayiw")   // Uppercase 'A' (append)
+        .keys("\"Ayiw") // Uppercase 'A' (append)
         .keys("$")
-        .keys("\"ap");    // Should have both
+        .keys("\"ap"); // Should have both
 
     assert_eq!(test.buffer_content(), "hello world testhelloworld \n");
     test.assert_cursor(0, 26);
@@ -606,13 +605,13 @@ fn test_register_case_sensitivity() {
 fn test_register_chain_operations() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("\"ayiw")   // Yank "one" to a
+    test.keys("\"ayiw") // Yank "one" to a
         .keys("w")
-        .keys("\"byiw")   // Yank "two" to b
-        .keys("\"ap")     // Paste "one"
-        .keys("\"bp")     // Paste "two"
-        .keys("\"ayiw")   // Yank "onetwo" to a
-        .keys("\"ap");    // Paste new a
+        .keys("\"byiw") // Yank "two" to b
+        .keys("\"ap") // Paste "one"
+        .keys("\"bp") // Paste "two"
+        .keys("\"ayiw") // Yank "onetwo" to a
+        .keys("\"ap"); // Paste new a
 
     assert_eq!(test.buffer_content(), "one tonetwo two three four\n");
     test.assert_cursor(0, 7);
@@ -622,15 +621,15 @@ fn test_register_chain_operations() {
 fn test_swap_words_with_registers() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("\"ayiw")   // Yank "hello" to a
+    test.keys("\"ayiw") // Yank "hello" to a
         .keys("w")
-        .keys("\"byiw")   // Yank "world" to b
+        .keys("\"byiw") // Yank "world" to b
         .keys("0")
-        .keys("diw")      // Delete "hello"
-        .keys("\"bp")     // Paste "world"
+        .keys("diw") // Delete "hello"
+        .keys("\"bp") // Paste "world"
         .keys("w")
-        .keys("diw")      // Delete "world"
-        .keys("\"ap");    // Paste "hello"
+        .keys("diw") // Delete "world"
+        .keys("\"ap"); // Paste "hello"
 
     assert_eq!(test.buffer_content(), "world hello\n");
     test.assert_cursor(0, 11);

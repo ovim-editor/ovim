@@ -1,6 +1,6 @@
+use crate::lua::EditorBridge;
 use anyhow::Result;
 use mlua::{Lua, Table};
-use crate::lua::EditorBridge;
 
 /// Sets up the vim global table with API namespaces
 pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
@@ -39,7 +39,9 @@ fn create_api_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
     // vim.api.nvim_command(cmd)
     let bridge_clone = bridge.clone();
     let nvim_command = lua.create_function(move |_lua, cmd: String| {
-        bridge_clone.execute_command(cmd).map_err(mlua::Error::external)?;
+        bridge_clone
+            .execute_command(cmd)
+            .map_err(mlua::Error::external)?;
         Ok(())
     })?;
     api.set("nvim_command", nvim_command)?;
@@ -50,7 +52,9 @@ fn create_api_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
         // Execute each line as a command
         for line in src.lines() {
             if !line.trim().is_empty() {
-                bridge_clone.execute_command(line.to_string()).map_err(mlua::Error::external)?;
+                bridge_clone
+                    .execute_command(line.to_string())
+                    .map_err(mlua::Error::external)?;
             }
         }
         if output {
@@ -121,7 +125,9 @@ fn create_fn_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
 /// Creates the vim.cmd function for executing ex commands
 fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function> {
     let cmd = lua.create_function(move |_lua, command: String| {
-        bridge.execute_command(command).map_err(mlua::Error::external)?;
+        bridge
+            .execute_command(command)
+            .map_err(mlua::Error::external)?;
         Ok(())
     })?;
     Ok(cmd)
@@ -134,58 +140,50 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
 
     // __newindex: called when setting opt.name = value
     let bridge_clone = bridge.clone();
-    let newindex = lua.create_function(move |_lua, (_, key, value): (mlua::Value, String, mlua::Value)| {
-        let cmd = match key.as_str() {
-            "number" | "nu" => {
-                match value {
+    let newindex = lua.create_function(
+        move |_lua, (_, key, value): (mlua::Value, String, mlua::Value)| {
+            let cmd = match key.as_str() {
+                "number" | "nu" => match value {
                     mlua::Value::Boolean(true) => "set number",
                     mlua::Value::Boolean(false) => "set nonumber",
                     _ => return Err(mlua::Error::external("number must be boolean")),
-                }
-            }
-            "relativenumber" | "rnu" => {
-                match value {
+                },
+                "relativenumber" | "rnu" => match value {
                     mlua::Value::Boolean(true) => "set relativenumber",
                     mlua::Value::Boolean(false) => "set norelativenumber",
                     _ => return Err(mlua::Error::external("relativenumber must be boolean")),
-                }
-            }
-            "expandtab" | "et" => {
-                match value {
+                },
+                "expandtab" | "et" => match value {
                     mlua::Value::Boolean(true) => "set expandtab",
                     mlua::Value::Boolean(false) => "set noexpandtab",
                     _ => return Err(mlua::Error::external("expandtab must be boolean")),
-                }
-            }
-            "tabstop" | "ts" => {
-                match value {
+                },
+                "tabstop" | "ts" => match value {
                     mlua::Value::Integer(n) => format!("set tabstop={}", n),
                     mlua::Value::Number(n) => format!("set tabstop={}", n as i64),
                     _ => return Err(mlua::Error::external("tabstop must be number")),
-                }
-            }
-            "shiftwidth" | "sw" => {
-                match value {
+                },
+                "shiftwidth" | "sw" => match value {
                     mlua::Value::Integer(n) => format!("set shiftwidth={}", n),
                     mlua::Value::Number(n) => format!("set shiftwidth={}", n as i64),
                     _ => return Err(mlua::Error::external("shiftwidth must be number")),
-                }
-            }
-            "scroll" => {
-                match value {
+                },
+                "scroll" => match value {
                     mlua::Value::Integer(n) => format!("set scroll={}", n),
                     mlua::Value::Number(n) => format!("set scroll={}", n as i64),
                     _ => return Err(mlua::Error::external("scroll must be number")),
+                },
+                _ => {
+                    return Err(mlua::Error::external(format!("Unknown option: {}", key)));
                 }
-            }
-            _ => {
-                return Err(mlua::Error::external(format!("Unknown option: {}", key)));
-            }
-        };
+            };
 
-        bridge_clone.execute_command(cmd.to_string()).map_err(mlua::Error::external)?;
-        Ok(())
-    })?;
+            bridge_clone
+                .execute_command(cmd.to_string())
+                .map_err(mlua::Error::external)?;
+            Ok(())
+        },
+    )?;
     metatable.set("__newindex", newindex)?;
 
     opt.set_metatable(Some(metatable));

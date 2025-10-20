@@ -55,8 +55,7 @@ impl SessionInfo {
 
     /// Get the session directory path
     pub fn session_dir() -> Result<PathBuf> {
-        let cache_dir = dirs::cache_dir()
-            .context("Failed to get cache directory")?;
+        let cache_dir = dirs::cache_dir().context("Failed to get cache directory")?;
 
         let session_dir = cache_dir.join("ovim").join("sessions");
         fs::create_dir_all(&session_dir)?;
@@ -98,8 +97,8 @@ impl SessionInfo {
         let session_dir = Self::session_dir()?;
         let path = session_dir.join(format!("{}.json", session_name));
 
-        let json = fs::read_to_string(&path)
-            .context(format!("Session '{}' not found", session_name))?;
+        let json =
+            fs::read_to_string(&path).context(format!("Session '{}' not found", session_name))?;
 
         let info: SessionInfo = serde_json::from_str(&json)?;
 
@@ -107,7 +106,10 @@ impl SessionInfo {
         if !is_process_alive(info.pid) {
             // Clean up stale session file
             let _ = fs::remove_file(&path);
-            anyhow::bail!("Session '{}' is not running (stale file cleaned up)", session_name);
+            anyhow::bail!(
+                "Session '{}' is not running (stale file cleaned up)",
+                session_name
+            );
         }
 
         Ok(info)
@@ -146,7 +148,8 @@ impl SessionInfo {
     /// Get the default session (most recently started)
     pub fn get_default() -> Result<Self> {
         let sessions = Self::list_all()?;
-        sessions.into_iter()
+        sessions
+            .into_iter()
             .max_by_key(|s| s.started_at)
             .context("No active sessions found")
     }

@@ -58,9 +58,8 @@ impl LanguageRegistry {
             "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
 
             // Python
-            "py" | "pyw" | "pyi" | "pyx" | "pxd" | "pxi" |
-            "pyc" | "pyd" | "pyo" | "pyz" | "pywz" |
-            "py3" | "pyde" | "pyt" | "snakefile" | "smk" => Some(Language::Python),
+            "py" | "pyw" | "pyi" | "pyx" | "pxd" | "pxi" | "pyc" | "pyd" | "pyo" | "pyz"
+            | "pywz" | "py3" | "pyde" | "pyt" | "snakefile" | "smk" => Some(Language::Python),
 
             // Java
             "java" => Some(Language::Java),
@@ -108,36 +107,37 @@ impl LanguageRegistry {
 
         match lower.as_str() {
             // Python special files
-            "pipfile" | "pipfile.lock" |
-            "snakefile" | "wscript" | "sconstruct" |
-            ".pythonstartup" | ".pythonrc" => Some(Language::Python),
+            "pipfile" | "pipfile.lock" | "snakefile" | "wscript" | "sconstruct"
+            | ".pythonstartup" | ".pythonrc" => Some(Language::Python),
 
             // JavaScript/Node special files
-            "jakefile" | "gulpfile.js" | "gruntfile.js" |
-            "webpack.config.js" | "rollup.config.js" => Some(Language::JavaScript),
+            "jakefile" | "gulpfile.js" | "gruntfile.js" | "webpack.config.js"
+            | "rollup.config.js" => Some(Language::JavaScript),
 
             // TypeScript special files
             ".eslintrc.ts" | ".prettierrc.ts" => Some(Language::TypeScript),
 
             // Bash special files
-            ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" |
-            ".zshrc" | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" |
-            "bashrc" | "zshrc" => Some(Language::Bash),
+            ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".zshrc"
+            | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" | "bashrc" | "zshrc" => {
+                Some(Language::Bash)
+            }
 
             // Ruby special files
-            "rakefile" | "gemfile" | "gemfile.lock" | "guardfile" |
-            "capfile" | "vagrantfile" => Some(Language::Ruby),
+            "rakefile" | "gemfile" | "gemfile.lock" | "guardfile" | "capfile" | "vagrantfile" => {
+                Some(Language::Ruby)
+            }
 
             // Go special files
             "go.mod" | "go.sum" => Some(Language::Go),
 
             // JSON special files
-            ".eslintrc" | ".prettierrc" | ".babelrc" |
-            "package.json" | "tsconfig.json" | "composer.json" => Some(Language::Json),
+            ".eslintrc" | ".prettierrc" | ".babelrc" | "package.json" | "tsconfig.json"
+            | "composer.json" => Some(Language::Json),
 
             // YAML special files
-            ".travis.yml" | ".gitlab-ci.yml" | "docker-compose.yml" |
-            ".clang-format" | ".clang-tidy" => Some(Language::Yaml),
+            ".travis.yml" | ".gitlab-ci.yml" | "docker-compose.yml" | ".clang-format"
+            | ".clang-tidy" => Some(Language::Yaml),
 
             // Markdown special files
             "readme" | "changelog" | "contributing" | "license" => Some(Language::Markdown),

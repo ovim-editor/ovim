@@ -74,15 +74,22 @@ fn test_di_braces_vs_d_braces_different() {
 
     let mut test1 = EditorTest::new("{hello}");
     test1.keys("di{");
-    assert_eq!(test1.buffer_content(), "{}\n", "di{{ should delete inside braces");
+    assert_eq!(
+        test1.buffer_content(),
+        "{}\n",
+        "di{{ should delete inside braces"
+    );
 
     // For d{, we need a multi-line setup to test paragraph motion
     let mut test2 = EditorTest::new("line1\n\n{hello}");
     test2.keys("Gd{"); // Go to last line, then d{
-    // d{ should delete to previous paragraph, not inside braces
-    // The exact behavior depends on paragraph definition, but it shouldn't be empty braces
+                       // d{ should delete to previous paragraph, not inside braces
+                       // The exact behavior depends on paragraph definition, but it shouldn't be empty braces
     let result = test2.buffer_content();
-    assert_ne!(result, "{}\n", "d{{ should not result in empty braces (paragraph motion, not text object)");
+    assert_ne!(
+        result, "{}\n",
+        "d{{ should not result in empty braces (paragraph motion, not text object)"
+    );
 }
 
 #[test]

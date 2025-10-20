@@ -127,7 +127,7 @@ fn test_gd_normal_mode_only() {
 fn test_k_keybinding_for_hover() {
     let mut test = EditorTest::new("fn test() {}\n");
 
-    test.keys("0");  // Start of line
+    test.keys("0"); // Start of line
 
     // Press K (without LSP it should do nothing)
     test.press('K');
@@ -142,13 +142,13 @@ fn test_lsp_keybindings_dont_break_editing() {
     let mut test = EditorTest::new("hello\nworld\n");
 
     // Normal Vim operations should work fine
-    test.keys("j");  // Move down
+    test.keys("j"); // Move down
     test.assert_cursor(1, 0);
 
-    test.keys("i");  // Enter insert mode
+    test.keys("i"); // Enter insert mode
     test.type_text("new ");
 
-    test.press_esc();  // Exit insert mode
+    test.press_esc(); // Exit insert mode
 
     // Verify normal editing works
     assert!(test.buffer_content().contains("new world"));
@@ -209,10 +209,7 @@ fn test_file_path_for_lsp() {
     test.set_file_path("/tmp/test.rs".to_string());
 
     // File path should be set
-    assert_eq!(
-        test.editor.buffer().file_path(),
-        Some("/tmp/test.rs")
-    );
+    assert_eq!(test.editor.buffer().file_path(), Some("/tmp/test.rs"));
 }
 
 /// Test LSP works with different file extensions

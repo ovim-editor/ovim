@@ -39,9 +39,7 @@ impl JdtlsDownloader {
     pub fn launcher_jar(&self) -> PathBuf {
         self.install_dir
             .join("plugins")
-            .join(format!(
-                "org.eclipse.equinox.launcher_*.jar"
-            ))
+            .join(format!("org.eclipse.equinox.launcher_*.jar"))
     }
 
     /// Find the actual launcher JAR (glob pattern)
@@ -173,7 +171,8 @@ impl JdtlsDownloader {
                         }
                     }
                 }
-            }).await;
+            })
+            .await;
 
             let extract_result = match extract_result {
                 Ok(result) => result,
@@ -181,7 +180,9 @@ impl JdtlsDownloader {
                     // Timeout - kill the tar process
                     let _ = child.kill().await;
                     last_error = Some("Tar extraction timed out after 10 seconds".to_string());
-                    progress_callback("Extraction timeout - server may be slow or file corrupt".to_string());
+                    progress_callback(
+                        "Extraction timeout - server may be slow or file corrupt".to_string(),
+                    );
                     continue;
                 }
             };
@@ -238,10 +239,7 @@ impl JdtlsDownloader {
     }
 
     /// Ensure jdtls is installed (download if needed)
-    pub async fn ensure_installed(
-        &self,
-        progress_callback: impl Fn(String),
-    ) -> Result<()> {
+    pub async fn ensure_installed(&self, progress_callback: impl Fn(String)) -> Result<()> {
         if self.is_installed().await {
             return Ok(());
         }
@@ -251,7 +249,8 @@ impl JdtlsDownloader {
 
     /// Get the path to the Lombok JAR
     pub fn lombok_jar_path(&self) -> PathBuf {
-        self.install_dir.join(format!("lombok-{}.jar", LOMBOK_VERSION))
+        self.install_dir
+            .join(format!("lombok-{}.jar", LOMBOK_VERSION))
     }
 
     /// Check if Lombok is installed
@@ -280,7 +279,10 @@ impl JdtlsDownloader {
             anyhow::bail!("Failed to download Lombok: HTTP {}", response.status());
         }
 
-        let bytes = response.bytes().await.context("Failed to read Lombok JAR")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("Failed to read Lombok JAR")?;
 
         progress_callback(format!("Downloaded {} bytes", bytes.len()));
 
@@ -299,10 +301,7 @@ impl JdtlsDownloader {
     }
 
     /// Ensure Lombok is installed (download if needed)
-    pub async fn ensure_lombok_installed(
-        &self,
-        progress_callback: impl Fn(String),
-    ) -> Result<()> {
+    pub async fn ensure_lombok_installed(&self, progress_callback: impl Fn(String)) -> Result<()> {
         if self.is_lombok_installed().await {
             return Ok(());
         }

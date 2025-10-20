@@ -9,8 +9,8 @@ use helpers::EditorTest;
 fn test_v_basic_selection() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('v')       // Enter visual mode
-        .keys("lll");     // Select 4 chars (h, e, l, l)
+    test.press('v') // Enter visual mode
+        .keys("lll"); // Select 4 chars (h, e, l, l)
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 3);
@@ -21,8 +21,8 @@ fn test_v_delete_selection() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("lll")      // Select "hell"
-        .press('d');      // Delete selection
+        .keys("lll") // Select "hell"
+        .press('d'); // Delete selection
 
     assert_eq!(test.buffer_content(), "o world\n");
     test.assert_cursor(0, 0);
@@ -33,11 +33,11 @@ fn test_v_yank_selection() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("llll")     // Select "hello"
-        .press('y')       // Yank
+        .keys("llll") // Select "hello"
+        .press('y') // Yank
         .press_esc()
-        .keys("$")        // Move to end
-        .press('p');      // Paste
+        .keys("$") // Move to end
+        .press('p'); // Paste
 
     assert_eq!(test.buffer_content(), "hello worldhello \n");
     test.assert_cursor(0, 16);
@@ -47,8 +47,7 @@ fn test_v_yank_selection() {
 fn test_v_select_word() {
     let mut test = EditorTest::new("hello world test");
 
-    test.press('v')
-        .keys("e");       // Select to end of word
+    test.press('v').keys("e"); // Select to end of word
 
     assert_eq!(test.buffer_content(), "hello world test\n");
     test.assert_cursor(0, 4);
@@ -58,8 +57,7 @@ fn test_v_select_word() {
 fn test_v_across_lines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('v')
-        .keys("jjj");     // Select across multiple lines
+    test.press('v').keys("jjj"); // Select across multiple lines
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
     test.assert_cursor(2, 0);
@@ -69,9 +67,9 @@ fn test_v_across_lines() {
 fn test_v_backward_selection() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("$")        // Go to end
+    test.keys("$") // Go to end
         .press('v')
-        .keys("hhh");     // Select backward
+        .keys("hhh"); // Select backward
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 7);
@@ -82,8 +80,8 @@ fn test_v_change_selection() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("llll")     // Select "hello"
-        .press('c')       // Change
+        .keys("llll") // Select "hello"
+        .press('c') // Change
         .type_text("goodbye")
         .press_esc();
 
@@ -96,8 +94,8 @@ fn test_v_escape_cancels() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("lll")      // Make selection
-        .press_esc();     // Cancel
+        .keys("lll") // Make selection
+        .press_esc(); // Cancel
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 3);
@@ -111,7 +109,7 @@ fn test_v_escape_cancels() {
 fn test_V_basic_selection() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('V');      // Enter visual line mode
+    test.press('V'); // Enter visual line mode
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
     test.assert_cursor(0, 0);
@@ -121,8 +119,7 @@ fn test_V_basic_selection() {
 fn test_V_multiple_lines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.press('V')
-        .keys("jj");      // Select 3 lines
+    test.press('V').keys("jj"); // Select 3 lines
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
     test.assert_cursor(2, 0);
@@ -133,8 +130,8 @@ fn test_V_delete_lines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
     test.press('V')
-        .keys("jj")       // Select 3 lines
-        .press('d');      // Delete
+        .keys("jj") // Select 3 lines
+        .press('d'); // Delete
 
     assert_eq!(test.buffer_content(), "line 4\n");
     test.assert_cursor(0, 0);
@@ -145,13 +142,16 @@ fn test_V_yank_paste_lines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
     test.press('V')
-        .press('j')       // Select 2 lines
-        .press('y')       // Yank
+        .press('j') // Select 2 lines
+        .press('y') // Yank
         .press_esc()
-        .press('G')       // Go to last line
-        .press('p');      // Paste
+        .press('G') // Go to last line
+        .press('p'); // Paste
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3line 1\nline 2\n \n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 2\nline 3line 1\nline 2\n \n"
+    );
     test.assert_cursor(4, 0);
 }
 
@@ -159,8 +159,8 @@ fn test_V_yank_paste_lines() {
 fn test_V_from_middle_of_line() {
     let mut test = EditorTest::new("hello world\ntest line");
 
-    test.keys("w")        // Move to "world"
-        .press('V');      // Should select entire line
+    test.keys("w") // Move to "world"
+        .press('V'); // Should select entire line
 
     assert_eq!(test.buffer_content(), "hello world\ntest line\n");
     test.assert_cursor(0, 6);
@@ -170,8 +170,7 @@ fn test_V_from_middle_of_line() {
 fn test_V_select_all() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('V')
-        .keys("G");       // Select to last line
+    test.press('V').keys("G"); // Select to last line
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
     test.assert_cursor(0, 0);
@@ -182,8 +181,8 @@ fn test_V_indent() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
     test.press('V')
-        .press('j')       // Select 2 lines
-        .press('>');      // Indent (if implemented)
+        .press('j') // Select 2 lines
+        .press('>'); // Indent (if implemented)
 
     assert_eq!(test.buffer_content(), "    line 1\n    line 2\nline 3\n");
     test.assert_cursor(1, 4);
@@ -193,9 +192,9 @@ fn test_V_indent() {
 fn test_V_backward_selection() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.keys("G")        // Go to last line
+    test.keys("G") // Go to last line
         .press('V')
-        .keys("kk");      // Select upward
+        .keys("kk"); // Select upward
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
     test.assert_cursor(1, 0);
@@ -210,8 +209,8 @@ fn test_v_delete_word() {
     let mut test = EditorTest::new("hello world test");
 
     test.press('v')
-        .keys("e")        // Select word
-        .press('d');      // Delete
+        .keys("e") // Select word
+        .press('d'); // Delete
 
     assert_eq!(test.buffer_content(), " world test\n");
     test.assert_cursor(0, 0);
@@ -222,8 +221,8 @@ fn test_v_change_word() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("e")        // Select "hello"
-        .press('c')       // Change
+        .keys("e") // Select "hello"
+        .press('c') // Change
         .type_text("goodbye")
         .press_esc();
 
@@ -236,9 +235,9 @@ fn test_V_delete_and_undo() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
     test.press('V')
-        .press('j')       // Select 2 lines
-        .press('d')       // Delete
-        .press('u');      // Undo
+        .press('j') // Select 2 lines
+        .press('d') // Delete
+        .press('u'); // Undo
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
     test.assert_cursor(1, 0);
@@ -249,13 +248,13 @@ fn test_v_yank_and_replace() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("llll")     // Select "hello"
-        .press('y')       // Yank
+        .keys("llll") // Select "hello"
+        .press('y') // Yank
         .press_esc()
-        .keys("w")        // Move to "world"
+        .keys("w") // Move to "world"
         .press('v')
-        .keys("llll")     // Select "world"
-        .press('p');      // Paste (should replace selection)
+        .keys("llll") // Select "world"
+        .press('p'); // Paste (should replace selection)
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 10);
@@ -269,9 +268,9 @@ fn test_v_yank_and_replace() {
 fn test_v_empty_line() {
     let mut test = EditorTest::new("hello\n\nworld");
 
-    test.press('j')       // Move to empty line
+    test.press('j') // Move to empty line
         .press('v')
-        .press('j');      // Select to next line
+        .press('j'); // Select to next line
 
     assert_eq!(test.buffer_content(), "hello\n\nworld\n");
     test.assert_cursor(2, 0);
@@ -281,7 +280,7 @@ fn test_v_empty_line() {
 fn test_v_single_char() {
     let mut test = EditorTest::new("x");
 
-    test.press('v');      // Select single char
+    test.press('v'); // Select single char
 
     assert_eq!(test.buffer_content(), "x\n");
     test.assert_cursor(0, 0);
@@ -291,8 +290,8 @@ fn test_v_single_char() {
 fn test_v_end_of_line() {
     let mut test = EditorTest::new("hello");
 
-    test.keys("$")        // Move to end
-        .press('v');      // Select last char
+    test.keys("$") // Move to end
+        .press('v'); // Select last char
 
     assert_eq!(test.buffer_content(), "hello\n");
     test.assert_cursor(0, 4);
@@ -302,7 +301,7 @@ fn test_v_end_of_line() {
 fn test_V_single_line() {
     let mut test = EditorTest::new("only line");
 
-    test.press('V');      // Select only line
+    test.press('V'); // Select only line
 
     assert_eq!(test.buffer_content(), "only line\n");
     test.assert_cursor(0, 0);
@@ -312,9 +311,9 @@ fn test_V_single_line() {
 fn test_v_select_entire_file() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("gg")       // Go to top
+    test.keys("gg") // Go to top
         .press('v')
-        .keys("G");       // Select to end
+        .keys("G"); // Select to end
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
     test.assert_cursor(0, 0);
@@ -328,8 +327,7 @@ fn test_v_select_entire_file() {
 fn test_v_with_w_motion() {
     let mut test = EditorTest::new("hello world test");
 
-    test.press('v')
-        .press('w');      // Select word forward
+    test.press('v').press('w'); // Select word forward
 
     assert_eq!(test.buffer_content(), "hello world test\n");
     test.assert_cursor(0, 6);
@@ -339,8 +337,7 @@ fn test_v_with_w_motion() {
 fn test_v_with_dollar() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('v')
-        .keys("$");       // Select to end of line
+    test.press('v').keys("$"); // Select to end of line
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 10);
@@ -350,9 +347,9 @@ fn test_v_with_dollar() {
 fn test_v_with_zero() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("$")        // Go to end
+    test.keys("$") // Go to end
         .press('v')
-        .keys("0");       // Select to beginning
+        .keys("0"); // Select to beginning
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 0);
@@ -362,9 +359,9 @@ fn test_v_with_zero() {
 fn test_V_with_gg() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.keys("G")        // Go to last line
+    test.keys("G") // Go to last line
         .press('V')
-        .keys("gg");      // Select to first line
+        .keys("gg"); // Select to first line
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
     test.assert_cursor(3, 0);
@@ -378,8 +375,8 @@ fn test_V_with_gg() {
 fn test_v_to_V_switch() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('v')       // Character visual
-        .press('V');      // Switch to line visual
+    test.press('v') // Character visual
+        .press('V'); // Switch to line visual
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\n");
     test.assert_cursor(0, 0);
@@ -389,8 +386,8 @@ fn test_v_to_V_switch() {
 fn test_V_to_v_switch() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('V')       // Line visual
-        .press('v');      // Switch to character visual
+    test.press('V') // Line visual
+        .press('v'); // Switch to character visual
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\n");
     test.assert_cursor(0, 0);
@@ -404,8 +401,7 @@ fn test_V_to_v_switch() {
 fn test_v_with_count() {
     let mut test = EditorTest::new("hello world test");
 
-    test.press('v')
-        .keys("3l");      // Select 4 chars (including current)
+    test.press('v').keys("3l"); // Select 4 chars (including current)
 
     assert_eq!(test.buffer_content(), "hello world test\n");
     test.assert_cursor(0, 1);
@@ -415,8 +411,7 @@ fn test_v_with_count() {
 fn test_V_with_count() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.press('V')
-        .keys("3j");      // Select 4 lines
+    test.press('V').keys("3j"); // Select 4 lines
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
     test.assert_cursor(3, 0);
@@ -430,8 +425,7 @@ fn test_V_with_count() {
 fn test_v_to_search_result() {
     let mut test = EditorTest::new("hello world hello");
 
-    test.press('v')
-        .press('/');      // Start search in visual mode
+    test.press('v').press('/'); // Start search in visual mode
 
     assert_eq!(test.buffer_content(), "hello world hello\n");
     test.assert_cursor(0, 0);
@@ -446,9 +440,9 @@ fn test_gv_reselect() {
     let mut test = EditorTest::new("hello world");
 
     test.press('v')
-        .keys("lll")      // Select
-        .press_esc()      // Exit visual mode
-        .keys("gv");      // Reselect last selection
+        .keys("lll") // Select
+        .press_esc() // Exit visual mode
+        .keys("gv"); // Reselect last selection
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 3);
@@ -459,8 +453,8 @@ fn test_gv_after_delete() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
     test.press('V')
-        .press('d')       // Delete line
-        .keys("gv");      // Reselect (might not work after delete)
+        .press('d') // Delete line
+        .keys("gv"); // Reselect (might not work after delete)
 
     assert_eq!(test.buffer_content(), "line 2\nline 3\n");
     test.assert_cursor(0, 0);
@@ -475,8 +469,8 @@ fn test_V_indented_lines() {
     let mut test = EditorTest::new("    line 1\n    line 2\n    line 3");
 
     test.press('V')
-        .press('j')       // Select 2 indented lines
-        .press('d');      // Delete
+        .press('j') // Select 2 indented lines
+        .press('d'); // Delete
 
     assert_eq!(test.buffer_content(), "    line 3\n");
     test.assert_cursor(0, 0);
@@ -486,8 +480,7 @@ fn test_V_indented_lines() {
 fn test_v_select_indentation() {
     let mut test = EditorTest::new("    indented line");
 
-    test.press('v')
-        .keys("lll");     // Select spaces
+    test.press('v').keys("lll"); // Select spaces
 
     assert_eq!(test.buffer_content(), "    indented line\n");
     test.assert_cursor(0, 3);

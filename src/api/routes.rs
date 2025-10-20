@@ -1,5 +1,6 @@
 use super::handlers::{
-    execute_command, get_buffer, get_cursor, get_health, get_lsp_status, get_mode, get_render, get_snapshot, send_keys, set_buffer,
+    execute_command, get_buffer, get_cursor, get_health, get_lsp_status, get_mode, get_render,
+    get_snapshot, send_keys, set_buffer,
 };
 use super::state::ApiState;
 use axum::{

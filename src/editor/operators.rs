@@ -250,7 +250,12 @@ impl Operators {
 
     /// Indents line(s) by adding spaces/tabs at the beginning
     /// Returns the number of lines indented
-    pub fn indent_lines(buffer: &mut Buffer, start_line: usize, end_line: usize, tab_width: usize) -> Result<usize> {
+    pub fn indent_lines(
+        buffer: &mut Buffer,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+    ) -> Result<usize> {
         let indent_str = " ".repeat(tab_width);
         let mut lines_indented = 0;
 
@@ -265,7 +270,12 @@ impl Operators {
 
     /// Dedents line(s) by removing spaces/tabs from the beginning
     /// Returns the number of lines dedented
-    pub fn dedent_lines(buffer: &mut Buffer, start_line: usize, end_line: usize, tab_width: usize) -> Result<usize> {
+    pub fn dedent_lines(
+        buffer: &mut Buffer,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+    ) -> Result<usize> {
         let mut lines_dedented = 0;
 
         for line_idx in start_line..end_line.min(buffer.line_count()) {

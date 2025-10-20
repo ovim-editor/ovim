@@ -2,14 +2,14 @@ mod cursor;
 
 pub use cursor::Cursor;
 
+use crate::editor::ChangeManager;
+use crate::syntax::{HighlightGroup, LanguageRegistry, SyntaxHighlighter};
+use crate::GitStatus;
 use anyhow::{Context, Result};
 use ropey::Rope;
-use std::path::{Path, PathBuf};
-use crate::syntax::{SyntaxHighlighter, LanguageRegistry, HighlightGroup};
-use crate::GitStatus;
-use crate::editor::ChangeManager;
-use std::ops::Range;
 use std::collections::HashSet;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 /// Represents a text buffer using a Rope data structure for efficient editing
 pub struct Buffer {
@@ -57,8 +57,15 @@ impl Buffer {
 
     /// Creates a buffer from a string
     pub fn from_str(content: &str) -> Self {
+        // Ensure content always ends with newline (Vim behavior)
+        let content_with_newline = if content.is_empty() || content.ends_with('\n') {
+            content.to_string()
+        } else {
+            format!("{}\n", content)
+        };
+
         Self {
-            rope: Rope::from_str(content),
+            rope: Rope::from_str(&content_with_newline),
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: None,
@@ -151,7 +158,13 @@ impl Buffer {
     }
 
     /// Deletes text in a range and returns the deleted text
-    pub fn delete_range(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> String {
+    pub fn delete_range(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) -> String {
         if start_line >= self.line_count() {
             return String::new();
         }
@@ -198,16 +211,16 @@ impl Buffer {
             .context(format!("Failed to read file: {}", path_str))?;
 
         // Validate UTF-8 with clear error message
-        let content = String::from_utf8(bytes)
-            .map_err(|e| {
-                let valid_up_to = e.utf8_error().valid_up_to();
-                anyhow::anyhow!(
-                    "File '{}' contains invalid UTF-8 at byte position {}\n\
+        let content = String::from_utf8(bytes).map_err(|e| {
+            let valid_up_to = e.utf8_error().valid_up_to();
+            anyhow::anyhow!(
+                "File '{}' contains invalid UTF-8 at byte position {}\n\
                      This file may be a binary file or use a non-UTF-8 encoding.\n\
                      Only UTF-8 encoded text files are supported.",
-                    path_str, valid_up_to
-                )
-            })?;
+                path_str,
+                valid_up_to
+            )
+        })?;
 
         let mut buffer = Self {
             rope: Rope::from_str(&content),
@@ -242,7 +255,9 @@ impl Buffer {
 
     /// Saves the buffer to its file path (async version)
     pub async fn save_async(&mut self) -> Result<()> {
-        let path = self.file_path.as_ref()
+        let path = self
+            .file_path
+            .as_ref()
             .context("No file path set for buffer")?;
         self.save_as_async(path.clone()).await?;
         Ok(())
@@ -259,17 +274,22 @@ impl Buffer {
 
         // Create temp file in same directory (ensures atomic rename on same filesystem)
         let temp_path = if let Some(parent) = path_ref.parent() {
-            parent.join(format!(".{}.tmp", path_ref.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("buffer")))
+            parent.join(format!(
+                ".{}.tmp",
+                path_ref
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("buffer")
+            ))
         } else {
             PathBuf::from(format!("{}.tmp", path_str))
         };
 
         // Write to temp file
-        let mut file = tokio::fs::File::create(&temp_path)
-            .await
-            .context(format!("Failed to create temp file: {}", temp_path.display()))?;
+        let mut file = tokio::fs::File::create(&temp_path).await.context(format!(
+            "Failed to create temp file: {}",
+            temp_path.display()
+        ))?;
 
         file.write_all(content.as_bytes())
             .await
@@ -480,7 +500,13 @@ impl Buffer {
     }
 
     /// Shifts highlights after a deletion
-    fn shift_highlights_for_deletion(&mut self, start_line: usize, start_col: usize, end_line: usize, end_col: usize) {
+    fn shift_highlights_for_deletion(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) {
         let Some(ref mut cache) = self.cached_highlights else {
             return; // No cache to shift
         };
@@ -601,7 +627,11 @@ impl Buffer {
     }
 
     /// Applies re-highlighted results if version matches
-    pub fn apply_highlights(&mut self, highlights: Vec<Vec<(Range<usize>, HighlightGroup)>>, version: u64) -> bool {
+    pub fn apply_highlights(
+        &mut self,
+        highlights: Vec<Vec<(Range<usize>, HighlightGroup)>>,
+        version: u64,
+    ) -> bool {
         // Only apply if version matches (buffer hasn't changed since re-parse started)
         if self.highlight_version == version {
             self.cached_highlights = Some(highlights);
