@@ -107,8 +107,7 @@ impl InputHandler {
                     let picker = crate::editor::Picker::new_file_finder(base_dir);
                     editor.set_picker(picker);
                     editor.set_mode(Mode::Picker);
-                    // Preload first item's preview
-                    Self::preload_picker_preview(editor);
+                    editor.mark_picker_selection_changed();
                     return Ok(());
                 }
                 KeyCode::Char('g') => {
@@ -4905,35 +4904,47 @@ impl InputHandler {
             }
             // Ctrl-N - move down in results
             KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let mut moved = false;
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_down();
+                    moved = true;
                 }
-                // Preload preview for newly selected item
-                Self::preload_picker_preview(editor);
+                if moved {
+                    editor.mark_picker_selection_changed();
+                }
             }
             // Ctrl-P - move up in results
             KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                let mut moved = false;
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_up();
+                    moved = true;
                 }
-                // Preload preview for newly selected item
-                Self::preload_picker_preview(editor);
+                if moved {
+                    editor.mark_picker_selection_changed();
+                }
             }
             // Down arrow - move down in results
             KeyCode::Down => {
+                let mut moved = false;
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_down();
+                    moved = true;
                 }
-                // Preload preview for newly selected item
-                Self::preload_picker_preview(editor);
+                if moved {
+                    editor.mark_picker_selection_changed();
+                }
             }
             // Up arrow - move up in results
             KeyCode::Up => {
+                let mut moved = false;
                 if let Some(picker) = editor.picker_mut() {
                     picker.move_up();
+                    moved = true;
                 }
-                // Preload preview for newly selected item
-                Self::preload_picker_preview(editor);
+                if moved {
+                    editor.mark_picker_selection_changed();
+                }
             }
             // Any other character - insert at cursor
             KeyCode::Char(ch) => {
@@ -4947,31 +4958,6 @@ impl InputHandler {
         }
 
         Ok(())
-    }
-
-    /// Preloads preview for the currently selected picker item
-    /// Respects debouncing - only loads if enough time has elapsed since last query change
-    fn preload_picker_preview(editor: &mut Editor) {
-        // Check debounce timing (200ms delay)
-        if !editor.should_load_picker_preview(200) {
-            return;
-        }
-
-        if let Some(picker) = editor.picker() {
-            if let Some(result) = picker.selected_result() {
-                // Only preload for file picker modes (not custom, completion, or LSP locations)
-                if *picker.mode() != crate::editor::PickerMode::Custom
-                    && *picker.mode() != crate::editor::PickerMode::Completion
-                    && *picker.mode() != crate::editor::PickerMode::LspLocations
-                {
-                    let file_path = result.location.clone();
-                    // This will load the file if not cached
-                    editor.get_or_load_preview(&file_path);
-                    // Trim cache to prevent memory bloat (keep max 50 entries)
-                    editor.trim_preview_cache(50);
-                }
-            }
-        }
     }
 
     /// Polls for the next event

@@ -479,22 +479,23 @@ async fn handle_api_request(
             // Get LSP server statuses
             let mut lsp_servers = HashMap::new();
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
-                if let Ok(lsp_manager) = lsp_manager_arc.try_lock() {
-                    let servers = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(async { lsp_manager.get_lsp_status().await })
-                    });
+                let lsp_manager_arc = lsp_manager_arc.clone();
+                let servers = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        let lsp_manager = lsp_manager_arc.lock().await;
+                        lsp_manager.get_lsp_status().await
+                    })
+                });
 
-                    for server in servers {
-                        let state = if server.has_capabilities {
-                            "ready"
-                        } else if server.state.contains("Initializing") {
-                            "initializing"
-                        } else {
-                            "unknown"
-                        };
-                        lsp_servers.insert(server.language, state.to_string());
-                    }
+                for server in servers {
+                    let state = if server.has_capabilities {
+                        "ready"
+                    } else if server.state.contains("Initializing") {
+                        "initializing"
+                    } else {
+                        "unknown"
+                    };
+                    lsp_servers.insert(server.language, state.to_string());
                 }
             }
 

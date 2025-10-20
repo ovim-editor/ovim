@@ -195,6 +195,8 @@ pub struct Editor {
     tab_page_manager: TabPageManager,
     /// Last time picker query changed (for debouncing preview loading)
     last_picker_query_change: Option<std::time::Instant>,
+    /// Last time picker selection moved (for debouncing preview loading)
+    last_picker_selection_change: Option<std::time::Instant>,
     /// Currently loading preview path (to avoid duplicate requests)
     loading_preview: Option<String>,
     /// Last successfully shown preview path (to show while new one loads)
@@ -279,6 +281,7 @@ impl Editor {
             location_window_open: false,
             tab_page_manager: TabPageManager::new(),
             last_picker_query_change: None,
+            last_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
         }
@@ -335,6 +338,7 @@ impl Editor {
             location_window_open: false,
             tab_page_manager: TabPageManager::new(),
             last_picker_query_change: None,
+            last_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
         }
@@ -1178,10 +1182,7 @@ impl Editor {
             return;
         };
 
-        // Try to get lock without blocking
-        let Ok(lsp_guard) = lsp.try_lock() else {
-            return;
-        };
+        let lsp_guard = lsp.lock().await;
 
         let _ = lsp_guard.did_close(uri, language_id).await;
     }
@@ -1587,15 +1588,26 @@ impl Editor {
         self.loading_preview = None;
     }
 
+    /// Marks that the picker selection moved (for debouncing preview loading)
+    pub fn mark_picker_selection_changed(&mut self) {
+        self.last_picker_selection_change = Some(std::time::Instant::now());
+    }
+
     /// Checks if enough time has elapsed since picker query changed (for debouncing)
     /// Returns true if we should load preview now
     pub fn should_load_picker_preview(&self, debounce_ms: u64) -> bool {
-        match self.last_picker_query_change {
-            None => true, // No previous change, load immediately
-            Some(last_change) => {
-                let elapsed = last_change.elapsed();
-                elapsed.as_millis() >= debounce_ms as u128
-            }
+        let mut last_change = self.last_picker_query_change;
+
+        if let Some(selection_change) = self.last_picker_selection_change {
+            last_change = match last_change {
+                Some(existing) => Some(std::cmp::max(existing, selection_change)),
+                None => Some(selection_change),
+            };
+        }
+
+        match last_change {
+            None => true, // No recent change, load immediately
+            Some(last_change) => last_change.elapsed().as_millis() >= debounce_ms as u128,
         }
     }
 
@@ -1787,8 +1799,7 @@ impl Editor {
         let file_path = self.buffer().file_path()?;
         let uri = lsp_types::Url::from_file_path(file_path).ok()?;
 
-        // Try to get lock without blocking - return None if busy
-        let lsp_guard = lsp.try_lock().ok()?;
+        let lsp_guard = lsp.lock().await;
         Some(lsp_guard.get_diagnostics(&uri).await)
     }
 
@@ -1797,10 +1808,8 @@ impl Editor {
         if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
-                    // Try to get lock without blocking - return (0,0,0,0) if busy
-                    if let Ok(lsp_guard) = lsp.try_lock() {
-                        return lsp_guard.count_diagnostics(&uri).await;
-                    }
+                    let lsp_guard = lsp.lock().await;
+                    return lsp_guard.count_diagnostics(&uri).await;
                 }
             }
         }
@@ -2094,10 +2103,7 @@ impl Editor {
         // Pass last_synced_content for incremental sync
         let old_content = self.lsp_state.last_synced_content.clone();
 
-        // Try to get lock without blocking - if LSP is busy, retry next iteration
-        let Ok(lsp_guard) = lsp.try_lock() else {
-            return; // Keep modified flag set so we retry soon
-        };
+        let lsp_guard = lsp.lock().await;
 
         let result = lsp_guard
             .did_change(uri, language_id, content.clone(), old_content)
@@ -2149,10 +2155,7 @@ impl Editor {
 
         let text = Some(self.buffer().rope().to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry next iteration
-        let Ok(lsp_guard) = lsp.try_lock() else {
-            return; // Keep save flag set so we retry
-        };
+        let lsp_guard = lsp.lock().await;
 
         let result = lsp_guard.did_save(uri, language_id, text).await;
         drop(lsp_guard);
@@ -2193,11 +2196,7 @@ impl Editor {
             return;
         };
 
-        // Try to get lock without blocking - if LSP is busy, put it back for retry
-        let Ok(lsp_guard) = lsp.try_lock() else {
-            self.lsp_state.pending_did_close_file = Some(file_path);
-            return;
-        };
+        let lsp_guard = lsp.lock().await;
 
         let _ = lsp_guard.did_close(uri, language_id).await;
     }
@@ -2362,14 +2361,7 @@ impl Editor {
         // Request definition
         self.set_lsp_status("Searching for definition...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let location = lsp_guard
             .goto_definition(&uri, line, character, language_id)
@@ -2485,14 +2477,7 @@ impl Editor {
         // Request implementation
         self.set_lsp_status("Searching for implementation...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let location = lsp_guard
             .implementation(&uri, line, character, language_id)
@@ -2608,14 +2593,7 @@ impl Editor {
         // Request type definition
         self.set_lsp_status("Searching for type definition...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let location = lsp_guard
             .type_definition(&uri, line, character, language_id)
@@ -2731,13 +2709,7 @@ impl Editor {
         // Request references
         self.set_lsp_status("Searching for references...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let locations = lsp_guard
             .references(&uri, line, character, language_id, true)
@@ -2827,13 +2799,7 @@ impl Editor {
         // Request document symbols
         self.set_lsp_status("Loading document symbols...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let symbols = lsp_guard.document_symbols(&uri, language_id).await?;
 
@@ -2898,13 +2864,7 @@ impl Editor {
         // Request workspace symbols with empty query (gets all symbols)
         self.set_lsp_status("Loading workspace symbols...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let symbols = lsp_guard
             .workspace_symbols(language_id, String::new())
@@ -2999,13 +2959,7 @@ impl Editor {
         // Request call hierarchy preparation
         self.set_lsp_status("Preparing call hierarchy...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let items = lsp_guard
             .prepare_call_hierarchy(uri, line, character, language_id)
@@ -3127,13 +3081,7 @@ impl Editor {
         // Request call hierarchy preparation
         self.set_lsp_status("Preparing call hierarchy...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let items = lsp_guard
             .prepare_call_hierarchy(uri, line, character, language_id)
@@ -3255,13 +3203,7 @@ impl Editor {
         // Request type hierarchy preparation
         self.set_lsp_status("Preparing type hierarchy...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let items = lsp_guard
             .prepare_type_hierarchy(uri, line, character, language_id)
@@ -3408,14 +3350,7 @@ impl Editor {
         // Request hover information
         self.set_lsp_status("Requesting hover information...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let hover_text = lsp_guard.hover(&uri, line, character, language_id).await?;
 
@@ -3486,14 +3421,7 @@ impl Editor {
         // Request completion
         self.set_lsp_status("Requesting completion...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let items = lsp_guard
             .completion(&uri, line, character, language_id)
@@ -3584,14 +3512,7 @@ impl Editor {
         // Request formatting
         self.set_lsp_status("Formatting document...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let edits = lsp_guard
             .format_document(&uri, language_id, 4, true) // 4 spaces, insert spaces
@@ -3660,14 +3581,7 @@ impl Editor {
         // Get diagnostics at cursor position for context
         self.set_lsp_status("Requesting code actions...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         let diagnostics = lsp_guard.get_diagnostics_for_line(&uri, line).await;
         let actions = lsp_guard
@@ -4118,14 +4032,7 @@ impl Editor {
         // Request organize imports
         self.set_lsp_status("Organizing imports...".to_string());
 
-        // Try to get lock without blocking - if LSP is busy, retry later
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy (e.g., Java initialization), will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         // Execute the organize imports command
         // For jdtls, the command is "java.action.organizeImports"
@@ -4200,14 +4107,7 @@ impl Editor {
         // Request rename
         self.set_lsp_status("Renaming...".to_string());
 
-        // Try to get lock without blocking
-        let lsp_guard = match lsp.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => {
-                // LSP manager is busy, will retry next iteration
-                return Err(anyhow::anyhow!("LSP busy"));
-            }
-        };
+        let lsp_guard = lsp.lock().await;
 
         // Call the rename method with individual parameters (using UTF-16 character position)
         let result = lsp_guard
