@@ -1,4 +1,4 @@
-use ovim::syntax::{SyntaxHighlighter, Language};
+use ovim::syntax::{Language, SyntaxHighlighter};
 
 #[test]
 fn test_javascript_highlighter() {

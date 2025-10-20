@@ -83,7 +83,8 @@ impl Motions {
                 // In punctuation
                 while new_col < chars.len()
                     && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col]) {
+                    && !Self::is_whitespace(chars[new_col])
+                {
                     new_col += 1;
                 }
             }
@@ -98,7 +99,9 @@ impl Motions {
             buffer.cursor_mut().set_position(line_idx + 1, 0);
             Self::skip_whitespace_forward(buffer);
         } else {
-            buffer.cursor_mut().set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
+            buffer
+                .cursor_mut()
+                .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
         }
     }
 
@@ -138,10 +141,9 @@ impl Motions {
                 let prev_line = rope.line(line_idx - 1).to_string();
                 let prev_line = prev_line.trim_end_matches('\n');
                 let prev_len = prev_line.chars().count();
-                buffer.cursor_mut().set_position(
-                    line_idx - 1,
-                    prev_len.saturating_sub(1).max(0)
-                );
+                buffer
+                    .cursor_mut()
+                    .set_position(line_idx - 1, prev_len.saturating_sub(1).max(0));
             }
             return;
         }
@@ -176,7 +178,8 @@ impl Motions {
                 // Move back through punctuation
                 while new_col > 0
                     && !Self::is_word_char(chars[new_col - 1])
-                    && !Self::is_whitespace(chars[new_col - 1]) {
+                    && !Self::is_whitespace(chars[new_col - 1])
+                {
                     new_col -= 1;
                 }
             }
@@ -258,13 +261,16 @@ impl Motions {
                 // Move through punctuation
                 while new_col < chars.len()
                     && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col]) {
+                    && !Self::is_whitespace(chars[new_col])
+                {
                     new_col += 1;
                 }
             }
         }
 
-        buffer.cursor_mut().set_col((new_col - 1).min(chars.len().saturating_sub(1)));
+        buffer
+            .cursor_mut()
+            .set_col((new_col - 1).min(chars.len().saturating_sub(1)));
     }
 
     /// Moves cursor backward to the end of the previous word
@@ -367,13 +373,15 @@ impl Motions {
                 // Move back through punctuation
                 while new_col > 0
                     && !Self::is_word_char(chars[new_col - 1])
-                    && !Self::is_whitespace(chars[new_col - 1]) {
+                    && !Self::is_whitespace(chars[new_col - 1])
+                {
                     new_col -= 1;
                 }
                 // Now find the end of this punctuation sequence
                 while new_col < chars.len()
                     && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col]) {
+                    && !Self::is_whitespace(chars[new_col])
+                {
                     new_col += 1;
                 }
                 new_col = new_col.saturating_sub(1);
@@ -402,7 +410,9 @@ impl Motions {
             new_col += 1;
         }
 
-        buffer.cursor_mut().set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
+        buffer
+            .cursor_mut()
+            .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
     }
 
     /// Finds next occurrence of character on current line (f motion)
@@ -597,7 +607,12 @@ impl Motions {
     }
 
     /// Find matching closing bracket searching forward
-    pub fn find_matching_bracket_forward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+    pub fn find_matching_bracket_forward(
+        chars: &[char],
+        start_pos: usize,
+        open: char,
+        close: char,
+    ) -> Option<usize> {
         let mut depth = 1;
         for (i, &ch) in chars.iter().enumerate().skip(start_pos + 1) {
             if ch == open {
@@ -613,7 +628,12 @@ impl Motions {
     }
 
     /// Find matching opening bracket searching backward
-    pub fn find_matching_bracket_backward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+    pub fn find_matching_bracket_backward(
+        chars: &[char],
+        start_pos: usize,
+        open: char,
+        close: char,
+    ) -> Option<usize> {
         let mut depth = 1;
         for i in (0..start_pos).rev() {
             let ch = chars[i];
@@ -647,9 +667,7 @@ impl Motions {
             let chars: Vec<char> = line_text.chars().collect();
 
             // Find first non-whitespace character
-            let first_non_blank = chars.iter()
-                .position(|&c| !c.is_whitespace())
-                .unwrap_or(0);
+            let first_non_blank = chars.iter().position(|&c| !c.is_whitespace()).unwrap_or(0);
 
             buffer.cursor_mut().set_col(first_non_blank);
         }
@@ -798,7 +816,8 @@ impl Motions {
                     let ch = chars[current_col];
                     if ch == '.' || ch == '!' || ch == '?' {
                         // Check if followed by space or at end of line
-                        if current_col + 1 >= chars.len() || chars[current_col + 1].is_whitespace() {
+                        if current_col + 1 >= chars.len() || chars[current_col + 1].is_whitespace()
+                        {
                             // Skip whitespace after punctuation
                             current_col += 1;
                             while current_col < chars.len() && chars[current_col].is_whitespace() {
@@ -810,7 +829,10 @@ impl Motions {
                                 if current_line + 1 < rope.len_lines() {
                                     buffer.cursor_mut().set_position(current_line + 1, 0);
                                 } else {
-                                    buffer.cursor_mut().set_position(current_line, chars.len().saturating_sub(1).max(0));
+                                    buffer.cursor_mut().set_position(
+                                        current_line,
+                                        chars.len().saturating_sub(1).max(0),
+                                    );
                                 }
                             } else {
                                 buffer.cursor_mut().set_position(current_line, current_col);
@@ -853,7 +875,11 @@ impl Motions {
         } else if line_idx > 0 {
             line_idx -= 1;
             if let Some(line) = buffer.line(line_idx) {
-                col = line.trim_end_matches('\n').chars().count().saturating_sub(1);
+                col = line
+                    .trim_end_matches('\n')
+                    .chars()
+                    .count()
+                    .saturating_sub(1);
             }
         }
 
@@ -875,7 +901,9 @@ impl Motions {
                         if col >= chars.len() && line_idx + 1 < buffer.rope().len_lines() {
                             buffer.cursor_mut().set_position(line_idx + 1, 0);
                         } else {
-                            buffer.cursor_mut().set_position(line_idx, col.min(chars.len().saturating_sub(1)));
+                            buffer
+                                .cursor_mut()
+                                .set_position(line_idx, col.min(chars.len().saturating_sub(1)));
                         }
                         return;
                     }
@@ -890,7 +918,11 @@ impl Motions {
 
             line_idx -= 1;
             if let Some(line) = buffer.line(line_idx) {
-                col = line.trim_end_matches('\n').chars().count().saturating_sub(1);
+                col = line
+                    .trim_end_matches('\n')
+                    .chars()
+                    .count()
+                    .saturating_sub(1);
             }
         }
     }
@@ -910,16 +942,23 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer.cursor_mut().set_position(target_line, first_non_blank);
+            buffer
+                .cursor_mut()
+                .set_position(target_line, first_non_blank);
         }
     }
 
     /// Moves cursor to the middle of the visible screen (M command)
     /// viewport_start: first visible line
     /// viewport_height: number of visible lines
-    pub fn move_to_screen_middle(buffer: &mut Buffer, viewport_start: usize, viewport_height: usize) {
+    pub fn move_to_screen_middle(
+        buffer: &mut Buffer,
+        viewport_start: usize,
+        viewport_height: usize,
+    ) {
         let middle_offset = viewport_height / 2;
-        let target_line = (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
+        let target_line =
+            (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
         if let Some(line) = buffer.line(target_line) {
@@ -929,7 +968,9 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer.cursor_mut().set_position(target_line, first_non_blank);
+            buffer
+                .cursor_mut()
+                .set_position(target_line, first_non_blank);
         }
     }
 
@@ -937,9 +978,16 @@ impl Motions {
     /// viewport_start: first visible line
     /// viewport_height: number of visible lines
     /// offset: optional offset from bottom (0 = last line, 1 = second to last, etc.)
-    pub fn move_to_screen_bottom(buffer: &mut Buffer, viewport_start: usize, viewport_height: usize, offset: usize) {
+    pub fn move_to_screen_bottom(
+        buffer: &mut Buffer,
+        viewport_start: usize,
+        viewport_height: usize,
+        offset: usize,
+    ) {
         let last_visible = viewport_start + viewport_height.saturating_sub(1);
-        let target_line = last_visible.saturating_sub(offset).min(buffer.line_count().saturating_sub(1));
+        let target_line = last_visible
+            .saturating_sub(offset)
+            .min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
         if let Some(line) = buffer.line(target_line) {
@@ -949,7 +997,9 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer.cursor_mut().set_position(target_line, first_non_blank);
+            buffer
+                .cursor_mut()
+                .set_position(target_line, first_non_blank);
         }
     }
 
@@ -1067,7 +1117,8 @@ impl Motions {
         // Move cursor down by the same amount (keep relative position in viewport)
         let cursor_line = buffer.cursor().line();
         let cursor_offset = cursor_line.saturating_sub(viewport_start);
-        let new_cursor_line = (new_viewport + cursor_offset).min(buffer.line_count().saturating_sub(1));
+        let new_cursor_line =
+            (new_viewport + cursor_offset).min(buffer.line_count().saturating_sub(1));
 
         // Keep cursor in same column if possible
         let col = buffer.cursor().col();

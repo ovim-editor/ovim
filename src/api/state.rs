@@ -169,7 +169,7 @@ pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
         if c == '<' {
             // Find the closing >
             if let Some(end) = s[i..].find('>') {
-                let key_name = &s[i+1..i+end];
+                let key_name = &s[i + 1..i + end];
                 if let Some(event) = parse_special_key(key_name) {
                     events.push(event);
                     i += end + 1;

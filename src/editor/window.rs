@@ -179,11 +179,7 @@ impl WindowNode {
     }
 
     /// Creates a new split node
-    pub fn new_split(
-        direction: SplitDirection,
-        first: WindowNode,
-        second: WindowNode,
-    ) -> Self {
+    pub fn new_split(direction: SplitDirection, first: WindowNode, second: WindowNode) -> Self {
         WindowNode::Split {
             direction,
             ratio: 0.5, // Equal split by default
@@ -301,8 +297,7 @@ impl WindowManager {
 
     /// Gets a window by index mutably
     pub fn get_window_mut(&mut self, index: usize) -> Option<&mut Window> {
-        Self::get_window_recursive_mut_static(&mut self.root, index)
-            .map(|(w, _)| w)
+        Self::get_window_recursive_mut_static(&mut self.root, index).map(|(w, _)| w)
     }
 
     /// Helper for recursive window lookup
@@ -401,7 +396,13 @@ impl WindowManager {
                 if found {
                     (true, next_index)
                 } else {
-                    Self::split_window_by_index_static(second, target_index, direction, buffer_id, next_index)
+                    Self::split_window_by_index_static(
+                        second,
+                        target_index,
+                        direction,
+                        buffer_id,
+                        next_index,
+                    )
                 }
             }
         }

@@ -1,7 +1,7 @@
 //! Command execution for ex commands (:w, :q, etc.)
 
-use crate::editor::Editor;
 use crate::api::{ApiResponse, ErrorResponse, SuccessResponse};
+use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
 
 /// Helper function to jump to a quickfix entry
@@ -93,7 +93,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         let char_count = editor.buffer().rope().len_chars();
                         ApiResponse::Success(SuccessResponse {
                             success: true,
-                            message: Some(format!("\"{}\" {}L, {}C written", path, line_count, char_count)),
+                            message: Some(format!(
+                                "\"{}\" {}L, {}C written",
+                                path, line_count, char_count
+                            )),
                             line_count: None,
                         })
                     }
@@ -148,8 +151,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 }
 
                 let (errors, warnings, info_count, hints) = editor.cached_diagnostic_count();
-                info.push_str(&format!("\nDiagnostics: {} errors, {} warnings, {} info, {} hints\n",
-                    errors, warnings, info_count, hints));
+                info.push_str(&format!(
+                    "\nDiagnostics: {} errors, {} warnings, {} info, {} hints\n",
+                    errors, warnings, info_count, hints
+                ));
 
                 if !editor.lsp_status().is_empty() {
                     info.push_str(&format!("Status: {}\n", editor.lsp_status()));
@@ -186,7 +191,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     .iter()
                     .enumerate()
                     .map(|(i, entry)| {
-                        let marker = if i == qf_list.selected_index() { ">" } else { " " };
+                        let marker = if i == qf_list.selected_index() {
+                            ">"
+                        } else {
+                            " "
+                        };
                         format!("{} {}", marker, entry.display_text())
                     })
                     .collect();
@@ -365,9 +374,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
         }
         _ => {
             // Handle :tabnew <filename>, :tabe <filename>, :tabedit <filename>
-            if let Some(filename) = command.strip_prefix("tabnew ")
+            if let Some(filename) = command
+                .strip_prefix("tabnew ")
                 .or_else(|| command.strip_prefix("tabe "))
-                .or_else(|| command.strip_prefix("tabedit ")) {
+                .or_else(|| command.strip_prefix("tabedit "))
+            {
                 // Create new tab and load file
                 editor.new_tab(None);
                 match editor.load_file(filename) {
@@ -384,7 +395,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     }),
                 }
             // Handle :w <filename>
-            } else if let Some(filename) = command.strip_prefix("w ").or_else(|| command.strip_prefix("write ")) {
+            } else if let Some(filename) = command
+                .strip_prefix("w ")
+                .or_else(|| command.strip_prefix("write "))
+            {
                 editor.buffer_mut().set_file_path(filename.to_string());
                 match editor.buffer_mut().save_as(filename) {
                     Ok(_) => {
@@ -394,7 +408,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         let char_count = editor.buffer().rope().len_chars();
                         ApiResponse::Success(SuccessResponse {
                             success: true,
-                            message: Some(format!("\"{}\" {}L, {}C written", filename, line_count, char_count)),
+                            message: Some(format!(
+                                "\"{}\" {}L, {}C written",
+                                filename, line_count, char_count
+                            )),
                             line_count: None,
                         })
                     }
@@ -454,7 +471,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     message: Some(format!("Current: {}\nAvailable: {}", current, schemes)),
                     line_count: None,
                 })
-            } else if let Some(scheme_name) = command.strip_prefix("colorscheme ").or_else(|| command.strip_prefix("colo ")) {
+            } else if let Some(scheme_name) = command
+                .strip_prefix("colorscheme ")
+                .or_else(|| command.strip_prefix("colo "))
+            {
                 match editor.set_color_scheme(scheme_name.trim()) {
                     Ok(_) => ApiResponse::Success(SuccessResponse {
                         success: true,
@@ -469,21 +489,30 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     }
                 }
             // Handle :set commands
-            } else if let Some(set_cmd) = command.strip_prefix("set ").or_else(|| command.strip_prefix("se ")) {
+            } else if let Some(set_cmd) = command
+                .strip_prefix("set ")
+                .or_else(|| command.strip_prefix("se "))
+            {
                 crate::commands::handle_set_command(editor, set_cmd.trim())
             // Handle split commands
             } else if command == "sp" || command == "split" {
                 editor.split_window_horizontal();
                 ApiResponse::Success(SuccessResponse {
                     success: true,
-                    message: Some(format!("Split horizontally ({} windows)", editor.window_count())),
+                    message: Some(format!(
+                        "Split horizontally ({} windows)",
+                        editor.window_count()
+                    )),
                     line_count: None,
                 })
             } else if command == "vsp" || command == "vsplit" {
                 editor.split_window_vertical();
                 ApiResponse::Success(SuccessResponse {
                     success: true,
-                    message: Some(format!("Split vertically ({} windows)", editor.window_count())),
+                    message: Some(format!(
+                        "Split vertically ({} windows)",
+                        editor.window_count()
+                    )),
                     line_count: None,
                 })
             // Handle config reload
@@ -510,29 +539,37 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             // Handle :bn (next buffer)
             } else if command == "bn" || command == "bnext" {
                 editor.next_buffer();
-                let buf_name = editor.buffer().file_path()
+                let buf_name = editor
+                    .buffer()
+                    .file_path()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "[No Name]".to_string());
                 ApiResponse::Success(SuccessResponse {
                     success: true,
-                    message: Some(format!("Buffer {} of {}: {}",
+                    message: Some(format!(
+                        "Buffer {} of {}: {}",
                         editor.current_buffer_index() + 1,
                         editor.buffer_count(),
-                        buf_name)),
+                        buf_name
+                    )),
                     line_count: None,
                 })
             // Handle :bp (previous buffer)
             } else if command == "bp" || command == "bprev" || command == "bprevious" {
                 editor.prev_buffer();
-                let buf_name = editor.buffer().file_path()
+                let buf_name = editor
+                    .buffer()
+                    .file_path()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "[No Name]".to_string());
                 ApiResponse::Success(SuccessResponse {
                     success: true,
-                    message: Some(format!("Buffer {} of {}: {}",
+                    message: Some(format!(
+                        "Buffer {} of {}: {}",
                         editor.current_buffer_index() + 1,
                         editor.buffer_count(),
-                        buf_name)),
+                        buf_name
+                    )),
                     line_count: None,
                 })
             // Handle :bd (delete buffer)
@@ -551,7 +588,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             line_count: None,
                         })
                     } else {
-                        let buf_name = editor.buffer().file_path()
+                        let buf_name = editor
+                            .buffer()
+                            .file_path()
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "[No Name]".to_string());
                         ApiResponse::Success(SuccessResponse {
@@ -572,7 +611,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         line_count: None,
                     })
                 } else {
-                    let buf_name = editor.buffer().file_path()
+                    let buf_name = editor
+                        .buffer()
+                        .file_path()
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "[No Name]".to_string());
                     ApiResponse::Success(SuccessResponse {
@@ -583,12 +624,22 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 }
             // Handle :ls or :buffers (list buffers)
             } else if command == "ls" || command == "buffers" {
-                let buf_list: Vec<String> = editor.buffer_names()
+                let buf_list: Vec<String> = editor
+                    .buffer_names()
                     .iter()
                     .enumerate()
                     .map(|(i, name)| {
-                        let marker = if i == editor.current_buffer_index() { "%" } else { " " };
-                        let modified = if i < editor.buffer_count() && editor.buffers[i].is_modified() { "+" } else { " " };
+                        let marker = if i == editor.current_buffer_index() {
+                            "%"
+                        } else {
+                            " "
+                        };
+                        let modified =
+                            if i < editor.buffer_count() && editor.buffers[i].is_modified() {
+                                "+"
+                            } else {
+                                " "
+                            };
                         format!("{} {}  {}", marker, modified, name)
                     })
                     .collect();
@@ -597,11 +648,16 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     message: Some(buf_list.join("\n")),
                     line_count: None,
                 })
-            } else if let Some(filename) = command.strip_prefix("e ").or_else(|| command.strip_prefix("edit ")) {
+            } else if let Some(filename) = command
+                .strip_prefix("e ")
+                .or_else(|| command.strip_prefix("edit "))
+            {
                 // :e <filename> - edit file
                 match editor.load_file(filename) {
                     Ok(_) => {
-                        let buf_name = editor.buffer().file_path()
+                        let buf_name = editor
+                            .buffer()
+                            .file_path()
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "[No Name]".to_string());
                         ApiResponse::Success(SuccessResponse {
@@ -656,14 +712,24 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
         let opts = &editor.options;
         let msg = match query_opt {
             "number" | "nu" => format!("  {}number", if opts.number { "" } else { "no" }),
-            "relativenumber" | "rnu" => format!("  {}relativenumber", if opts.relative_number { "" } else { "no" }),
+            "relativenumber" | "rnu" => format!(
+                "  {}relativenumber",
+                if opts.relative_number { "" } else { "no" }
+            ),
             "expandtab" | "et" => format!("  {}expandtab", if opts.expand_tab { "" } else { "no" }),
             "tabstop" | "ts" => format!("  tabstop={}", opts.tab_width),
             "shiftwidth" | "sw" => format!("  shiftwidth={}", opts.shift_width),
-            "scroll" => format!("  scroll={}", opts.scroll.map(|s| s.to_string()).unwrap_or_else(|| "auto".to_string())),
-            _ => return ApiResponse::Error(ErrorResponse {
-                error: format!("Unknown option: {}", query_opt),
-            }),
+            "scroll" => format!(
+                "  scroll={}",
+                opts.scroll
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "auto".to_string())
+            ),
+            _ => {
+                return ApiResponse::Error(ErrorResponse {
+                    error: format!("Unknown option: {}", query_opt),
+                })
+            }
         };
         return ApiResponse::Success(SuccessResponse {
             success: true,
@@ -728,60 +794,54 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
     // Handle value-based options
     if let Some(value) = opt_value {
         match opt_name {
-            "tabstop" | "ts" => {
-                match value.parse::<usize>() {
-                    Ok(n) if n > 0 && n <= 16 => {
-                        editor.options.tab_width = n;
-                        ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("  tabstop={}", n)),
-                            line_count: None,
-                        })
-                    }
-                    Ok(_) => ApiResponse::Error(ErrorResponse {
-                        error: "tabstop must be between 1 and 16".to_string(),
-                    }),
-                    Err(_) => ApiResponse::Error(ErrorResponse {
-                        error: format!("Invalid number: {}", value),
-                    }),
+            "tabstop" | "ts" => match value.parse::<usize>() {
+                Ok(n) if n > 0 && n <= 16 => {
+                    editor.options.tab_width = n;
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  tabstop={}", n)),
+                        line_count: None,
+                    })
                 }
-            }
-            "shiftwidth" | "sw" => {
-                match value.parse::<usize>() {
-                    Ok(n) if n > 0 && n <= 16 => {
-                        editor.options.shift_width = n;
-                        ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("  shiftwidth={}", n)),
-                            line_count: None,
-                        })
-                    }
-                    Ok(_) => ApiResponse::Error(ErrorResponse {
-                        error: "shiftwidth must be between 1 and 16".to_string(),
-                    }),
-                    Err(_) => ApiResponse::Error(ErrorResponse {
-                        error: format!("Invalid number: {}", value),
-                    }),
+                Ok(_) => ApiResponse::Error(ErrorResponse {
+                    error: "tabstop must be between 1 and 16".to_string(),
+                }),
+                Err(_) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Invalid number: {}", value),
+                }),
+            },
+            "shiftwidth" | "sw" => match value.parse::<usize>() {
+                Ok(n) if n > 0 && n <= 16 => {
+                    editor.options.shift_width = n;
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  shiftwidth={}", n)),
+                        line_count: None,
+                    })
                 }
-            }
-            "scroll" => {
-                match value.parse::<usize>() {
-                    Ok(n) if n > 0 => {
-                        editor.options.scroll = Some(n);
-                        ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("  scroll={}", n)),
-                            line_count: None,
-                        })
-                    }
-                    Ok(_) => ApiResponse::Error(ErrorResponse {
-                        error: "scroll must be greater than 0".to_string(),
-                    }),
-                    Err(_) => ApiResponse::Error(ErrorResponse {
-                        error: format!("Invalid number: {}", value),
-                    }),
+                Ok(_) => ApiResponse::Error(ErrorResponse {
+                    error: "shiftwidth must be between 1 and 16".to_string(),
+                }),
+                Err(_) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Invalid number: {}", value),
+                }),
+            },
+            "scroll" => match value.parse::<usize>() {
+                Ok(n) if n > 0 => {
+                    editor.options.scroll = Some(n);
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  scroll={}", n)),
+                        line_count: None,
+                    })
                 }
-            }
+                Ok(_) => ApiResponse::Error(ErrorResponse {
+                    error: "scroll must be greater than 0".to_string(),
+                }),
+                Err(_) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Invalid number: {}", value),
+                }),
+            },
             _ => ApiResponse::Error(ErrorResponse {
                 error: format!("Unknown option: {}", opt_name),
             }),

@@ -1,6 +1,6 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Test helper that provides a fluent API for driving editor operations
 /// and capturing snapshots of editor state
@@ -104,7 +104,10 @@ impl EditorTest {
                     // Show cursor position with a marker
                     let before = line_display.chars().take(cursor.col()).collect::<String>();
                     let at_cursor = line_display.chars().nth(cursor.col()).unwrap_or(' ');
-                    let after = line_display.chars().skip(cursor.col() + 1).collect::<String>();
+                    let after = line_display
+                        .chars()
+                        .skip(cursor.col() + 1)
+                        .collect::<String>();
                     lines.push(format!("{}[{}]{}", before, at_cursor, after));
                 } else {
                     lines.push(line_display.to_string());
@@ -145,7 +148,10 @@ impl EditorTest {
             (cursor.line(), cursor.col()),
             (line, col),
             "Expected cursor at {}:{}, got {}:{}",
-            line, col, cursor.line(), cursor.col()
+            line,
+            col,
+            cursor.line(),
+            cursor.col()
         );
     }
 
@@ -173,15 +179,11 @@ impl EditorTest {
 
     /// Assert specific line content
     pub fn assert_line(&self, line_idx: usize, expected: &str) {
-        let actual = self.editor.buffer().line(line_idx)
-            .unwrap_or_default();
+        let actual = self.editor.buffer().line(line_idx).unwrap_or_default();
         assert_eq!(
-            actual,
-            expected,
+            actual, expected,
             "Line {} mismatch:\nExpected: {:?}\nGot: {:?}",
-            line_idx,
-            expected,
-            actual
+            line_idx, expected, actual
         );
     }
 
@@ -227,7 +229,8 @@ mod tests {
     fn test_editor_test_basic() {
         let mut test = EditorTest::new("hello\nworld");
 
-        test.assert_line_count(2);
+        // Vim behavior: content always ends with newline, so "hello\nworld" becomes "hello\nworld\n" (3 lines)
+        test.assert_line_count(3);
         test.assert_cursor(0, 0);
         test.assert_mode(Mode::Normal);
 
@@ -239,9 +242,7 @@ mod tests {
     fn test_fluent_api() {
         let mut test = EditorTest::new("test");
 
-        test.press('i')
-            .type_text("hello ")
-            .press_esc();
+        test.press('i').type_text("hello ").press_esc();
 
         assert!(test.buffer_content().contains("hello"));
     }

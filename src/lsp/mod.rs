@@ -32,10 +32,9 @@ pub use types::{LspPosition, LspRange};
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use lsp_types::{
-    Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DidSaveTextDocumentParams, PublishDiagnosticsParams,
-    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem, Url,
-    VersionedTextDocumentIdentifier,
+    Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -206,7 +205,11 @@ impl LspManager {
         args: Vec<String>,
         root_path: &Path,
     ) -> Result<()> {
-        lsp_debug!("LspManager", "start_server called for language={}", language);
+        lsp_debug!(
+            "LspManager",
+            "start_server called for language={}",
+            language
+        );
         // Check if already running
         if self.servers.contains_key(language) {
             lsp_debug!("LspManager", "Server already running for {}", language);
@@ -218,8 +221,8 @@ impl LspManager {
         let mut server = LanguageServer::spawn(language, command, args).await?;
         lsp_debug!("LspManager", "Server spawned successfully");
 
-        let root_uri = Url::from_file_path(root_path)
-            .map_err(|_| anyhow::anyhow!("Invalid root path"))?;
+        let root_uri =
+            Url::from_file_path(root_path).map_err(|_| anyhow::anyhow!("Invalid root path"))?;
         lsp_debug!("LspManager", "Root URI: {}", root_uri);
 
         lsp_debug!("LspManager", "Calling initialize...");
@@ -231,7 +234,12 @@ impl LspManager {
         if let Some(mut existing) = self.servers.insert(language.to_string(), server) {
             // Another thread won the race - clean up the existing server
             if let Err(e) = existing.shutdown().await {
-                lsp_warn!("LspManager", "Failed to shut down redundant server for {}: {}", language, e);
+                lsp_warn!(
+                    "LspManager",
+                    "Failed to shut down redundant server for {}: {}",
+                    language,
+                    e
+                );
             }
         }
 
@@ -261,9 +269,7 @@ impl LspManager {
             .map(|diags| {
                 diags
                     .iter()
-                    .filter(|d| {
-                        d.range.start.line <= line && d.range.end.line >= line
-                    })
+                    .filter(|d| d.range.start.line <= line && d.range.end.line >= line)
                     .cloned()
                     .collect()
             })
@@ -330,7 +336,9 @@ impl LspManager {
 
     /// Gets a reference to a language server
     pub async fn get_server(&self, language: &str) -> Option<LanguageServer> {
-        self.servers.get(language).map(|entry| entry.value().clone())
+        self.servers
+            .get(language)
+            .map(|entry| entry.value().clone())
     }
 
     /// Sends textDocument/didOpen notification
@@ -341,7 +349,14 @@ impl LspManager {
         version: i32,
         text: String,
     ) -> Result<()> {
-        lsp_debug!("LSP-NOTIFY", "textDocument/didOpen | URI: {} | Language: {} | Version: {} | Size: {} bytes", uri, language_id, version, text.len());
+        lsp_debug!(
+            "LSP-NOTIFY",
+            "textDocument/didOpen | URI: {} | Language: {} | Version: {} | Size: {} bytes",
+            uri,
+            language_id,
+            version,
+            text.len()
+        );
 
         // Check document size to prevent OOM
         if text.len() > MAX_DOCUMENT_SIZE {
@@ -354,7 +369,8 @@ impl LspManager {
             ));
         }
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -390,7 +406,8 @@ impl LspManager {
         old_text: Option<String>,
     ) -> Result<()> {
         // Get server reference
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -488,7 +505,8 @@ impl LspManager {
                 text.clone(),
                 old_text.clone(),
             )));
-            self.change_debouncers.insert(uri.clone(), debouncer.clone());
+            self.change_debouncers
+                .insert(uri.clone(), debouncer.clone());
             debouncer
         };
 
@@ -529,7 +547,8 @@ impl LspManager {
         // Flush any pending changes before saving
         self.flush_pending_changes(&uri).await?;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -550,7 +569,8 @@ impl LspManager {
         // Flush any pending changes before closing
         self.flush_pending_changes(&uri).await?;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -616,7 +636,9 @@ impl LspManager {
                     // Only show messages if OVIM_LSP_DEBUG is set to avoid cluttering the terminal
                     if std::env::var("OVIM_LSP_DEBUG").is_ok() {
                         if let Some(params) = notification.params {
-                            if let Ok(msg_params) = serde_json::from_value::<lsp_types::ShowMessageParams>(params) {
+                            if let Ok(msg_params) =
+                                serde_json::from_value::<lsp_types::ShowMessageParams>(params)
+                            {
                                 // Format message with severity prefix
                                 let prefix = match msg_params.typ {
                                     lsp_types::MessageType::ERROR => "LSP Error",
@@ -633,23 +655,39 @@ impl LspManager {
                                     _ => "UNKNOWN",
                                 };
                                 let log_level = match msg_params.typ {
-                                    lsp_types::MessageType::ERROR => crate::lsp::logger::LogLevel::Error,
-                                    lsp_types::MessageType::WARNING => crate::lsp::logger::LogLevel::Warning,
-                                    lsp_types::MessageType::INFO => crate::lsp::logger::LogLevel::Info,
+                                    lsp_types::MessageType::ERROR => {
+                                        crate::lsp::logger::LogLevel::Error
+                                    }
+                                    lsp_types::MessageType::WARNING => {
+                                        crate::lsp::logger::LogLevel::Warning
+                                    }
+                                    lsp_types::MessageType::INFO => {
+                                        crate::lsp::logger::LogLevel::Info
+                                    }
                                     _ => crate::lsp::logger::LogLevel::Info,
                                 };
-                                crate::lsp::logger::log_message(log_level, &format!("{}:{}", language_id, prefix), &format!("{}: {}", type_str, msg_params.message));
+                                crate::lsp::logger::log_message(
+                                    log_level,
+                                    &format!("{}:{}", language_id, prefix),
+                                    &format!("{}: {}", type_str, msg_params.message),
+                                );
                             }
                         }
                     }
                 }
                 "window/logMessage" => {
                     if let Some(params) = notification.params {
-                        if let Ok(log_params) = serde_json::from_value::<lsp_types::LogMessageParams>(params) {
+                        if let Ok(log_params) =
+                            serde_json::from_value::<lsp_types::LogMessageParams>(params)
+                        {
                             // Only log if OVIM_LSP_DEBUG is set
                             let log_level = match log_params.typ {
-                                lsp_types::MessageType::ERROR => crate::lsp::logger::LogLevel::Error,
-                                lsp_types::MessageType::WARNING => crate::lsp::logger::LogLevel::Warning,
+                                lsp_types::MessageType::ERROR => {
+                                    crate::lsp::logger::LogLevel::Error
+                                }
+                                lsp_types::MessageType::WARNING => {
+                                    crate::lsp::logger::LogLevel::Warning
+                                }
                                 lsp_types::MessageType::INFO => crate::lsp::logger::LogLevel::Info,
                                 _ => crate::lsp::logger::LogLevel::Debug,
                             };
@@ -660,7 +698,11 @@ impl LspManager {
                                 lsp_types::MessageType::LOG => "LOG",
                                 _ => "UNKNOWN",
                             };
-                            crate::lsp::logger::log_message(log_level, &format!("LSP:{}:{}", language_id, prefix), &log_params.message);
+                            crate::lsp::logger::log_message(
+                                log_level,
+                                &format!("LSP:{}:{}", language_id, prefix),
+                                &log_params.message,
+                            );
                         }
                     }
                 }
@@ -669,16 +711,15 @@ impl LspManager {
                     // These provide real-time feedback about long-running operations
                     if let Some(params) = &notification.params {
                         // Try to parse as ProgressParams
-                        if let Ok(progress) = serde_json::from_value::<lsp_types::ProgressParams>(params.clone()) {
+                        if let Ok(progress) =
+                            serde_json::from_value::<lsp_types::ProgressParams>(params.clone())
+                        {
                             // Extract meaningful message from progress
                             let message_opt = match &progress.value {
                                 lsp_types::ProgressParamsValue::WorkDone(work_done) => {
                                     match work_done {
                                         lsp_types::WorkDoneProgress::Begin(begin) => {
-                                            Some(format!("{}: {}",
-                                                language_id,
-                                                begin.title,
-                                            ))
+                                            Some(format!("{}: {}", language_id, begin.title,))
                                         }
                                         lsp_types::WorkDoneProgress::Report(report) => {
                                             if let Some(msg) = &report.message {
@@ -706,7 +747,9 @@ impl LspManager {
                                 // Store latest progress message (will be cleared on End)
                                 let mut current_progress = self.current_progress.lock().await;
                                 match &progress.value {
-                                    lsp_types::ProgressParamsValue::WorkDone(lsp_types::WorkDoneProgress::End(_)) => {
+                                    lsp_types::ProgressParamsValue::WorkDone(
+                                        lsp_types::WorkDoneProgress::End(_),
+                                    ) => {
                                         current_progress.remove(&language_id.to_string());
                                     }
                                     _ => {
@@ -719,7 +762,11 @@ impl LspManager {
                 }
                 _ => {
                     // Silently ignore unknown notifications
-                    lsp_debug!(&format!("LSP:{}", language_id), "Unknown notification: {}", method);
+                    lsp_debug!(
+                        &format!("LSP:{}", language_id),
+                        "Unknown notification: {}",
+                        method
+                    );
                 }
             }
         }
@@ -732,7 +779,8 @@ impl LspManager {
 
         // Process all pending notifications (non-blocking)
         while let Ok(notification) = rx.try_recv() {
-            self.handle_notification(&notification.language_id, notification.message).await;
+            self.handle_notification(&notification.language_id, notification.message)
+                .await;
         }
     }
 
@@ -752,7 +800,10 @@ impl LspManager {
 
     /// Starts a background task to listen for notifications from a language server
     pub async fn start_notification_listener(&self, language_id: String) {
-        let server = self.servers.get(&language_id).map(|entry| entry.value().clone());
+        let server = self
+            .servers
+            .get(&language_id)
+            .map(|entry| entry.value().clone());
 
         if let Some(server) = server {
             let tx = self.notification_tx.clone();
@@ -789,9 +840,13 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::Location>> {
-        use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -802,9 +857,7 @@ impl LspManager {
 
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -838,10 +891,14 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::Location>> {
-        use lsp_types::{request::GotoImplementationParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
         use lsp_types::GotoDefinitionResponse as GotoImplementationResponse;
+        use lsp_types::{
+            request::GotoImplementationParams, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -852,9 +909,7 @@ impl LspManager {
 
         let params = GotoImplementationParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -888,10 +943,14 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::Location>> {
-        use lsp_types::{request::GotoTypeDefinitionParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
         use lsp_types::GotoDefinitionResponse as GotoTypeDefinitionResponse;
+        use lsp_types::{
+            request::GotoTypeDefinitionParams, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -902,9 +961,7 @@ impl LspManager {
 
         let params = GotoTypeDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -938,11 +995,21 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<String>> {
-        use lsp_types::{HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
 
-        lsp_debug!("LSP-HOVER", "hover() called | URI: {} | line: {}, char: {} | language: {}", uri, line, character, language_id);
+        lsp_debug!(
+            "LSP-HOVER",
+            "hover() called | URI: {} | line: {}, char: {} | language: {}",
+            uri,
+            line,
+            character,
+            language_id
+        );
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -958,9 +1025,7 @@ impl LspManager {
 
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -983,23 +1048,17 @@ impl LspManager {
         };
 
         // Extract text from hover response
-        Ok(response.and_then(|hover| {
-            match hover.contents {
-                lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
-                lsp_types::HoverContents::Array(contents) => {
-                    let texts: Vec<String> = contents.into_iter()
-                        .map(marked_string_to_text)
-                        .collect();
-                    if texts.is_empty() {
-                        None
-                    } else {
-                        Some(texts.join("\n\n"))
-                    }
-                }
-                lsp_types::HoverContents::Markup(content) => {
-                    Some(content.value)
+        Ok(response.and_then(|hover| match hover.contents {
+            lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
+            lsp_types::HoverContents::Array(contents) => {
+                let texts: Vec<String> = contents.into_iter().map(marked_string_to_text).collect();
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(texts.join("\n\n"))
                 }
             }
+            lsp_types::HoverContents::Markup(content) => Some(content.value),
         }))
     }
 
@@ -1011,9 +1070,13 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Vec<lsp_types::CompletionItem>> {
-        use lsp_types::{CompletionParams, CompletionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            CompletionParams, CompletionResponse, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1024,9 +1087,7 @@ impl LspManager {
 
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -1040,10 +1101,12 @@ impl LspManager {
 
         let response: Option<CompletionResponse> = serde_json::from_value(result).ok();
 
-        Ok(response.map(|resp| match resp {
-            CompletionResponse::Array(items) => items,
-            CompletionResponse::List(list) => list.items,
-        }).unwrap_or_default())
+        Ok(response
+            .map(|resp| match resp {
+                CompletionResponse::Array(items) => items,
+                CompletionResponse::List(list) => list.items,
+            })
+            .unwrap_or_default())
     }
 
     /// Requests document formatting
@@ -1056,7 +1119,8 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::TextEdit>> {
         use lsp_types::{DocumentFormattingParams, FormattingOptions, TextDocumentIdentifier};
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1066,9 +1130,7 @@ impl LspManager {
         }
 
         let params = DocumentFormattingParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             options: FormattingOptions {
                 tab_size,
                 insert_spaces,
@@ -1098,9 +1160,13 @@ impl LspManager {
         tab_size: u32,
         insert_spaces: bool,
     ) -> Result<Vec<lsp_types::TextEdit>> {
-        use lsp_types::{DocumentRangeFormattingParams, FormattingOptions, Position, Range, TextDocumentIdentifier};
+        use lsp_types::{
+            DocumentRangeFormattingParams, FormattingOptions, Position, Range,
+            TextDocumentIdentifier,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1110,9 +1176,7 @@ impl LspManager {
         }
 
         let params = DocumentRangeFormattingParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             range: Range {
                 start: Position {
                     line: start_line,
@@ -1132,7 +1196,10 @@ impl LspManager {
         };
 
         let result = server
-            .request("textDocument/rangeFormatting", serde_json::to_value(params)?)
+            .request(
+                "textDocument/rangeFormatting",
+                serde_json::to_value(params)?,
+            )
             .await?;
 
         let edits: Option<Vec<lsp_types::TextEdit>> = serde_json::from_value(result).ok();
@@ -1153,7 +1220,8 @@ impl LspManager {
             CodeActionContext, CodeActionParams, Position, Range, TextDocumentIdentifier,
         };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1169,9 +1237,7 @@ impl LspManager {
         };
 
         let params = CodeActionParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             range,
             context: CodeActionContext {
                 diagnostics,
@@ -1201,9 +1267,13 @@ impl LspManager {
         language_id: &str,
         include_declaration: bool,
     ) -> Result<Vec<lsp_types::Location>> {
-        use lsp_types::{Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1214,9 +1284,7 @@ impl LspManager {
 
         let params = ReferenceParams {
             text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             context: ReferenceContext {
@@ -1246,7 +1314,8 @@ impl LspManager {
     ) -> Result<Option<lsp_types::PrepareRenameResponse>> {
         use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1256,9 +1325,7 @@ impl LspManager {
         }
 
         let params = TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position { line, character },
         };
 
@@ -1266,7 +1333,8 @@ impl LspManager {
             .request("textDocument/prepareRename", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<lsp_types::PrepareRenameResponse> = serde_json::from_value(result).ok();
+        let response: Option<lsp_types::PrepareRenameResponse> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1280,9 +1348,12 @@ impl LspManager {
         language_id: &str,
         new_name: String,
     ) -> Result<Option<lsp_types::WorkspaceEdit>> {
-        use lsp_types::{Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1293,9 +1364,7 @@ impl LspManager {
 
         let params = RenameParams {
             text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             new_name,
@@ -1319,9 +1388,12 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<lsp_types::SignatureHelp>> {
-        use lsp_types::{Position, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            Position, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1332,9 +1404,7 @@ impl LspManager {
 
         let params = SignatureHelpParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -1360,7 +1430,8 @@ impl LspManager {
     ) -> Result<Option<lsp_types::SelectionRange>> {
         use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier};
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1370,9 +1441,7 @@ impl LspManager {
         }
 
         let params = SelectionRangeParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             positions: vec![Position { line, character }],
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -1396,7 +1465,8 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::DocumentSymbol>> {
         use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1406,9 +1476,7 @@ impl LspManager {
         }
 
         let params = DocumentSymbolParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
@@ -1419,25 +1487,30 @@ impl LspManager {
 
         // Response can be either DocumentSymbol[] or SymbolInformation[]
         // Try DocumentSymbol first (hierarchical)
-        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::DocumentSymbol>>(result.clone()) {
+        if let Ok(symbols) =
+            serde_json::from_value::<Vec<lsp_types::DocumentSymbol>>(result.clone())
+        {
             return Ok(symbols);
         }
 
         // Fall back to SymbolInformation (flat) - convert to DocumentSymbol
         if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::SymbolInformation>>(result) {
             // Convert SymbolInformation to DocumentSymbol (without children)
-            let doc_symbols = symbols.into_iter().map(|sym| {
-                lsp_types::DocumentSymbol {
-                    name: sym.name,
-                    detail: None,
-                    kind: sym.kind,
-                    tags: sym.tags,
-                    deprecated: None, // Use tags instead
-                    range: sym.location.range,
-                    selection_range: sym.location.range,
-                    children: None,
-                }
-            }).collect();
+            let doc_symbols = symbols
+                .into_iter()
+                .map(|sym| {
+                    lsp_types::DocumentSymbol {
+                        name: sym.name,
+                        detail: None,
+                        kind: sym.kind,
+                        tags: sym.tags,
+                        deprecated: None, // Use tags instead
+                        range: sym.location.range,
+                        selection_range: sym.location.range,
+                        children: None,
+                    }
+                })
+                .collect();
             return Ok(doc_symbols);
         }
 
@@ -1453,9 +1526,12 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Vec<lsp_types::DocumentHighlight>> {
-        use lsp_types::{DocumentHighlightParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            DocumentHighlightParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1466,9 +1542,7 @@ impl LspManager {
 
         let params = DocumentHighlightParams {
             text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier {
-                    uri: uri.clone(),
-                },
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
                 position: Position { line, character },
             },
             work_done_progress_params: Default::default(),
@@ -1476,10 +1550,14 @@ impl LspManager {
         };
 
         let result = server
-            .request("textDocument/documentHighlight", serde_json::to_value(params)?)
+            .request(
+                "textDocument/documentHighlight",
+                serde_json::to_value(params)?,
+            )
             .await?;
 
-        let response: Option<Vec<lsp_types::DocumentHighlight>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::DocumentHighlight>> =
+            serde_json::from_value(result).ok();
 
         Ok(response.unwrap_or_default())
     }
@@ -1492,7 +1570,8 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::SymbolInformation>> {
         use lsp_types::WorkspaceSymbolParams;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1513,32 +1592,37 @@ impl LspManager {
 
         // Response can be either SymbolInformation[] or WorkspaceSymbol[]
         // Try SymbolInformation first (simpler format)
-        if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::SymbolInformation>>(result.clone()) {
+        if let Ok(symbols) =
+            serde_json::from_value::<Vec<lsp_types::SymbolInformation>>(result.clone())
+        {
             return Ok(symbols);
         }
 
         // Try WorkspaceSymbol (newer format with optional data field)
         if let Ok(symbols) = serde_json::from_value::<Vec<lsp_types::WorkspaceSymbol>>(result) {
             // Convert WorkspaceSymbol to SymbolInformation
-            let symbol_infos = symbols.into_iter().filter_map(|sym| {
-                // WorkspaceSymbol has OneOf<Location, WorkspaceLocation>
-                // We only support full Location for now
-                match sym.location {
-                    lsp_types::OneOf::Left(location) => Some(lsp_types::SymbolInformation {
-                        name: sym.name,
-                        kind: sym.kind,
-                        tags: sym.tags,
-                        deprecated: None,
-                        location,
-                        container_name: sym.container_name,
-                    }),
-                    lsp_types::OneOf::Right(_workspace_location) => {
-                        // Skip workspace locations (URIs without ranges) for now
-                        // These need to be resolved separately
-                        None
+            let symbol_infos = symbols
+                .into_iter()
+                .filter_map(|sym| {
+                    // WorkspaceSymbol has OneOf<Location, WorkspaceLocation>
+                    // We only support full Location for now
+                    match sym.location {
+                        lsp_types::OneOf::Left(location) => Some(lsp_types::SymbolInformation {
+                            name: sym.name,
+                            kind: sym.kind,
+                            tags: sym.tags,
+                            deprecated: None,
+                            location,
+                            container_name: sym.container_name,
+                        }),
+                        lsp_types::OneOf::Right(_workspace_location) => {
+                            // Skip workspace locations (URIs without ranges) for now
+                            // These need to be resolved separately
+                            None
+                        }
                     }
-                }
-            }).collect();
+                })
+                .collect();
             return Ok(symbol_infos);
         }
 
@@ -1554,7 +1638,8 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::FoldingRange>> {
         use lsp_types::{FoldingRangeParams, TextDocumentIdentifier};
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1564,9 +1649,7 @@ impl LspManager {
         }
 
         let params = FoldingRangeParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
         };
@@ -1589,9 +1672,13 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<Vec<lsp_types::CallHierarchyItem>>> {
-        use lsp_types::{CallHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            CallHierarchyPrepareParams, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1609,10 +1696,14 @@ impl LspManager {
         };
 
         let result = server
-            .request("textDocument/prepareCallHierarchy", serde_json::to_value(params)?)
+            .request(
+                "textDocument/prepareCallHierarchy",
+                serde_json::to_value(params)?,
+            )
             .await?;
 
-        let response: Option<Vec<lsp_types::CallHierarchyItem>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::CallHierarchyItem>> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1626,7 +1717,8 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyIncomingCall>>> {
         use lsp_types::CallHierarchyIncomingCallsParams;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1645,7 +1737,8 @@ impl LspManager {
             .request("callHierarchy/incomingCalls", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::CallHierarchyIncomingCall>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::CallHierarchyIncomingCall>> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1659,7 +1752,8 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>> {
         use lsp_types::CallHierarchyOutgoingCallsParams;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1678,7 +1772,8 @@ impl LspManager {
             .request("callHierarchy/outgoingCalls", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::CallHierarchyOutgoingCall>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::CallHierarchyOutgoingCall>> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1692,9 +1787,13 @@ impl LspManager {
         character: u32,
         language_id: &str,
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
-        use lsp_types::{TypeHierarchyPrepareParams, Position, TextDocumentIdentifier, TextDocumentPositionParams};
+        use lsp_types::{
+            Position, TextDocumentIdentifier, TextDocumentPositionParams,
+            TypeHierarchyPrepareParams,
+        };
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1712,10 +1811,14 @@ impl LspManager {
         };
 
         let result = server
-            .request("textDocument/prepareTypeHierarchy", serde_json::to_value(params)?)
+            .request(
+                "textDocument/prepareTypeHierarchy",
+                serde_json::to_value(params)?,
+            )
             .await?;
 
-        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1729,7 +1832,8 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySupertypesParams;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1748,7 +1852,8 @@ impl LspManager {
             .request("typeHierarchy/supertypes", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1762,7 +1867,8 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySubtypesParams;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1781,7 +1887,8 @@ impl LspManager {
             .request("typeHierarchy/subtypes", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::TypeHierarchyItem>> =
+            serde_json::from_value(result).ok();
 
         Ok(response)
     }
@@ -1796,13 +1903,16 @@ impl LspManager {
     ) -> Result<Option<serde_json::Value>> {
         use lsp_types::ExecuteCommandParams;
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
         // Check if server supports execute command
         if !server.supports_execute_command().await {
-            return Err(anyhow::anyhow!("Server does not support workspace/executeCommand"));
+            return Err(anyhow::anyhow!(
+                "Server does not support workspace/executeCommand"
+            ));
         }
 
         let params = ExecuteCommandParams {
@@ -1827,7 +1937,8 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::InlayHint>> {
         use lsp_types::{InlayHintParams, TextDocumentIdentifier, WorkDoneProgressParams};
 
-        let server = self.servers
+        let server = self
+            .servers
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
@@ -1837,9 +1948,7 @@ impl LspManager {
         }
 
         let params = InlayHintParams {
-            text_document: TextDocumentIdentifier {
-                uri: uri.clone(),
-            },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             range,
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
@@ -1880,14 +1989,20 @@ impl LspManager {
 
     /// Gets the list of active language server names
     pub async fn get_active_servers(&self) -> Vec<String> {
-        self.servers.iter().map(|entry| entry.key().clone()).collect()
+        self.servers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 }
 
 /// Computes a simple diff between old and new content for incremental sync
 /// Returns Some((range, new_text)) if a single contiguous change is found,
 /// or None if the change is too complex (fallback to full sync)
-pub fn compute_simple_diff(old_content: &str, new_content: &str) -> Option<(lsp_types::Range, String)> {
+pub fn compute_simple_diff(
+    old_content: &str,
+    new_content: &str,
+) -> Option<(lsp_types::Range, String)> {
     use lsp_types::{Position, Range};
 
     let old_lines: Vec<&str> = old_content.lines().collect();
@@ -1911,7 +2026,11 @@ pub fn compute_simple_diff(old_content: &str, new_content: &str) -> Option<(lsp_
                 character: 0,
             };
             let new_text = new_lines[old_lines.len()..].join("\n");
-            let new_text = if !old_content.is_empty() { format!("\n{}", new_text) } else { new_text };
+            let new_text = if !old_content.is_empty() {
+                format!("\n{}", new_text)
+            } else {
+                new_text
+            };
 
             return Some((
                 Range {
@@ -2010,7 +2129,13 @@ pub fn compute_simple_diff(old_content: &str, new_content: &str) -> Option<(lsp_
         String::new()
     };
 
-    Some((Range { start: start_pos, end: end_pos }, new_text))
+    Some((
+        Range {
+            start: start_pos,
+            end: end_pos,
+        },
+        new_text,
+    ))
 }
 
 /// Converts a MarkedString to plain text
@@ -2135,8 +2260,11 @@ mod tests {
         let (range, new_text) = result.unwrap();
         assert_eq!(range.start.line, 1);
         // The diff algorithm should include "Line 2\nLine 3" as the new text
-        assert!(new_text.contains("Line 2") || new_text.contains("Line 3"),
-                "Expected new_text to contain inserted content, got: {:?}", new_text);
+        assert!(
+            new_text.contains("Line 2") || new_text.contains("Line 3"),
+            "Expected new_text to contain inserted content, got: {:?}",
+            new_text
+        );
     }
 
     #[test]

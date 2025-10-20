@@ -17,11 +17,19 @@ fn test_lsp_goto_definition_multi_file() {
 
     // File 2: utils.rs
     let file2 = temp_dir.join("utils.rs");
-    fs::write(&file2, "pub fn helper() -> i32 {\n    42\n}\n\npub fn caller() {\n    let x = helper();\n}\n").unwrap();
+    fs::write(
+        &file2,
+        "pub fn helper() -> i32 {\n    42\n}\n\npub fn caller() {\n    let x = helper();\n}\n",
+    )
+    .unwrap();
 
     // File 3: main.rs
     let file3 = temp_dir.join("main.rs");
-    fs::write(&file3, "mod utils;\n\nfn main() {\n    utils::helper();\n}\n").unwrap();
+    fs::write(
+        &file3,
+        "mod utils;\n\nfn main() {\n    utils::helper();\n}\n",
+    )
+    .unwrap();
 
     // Test navigation from main.rs
     let mut test = EditorTest::new("mod utils;\n\nfn main() {\n    utils::helper();\n}\n");
@@ -140,7 +148,7 @@ fn main() {
     // Go back with Ctrl-O
     test.press_with(
         crossterm::event::KeyCode::Char('o'),
-        crossterm::event::KeyModifiers::CONTROL
+        crossterm::event::KeyModifiers::CONTROL,
     );
 
     // Should be back at original position (or close to it)

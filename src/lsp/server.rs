@@ -11,7 +11,7 @@ use super::supervisor::{RestartPolicy, TaskHealth, TaskSupervisor};
 use anyhow::{anyhow, Context, Result};
 use lsp_types::{
     ClientCapabilities, InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
-    Url, WorkspaceFolder, TextDocumentContentChangeEvent,
+    TextDocumentContentChangeEvent, Url, WorkspaceFolder,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -30,9 +30,10 @@ const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 /// Maximum number of pending requests to prevent OOM
 const MAX_PENDING_REQUESTS: usize = 1000;
 
-/// Maximum time a request can remain pending before cleanup (30 seconds)
+/// Maximum time a request can remain pending before cleanup (10 minutes)
 /// This prevents stale requests from accumulating when LSP servers hang
-const REQUEST_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Initialize requests need much longer (up to 5 minutes for Java)
+const REQUEST_STALE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Interval for cleanup task (10 seconds)
 /// More frequent cleanup prevents memory buildup from stale requests
@@ -64,10 +65,7 @@ pub enum ServerState {
     },
 
     /// Server has failed and cannot recover
-    Failed {
-        error: String,
-        at: Instant,
-    },
+    Failed { error: String, at: Instant },
 
     /// Server is shutting down
     ShuttingDown,
@@ -231,7 +229,13 @@ impl LanguageServer {
 
     /// Spawns a new language server process
     pub async fn spawn(language: &str, command: &str, args: Vec<String>) -> Result<Self> {
-        crate::lsp_debug!("Server", "Spawning {} with command: {} args: {:?}", language, command, args);
+        crate::lsp_debug!(
+            "Server",
+            "Spawning {} with command: {} args: {:?}",
+            language,
+            command,
+            args
+        );
         let mut child = Command::new(command)
             .args(&args)
             .stdin(Stdio::piped())
@@ -303,7 +307,9 @@ impl LanguageServer {
             cap_inlay_hint: AtomicBool::new(false),
         });
 
-        let server = Self { inner: inner.clone() };
+        let server = Self {
+            inner: inner.clone(),
+        };
 
         // Spawn writer task to write messages to stdin
         // Note: This task is NOT supervised because:
@@ -325,9 +331,9 @@ impl LanguageServer {
 
         // Spawn supervised stale request cleanup task
         let inner_cleanup = inner.clone();
-        inner.supervisor.spawn_supervised(
-            "lsp_cleanup".to_string(),
-            move || {
+        inner
+            .supervisor
+            .spawn_supervised("lsp_cleanup".to_string(), move || {
                 let inner = inner_cleanup.clone();
                 async move {
                     loop {
@@ -357,11 +363,14 @@ impl LanguageServer {
                                 crate::lsp_warn!(
                                     "Cleanup",
                                     "Removing stale request {:?} for method '{}' (age: {:?})",
-                                    id, req.method, age
+                                    id,
+                                    req.method,
+                                    age
                                 );
                                 let _ = req.sender.send(Err(anyhow!(
                                     "Request '{}' timed out and was cleaned up after {:?}",
-                                    req.method, age
+                                    req.method,
+                                    age
                                 )));
                             }
                         }
@@ -388,8 +397,8 @@ impl LanguageServer {
                         }
                     }
                 }
-            }
-        ).await?;
+            })
+            .await?;
 
         // Spawn task to read messages from stdout
         // Note: Not supervised because stdout is unique to the process - if this fails, server is dead
@@ -446,7 +455,8 @@ impl LanguageServer {
 
                 // Read content
                 let mut content = vec![0u8; content_length];
-                if let Err(_e) = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut content).await
+                if let Err(_e) =
+                    tokio::io::AsyncReadExt::read_exact(&mut reader, &mut content).await
                 {
                     // Error reading message body, LSP server may have closed
                     break;
@@ -464,9 +474,12 @@ impl LanguageServer {
                                     if let Some(error) = msg.error {
                                         // Don't print to stderr - propagate error to caller
                                         // Errors will be shown in status line by the editor
-                                        let error_msg = format!("{} (code {})", error.message, error.code);
+                                        let error_msg =
+                                            format!("{} (code {})", error.message, error.code);
                                         eprintln!("[LSP-ERROR] Request failed: {:?} | Method: {} | Error: {}", id, req.method, error_msg);
-                                        let _ = req.sender.send(Err(anyhow!("LSP error: {}", error_msg)));
+                                        let _ = req
+                                            .sender
+                                            .send(Err(anyhow!("LSP error: {}", error_msg)));
                                     } else if let Some(result) = msg.result {
                                         let _ = req.sender.send(Ok(result));
                                     } else {
@@ -535,9 +548,9 @@ impl LanguageServer {
         // Java/jdtls: 5 minutes (300s) for large projects with many dependencies
         // Other languages: 2 minutes (120s) should be plenty
         let init_timeout = if self.inner.language == "java" {
-            Duration::from_secs(300)  // 5 minutes for Java
+            Duration::from_secs(300) // 5 minutes for Java
         } else {
-            Duration::from_secs(120)  // 2 minutes for other languages
+            Duration::from_secs(120) // 2 minutes for other languages
         };
 
         tokio::time::timeout(init_timeout, self.initialize_internal(root_uri))
@@ -554,7 +567,8 @@ impl LanguageServer {
         self.transition_to(ServerState::Initializing {
             started_at: Instant::now(),
             pending_operations: Vec::new(),
-        }).await;
+        })
+        .await;
 
         // Build client capabilities with work done progress support
         let mut capabilities = ClientCapabilities::default();
@@ -590,11 +604,13 @@ impl LanguageServer {
             work_done_progress_params: Default::default(),
         };
 
-        let result = self.request("initialize", serde_json::to_value(params)?).await
+        let result = self
+            .request("initialize", serde_json::to_value(params)?)
+            .await
             .context("Failed to send initialize request")?;
 
-        let init_result: InitializeResult = serde_json::from_value(result)
-            .context("Failed to parse initialize response")?;
+        let init_result: InitializeResult =
+            serde_json::from_value(result).context("Failed to parse initialize response")?;
 
         // Store capabilities
         let mut caps = self.inner.capabilities.lock().await;
@@ -605,14 +621,16 @@ impl LanguageServer {
         self.cache_capabilities(&init_result.capabilities);
 
         // Send initialized notification
-        self.notify("initialized", serde_json::to_value(InitializedParams {})?).await
+        self.notify("initialized", serde_json::to_value(InitializedParams {})?)
+            .await
             .context("Failed to send initialized notification")?;
 
         // Transition to Ready state and replay pending operations
         self.transition_to(ServerState::Ready {
             initialized_at: Instant::now(),
             capabilities: init_result.capabilities,
-        }).await;
+        })
+        .await;
 
         Ok(())
     }
@@ -627,7 +645,12 @@ impl LanguageServer {
         // Handle transition-specific logic
         match (&*state, &new_state) {
             // Transitioning from Initializing to Ready: replay pending operations
-            (ServerState::Initializing { pending_operations, .. }, ServerState::Ready { .. }) => {
+            (
+                ServerState::Initializing {
+                    pending_operations, ..
+                },
+                ServerState::Ready { .. },
+            ) => {
                 // Removed verbose logging: Replaying {} pending operations
 
                 for op in pending_operations {
@@ -645,7 +668,12 @@ impl LanguageServer {
     /// Replays a pending operation after server becomes ready
     async fn replay_operation(&self, op: &PendingOperation) -> Result<()> {
         match op {
-            PendingOperation::DidOpen { uri, language_id, version, text } => {
+            PendingOperation::DidOpen {
+                uri,
+                language_id,
+                version,
+                text,
+            } => {
                 use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem};
 
                 let params = DidOpenTextDocumentParams {
@@ -661,7 +689,11 @@ impl LanguageServer {
                     .await
                     .context("Failed to replay didOpen")
             }
-            PendingOperation::DidChange { uri, language_id: _, changes } => {
+            PendingOperation::DidChange {
+                uri,
+                language_id: _,
+                changes,
+            } => {
                 use lsp_types::{DidChangeTextDocumentParams, VersionedTextDocumentIdentifier};
 
                 // Note: version might be stale, but better than losing the operation
@@ -677,7 +709,11 @@ impl LanguageServer {
                     .await
                     .context("Failed to replay didChange")
             }
-            PendingOperation::DidSave { uri, language_id: _, text } => {
+            PendingOperation::DidSave {
+                uri,
+                language_id: _,
+                text,
+            } => {
                 use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
 
                 let params = DidSaveTextDocumentParams {
@@ -691,7 +727,11 @@ impl LanguageServer {
             }
             PendingOperation::Request { method, params: _ } => {
                 // Requests are not replayed (they would have timed out already)
-                crate::lsp_debug!(&self.log_prefix(), "Skipping replay of request '{}'", method);
+                crate::lsp_debug!(
+                    &self.log_prefix(),
+                    "Skipping replay of request '{}'",
+                    method
+                );
                 Ok(())
             }
         }
@@ -721,32 +761,31 @@ impl LanguageServer {
                 drop(state); // Release lock before executing
                 execute().await
             }
-            ServerState::Initializing { pending_operations, .. } => {
+            ServerState::Initializing {
+                pending_operations, ..
+            } => {
                 // Queuing operation while server initializes
                 pending_operations.push(op);
                 Ok(())
             }
-            ServerState::Failed { error, .. } => {
-                Err(anyhow!("Server failed: {}", error))
-            }
-            ServerState::Terminated => {
-                Err(anyhow!("Server has terminated"))
-            }
-            state => {
-                Err(anyhow!("Server in unexpected state: {:?}", state))
-            }
+            ServerState::Failed { error, .. } => Err(anyhow!("Server failed: {}", error)),
+            ServerState::Terminated => Err(anyhow!("Server has terminated")),
+            state => Err(anyhow!("Server in unexpected state: {:?}", state)),
         }
     }
 
     /// Sends a request and waits for the response
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
-        let request_id = RequestId::Number(
-            self.inner
-                .next_request_id
-                .fetch_add(1, Ordering::SeqCst),
-        );
+        let request_id =
+            RequestId::Number(self.inner.next_request_id.fetch_add(1, Ordering::SeqCst));
 
-        crate::lsp_debug!(&self.log_prefix(), "LSP-REQUEST: {} | ID: {:?} | Params: {}", method, request_id, params);
+        crate::lsp_debug!(
+            &self.log_prefix(),
+            "LSP-REQUEST: {} | ID: {:?} | Params: {}",
+            method,
+            request_id,
+            params
+        );
 
         let (tx, rx) = oneshot::channel();
 
@@ -766,11 +805,14 @@ impl LanguageServer {
 
             // eprintln!("[LSP-REQUEST] Pending requests before: {} | Adding: {}", pending.len(), method);
 
-            pending.insert(request_id.clone(), PendingRequest {
-                sender: tx,
-                sent_at: Instant::now(),
-                method: method.to_string(),
-            });
+            pending.insert(
+                request_id.clone(),
+                PendingRequest {
+                    sender: tx,
+                    sent_at: Instant::now(),
+                    method: method.to_string(),
+                },
+            );
         }
 
         // Send request
@@ -801,9 +843,9 @@ impl LanguageServer {
         // Use longer timeout for initialize request (jdtls can be very slow)
         let timeout_duration = if method == "initialize" {
             // Java LSP can take 5+ minutes to index large projects on first run
-            std::time::Duration::from_secs(300)  // 5 minutes for initialize
+            std::time::Duration::from_secs(300) // 5 minutes for initialize
         } else {
-            std::time::Duration::from_secs(10)   // 10s for other requests
+            std::time::Duration::from_secs(10) // 10s for other requests
         };
 
         // eprintln!("[LSP-REQUEST] Waiting for response (timeout: {:?})", timeout_duration);
@@ -825,7 +867,11 @@ impl LanguageServer {
                 // Timeout - remove pending request
                 let mut pending = self.inner.pending_requests.lock().await;
                 pending.remove(&request_id);
-                Err(anyhow!("Request '{}' timed out after {:?}", method, timeout_duration))
+                Err(anyhow!(
+                    "Request '{}' timed out after {:?}",
+                    method,
+                    timeout_duration
+                ))
             }
         }
     }
@@ -883,8 +929,9 @@ impl LanguageServer {
         // Step 1: Send LSP shutdown request
         let shutdown_result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.request("shutdown", Value::Null)
-        ).await;
+            self.request("shutdown", Value::Null),
+        )
+        .await;
 
         if shutdown_result.is_ok() {
             // Step 2: Send exit notification
@@ -893,10 +940,7 @@ impl LanguageServer {
             // Step 3: Wait for graceful exit
             let mut process = self.inner.process.lock().await;
             if let Some(ref mut child) = *process {
-                match tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    child.wait()
-                ).await {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
                     Ok(Ok(_status)) => {
                         return Ok(());
                     }
@@ -923,10 +967,9 @@ impl LanguageServer {
                 if let Some(pid) = child.id() {
                     if let Ok(()) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
                         // Wait 3 seconds for SIGTERM to take effect
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(3),
-                            child.wait()
-                        ).await {
+                        match tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+                            .await
+                        {
                             Ok(Ok(_status)) => {
                                 return Ok(());
                             }
@@ -1018,34 +1061,29 @@ impl LanguageServer {
     /// Called once during initialization
     fn cache_capabilities(&self, caps: &ServerCapabilities) {
         // Cache goto definition support
-        self.inner.cap_goto_definition.store(
-            caps.definition_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_goto_definition
+            .store(caps.definition_provider.is_some(), Ordering::Relaxed);
 
         // Cache goto implementation support
-        self.inner.cap_goto_implementation.store(
-            caps.implementation_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_goto_implementation
+            .store(caps.implementation_provider.is_some(), Ordering::Relaxed);
 
         // Cache goto type definition support
-        self.inner.cap_goto_type_definition.store(
-            caps.type_definition_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_goto_type_definition
+            .store(caps.type_definition_provider.is_some(), Ordering::Relaxed);
 
         // Cache hover support
-        self.inner.cap_hover.store(
-            caps.hover_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_hover
+            .store(caps.hover_provider.is_some(), Ordering::Relaxed);
 
         // Cache completion support
-        self.inner.cap_completion.store(
-            caps.completion_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_completion
+            .store(caps.completion_provider.is_some(), Ordering::Relaxed);
 
         // Cache formatting support
         self.inner.cap_formatting.store(
@@ -1060,53 +1098,48 @@ impl LanguageServer {
         );
 
         // Cache code actions support
-        self.inner.cap_code_actions.store(
-            caps.code_action_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_code_actions
+            .store(caps.code_action_provider.is_some(), Ordering::Relaxed);
 
         // Cache references support
-        self.inner.cap_references.store(
-            caps.references_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_references
+            .store(caps.references_provider.is_some(), Ordering::Relaxed);
 
         // Cache rename support
-        self.inner.cap_rename.store(
-            caps.rename_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_rename
+            .store(caps.rename_provider.is_some(), Ordering::Relaxed);
 
         // Cache prepare rename support
         let prepare_rename_support = match &caps.rename_provider {
             Some(lsp_types::OneOf::Right(options)) => options.prepare_provider.unwrap_or(false),
             _ => false,
         };
-        self.inner.cap_prepare_rename.store(prepare_rename_support, Ordering::Relaxed);
+        self.inner
+            .cap_prepare_rename
+            .store(prepare_rename_support, Ordering::Relaxed);
 
         // Cache signature help support
-        self.inner.cap_signature_help.store(
-            caps.signature_help_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_signature_help
+            .store(caps.signature_help_provider.is_some(), Ordering::Relaxed);
 
         // Cache document symbol support
-        self.inner.cap_document_symbol.store(
-            caps.document_symbol_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_document_symbol
+            .store(caps.document_symbol_provider.is_some(), Ordering::Relaxed);
 
         // Cache selection range support
-        self.inner.cap_selection_range.store(
-            caps.selection_range_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_selection_range
+            .store(caps.selection_range_provider.is_some(), Ordering::Relaxed);
 
         // Cache workspace symbol support
-        self.inner.cap_workspace_symbol.store(
-            caps.workspace_symbol_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_workspace_symbol
+            .store(caps.workspace_symbol_provider.is_some(), Ordering::Relaxed);
 
         // Cache document highlight support
         self.inner.cap_document_highlight.store(
@@ -1124,39 +1157,36 @@ impl LanguageServer {
             }
             None => false,
         };
-        self.inner.cap_incremental_sync.store(incremental_sync, Ordering::Relaxed);
+        self.inner
+            .cap_incremental_sync
+            .store(incremental_sync, Ordering::Relaxed);
 
         // Cache folding range support
-        self.inner.cap_folding_range.store(
-            caps.folding_range_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_folding_range
+            .store(caps.folding_range_provider.is_some(), Ordering::Relaxed);
 
         // Cache call hierarchy support
-        self.inner.cap_call_hierarchy.store(
-            caps.call_hierarchy_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_call_hierarchy
+            .store(caps.call_hierarchy_provider.is_some(), Ordering::Relaxed);
 
         // Cache type hierarchy support
         // Note: type_hierarchy_provider doesn't exist in lsp-types 0.95.1
         // Will be available when upgrading to lsp-types 0.96+
-        self.inner.cap_type_hierarchy.store(
-            false,
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_type_hierarchy
+            .store(false, Ordering::Relaxed);
 
         // Cache execute command support
-        self.inner.cap_execute_command.store(
-            caps.execute_command_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_execute_command
+            .store(caps.execute_command_provider.is_some(), Ordering::Relaxed);
 
         // Cache inlay hint support
-        self.inner.cap_inlay_hint.store(
-            caps.inlay_hint_provider.is_some(),
-            Ordering::Relaxed,
-        );
+        self.inner
+            .cap_inlay_hint
+            .store(caps.inlay_hint_provider.is_some(), Ordering::Relaxed);
     }
 
     /// Gets the server capabilities

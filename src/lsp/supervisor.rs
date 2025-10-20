@@ -91,11 +91,7 @@ impl TaskSupervisor {
     ///
     /// The factory function is called each time the task needs to start/restart.
     /// This allows stateless restart - the factory creates a fresh future each time.
-    pub async fn spawn_supervised<F, Fut>(
-        &self,
-        name: String,
-        factory: F,
-    ) -> Result<()>
+    pub async fn spawn_supervised<F, Fut>(&self, name: String, factory: F) -> Result<()>
     where
         F: Fn() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<()>> + Send + 'static,
@@ -146,7 +142,9 @@ impl TaskSupervisor {
                         crate::lsp_error!(
                             "Supervisor",
                             "Task '{}' failed after {:?}: {}",
-                            name_clone, uptime, e
+                            name_clone,
+                            uptime,
+                            e
                         );
 
                         // Check restart policy
@@ -154,10 +152,14 @@ impl TaskSupervisor {
                             RestartPolicy::Never => {
                                 break;
                             }
-                            RestartPolicy::Always { max_retries, initial_backoff } |
-                            RestartPolicy::OnFailure { max_retries, initial_backoff } => {
-                                (max_retries, initial_backoff)
+                            RestartPolicy::Always {
+                                max_retries,
+                                initial_backoff,
                             }
+                            | RestartPolicy::OnFailure {
+                                max_retries,
+                                initial_backoff,
+                            } => (max_retries, initial_backoff),
                         };
 
                         // Check retry limit
@@ -165,7 +167,9 @@ impl TaskSupervisor {
                             crate::lsp_error!(
                                 "Supervisor",
                                 "Task '{}' exceeded max retries ({}/{})",
-                                name_clone, restarts, max_retries
+                                name_clone,
+                                restarts,
+                                max_retries
                             );
 
                             // Update status to MaxRetriesExceeded
@@ -276,9 +280,7 @@ impl TaskSupervisor {
         let mut tasks = self.tasks.lock().await;
         let before = tasks.len();
 
-        tasks.retain(|_name, task| {
-            !task.handle.is_finished()
-        });
+        tasks.retain(|_name, task| !task.handle.is_finished());
 
         before - tasks.len()
     }

@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerMode {
@@ -171,10 +171,10 @@ impl Picker {
 
         // Use ignore crate's WalkBuilder which respects .gitignore, .ignore, and other ignore files
         let walker = WalkBuilder::new(dir)
-            .hidden(false)  // Don't automatically skip hidden files (let gitignore handle it)
-            .git_ignore(true)  // Respect .gitignore files
-            .git_global(true)  // Respect global gitignore
-            .git_exclude(true)  // Respect .git/info/exclude
+            .hidden(false) // Don't automatically skip hidden files (let gitignore handle it)
+            .git_ignore(true) // Respect .gitignore files
+            .git_global(true) // Respect global gitignore
+            .git_exclude(true) // Respect .git/info/exclude
             .build();
 
         for entry in walker.filter_map(|e| e.ok()) {
@@ -307,7 +307,8 @@ impl Picker {
                 // Bonus for matching after path separator or start of word
                 if target_idx > 0 {
                     let prev_char = target_chars[target_idx - 1];
-                    if prev_char == '/' || prev_char == '_' || prev_char == '-' || prev_char == ' ' {
+                    if prev_char == '/' || prev_char == '_' || prev_char == '-' || prev_char == ' '
+                    {
                         score += 8;
                     }
                 }
@@ -344,8 +345,7 @@ impl Picker {
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        Self::fuzzy_match(&self.query, &r.display)
-                            .map(|score| (r.clone(), score))
+                        Self::fuzzy_match(&self.query, &r.display).map(|score| (r.clone(), score))
                     })
                     .collect();
 
@@ -371,8 +371,7 @@ impl Picker {
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        Self::fuzzy_match(&self.query, &r.display)
-                            .map(|score| (r.clone(), score))
+                        Self::fuzzy_match(&self.query, &r.display).map(|score| (r.clone(), score))
                     })
                     .collect();
 
@@ -521,7 +520,8 @@ impl Picker {
                 // Insert in sorted order
                 let mut insert_idx = self.filtered_results.len();
                 for (idx, existing) in self.filtered_results.iter().enumerate() {
-                    if let Some(existing_score) = Self::fuzzy_match(&self.query, &existing.display) {
+                    if let Some(existing_score) = Self::fuzzy_match(&self.query, &existing.display)
+                    {
                         if score > existing_score {
                             insert_idx = idx;
                             break;
@@ -580,7 +580,10 @@ impl Picker {
             let start_len = (max_len - 3) / 2;
             let end_len = max_len - 3 - start_len;
             let start: String = chars.iter().take(start_len).collect();
-            let end: String = chars.iter().skip(chars.len().saturating_sub(end_len)).collect();
+            let end: String = chars
+                .iter()
+                .skip(chars.len().saturating_sub(end_len))
+                .collect();
             return format!("{}...{}", start, end);
         }
 

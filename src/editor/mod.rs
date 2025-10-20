@@ -27,7 +27,7 @@ pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
-pub use register::RegisterManager;
+pub use register::{RegisterManager, RegisterType};
 pub use search::Search;
 pub use tabpage::{TabPage, TabPageManager};
 pub use textobjects::{TextObjectRange, TextObjects};
@@ -66,10 +66,10 @@ impl Default for EditorOptions {
 
 use crate::buffer::Buffer;
 use crate::lsp::LspManager;
-use crate::syntax::{ColorScheme, ColorSchemeRegistry};
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
+use crate::syntax::{ColorScheme, ColorSchemeRegistry};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -228,7 +228,9 @@ pub struct PreviewCache {
     pub content: String,
     /// Cached syntax-highlighted lines (line_idx -> highlights)
     /// Uses RefCell for interior mutability so we can cache highlights even with immutable reference
-    pub highlighted_lines: std::cell::RefCell<HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>>,
+    pub highlighted_lines: std::cell::RefCell<
+        HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>,
+    >,
     /// Detected language (if any)
     pub language: Option<crate::syntax::Language>,
 }
@@ -254,8 +256,8 @@ pub enum LspAction {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FindType {
-    Find,  // f/F - cursor lands on character
-    Till,  // t/T - cursor lands before/after character
+    Find, // f/F - cursor lands on character
+    Till, // t/T - cursor lands before/after character
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -730,10 +732,16 @@ impl Editor {
             let search_col = if is_forward {
                 cursor_col + 1
             } else {
-                if cursor_col > 0 { cursor_col - 1 } else { 0 }
+                if cursor_col > 0 {
+                    cursor_col - 1
+                } else {
+                    0
+                }
             };
 
-            if let Some((line, col, _)) = search_clone.find_next(self.buffer(), cursor_line, search_col) {
+            if let Some((line, col, _)) =
+                search_clone.find_next(self.buffer(), cursor_line, search_col)
+            {
                 self.buffer_mut().cursor_mut().set_position(line, col);
             }
         }
@@ -751,13 +759,19 @@ impl Editor {
             // if original was backward, now going forward (use col+1)
             let search_col = if is_forward {
                 // Original was forward, now backward
-                if cursor.col() > 0 { cursor.col() - 1 } else { 0 }
+                if cursor.col() > 0 {
+                    cursor.col() - 1
+                } else {
+                    0
+                }
             } else {
                 // Original was backward, now forward
                 cursor.col() + 1
             };
 
-            if let Some((line, col, _)) = rev_search.find_next(self.buffer(), cursor.line(), search_col) {
+            if let Some((line, col, _)) =
+                rev_search.find_next(self.buffer(), cursor.line(), search_col)
+            {
                 self.buffer_mut().cursor_mut().set_position(line, col);
             }
         }
@@ -768,7 +782,8 @@ impl Editor {
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col();
         let file_path = self.buffer().file_path().map(|s| s.to_string());
-        self.marks.set_mark(name, cursor_line, cursor_col, file_path.as_deref())
+        self.marks
+            .set_mark(name, cursor_line, cursor_col, file_path.as_deref())
     }
 
     /// Jumps to a mark (exact position with backtick)
@@ -776,7 +791,9 @@ impl Editor {
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
             if let Some(mark) = self.marks.get_mark(name) {
-                self.buffer_mut().cursor_mut().set_position(mark.line, mark.col);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(mark.line, mark.col);
                 return true;
             }
         }
@@ -807,7 +824,9 @@ impl Editor {
                 let clamped_col = global_mark.col.min(line_len);
 
                 // Jump to the validated position
-                self.buffer_mut().cursor_mut().set_position(clamped_line, clamped_col);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(clamped_line, clamped_col);
                 return true;
             }
         }
@@ -830,7 +849,9 @@ impl Editor {
                     0
                 };
 
-                self.buffer_mut().cursor_mut().set_position(mark.line, first_non_blank);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(mark.line, first_non_blank);
                 return true;
             }
         }
@@ -863,7 +884,9 @@ impl Editor {
                     0
                 };
 
-                self.buffer_mut().cursor_mut().set_position(clamped_line, first_non_blank);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(clamped_line, first_non_blank);
                 return true;
             }
         }
@@ -963,10 +986,20 @@ impl Editor {
     pub fn list_buffers(&self) -> String {
         let mut result = String::new();
         for (i, buf) in self.buffers.iter().enumerate() {
-            let current_marker = if i == self.current_buffer_index { "%" } else { " " };
+            let current_marker = if i == self.current_buffer_index {
+                "%"
+            } else {
+                " "
+            };
             let modified_marker = if buf.is_modified() { "+" } else { " " };
             let name = buf.file_path().unwrap_or("[No Name]");
-            result.push_str(&format!("{}{} {}: {}\n", current_marker, modified_marker, i + 1, name));
+            result.push_str(&format!(
+                "{}{} {}: {}\n",
+                current_marker,
+                modified_marker,
+                i + 1,
+                name
+            ));
         }
         result
     }
@@ -1087,9 +1120,7 @@ impl Editor {
     /// Returns None if no buffer has that file path
     fn find_buffer_by_path(&self, file_path: &str) -> Option<usize> {
         // Normalize paths for comparison
-        let target_path = std::path::Path::new(file_path)
-            .canonicalize()
-            .ok()?;
+        let target_path = std::path::Path::new(file_path).canonicalize().ok()?;
 
         for (index, buffer) in self.buffers.iter().enumerate() {
             if let Some(buf_path) = buffer.file_path() {
@@ -1106,7 +1137,9 @@ impl Editor {
     /// Opens a file, switching to existing buffer if already open
     /// or creating a new buffer if not
     pub fn open_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
-        let path_str = path.as_ref().to_str()
+        let path_str = path
+            .as_ref()
+            .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Check if file is already open
@@ -1165,9 +1198,9 @@ impl Editor {
     /// Calculates half-page scroll amount
     /// Uses options.scroll if set, otherwise viewport_height / 2
     pub fn half_page_scroll(&self) -> usize {
-        self.options.scroll.unwrap_or_else(|| {
-            (self.viewport_height / 2).max(1)
-        })
+        self.options
+            .scroll
+            .unwrap_or_else(|| (self.viewport_height / 2).max(1))
     }
 
     /// Clears the pending command
@@ -1277,21 +1310,31 @@ impl Editor {
 
     /// Yanks text to the appropriate register (pending_register or default)
     pub fn yank_to_register(&mut self, text: String) {
+        self.yank_to_register_with_type(text, RegisterType::Character);
+    }
+
+    /// Yanks text to the appropriate register with explicit type
+    pub fn yank_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
         if let Some(reg) = self.pending_register {
-            self.registers.set(Some(reg), text);
+            self.registers.set_with_type(Some(reg), text, reg_type);
             self.pending_register = None;
         } else {
-            self.registers.yank(text);
+            self.registers.yank_with_type(text, reg_type);
         }
     }
 
     /// Deletes text and stores in the appropriate register (pending_register or default)
     pub fn delete_to_register(&mut self, text: String) {
+        self.delete_to_register_with_type(text, RegisterType::Character);
+    }
+
+    /// Deletes text and stores in the appropriate register with explicit type
+    pub fn delete_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
         if let Some(reg) = self.pending_register {
-            self.registers.set(Some(reg), text);
+            self.registers.set_with_type(Some(reg), text, reg_type);
             self.pending_register = None;
         } else {
-            self.registers.delete(text);
+            self.registers.delete_with_type(text, reg_type);
         }
     }
 
@@ -1304,6 +1347,19 @@ impl Editor {
         };
         self.pending_register = None;
         text
+    }
+
+    /// Gets text and type from the appropriate register (pending_register or default)
+    pub fn get_from_register_with_type(&mut self) -> (String, RegisterType) {
+        let (text, reg_type) = if let Some(reg) = self.pending_register {
+            let (t, rt) = self.registers.get_with_type(Some(reg));
+            (t.to_string(), rt)
+        } else {
+            let (t, rt) = self.registers.get_default_with_type();
+            (t.to_string(), rt)
+        };
+        self.pending_register = None;
+        (text, reg_type)
     }
 
     /// Gets the pending register for next operation
@@ -1337,7 +1393,10 @@ impl Editor {
     }
 
     /// Sets visual block insert/append state for replay on insert mode exit
-    pub fn set_visual_block_insert_state(&mut self, state: Option<(usize, usize, usize, bool, bool)>) {
+    pub fn set_visual_block_insert_state(
+        &mut self,
+        state: Option<(usize, usize, usize, bool, bool)>,
+    ) {
         self.visual_block_insert_state = state;
     }
 
@@ -1384,7 +1443,10 @@ impl Editor {
                 Mode::VisualBlock => {
                     // Block mode: return corners of rectangle
                     // Normalize so start_line <= end_line and start_col <= end_col
-                    eprintln!("[DEBUG visual_selection] start=({},{}), end=({},{})", start.0, start.1, end.0, end.1);
+                    eprintln!(
+                        "[DEBUG visual_selection] start=({},{}), end=({},{})",
+                        start.0, start.1, end.0, end.1
+                    );
                     let (min_line, max_line) = if start.0 <= end.0 {
                         (start.0, end.0)
                     } else {
@@ -1397,7 +1459,10 @@ impl Editor {
                         (end.1, start.1)
                     };
 
-                    eprintln!("[DEBUG visual_selection] result: (({},{}), ({},{}))", min_line, min_col, max_line, max_col);
+                    eprintln!(
+                        "[DEBUG visual_selection] result: (({},{}), ({},{}))",
+                        min_line, min_col, max_line, max_col
+                    );
                     ((min_line, min_col), (max_line, max_col))
                 }
                 _ => {
@@ -1485,7 +1550,9 @@ impl Editor {
 
     /// Starts building a composite change (e.g., when entering insert mode)
     pub fn start_change_building(&mut self, cursor_before: Position) {
-        self.buffer_mut().change_manager_mut().start_building(cursor_before);
+        self.buffer_mut()
+            .change_manager_mut()
+            .start_building(cursor_before);
     }
 
     /// Adds a change to the change manager
@@ -1497,12 +1564,20 @@ impl Editor {
     /// Finalizes the current composite change
     pub fn finalize_change_building(&mut self) {
         let cursor_pos = (self.buffer().cursor().line(), self.buffer().cursor().col());
-        self.buffer_mut().change_manager_mut().finalize_building_at(cursor_pos);
+        self.buffer_mut()
+            .change_manager_mut()
+            .finalize_building_at(cursor_pos);
     }
 
     /// Gets a reference to the last change
     pub fn last_change(&self) -> Option<&Change> {
         self.buffer().change_manager().last_change()
+    }
+
+    /// Pops the last change from the undo stack (without undoing it)
+    /// Used when replacing a change with a composite version
+    pub fn pop_last_change(&mut self) -> Option<Change> {
+        self.buffer_mut().change_manager_mut().pop_last_change()
     }
 
     /// Undoes the last change
@@ -1599,7 +1674,8 @@ impl Editor {
                 // Only for file picker modes
                 if *picker.mode() != crate::editor::PickerMode::Custom
                     && *picker.mode() != crate::editor::PickerMode::Completion
-                    && *picker.mode() != crate::editor::PickerMode::LspLocations {
+                    && *picker.mode() != crate::editor::PickerMode::LspLocations
+                {
                     let file_path = result.location.clone();
 
                     // Skip if already cached
@@ -1695,7 +1771,10 @@ impl Editor {
 
     /// Gets preview with fallback - prefers current file, but shows last preview if loading
     /// This provides smooth transitions without "Loading..." flicker
-    pub fn get_preview_with_fallback(&mut self, file_path: &str) -> Option<(&PreviewCache, String)> {
+    pub fn get_preview_with_fallback(
+        &mut self,
+        file_path: &str,
+    ) -> Option<(&PreviewCache, String)> {
         // Try to get the requested preview
         if let Some(preview) = self.preview_cache.get(file_path) {
             // Update last shown
@@ -1745,11 +1824,8 @@ impl Editor {
             // Keep only the most recent entries
             // Simple strategy: clear half when limit is exceeded
             let to_remove = self.preview_cache.len() - max_entries / 2;
-            let keys_to_remove: Vec<String> = self.preview_cache
-                .keys()
-                .take(to_remove)
-                .cloned()
-                .collect();
+            let keys_to_remove: Vec<String> =
+                self.preview_cache.keys().take(to_remove).cloned().collect();
             for key in keys_to_remove {
                 self.preview_cache.remove(&key);
             }
@@ -2056,8 +2132,6 @@ impl Editor {
             return;
         }
 
-        self.buffer_modified_this_iteration = false;
-
         let Some(ref lsp) = self.lsp_manager else {
             return;
         };
@@ -2087,16 +2161,28 @@ impl Editor {
         // Pass last_synced_content for incremental sync
         let old_content = self.last_synced_content.clone();
 
-        // Try to get lock without blocking - if LSP is busy, skip this iteration
+        // Try to get lock without blocking - if LSP is busy, retry next iteration
         let Ok(lsp_guard) = lsp.try_lock() else {
-            return; // LSP busy, will sync on next change
+            return; // Keep modified flag set so we retry soon
         };
 
-        let _ = lsp_guard.did_change(uri, language_id, content.clone(), old_content).await;
+        let result = lsp_guard
+            .did_change(uri, language_id, content.clone(), old_content)
+            .await;
         drop(lsp_guard);
 
-        // Update last_synced_content after successful sync
-        self.last_synced_content = Some(content);
+        self.buffer_modified_this_iteration = false;
+
+        match result {
+            Ok(_) => {
+                self.last_synced_content = Some(content);
+            }
+            Err(e) => {
+                // Restore flag so we retry the sync
+                self.buffer_modified_this_iteration = true;
+                self.set_lsp_status(format!("LSP: didChange failed: {}", e));
+            }
+        }
     }
 
     /// Sends didSave notification if buffer was saved, then resets the flag
@@ -2104,8 +2190,6 @@ impl Editor {
         if !self.buffer_saved_this_iteration {
             return;
         }
-
-        self.buffer_saved_this_iteration = false;
 
         let Some(ref lsp) = self.lsp_manager else {
             return;
@@ -2132,12 +2216,21 @@ impl Editor {
 
         let text = Some(self.buffer().rope().to_string());
 
-        // Try to get lock without blocking - if LSP is busy, skip
+        // Try to get lock without blocking - if LSP is busy, retry next iteration
         let Ok(lsp_guard) = lsp.try_lock() else {
-            return; // LSP busy, save notification will be sent on next save
+            return; // Keep save flag set so we retry
         };
 
-        let _ = lsp_guard.did_save(uri, language_id, text).await;
+        let result = lsp_guard.did_save(uri, language_id, text).await;
+        drop(lsp_guard);
+
+        self.buffer_saved_this_iteration = false;
+
+        if let Err(e) = result {
+            // Restore flag so we retry and surface error
+            self.buffer_saved_this_iteration = true;
+            self.set_lsp_status(format!("LSP: didSave failed: {}", e));
+        }
     }
 
     /// Sends didClose notification for pending file (when switching files)
@@ -2205,7 +2298,8 @@ impl Editor {
                 Err(e) => {
                     // Check if error message indicates we should retry (e.g., "LSP busy")
                     let error_msg = e.to_string();
-                    let should_retry = error_msg.contains("LSP busy") || error_msg.contains("couldn't get lock");
+                    let should_retry =
+                        error_msg.contains("LSP busy") || error_msg.contains("couldn't get lock");
 
                     if should_retry {
                         // Retry silently - put action back
@@ -2253,7 +2347,8 @@ impl Editor {
         let safe_col = col.min(char_count);
 
         // Convert to UTF-16 code units
-        line_text.chars()
+        line_text
+            .chars()
             .take(safe_col)
             .map(|c| c.len_utf16() as u32)
             .sum()
@@ -2362,7 +2457,9 @@ impl Editor {
             // Check if definition is in the same file
             if location.uri == uri {
                 // Same file - jump directly
-                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, target_col);
                 self.set_lsp_status(format!("Definition found at line {}", target_line + 1));
                 return Ok(true);
             } else {
@@ -2372,11 +2469,18 @@ impl Editor {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
-                                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                                let file_name = target_path.file_name()
+                                self.buffer_mut()
+                                    .cursor_mut()
+                                    .set_position(target_line, target_col);
+                                let file_name = target_path
+                                    .file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file");
-                                self.set_lsp_status(format!("Opened {} at line {}", file_name, target_line + 1));
+                                self.set_lsp_status(format!(
+                                    "Opened {} at line {}",
+                                    file_name,
+                                    target_line + 1
+                                ));
                                 return Ok(true);
                             }
                             Err(e) => {
@@ -2476,7 +2580,9 @@ impl Editor {
             // Check if implementation is in the same file
             if location.uri == uri {
                 // Same file - jump directly
-                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, target_col);
                 self.set_lsp_status(format!("Implementation found at line {}", target_line + 1));
                 return Ok(true);
             } else {
@@ -2486,11 +2592,18 @@ impl Editor {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
-                                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                                let file_name = target_path.file_name()
+                                self.buffer_mut()
+                                    .cursor_mut()
+                                    .set_position(target_line, target_col);
+                                let file_name = target_path
+                                    .file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file");
-                                self.set_lsp_status(format!("Opened {} at line {}", file_name, target_line + 1));
+                                self.set_lsp_status(format!(
+                                    "Opened {} at line {}",
+                                    file_name,
+                                    target_line + 1
+                                ));
                                 return Ok(true);
                             }
                             Err(e) => {
@@ -2590,7 +2703,9 @@ impl Editor {
             // Check if type definition is in the same file
             if location.uri == uri {
                 // Same file - jump directly
-                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, target_col);
                 self.set_lsp_status(format!("Type definition found at line {}", target_line + 1));
                 return Ok(true);
             } else {
@@ -2600,11 +2715,18 @@ impl Editor {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
-                                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                                let file_name = target_path.file_name()
+                                self.buffer_mut()
+                                    .cursor_mut()
+                                    .set_position(target_line, target_col);
+                                let file_name = target_path
+                                    .file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file");
-                                self.set_lsp_status(format!("Opened {} at line {}", file_name, target_line + 1));
+                                self.set_lsp_status(format!(
+                                    "Opened {} at line {}",
+                                    file_name,
+                                    target_line + 1
+                                ));
                                 return Ok(true);
                             }
                             Err(e) => {
@@ -2704,7 +2826,10 @@ impl Editor {
         let items: Vec<String> = locations
             .iter()
             .map(|loc| {
-                let file_path = loc.uri.to_file_path().ok()
+                let file_path = loc
+                    .uri
+                    .to_file_path()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = loc.range.start.line + 1;
@@ -2777,9 +2902,7 @@ impl Editor {
             }
         };
 
-        let symbols = lsp_guard
-            .document_symbols(&uri, language_id)
-            .await?;
+        let symbols = lsp_guard.document_symbols(&uri, language_id).await?;
 
         drop(lsp_guard);
 
@@ -2870,7 +2993,11 @@ impl Editor {
         let items: Vec<String> = symbols
             .iter()
             .map(|sym| {
-                let file_name = sym.location.uri.to_file_path().ok()
+                let file_name = sym
+                    .location
+                    .uri
+                    .to_file_path()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = sym.location.range.start.line + 1;
@@ -2962,9 +3089,7 @@ impl Editor {
 
         // Get incoming calls for the first item
         let first_item = items.into_iter().next().unwrap();
-        let incoming = lsp_guard
-            .incoming_calls(first_item, language_id)
-            .await?;
+        let incoming = lsp_guard.incoming_calls(first_item, language_id).await?;
 
         drop(lsp_guard);
 
@@ -2996,7 +3121,11 @@ impl Editor {
             .iter()
             .map(|call| {
                 let name = &call.from.name;
-                let file_path = call.from.uri.to_file_path().ok()
+                let file_path = call
+                    .from
+                    .uri
+                    .to_file_path()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = call.from.range.start.line + 1;
@@ -3088,9 +3217,7 @@ impl Editor {
 
         // Get outgoing calls for the first item
         let first_item = items.into_iter().next().unwrap();
-        let outgoing = lsp_guard
-            .outgoing_calls(first_item, language_id)
-            .await?;
+        let outgoing = lsp_guard.outgoing_calls(first_item, language_id).await?;
 
         drop(lsp_guard);
 
@@ -3122,7 +3249,11 @@ impl Editor {
             .iter()
             .map(|call| {
                 let name = &call.to.name;
-                let file_path = call.to.uri.to_file_path().ok()
+                let file_path = call
+                    .to
+                    .uri
+                    .to_file_path()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = call.to.range.start.line + 1;
@@ -3217,9 +3348,7 @@ impl Editor {
         let supertypes = lsp_guard
             .supertypes(first_item.clone(), language_id)
             .await?;
-        let subtypes = lsp_guard
-            .subtypes(first_item, language_id)
-            .await?;
+        let subtypes = lsp_guard.subtypes(first_item, language_id).await?;
 
         drop(lsp_guard);
 
@@ -3234,7 +3363,10 @@ impl Editor {
                     uri: super_type.uri.clone(),
                     range: super_type.range,
                 };
-                let file_name = super_type.uri.to_file_path().ok()
+                let file_name = super_type
+                    .uri
+                    .to_file_path()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = super_type.range.start.line + 1;
@@ -3250,7 +3382,10 @@ impl Editor {
                     uri: sub_type.uri.clone(),
                     range: sub_type.range,
                 };
-                let file_name = sub_type.uri.to_file_path().ok()
+                let file_name = sub_type
+                    .uri
+                    .to_file_path()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = sub_type.range.start.line + 1;
@@ -3268,7 +3403,10 @@ impl Editor {
         self.available_type_hierarchy = all_types_data;
         self.active_lsp_result_type = Some(LspResultType::TypeHierarchy);
 
-        self.set_lsp_status(format!("Found {} types in hierarchy", all_types_display.len()));
+        self.set_lsp_status(format!(
+            "Found {} types in hierarchy",
+            all_types_display.len()
+        ));
 
         // Create picker with results
         let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -3317,7 +3455,13 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        crate::lsp_debug!("HOVER-DEBUG", "Cursor: line={}, col={} | UTF-16 char={}", cursor.line(), cursor.col(), character);
+        crate::lsp_debug!(
+            "HOVER-DEBUG",
+            "Cursor: line={}, col={} | UTF-16 char={}",
+            cursor.line(),
+            cursor.col(),
+            character
+        );
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -3340,9 +3484,7 @@ impl Editor {
             }
         };
 
-        let hover_text = lsp_guard
-            .hover(&uri, line, character, language_id)
-            .await?;
+        let hover_text = lsp_guard.hover(&uri, line, character, language_id).await?;
 
         drop(lsp_guard);
 
@@ -3454,8 +3596,12 @@ impl Editor {
         let trigger_prefix = chars[trigger_col..cursor_col].iter().collect::<String>();
 
         // Show the completion menu
-        self.completion_menu.show(items, trigger_col, trigger_prefix);
-        self.set_lsp_status(format!("{} completions available", self.completion_menu.items().len()));
+        self.completion_menu
+            .show(items, trigger_col, trigger_prefix);
+        self.set_lsp_status(format!(
+            "{} completions available",
+            self.completion_menu.items().len()
+        ));
 
         Ok(true)
     }
@@ -3631,7 +3777,10 @@ impl Editor {
         // Sort edits in reverse order (bottom to top) to avoid position invalidation
         let mut sorted_edits = edits;
         sorted_edits.sort_by(|a, b| {
-            b.range.start.line.cmp(&a.range.start.line)
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
                 .then(b.range.start.character.cmp(&a.range.start.character))
         });
 
@@ -3644,12 +3793,14 @@ impl Editor {
 
             // Delete the range
             if start_line != end_line || start_col != end_col {
-                self.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+                self.buffer_mut()
+                    .delete_range(start_line, start_col, end_line, end_col);
             }
 
             // Insert new text
             if !edit.new_text.is_empty() {
-                self.buffer_mut().insert_text_at(start_line, start_col, &edit.new_text);
+                self.buffer_mut()
+                    .insert_text_at(start_line, start_col, &edit.new_text);
             }
         }
     }
@@ -3679,7 +3830,9 @@ impl Editor {
                                 match std::env::current_dir() {
                                     Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
                                     Err(_) => {
-                                        self.set_lsp_status("Failed to resolve file path".to_string());
+                                        self.set_lsp_status(
+                                            "Failed to resolve file path".to_string(),
+                                        );
                                         return;
                                     }
                                 }
@@ -3707,24 +3860,39 @@ impl Editor {
                                 for text_doc_edit in edits {
                                     // Check if this is for the current document
                                     if let Some(file_path) = self.buffer().file_path() {
-                                        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-                                            file_path.to_string()
-                                        } else {
-                                            match std::env::current_dir() {
-                                                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                                                Err(_) => continue,
-                                            }
-                                        };
+                                        let abs_path =
+                                            if std::path::Path::new(file_path).is_absolute() {
+                                                file_path.to_string()
+                                            } else {
+                                                match std::env::current_dir() {
+                                                    Ok(cwd) => cwd
+                                                        .join(file_path)
+                                                        .to_string_lossy()
+                                                        .to_string(),
+                                                    Err(_) => continue,
+                                                }
+                                            };
 
                                         if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
                                             if text_doc_edit.text_document.uri == uri {
-                                                self.apply_lsp_edits(text_doc_edit.edits.iter().filter_map(|e| {
-                                                    match e {
-                                                        lsp_types::OneOf::Left(edit) => Some(edit.clone()),
-                                                        lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
-                                                    }
-                                                }).collect());
-                                                self.set_lsp_status(format!("Applied: {}", action_title));
+                                                self.apply_lsp_edits(
+                                                    text_doc_edit
+                                                        .edits
+                                                        .iter()
+                                                        .filter_map(|e| match e {
+                                                            lsp_types::OneOf::Left(edit) => {
+                                                                Some(edit.clone())
+                                                            }
+                                                            lsp_types::OneOf::Right(annot_edit) => {
+                                                                Some(annot_edit.text_edit.clone())
+                                                            }
+                                                        })
+                                                        .collect(),
+                                                );
+                                                self.set_lsp_status(format!(
+                                                    "Applied: {}",
+                                                    action_title
+                                                ));
                                             }
                                         }
                                     }
@@ -3737,24 +3905,46 @@ impl Editor {
                                         lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
                                             // Check if this is for the current document
                                             if let Some(file_path) = self.buffer().file_path() {
-                                                let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                                let abs_path = if std::path::Path::new(file_path)
+                                                    .is_absolute()
+                                                {
                                                     file_path.to_string()
                                                 } else {
                                                     match std::env::current_dir() {
-                                                        Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                                        Ok(cwd) => cwd
+                                                            .join(file_path)
+                                                            .to_string_lossy()
+                                                            .to_string(),
                                                         Err(_) => continue,
                                                     }
                                                 };
 
-                                                if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                                if let Ok(uri) =
+                                                    lsp_types::Url::from_file_path(&abs_path)
+                                                {
                                                     if text_doc_edit.text_document.uri == uri {
-                                                        self.apply_lsp_edits(text_doc_edit.edits.iter().filter_map(|e| {
-                                                            match e {
-                                                                lsp_types::OneOf::Left(edit) => Some(edit.clone()),
-                                                                lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
-                                                            }
-                                                        }).collect());
-                                                        self.set_lsp_status(format!("Applied: {}", action_title));
+                                                        self.apply_lsp_edits(
+                                                            text_doc_edit
+                                                                .edits
+                                                                .iter()
+                                                                .filter_map(|e| match e {
+                                                                    lsp_types::OneOf::Left(
+                                                                        edit,
+                                                                    ) => Some(edit.clone()),
+                                                                    lsp_types::OneOf::Right(
+                                                                        annot_edit,
+                                                                    ) => Some(
+                                                                        annot_edit
+                                                                            .text_edit
+                                                                            .clone(),
+                                                                    ),
+                                                                })
+                                                                .collect(),
+                                                        );
+                                                        self.set_lsp_status(format!(
+                                                            "Applied: {}",
+                                                            action_title
+                                                        ));
                                                     }
                                                 }
                                             }
@@ -3785,7 +3975,9 @@ impl Editor {
                     return;
                 };
 
-                let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) else {
+                let Some(language_id) =
+                    crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+                else {
                     self.set_lsp_status("Language not supported".to_string());
                     return;
                 };
@@ -3796,7 +3988,9 @@ impl Editor {
 
                     tokio::spawn(async move {
                         let guard = lsp.lock().await;
-                        let _result = guard.execute_command(command_name, arguments, &language_id).await;
+                        let _result = guard
+                            .execute_command(command_name, arguments, &language_id)
+                            .await;
                         // Note: Result isn't sent back to editor - this is fire and forget
                         // A full implementation would use a channel to send results back
                     });
@@ -3820,7 +4014,9 @@ impl Editor {
 
         // Clone the completion data we need before mutable borrow
         let completion = self.available_completions[completion_index].clone();
-        let insert_text = completion.insert_text.as_ref()
+        let insert_text = completion
+            .insert_text
+            .as_ref()
             .unwrap_or(&completion.label)
             .clone();
         let label = completion.label.clone();
@@ -3835,7 +4031,9 @@ impl Editor {
         let insert_pos = line_char_idx + col;
 
         // Insert the text
-        self.buffer_mut().rope_mut().insert(insert_pos, &insert_text);
+        self.buffer_mut()
+            .rope_mut()
+            .insert(insert_pos, &insert_text);
 
         // Move cursor to end of inserted text
         let new_col = col + insert_text.chars().count();
@@ -4079,7 +4277,9 @@ impl Editor {
         };
 
         // Call the rename method with individual parameters (using UTF-16 character position)
-        let result = lsp_guard.rename(&uri, line, character, language_id, new_name.clone()).await;
+        let result = lsp_guard
+            .rename(&uri, line, character, language_id, new_name.clone())
+            .await;
 
         drop(lsp_guard);
 
@@ -4109,10 +4309,7 @@ impl Editor {
 
     /// Applies a workspace edit from the LSP server
     /// Returns true if all edits were applied successfully
-    pub async fn apply_workspace_edit(
-        &mut self,
-        edit: lsp_types::WorkspaceEdit,
-    ) -> Result<bool> {
+    pub async fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
         // Track whether all edits were applied successfully
         let mut all_applied = true;
 
@@ -4173,12 +4370,16 @@ impl Editor {
                             if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
                                 if text_doc_edit.text_document.uri == uri {
                                     // Apply edits to current buffer
-                                    let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit.edits.iter().filter_map(|e| {
-                                        match e {
+                                    let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
+                                        .edits
+                                        .iter()
+                                        .filter_map(|e| match e {
                                             lsp_types::OneOf::Left(edit) => Some(edit.clone()),
-                                            lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
-                                        }
-                                    }).collect();
+                                            lsp_types::OneOf::Right(annot_edit) => {
+                                                Some(annot_edit.text_edit.clone())
+                                            }
+                                        })
+                                        .collect();
                                     self.apply_lsp_edits(text_edits);
                                 } else {
                                     all_applied = false;
@@ -4197,11 +4398,14 @@ impl Editor {
                             lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
                                 // Check if this is for the current document
                                 if let Some(file_path) = self.buffer().file_path() {
-                                    let abs_path = if std::path::Path::new(file_path).is_absolute() {
+                                    let abs_path = if std::path::Path::new(file_path).is_absolute()
+                                    {
                                         file_path.to_string()
                                     } else {
                                         match std::env::current_dir() {
-                                            Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                                            Ok(cwd) => {
+                                                cwd.join(file_path).to_string_lossy().to_string()
+                                            }
                                             Err(_) => {
                                                 all_applied = false;
                                                 continue;
@@ -4212,12 +4416,19 @@ impl Editor {
                                     if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
                                         if text_doc_edit.text_document.uri == uri {
                                             // Apply edits to current buffer
-                                            let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit.edits.iter().filter_map(|e| {
-                                                match e {
-                                                    lsp_types::OneOf::Left(edit) => Some(edit.clone()),
-                                                    lsp_types::OneOf::Right(annot_edit) => Some(annot_edit.text_edit.clone()),
-                                                }
-                                            }).collect();
+                                            let text_edits: Vec<lsp_types::TextEdit> =
+                                                text_doc_edit
+                                                    .edits
+                                                    .iter()
+                                                    .filter_map(|e| match e {
+                                                        lsp_types::OneOf::Left(edit) => {
+                                                            Some(edit.clone())
+                                                        }
+                                                        lsp_types::OneOf::Right(annot_edit) => {
+                                                            Some(annot_edit.text_edit.clone())
+                                                        }
+                                                    })
+                                                    .collect();
                                             self.apply_lsp_edits(text_edits);
                                         } else {
                                             all_applied = false;
@@ -4245,9 +4456,9 @@ impl Editor {
     /// Renders the editor to an in-memory buffer and returns ANSI output
     /// Used for headless mode to get pixel-perfect terminal representation
     pub fn render_to_ansi(&mut self, width: u16, height: u16) -> Result<String> {
+        use crate::ui::buffer_to_ansi;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
-        use crate::ui::buffer_to_ansi;
 
         // Create a test backend with specified dimensions
         let backend = TestBackend::new(width, height);
@@ -4391,11 +4602,8 @@ impl Editor {
         };
 
         // Now we can mutably borrow buffer
-        let new_viewport = Motions::scroll_half_page_down(
-            self.buffer_mut(),
-            viewport_start,
-            viewport_height,
-        );
+        let new_viewport =
+            Motions::scroll_half_page_down(self.buffer_mut(), viewport_start, viewport_height);
 
         // Finally update window scroll offset
         if let Some(wm) = &mut self.window_manager {
@@ -4419,11 +4627,8 @@ impl Editor {
         };
 
         // Now we can mutably borrow buffer
-        let new_viewport = Motions::scroll_half_page_up(
-            self.buffer_mut(),
-            viewport_start,
-            viewport_height,
-        );
+        let new_viewport =
+            Motions::scroll_half_page_up(self.buffer_mut(), viewport_start, viewport_height);
 
         // Finally update window scroll offset
         if let Some(wm) = &mut self.window_manager {
@@ -4447,11 +4652,8 @@ impl Editor {
         };
 
         // Now we can mutably borrow buffer
-        let new_viewport = Motions::scroll_page_down(
-            self.buffer_mut(),
-            viewport_start,
-            viewport_height,
-        );
+        let new_viewport =
+            Motions::scroll_page_down(self.buffer_mut(), viewport_start, viewport_height);
 
         // Finally update window scroll offset
         if let Some(wm) = &mut self.window_manager {
@@ -4475,11 +4677,8 @@ impl Editor {
         };
 
         // Now we can mutably borrow buffer
-        let new_viewport = Motions::scroll_page_up(
-            self.buffer_mut(),
-            viewport_start,
-            viewport_height,
-        );
+        let new_viewport =
+            Motions::scroll_page_up(self.buffer_mut(), viewport_start, viewport_height);
 
         // Finally update window scroll offset
         if let Some(wm) = &mut self.window_manager {
@@ -4533,15 +4732,19 @@ impl Editor {
 
             // Delete the partial word from trigger position to cursor
             if cursor_col > trigger_col {
-                self.buffer_mut().delete_range(cursor_line, trigger_col, cursor_line, cursor_col);
+                self.buffer_mut()
+                    .delete_range(cursor_line, trigger_col, cursor_line, cursor_col);
             }
 
             // Insert the completion text
-            self.buffer_mut().insert_text_at(cursor_line, trigger_col, &text_to_insert);
+            self.buffer_mut()
+                .insert_text_at(cursor_line, trigger_col, &text_to_insert);
 
             // Move cursor to end of inserted text
             let new_col = trigger_col + text_to_insert.chars().count();
-            self.buffer_mut().cursor_mut().set_position(cursor_line, new_col);
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(cursor_line, new_col);
 
             // Mark buffer as modified
             self.buffer_modified_this_iteration = true;

@@ -1,5 +1,5 @@
-use ovim::editor::{Editor, InputHandler};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -121,7 +121,11 @@ fn test_o_type_text() {
 
     // Check content
     let content = buffer_content(&editor);
-    assert!(content.contains("new"), "Content should contain 'new': {}", content);
+    assert!(
+        content.contains("new"),
+        "Content should contain 'new': {}",
+        content
+    );
 
     // Should have 3 lines
     assert_eq!(editor.buffer().line_count(), 3);
@@ -255,5 +259,9 @@ fn test_o_mixed_indentation() {
 
     // New line should have the mixed indentation
     let new_line = editor.buffer().line(2).unwrap();
-    assert!(new_line.starts_with("  \t"), "Line should start with '  \\t': {:?}", new_line);
+    assert!(
+        new_line.starts_with("  \t"),
+        "Line should start with '  \\t': {:?}",
+        new_line
+    );
 }

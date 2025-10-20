@@ -1,10 +1,14 @@
 use anyhow::Result;
 use crossterm::event::Event;
-use ovim::editor::{Editor, InputHandler};
-use ovim::ui::UI;
+use ovim::api::{
+    parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot,
+    ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo,
+    PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
+};
 use ovim::cli::Args;
-use ovim::api::{ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
+use ovim::editor::{Editor, InputHandler};
 use ovim::session::SessionInfo;
+use ovim::ui::UI;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
@@ -92,17 +96,19 @@ async fn main() -> Result<()> {
         let port = port_rx.await.expect("Failed to get server port");
 
         // Write session info
-        let session_name = args.session.clone().unwrap_or_else(|| "default".to_string());
-        let session_info = SessionInfo::new(
-            port,
-            args.file.clone(),
-            session_name.clone(),
-        );
+        let session_name = args
+            .session
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
 
         if let Err(e) = session_info.write() {
             eprintln!("Warning: Failed to write session info: {}", e);
         } else {
-            eprintln!("Session '{}' created at ~/.cache/ovim/sessions/{}.json", session_name, session_name);
+            eprintln!(
+                "Session '{}' created at ~/.cache/ovim/sessions/{}.json",
+                session_name, session_name
+            );
         }
 
         // Set up cleanup on exit
@@ -119,7 +125,14 @@ async fn main() -> Result<()> {
         let session_info_arc = Arc::new(Mutex::new(session_info));
 
         // Run in headless mode (API only, no TUI)
-        run_headless_loop(&mut editor, rx, java_status_rx, start_time, session_info_arc).await?;
+        run_headless_loop(
+            &mut editor,
+            rx,
+            java_status_rx,
+            start_time,
+            session_info_arc,
+        )
+        .await?;
         cleanup_handle.abort();
         return Ok(());
     } else {
@@ -146,10 +159,11 @@ async fn run_headless_loop(
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
 ) -> Result<()> {
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
 
     // Create channel for async preview loading
-    let (preview_tx, mut preview_rx) = tokio::sync::mpsc::channel::<(String, ovim::editor::PreviewCache)>(100);
+    let (preview_tx, mut preview_rx) =
+        tokio::sync::mpsc::channel::<(String, ovim::editor::PreviewCache)>(100);
 
     // Create channel for async file loading
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<ovim::editor::PickerResult>(1000);
@@ -299,10 +313,10 @@ fn spawn_file_finder_loading(
 
             // Use ignore crate's WalkBuilder which respects .gitignore
             let walker = WalkBuilder::new(&base_dir)
-                .hidden(false)  // Don't automatically skip hidden files
-                .git_ignore(true)  // Respect .gitignore files
-                .git_global(true)  // Respect global gitignore
-                .git_exclude(true)  // Respect .git/info/exclude
+                .hidden(false) // Don't automatically skip hidden files
+                .git_ignore(true) // Respect .gitignore files
+                .git_global(true) // Respect global gitignore
+                .git_exclude(true) // Respect .git/info/exclude
                 .build();
 
             // Walk the directory tree and send files as we find them
@@ -374,7 +388,8 @@ async fn run_event_loop(
     let debounce_delay = Duration::from_millis(100);
 
     // Create channel for async preview loading
-    let (preview_tx, mut preview_rx) = tokio::sync::mpsc::channel::<(String, ovim::editor::PreviewCache)>(100);
+    let (preview_tx, mut preview_rx) =
+        tokio::sync::mpsc::channel::<(String, ovim::editor::PreviewCache)>(100);
 
     // Create channel for async file loading
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<ovim::editor::PickerResult>(1000);
@@ -455,7 +470,8 @@ async fn run_event_loop(
             while let Ok(request) = rx.try_recv() {
                 // For TUI mode, use dummy start time and session info since /health isn't typically used
                 let dummy_start = SystemTime::now();
-                let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".to_string())));
+                let dummy_session =
+                    Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".to_string())));
                 handle_api_request(editor, request, dummy_start, &dummy_session).await;
             }
         }
@@ -584,30 +600,28 @@ async fn handle_api_request(
                 });
 
                 let lsp_status_info = LspStatusInfo {
-                    servers: servers.into_iter().map(|s| LspServerInfoItem {
-                        language: s.language,
-                        command: s.command,
-                        state: s.state,
-                        pending_requests: s.pending_requests,
-                        has_capabilities: s.has_capabilities,
-                    }).collect(),
+                    servers: servers
+                        .into_iter()
+                        .map(|s| LspServerInfoItem {
+                            language: s.language,
+                            command: s.command,
+                            state: s.state,
+                            pending_requests: s.pending_requests,
+                            has_capabilities: s.has_capabilities,
+                        })
+                        .collect(),
                 };
 
                 let _ = tx.send(ApiResponse::LspStatus(lsp_status_info));
             } else {
                 // No LSP manager available
-                let lsp_status_info = LspStatusInfo {
-                    servers: vec![],
-                };
+                let lsp_status_info = LspStatusInfo { servers: vec![] };
                 let _ = tx.send(ApiResponse::LspStatus(lsp_status_info));
             }
         }
         ApiRequest::GetHealth(tx) => {
             // Calculate uptime
-            let uptime = start_time
-                .elapsed()
-                .unwrap_or_default()
-                .as_secs();
+            let uptime = start_time.elapsed().unwrap_or_default().as_secs();
 
             // Get file being edited
             let file = editor.buffer().file_path().map(|p| p.to_string());
@@ -617,9 +631,8 @@ async fn handle_api_request(
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
                 if let Ok(lsp_manager) = lsp_manager_arc.try_lock() {
                     let servers = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            lsp_manager.get_lsp_status().await
-                        })
+                        tokio::runtime::Handle::current()
+                            .block_on(async { lsp_manager.get_lsp_status().await })
                     });
 
                     for server in servers {
@@ -665,23 +678,30 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         column: cursor.col(),
     };
 
-    let visual_selection = editor.visual_selection().map(|((start_line, start_col), (end_line, end_col))| {
-        VisualSelection {
-            start: CursorPosition {
-                line: start_line,
-                column: start_col,
-            },
-            end: CursorPosition {
-                line: end_line,
-                column: end_col,
-            },
-        }
-    });
+    let visual_selection =
+        editor
+            .visual_selection()
+            .map(
+                |((start_line, start_col), (end_line, end_col))| VisualSelection {
+                    start: CursorPosition {
+                        line: start_line,
+                        column: start_col,
+                    },
+                    end: CursorPosition {
+                        line: end_line,
+                        column: end_col,
+                    },
+                },
+            );
 
     // Get registers content
     let mut registers = HashMap::new();
     let reg_manager = editor.registers();
-    for reg_name in &['"', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'] {
+    for reg_name in &[
+        '"', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g',
+        'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y',
+        'z',
+    ] {
         let content = reg_manager.get(Some(*reg_name));
         if !content.is_empty() {
             registers.insert(reg_name.to_string(), content.to_string());
@@ -692,33 +712,36 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     let mut marks = HashMap::new();
     let mark_manager = editor.marks();
     for (name, mark) in mark_manager.iter() {
-        marks.insert(name.to_string(), CursorPosition {
-            line: mark.line,
-            column: mark.col,
-        });
+        marks.insert(
+            name.to_string(),
+            CursorPosition {
+                line: mark.line,
+                column: mark.col,
+            },
+        );
     }
 
     // Get picker state if in picker mode
-    let picker = editor.picker().map(|p| {
-        PickerInfo {
-            mode: match p.mode() {
-                ovim::editor::PickerMode::FindFiles => "FindFiles".to_string(),
-                ovim::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
-                ovim::editor::PickerMode::Custom => "Custom".to_string(),
-                ovim::editor::PickerMode::Completion => "Completion".to_string(),
-                ovim::editor::PickerMode::LspLocations => "LspLocations".to_string(),
-            },
-            query: p.query().to_string(),
-            results: p.filtered_results().iter().map(|r| {
-                PickerResultInfo {
-                    display: r.display.clone(),
-                    location: r.location.clone(),
-                    line: r.line,
-                    col: r.col,
-                }
-            }).collect(),
-            selected_index: p.selected_index(),
-        }
+    let picker = editor.picker().map(|p| PickerInfo {
+        mode: match p.mode() {
+            ovim::editor::PickerMode::FindFiles => "FindFiles".to_string(),
+            ovim::editor::PickerMode::LiveGrep => "LiveGrep".to_string(),
+            ovim::editor::PickerMode::Custom => "Custom".to_string(),
+            ovim::editor::PickerMode::Completion => "Completion".to_string(),
+            ovim::editor::PickerMode::LspLocations => "LspLocations".to_string(),
+        },
+        query: p.query().to_string(),
+        results: p
+            .filtered_results()
+            .iter()
+            .map(|r| PickerResultInfo {
+                display: r.display.clone(),
+                location: r.location.clone(),
+                line: r.line,
+                col: r.col,
+            })
+            .collect(),
+        selected_index: p.selected_index(),
     });
 
     EditorSnapshot {
@@ -766,7 +789,9 @@ fn find_jvm_project_root(file_path: &std::path::Path) -> &std::path::Path {
         current = dir.parent();
     }
     // Fall back to file's parent directory if no project root found
-    file_path.parent().unwrap_or_else(|| std::path::Path::new("/"))
+    file_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/"))
 }
 
 /// Initialize Java LSP with auto-download and configuration
@@ -783,7 +808,7 @@ async fn initialize_java_lsp_background(
     file_path: std::path::PathBuf,
 ) {
     ovim::lsp_debug!("Java", "Background task started for {:?}", file_path);
-    use ovim::java::{JdtlsDownloader, JdtlsLauncher, parser};
+    use ovim::java::{parser, JdtlsDownloader, JdtlsLauncher};
 
     // Early exit if no LSP manager
     let Some(lsp_manager) = lsp_manager else {
@@ -807,7 +832,10 @@ async fn initialize_java_lsp_background(
         }
     };
 
-    send_java_status(format!("Detected Java {} project", project_config.java_version.as_str()));
+    send_java_status(format!(
+        "Detected Java {} project",
+        project_config.java_version.as_str()
+    ));
 
     // Get jdtls installation directory
     let jdtls_dir = match ovim::java::jdtls_dir().await {
@@ -824,9 +852,12 @@ async fn initialize_java_lsp_background(
     if !downloader.is_installed().await {
         send_java_status("Downloading jdtls... (first time setup)".to_string());
 
-        match downloader.ensure_installed(|msg| {
-            send_java_status(msg);
-        }).await {
+        match downloader
+            .ensure_installed(|msg| {
+                send_java_status(msg);
+            })
+            .await
+        {
             Ok(()) => send_java_status("Download complete!".to_string()),
             Err(e) => {
                 send_java_status(format!("Download failed: {}", e));
@@ -841,9 +872,12 @@ async fn initialize_java_lsp_background(
     if !downloader.is_lombok_installed().await {
         send_java_status("Downloading Lombok... (first time setup)".to_string());
 
-        match downloader.ensure_lombok_installed(|msg| {
-            send_java_status(msg);
-        }).await {
+        match downloader
+            .ensure_lombok_installed(|msg| {
+                send_java_status(msg);
+            })
+            .await
+        {
             Ok(()) => send_java_status("Lombok download complete!".to_string()),
             Err(e) => {
                 send_java_status(format!("Lombok download failed: {}", e));
@@ -873,12 +907,8 @@ async fn initialize_java_lsp_background(
     send_java_status("Configuring launcher...".to_string());
 
     // Create launcher
-    let launcher = JdtlsLauncher::from_project_config(
-        project_config,
-        jdtls_dir,
-        workspace_dir,
-        lombok_jar,
-    );
+    let launcher =
+        JdtlsLauncher::from_project_config(project_config, jdtls_dir, workspace_dir, lombok_jar);
 
     send_java_status("Finding JVM...".to_string());
 
@@ -919,7 +949,14 @@ async fn initialize_java_lsp_background(
         ovim::lsp_debug!("Java", "Inside start_server task, acquiring lock...");
         let lsp = lsp_clone.lock().await;
         ovim::lsp_debug!("Java", "Lock acquired, calling start_server...");
-        let result = lsp.start_server("java", &server_command_clone, server_args_clone, &project_root_clone).await;
+        let result = lsp
+            .start_server(
+                "java",
+                &server_command_clone,
+                server_args_clone,
+                &project_root_clone,
+            )
+            .await;
         ovim::lsp_debug!("Java", "start_server returned: {:?}", result);
         result
     });
@@ -997,7 +1034,7 @@ async fn initialize_java_lsp_background(
 
 /// Old version that requires mutable editor (used in headless mode)
 async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
-    use ovim::java::{JdtlsDownloader, JdtlsLauncher, parser};
+    use ovim::java::{parser, JdtlsDownloader, JdtlsLauncher};
 
     // Find project root
     let project_root = find_jvm_project_root(file_path);
@@ -1038,9 +1075,11 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
 
         // Spawn download task
         let mut download_task = tokio::spawn(async move {
-            downloader.ensure_installed(move |msg| {
-                let _ = progress_tx.send(msg);
-            }).await
+            downloader
+                .ensure_installed(move |msg| {
+                    let _ = progress_tx.send(msg);
+                })
+                .await
         });
 
         // Poll for progress updates without blocking
@@ -1081,9 +1120,11 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
 
         // Spawn download task
         let mut download_task = tokio::spawn(async move {
-            lombok_downloader.ensure_lombok_installed(move |msg| {
-                let _ = progress_tx.send(msg);
-            }).await
+            lombok_downloader
+                .ensure_lombok_installed(move |msg| {
+                    let _ = progress_tx.send(msg);
+                })
+                .await
         });
 
         // Poll for progress updates without blocking
@@ -1136,12 +1177,8 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
     editor.set_lsp_status("Java: Configuring launcher...".to_string());
 
     // Create launcher
-    let launcher = JdtlsLauncher::from_project_config(
-        project_config,
-        jdtls_dir,
-        workspace_dir,
-        lombok_jar,
-    );
+    let launcher =
+        JdtlsLauncher::from_project_config(project_config, jdtls_dir, workspace_dir, lombok_jar);
 
     editor.set_lsp_status("Java: Finding JVM...".to_string());
 
@@ -1172,7 +1209,10 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
 
         editor.set_lsp_status("Java: Starting LSP server...".to_string());
 
-        match lsp.start_server("java", server_command, server_args, project_root).await {
+        match lsp
+            .start_server("java", server_command, server_args, project_root)
+            .await
+        {
             Ok(_) => {
                 drop(lsp);
                 editor.register_lsp_server("java".to_string(), "jdtls".to_string());
@@ -1220,8 +1260,8 @@ async fn initialize_java_lsp(editor: &mut Editor, file_path: &std::path::Path) {
 
 /// Initialize LSP for a file based on its extension
 async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
-    use std::path::Path;
     use ovim::java::{JdtlsDownloader, JdtlsLauncher};
+    use std::path::Path;
 
     let path = Path::new(file_path);
 
@@ -1258,7 +1298,11 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     // Determine language and LSP server based on file extension
     let (language_id, server_command, server_args) = match extension {
         "rs" => ("rust", "rust-analyzer", vec![]),
-        "js" | "ts" | "jsx" | "tsx" => ("javascript", "typescript-language-server", vec!["--stdio".to_string()]),
+        "js" | "ts" | "jsx" | "tsx" => (
+            "javascript",
+            "typescript-language-server",
+            vec!["--stdio".to_string()],
+        ),
         "py" => ("python", "pylsp", vec![]),
         _ => return, // No LSP support for this file type
     };
@@ -1285,7 +1329,10 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         let lsp = lsp_manager.lock().await;
 
         // Start the server (will skip if already running)
-        match lsp.start_server(language_id, server_command, server_args, root_path).await {
+        match lsp
+            .start_server(language_id, server_command, server_args, root_path)
+            .await
+        {
             Ok(_) => {
                 drop(lsp); // Release lock before calling editor methods
                 editor.register_lsp_server(language_id.to_string(), server_command.to_string());
@@ -1294,7 +1341,8 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                 let lsp = lsp_manager.lock().await;
 
                 // Start notification listener to receive diagnostics
-                lsp.start_notification_listener(language_id.to_string()).await;
+                lsp.start_notification_listener(language_id.to_string())
+                    .await;
 
                 // Send didOpen notification
                 let file_content = editor.buffer().rope().to_string();
@@ -1307,7 +1355,10 @@ async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     }
                 };
 
-                match lsp.did_open(uri, language_id, 1, file_content.clone()).await {
+                match lsp
+                    .did_open(uri, language_id, 1, file_content.clone())
+                    .await
+                {
                     Ok(_) => {
                         drop(lsp);
                         // CRITICAL FIX: Initialize last_synced_content after successful didOpen

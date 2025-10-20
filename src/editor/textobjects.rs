@@ -301,7 +301,9 @@ impl TextObjects {
         buffer.rope_mut().remove(start_char..end_char);
 
         // Position cursor at start of deleted range
-        buffer.cursor_mut().set_position(range.start_line, range.start_col);
+        buffer
+            .cursor_mut()
+            .set_position(range.start_line, range.start_col);
 
         Ok(deleted)
     }
@@ -341,12 +343,19 @@ impl TextObjects {
             if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] != '/' {
                 // Found potential opening tag
                 let mut name_end = i + 1;
-                while name_end < chars.len() && chars[name_end] != '>' && !chars[name_end].is_whitespace() {
+                while name_end < chars.len()
+                    && chars[name_end] != '>'
+                    && !chars[name_end].is_whitespace()
+                {
                     name_end += 1;
                 }
                 if name_end < chars.len() {
                     let name: String = chars[(i + 1)..name_end].iter().collect();
-                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':') {
+                    if !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':')
+                    {
                         tag_start = Some(i);
                         tag_name = Some(name);
                         break;
@@ -417,10 +426,16 @@ impl TextObjects {
                             });
                         }
                     }
-                } else if search_pos + 1 < chars.len() && chars[search_pos + 1] != '!' && chars[search_pos + 1] != '?' {
+                } else if search_pos + 1 < chars.len()
+                    && chars[search_pos + 1] != '!'
+                    && chars[search_pos + 1] != '?'
+                {
                     // Potential opening tag (not a comment or processing instruction)
                     let mut name_end = search_pos + 1;
-                    while name_end < chars.len() && chars[name_end] != '>' && !chars[name_end].is_whitespace() {
+                    while name_end < chars.len()
+                        && chars[name_end] != '>'
+                        && !chars[name_end].is_whitespace()
+                    {
                         name_end += 1;
                     }
                     let found_name: String = chars[(search_pos + 1)..name_end].iter().collect();
@@ -443,7 +458,11 @@ impl TextObjects {
     }
 
     /// Helper to convert character offsets to line/col positions
-    fn char_offset_to_position(buffer: &Buffer, start_offset: usize, end_offset: usize) -> (usize, usize, usize, usize) {
+    fn char_offset_to_position(
+        buffer: &Buffer,
+        start_offset: usize,
+        end_offset: usize,
+    ) -> (usize, usize, usize, usize) {
         let rope = buffer.rope();
 
         let start_line = rope.char_to_line(start_offset);

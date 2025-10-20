@@ -51,7 +51,10 @@ impl LuaContext {
     pub fn execute_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref();
         let code = std::fs::read_to_string(path)?;
-        self.lua.load(&code).set_name(path.to_string_lossy().as_ref()).exec()?;
+        self.lua
+            .load(&code)
+            .set_name(path.to_string_lossy().as_ref())
+            .exec()?;
         Ok(())
     }
 
@@ -121,7 +124,11 @@ impl LuaContext {
     }
 
     /// Sets a global variable in Lua
-    pub fn set_global<'lua, V: mlua::IntoLua<'lua>>(&'lua self, name: &str, value: V) -> Result<()> {
+    pub fn set_global<'lua, V: mlua::IntoLua<'lua>>(
+        &'lua self,
+        name: &str,
+        value: V,
+    ) -> Result<()> {
         self.lua.globals().set(name, value)?;
         Ok(())
     }

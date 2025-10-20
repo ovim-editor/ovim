@@ -1,9 +1,8 @@
 use crate::editor::Editor;
+use crate::syntax::{HighlightGroup, Theme};
 use crate::LineStatus;
-use crate::syntax::{Theme, HighlightGroup};
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
-use std::ops::Range;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -13,6 +12,7 @@ use ratatui::{
     Frame, Terminal as RatatuiTerminal,
 };
 use std::io;
+use std::ops::Range;
 
 /// Handles rendering the editor state to the terminal
 pub struct Renderer {
@@ -36,12 +36,15 @@ impl Renderer {
         // Fill entire frame with blank lines to prevent artifacts from previous renders
         let area = frame.area();
         let blank_line = " ".repeat(area.width as usize);
-        let blank_lines: Vec<Line> = (0..area.height).map(|_| Line::from(blank_line.clone())).collect();
+        let blank_lines: Vec<Line> = (0..area.height)
+            .map(|_| Line::from(blank_line.clone()))
+            .collect();
         let bg_paragraph = Paragraph::new(blank_lines).style(Style::default().bg(Color::Reset));
         frame.render_widget(bg_paragraph, area);
 
         // Get color scheme from editor, fall back to Tokyonight if not found
-        let scheme = editor.get_color_scheme()
+        let scheme = editor
+            .get_color_scheme()
             .cloned()
             .unwrap_or_else(|| crate::syntax::ColorScheme::tokyonight());
         let theme = Theme::from_scheme(scheme);
@@ -68,11 +71,14 @@ impl Renderer {
         let chunks = if has_progress {
             Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(1), // progress line
-                    Constraint::Length(1), // status line
-                ].as_ref())
+                .constraints(
+                    [
+                        Constraint::Min(1),
+                        Constraint::Length(1), // progress line
+                        Constraint::Length(1), // status line
+                    ]
+                    .as_ref(),
+                )
                 .split(content_area)
         } else {
             Layout::default()
@@ -137,18 +143,14 @@ impl Renderer {
             }
         } else if editor.mode() == crate::mode::Mode::Command {
             // Position cursor in command line (use status_chunk, not chunks[1])
-            let cmd_cursor_x = (editor.command_line().len() + 1).min(status_chunk.width.saturating_sub(1) as usize);
-            frame.set_cursor_position((
-                status_chunk.x + cmd_cursor_x as u16,
-                status_chunk.y,
-            ));
+            let cmd_cursor_x = (editor.command_line().len() + 1)
+                .min(status_chunk.width.saturating_sub(1) as usize);
+            frame.set_cursor_position((status_chunk.x + cmd_cursor_x as u16, status_chunk.y));
         } else if editor.mode() == crate::mode::Mode::Search {
             // Position cursor in search line (use status_chunk, not chunks[1])
-            let search_cursor_x = (editor.search_buffer().len() + 1).min(status_chunk.width.saturating_sub(1) as usize);
-            frame.set_cursor_position((
-                status_chunk.x + search_cursor_x as u16,
-                status_chunk.y,
-            ));
+            let search_cursor_x = (editor.search_buffer().len() + 1)
+                .min(status_chunk.width.saturating_sub(1) as usize);
+            frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
         } else {
             // Position cursor in text buffer (accounting for gutter, tabs, and wide chars)
             let screen_line = cursor_line.saturating_sub(viewport_start);
@@ -306,22 +308,27 @@ impl Renderer {
     /// Adjusts syntax highlight ranges based on tab expansion mapping
     fn remap_highlights(
         highlights: &[(Range<usize>, HighlightGroup)],
-        byte_mapping: &[(usize, usize)]
+        byte_mapping: &[(usize, usize)],
     ) -> Vec<(Range<usize>, HighlightGroup)> {
-        highlights.iter().map(|(range, group)| {
-            // Find mapped positions for start and end
-            let new_start = byte_mapping.iter()
-                .find(|(orig, _)| *orig >= range.start)
-                .map(|(_, expanded)| *expanded)
-                .unwrap_or(0);
+        highlights
+            .iter()
+            .map(|(range, group)| {
+                // Find mapped positions for start and end
+                let new_start = byte_mapping
+                    .iter()
+                    .find(|(orig, _)| *orig >= range.start)
+                    .map(|(_, expanded)| *expanded)
+                    .unwrap_or(0);
 
-            let new_end = byte_mapping.iter()
-                .find(|(orig, _)| *orig >= range.end)
-                .map(|(_, expanded)| *expanded)
-                .unwrap_or(new_start);
+                let new_end = byte_mapping
+                    .iter()
+                    .find(|(orig, _)| *orig >= range.end)
+                    .map(|(_, expanded)| *expanded)
+                    .unwrap_or(new_start);
 
-            (new_start..new_end, *group)
-        }).collect()
+                (new_start..new_end, *group)
+            })
+            .collect()
     }
 
     /// Renders the buffer content and returns the viewport start line
@@ -354,10 +361,7 @@ impl Renderer {
         let (gutter_area, text_area) = if gutter_width > 0 {
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(gutter_width),
-                    Constraint::Min(1),
-                ])
+                .constraints([Constraint::Length(gutter_width), Constraint::Min(1)])
                 .split(area);
             (Some(chunks[0]), chunks[1])
         } else {
@@ -395,22 +399,28 @@ impl Renderer {
                     };
 
                     // Add sign column for git status indicators
-                    let (sign_text, sign_color) = match buffer.git_status().get_line_status(line_idx) {
-                        Some(LineStatus::Added) => ("+ ", Color::Green),
-                        Some(LineStatus::Modified) => ("~ ", Color::Yellow),
-                        Some(LineStatus::Removed) => ("- ", Color::Red),
-                        None => ("  ", Color::DarkGray),
-                    };
+                    let (sign_text, sign_color) =
+                        match buffer.git_status().get_line_status(line_idx) {
+                            Some(LineStatus::Added) => ("+ ", Color::Green),
+                            Some(LineStatus::Modified) => ("~ ", Color::Yellow),
+                            Some(LineStatus::Removed) => ("- ", Color::Red),
+                            None => ("  ", Color::DarkGray),
+                        };
 
                     // Highlight current line number
                     let line_num_style = if line_idx == cursor.line() {
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::DarkGray)
                     };
 
                     // Build gutter with separate styles for sign and line number
-                    let sign_span = Span::styled(sign_text, Style::default().fg(sign_color).add_modifier(Modifier::BOLD));
+                    let sign_span = Span::styled(
+                        sign_text,
+                        Style::default().fg(sign_color).add_modifier(Modifier::BOLD),
+                    );
                     let line_num_span = Span::styled(line_num_text, line_num_style);
 
                     gutter_lines.push(Line::from(vec![sign_span, line_num_span]));
@@ -433,7 +443,8 @@ impl Renderer {
                 let line_text = line_text.trim_end_matches('\n');
 
                 // Expand tabs to spaces for proper rendering and get byte mapping
-                let (line_text, byte_mapping) = Self::expand_tabs_with_mapping(line_text, tab_width);
+                let (line_text, byte_mapping) =
+                    Self::expand_tabs_with_mapping(line_text, tab_width);
 
                 // Get syntax highlights for this line and remap them for expanded text
                 let original_highlights = buffer.highlights_for_line(line_idx);
@@ -441,7 +452,9 @@ impl Renderer {
 
                 // Check if we need special highlighting (visual selection or search)
                 let has_visual_selection = visual_selection
-                    .map(|((start_line, _), (end_line, _))| line_idx >= start_line && line_idx <= end_line)
+                    .map(|((start_line, _), (end_line, _))| {
+                        line_idx >= start_line && line_idx <= end_line
+                    })
                     .unwrap_or(false);
 
                 let search_matches = if let Some(search) = current_search {
@@ -451,7 +464,9 @@ impl Renderer {
                 };
 
                 // Always use character-by-character rendering if we have any highlighting
-                let needs_detailed_rendering = has_visual_selection || !search_matches.is_empty() || !syntax_highlights.is_empty();
+                let needs_detailed_rendering = has_visual_selection
+                    || !search_matches.is_empty()
+                    || !syntax_highlights.is_empty();
 
                 if needs_detailed_rendering {
                     let mut line = Self::render_line_with_highlights(
@@ -464,16 +479,22 @@ impl Renderer {
                         &syntax_highlights,
                     );
                     // Pad line to clear previous content
-                    let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    let line_len: usize =
+                        line.spans.iter().map(|s| s.content.chars().count()).sum();
                     if line_len < text_area.width as usize {
-                        line.spans.push(Span::raw(" ".repeat(text_area.width as usize - line_len)));
+                        line.spans
+                            .push(Span::raw(" ".repeat(text_area.width as usize - line_len)));
                     }
                     lines.push(line);
                 } else {
                     // Pad simple lines too
                     let line_len = line_text.chars().count();
                     let line_text = if line_len < text_area.width as usize {
-                        format!("{}{}", line_text, " ".repeat(text_area.width as usize - line_len))
+                        format!(
+                            "{}{}",
+                            line_text,
+                            " ".repeat(text_area.width as usize - line_len)
+                        )
                     } else {
                         line_text.to_string()
                     };
@@ -495,8 +516,8 @@ impl Renderer {
 
     /// Renders the LSP progress line (just above status line)
     fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
+        use ratatui::style::{Color, Modifier, Style};
         use ratatui::text::{Line, Span};
-        use ratatui::style::{Color, Style, Modifier};
         use ratatui::widgets::Paragraph;
 
         // Right-align the progress message
@@ -511,8 +532,7 @@ impl Renderer {
             ),
         ]);
 
-        let paragraph = Paragraph::new(progress_line)
-            .style(Style::default().bg(Color::Black));
+        let paragraph = Paragraph::new(progress_line).style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
     }
 
@@ -570,15 +590,13 @@ impl Renderer {
             .saturating_sub(lsp_status.len())
             .saturating_sub(position.len());
 
-        let mut spans = vec![
-            Span::styled(
-                &mode_indicator,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
+        let mut spans = vec![Span::styled(
+            &mode_indicator,
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )];
 
         // Add recording indicator if recording
         if !recording_indicator.is_empty() {
@@ -602,15 +620,19 @@ impl Renderer {
         if !diagnostics.is_empty() {
             spans.push(Span::styled(
                 &diagnostics,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(if errors > 0 { Color::Red } else { Color::Yellow }),
+                Style::default().fg(Color::Black).bg(if errors > 0 {
+                    Color::Red
+                } else {
+                    Color::Yellow
+                }),
             ));
         }
 
         // Add LSP status if present
         if !lsp_status.is_empty() {
-            let lsp_color = if editor.lsp_status().contains("Failed") || editor.lsp_status().contains("Error") {
+            let lsp_color = if editor.lsp_status().contains("Failed")
+                || editor.lsp_status().contains("Error")
+            {
                 Color::Red
             } else if editor.lsp_status().contains("ready") {
                 Color::Green
@@ -619,23 +641,18 @@ impl Renderer {
             };
             spans.push(Span::styled(
                 &lsp_status,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(lsp_color),
+                Style::default().fg(Color::Black).bg(lsp_color),
             ));
         }
 
         spans.push(Span::styled(
             position,
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Gray),
+            Style::default().fg(Color::Black).bg(Color::Gray),
         ));
 
         let status_line = Line::from(spans);
 
-        let paragraph = Paragraph::new(status_line)
-            .style(Style::default().bg(Color::DarkGray));
+        let paragraph = Paragraph::new(status_line).style(Style::default().bg(Color::DarkGray));
         frame.render_widget(paragraph, area);
     }
 
@@ -694,17 +711,21 @@ impl Renderer {
         };
 
         let paragraph = Paragraph::new(text)
-            .style(Style::default()
-                .bg(Color::Rgb(30, 30, 40))
-                .fg(Color::Rgb(230, 230, 230)))
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(30, 30, 40))
+                    .fg(Color::Rgb(230, 230, 230)),
+            )
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Rgb(255, 200, 100)))
                     .title(title)
-                    .title_style(Style::default()
-                        .fg(Color::Rgb(255, 200, 100))
-                        .add_modifier(Modifier::BOLD)),
+                    .title_style(
+                        Style::default()
+                            .fg(Color::Rgb(255, 200, 100))
+                            .add_modifier(Modifier::BOLD),
+                    ),
             )
             .wrap(ratatui::widgets::Wrap { trim: false });
 
@@ -714,7 +735,12 @@ impl Renderer {
     }
 
     /// Renders the completion menu popup
-    fn render_completion_menu(frame: &mut Frame, editor: &Editor, buffer_area: Rect, viewport_start: usize) {
+    fn render_completion_menu(
+        frame: &mut Frame,
+        editor: &Editor,
+        buffer_area: Rect,
+        viewport_start: usize,
+    ) {
         let completion_menu = editor.completion_menu();
         if !completion_menu.is_visible() {
             return;
@@ -769,7 +795,8 @@ impl Renderer {
         let menu_height = num_items as u16 + 2; // +2 for borders
 
         // Calculate width based on longest label
-        let max_label_len = items.iter()
+        let max_label_len = items
+            .iter()
             .take(max_items_to_show)
             .map(|item| item.label.len())
             .max()
@@ -806,9 +833,7 @@ impl Renderer {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .bg(Color::Rgb(40, 44, 52))
-                    .fg(Color::White)
+                Style::default().bg(Color::Rgb(40, 44, 52)).fg(Color::White)
             };
 
             // Format: "label"  or "  label" with selection indicator
@@ -882,7 +907,11 @@ impl Renderer {
                     .borders(Borders::RIGHT)
                     .border_style(Style::default().fg(Color::DarkGray))
                     .title(" Files ")
-                    .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                    .title_style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
             )
             .style(Style::default().bg(Color::Rgb(30, 34, 42)));
 
@@ -893,17 +922,12 @@ impl Renderer {
     fn render_command_line(frame: &mut Frame, editor: &Editor, area: Rect) {
         let command_text = format!(":{}", editor.command_line());
 
-        let command_line = Line::from(vec![
-            Span::styled(
-                command_text,
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Black),
-            ),
-        ]);
+        let command_line = Line::from(vec![Span::styled(
+            command_text,
+            Style::default().fg(Color::White).bg(Color::Black),
+        )]);
 
-        let paragraph = Paragraph::new(command_line)
-            .style(Style::default().bg(Color::Black));
+        let paragraph = Paragraph::new(command_line).style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
     }
 
@@ -912,17 +936,12 @@ impl Renderer {
         let search_prefix = if editor.search_forward() { "/" } else { "?" };
         let search_text = format!("{}{}", search_prefix, editor.search_buffer());
 
-        let search_line = Line::from(vec![
-            Span::styled(
-                search_text,
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Black),
-            ),
-        ]);
+        let search_line = Line::from(vec![Span::styled(
+            search_text,
+            Style::default().fg(Color::White).bg(Color::Black),
+        )]);
 
-        let paragraph = Paragraph::new(search_line)
-            .style(Style::default().bg(Color::Black));
+        let paragraph = Paragraph::new(search_line).style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
     }
 
@@ -945,7 +964,9 @@ impl Renderer {
 
     /// Renders the picker overlay
     fn render_picker(frame: &mut Frame, editor: &mut Editor, _full_area: Rect) {
-        let Some(picker) = editor.picker() else { return };
+        let Some(picker) = editor.picker() else {
+            return;
+        };
 
         let picker_area = Self::get_picker_area(frame.area());
         let show_preview = Self::should_show_preview(picker_area);
@@ -962,13 +983,15 @@ impl Renderer {
         // Richer background with gradient-like effect
         let block = Block::default()
             .title(mode_name)
-            .title_style(Style::default()
-                .fg(Color::Rgb(165, 180, 252))  // Soft indigo
-                .add_modifier(Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(Color::Rgb(165, 180, 252)) // Soft indigo
+                    .add_modifier(Modifier::BOLD),
+            )
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(100, 116, 180)))  // Muted purple-blue
+            .border_style(Style::default().fg(Color::Rgb(100, 116, 180))) // Muted purple-blue
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .style(Style::default().bg(Color::Rgb(20, 24, 35)));  // Deep navy
+            .style(Style::default().bg(Color::Rgb(20, 24, 35))); // Deep navy
 
         frame.render_widget(block.clone(), picker_area);
 
@@ -989,11 +1012,14 @@ impl Renderer {
         // Split left side into query line + separator + results
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),  // Query line
-                Constraint::Length(1),  // Separator
-                Constraint::Min(1)      // Results
-            ].as_ref())
+            .constraints(
+                [
+                    Constraint::Length(1), // Query line
+                    Constraint::Length(1), // Separator
+                    Constraint::Min(1),    // Results
+                ]
+                .as_ref(),
+            )
             .split(main_chunks[0]);
 
         // Render query line with enhanced styling
@@ -1015,21 +1041,18 @@ impl Renderer {
             Span::styled(
                 prompt_icon,
                 Style::default()
-                    .fg(Color::Rgb(129, 250, 183))  // Soft green
+                    .fg(Color::Rgb(129, 250, 183)) // Soft green
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                " ",
-                Style::default(),
-            ),
+            Span::styled(" ", Style::default()),
             Span::styled(
                 before_cursor,
                 Style::default()
-                    .fg(Color::Rgb(220, 220, 230))  // Near white
+                    .fg(Color::Rgb(220, 220, 230)) // Near white
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "▊",  // Cursor block
+                "▊", // Cursor block
                 Style::default()
                     .fg(Color::Rgb(165, 180, 252))
                     .add_modifier(Modifier::SLOW_BLINK),
@@ -1054,8 +1077,8 @@ impl Renderer {
         }
 
         let query_line = Line::from(spans);
-        let query_paragraph = Paragraph::new(query_line)
-            .style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        let query_paragraph =
+            Paragraph::new(query_line).style(Style::default().bg(Color::Rgb(20, 24, 35)));
         frame.render_widget(query_paragraph, left_chunks[0]);
 
         // Render separator line
@@ -1063,11 +1086,11 @@ impl Renderer {
         let separator_line = Line::from(Span::styled(
             separator,
             Style::default()
-                .fg(Color::Rgb(60, 70, 100))  // Subtle line
-                .bg(Color::Rgb(20, 24, 35)),  // Background color
+                .fg(Color::Rgb(60, 70, 100)) // Subtle line
+                .bg(Color::Rgb(20, 24, 35)), // Background color
         ));
-        let separator_paragraph = Paragraph::new(separator_line)
-            .style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        let separator_paragraph =
+            Paragraph::new(separator_line).style(Style::default().bg(Color::Rgb(20, 24, 35)));
         frame.render_widget(separator_paragraph, left_chunks[1]);
 
         // Render results
@@ -1094,34 +1117,34 @@ impl Renderer {
 
                 // Truncate the display path if needed
                 let max_display_len = result_width.saturating_sub(5); // Room for icon + prefix + padding
-                let display = crate::editor::Picker::truncate_path(&result.display, max_display_len);
+                let display =
+                    crate::editor::Picker::truncate_path(&result.display, max_display_len);
 
                 // Choose icon based on file type or result type
                 let icon = if result.line > 0 {
-                    " "  // Search result icon
+                    " " // Search result icon
                 } else if display.ends_with('/') {
-                    " "  // Directory icon
+                    " " // Directory icon
                 } else {
-                    " "  // File icon
+                    " " // File icon
                 };
 
                 let (icon_style, text_style, bg_color) = if is_selected {
                     (
                         Style::default()
-                            .fg(Color::Rgb(129, 250, 183))  // Bright green for icon
+                            .fg(Color::Rgb(129, 250, 183)) // Bright green for icon
                             .add_modifier(Modifier::BOLD),
                         Style::default()
-                            .fg(Color::Rgb(240, 240, 255))  // Bright text
-                            .bg(Color::Rgb(55, 65, 95))  // Highlighted background
+                            .fg(Color::Rgb(240, 240, 255)) // Bright text
+                            .bg(Color::Rgb(55, 65, 95)) // Highlighted background
                             .add_modifier(Modifier::BOLD),
                         Color::Rgb(55, 65, 95),
                     )
                 } else {
                     (
+                        Style::default().fg(Color::Rgb(120, 130, 160)), // Muted icon
                         Style::default()
-                            .fg(Color::Rgb(120, 130, 160)),  // Muted icon
-                        Style::default()
-                            .fg(Color::Rgb(180, 185, 200))  // Light gray text
+                            .fg(Color::Rgb(180, 185, 200)) // Light gray text
                             .bg(Color::Rgb(20, 24, 35)),
                         Color::Rgb(20, 24, 35),
                     )
@@ -1153,7 +1176,7 @@ impl Renderer {
                 Span::styled(
                     text,
                     Style::default()
-                        .fg(Color::Rgb(240, 120, 120))  // Soft red
+                        .fg(Color::Rgb(240, 120, 120)) // Soft red
                         .bg(Color::Rgb(20, 24, 35)),
                 ),
                 Span::styled(
@@ -1164,15 +1187,17 @@ impl Renderer {
         } else {
             // Add result count at the bottom if there's space
             if all_lines.len() < max_results {
-                let result_count = format!("  {} result{}",
+                let result_count = format!(
+                    "  {} result{}",
                     results.len(),
-                    if results.len() == 1 { "" } else { "s" });
+                    if results.len() == 1 { "" } else { "s" }
+                );
                 let padding = result_width.saturating_sub(result_count.len());
                 all_lines.push(Line::from(vec![
                     Span::styled(
                         result_count,
                         Style::default()
-                            .fg(Color::Rgb(100, 110, 140))  // Very muted
+                            .fg(Color::Rgb(100, 110, 140)) // Very muted
                             .bg(Color::Rgb(20, 24, 35))
                             .add_modifier(Modifier::ITALIC),
                     ),
@@ -1187,16 +1212,14 @@ impl Renderer {
         // Fill remaining lines with empty spans that have background color
         let lines_to_fill = max_results.saturating_sub(all_lines.len());
         for _ in 0..lines_to_fill {
-            all_lines.push(Line::from(vec![
-                Span::styled(
-                    " ".repeat(result_width),
-                    Style::default().bg(Color::Rgb(20, 24, 35)),
-                ),
-            ]));
+            all_lines.push(Line::from(vec![Span::styled(
+                " ".repeat(result_width),
+                Style::default().bg(Color::Rgb(20, 24, 35)),
+            )]));
         }
 
-        let results_paragraph = Paragraph::new(all_lines)
-            .style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        let results_paragraph =
+            Paragraph::new(all_lines).style(Style::default().bg(Color::Rgb(20, 24, 35)));
         frame.render_widget(results_paragraph, left_chunks[2]);
 
         // Get selected result (need to clone to release immutable borrow of picker)
@@ -1217,12 +1240,17 @@ impl Renderer {
     }
 
     /// Renders the file preview for the picker
-    fn render_picker_preview(frame: &mut Frame, editor: &mut crate::editor::Editor, result: &crate::editor::PickerResult, area: Rect) {
+    fn render_picker_preview(
+        frame: &mut Frame,
+        editor: &mut crate::editor::Editor,
+        result: &crate::editor::PickerResult,
+        area: Rect,
+    ) {
         // Add border around preview with enhanced styling
         let preview_block = Block::default()
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(Color::Rgb(60, 70, 100)))  // Subtle divider
-            .style(Style::default().bg(Color::Rgb(25, 29, 40)));  // Slightly different background
+            .border_style(Style::default().fg(Color::Rgb(60, 70, 100))) // Subtle divider
+            .style(Style::default().bg(Color::Rgb(25, 29, 40))); // Slightly different background
 
         let inner_area = preview_block.inner(area);
         frame.render_widget(preview_block, area);
@@ -1235,10 +1263,12 @@ impl Renderer {
                 // Not cached yet - show loading message
                 let loading_msg = " 󰦖  Loading preview...";
                 let paragraph = Paragraph::new(loading_msg)
-                    .style(Style::default()
-                        .fg(Color::Rgb(120, 130, 160))
-                        .bg(Color::Rgb(25, 29, 40))
-                        .add_modifier(Modifier::ITALIC))
+                    .style(
+                        Style::default()
+                            .fg(Color::Rgb(120, 130, 160))
+                            .bg(Color::Rgb(25, 29, 40))
+                            .add_modifier(Modifier::ITALIC),
+                    )
                     .alignment(ratatui::layout::Alignment::Center);
 
                 // Center vertically
@@ -1298,7 +1328,8 @@ impl Renderer {
                         let mut cache = preview.highlighted_lines.borrow_mut();
                         for line_idx in start_line..end_line {
                             if !cache.contains_key(&line_idx) {
-                                let highlights = highlighter.highlights_for_line(line_idx, &preview.content);
+                                let highlights =
+                                    highlighter.highlights_for_line(line_idx, &preview.content);
                                 cache.insert(line_idx, highlights);
                             }
                         }
@@ -1320,9 +1351,15 @@ impl Renderer {
                         let line_text = Self::truncate_to_width(&line_text, content_width);
 
                         // Get highlights from cache and remap for expanded tabs
-                        let original_highlights = preview.highlighted_lines.borrow().get(&line_idx).cloned().unwrap_or_default();
+                        let original_highlights = preview
+                            .highlighted_lines
+                            .borrow()
+                            .get(&line_idx)
+                            .cloned()
+                            .unwrap_or_default();
                         let highlights = Self::remap_highlights(&original_highlights, &tab_mapping);
-                        let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
+                        let is_target_line =
+                            result.line > 0 && result.line < total_lines && line_idx == result.line;
 
                         // Build the line with syntax highlighting
                         let mut spans = Vec::new();
@@ -1330,7 +1367,9 @@ impl Renderer {
                         // Add line number prefix
                         let line_num = format!("{:>4} │ ", line_idx + 1);
                         let line_num_style = if is_target_line {
-                            Style::default().fg(Color::Rgb(129, 250, 183)).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Rgb(129, 250, 183))
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().fg(Color::Rgb(100, 110, 140))
                         };
@@ -1352,7 +1391,8 @@ impl Renderer {
                         while col_idx < chars.len() {
                             // Find the syntax group for this character (convert to byte index)
                             let byte_idx = byte_indices[col_idx];
-                            let syntax_group = highlights.iter()
+                            let syntax_group = highlights
+                                .iter()
                                 .find(|(range, _)| range.contains(&byte_idx))
                                 .map(|(_, group)| *group);
 
@@ -1360,7 +1400,8 @@ impl Renderer {
                             let mut end_col = col_idx + 1;
                             while end_col < chars.len() {
                                 let next_byte_idx = byte_indices[end_col];
-                                let next_group = highlights.iter()
+                                let next_group = highlights
+                                    .iter()
                                     .find(|(range, _)| range.contains(&next_byte_idx))
                                     .map(|(_, group)| *group);
 
@@ -1392,7 +1433,12 @@ impl Renderer {
                 }
                 Err(_) => {
                     // Fall back to plain text
-                    Self::render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+                    Self::render_plain_preview(
+                        &preview.content,
+                        result,
+                        inner_area,
+                        &mut lines_to_render,
+                    );
                 }
             }
         } else {
@@ -1400,13 +1446,18 @@ impl Renderer {
             Self::render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
         }
 
-        let paragraph = Paragraph::new(lines_to_render)
-            .style(Style::default().bg(Color::Rgb(25, 29, 40)));
+        let paragraph =
+            Paragraph::new(lines_to_render).style(Style::default().bg(Color::Rgb(25, 29, 40)));
         frame.render_widget(paragraph, inner_area);
     }
 
     /// Renders plain text preview without syntax highlighting
-    fn render_plain_preview(content: &str, result: &crate::editor::PickerResult, area: Rect, lines: &mut Vec<Line<'static>>) {
+    fn render_plain_preview(
+        content: &str,
+        result: &crate::editor::PickerResult,
+        area: Rect,
+        lines: &mut Vec<Line<'static>>,
+    ) {
         let max_lines = area.height as usize;
         let total_lines = content.lines().count();
 
@@ -1435,11 +1486,14 @@ impl Renderer {
             let content_width = area.width.saturating_sub(7) as usize;
             let line_text = Self::truncate_to_width(&line_text, content_width);
 
-            let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
+            let is_target_line =
+                result.line > 0 && result.line < total_lines && line_idx == result.line;
 
             let line_num = format!("{:>4} │ ", line_idx + 1);
             let line_num_style = if is_target_line {
-                Style::default().fg(Color::Rgb(129, 250, 183)).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Rgb(129, 250, 183))
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Rgb(100, 110, 140))
             };
@@ -1462,8 +1516,8 @@ impl Renderer {
         // Add border around preview with enhanced styling
         let preview_block = Block::default()
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(Color::Rgb(60, 70, 100)))  // Subtle divider
-            .style(Style::default().bg(Color::Rgb(25, 29, 40)));  // Slightly different background
+            .border_style(Style::default().fg(Color::Rgb(60, 70, 100))) // Subtle divider
+            .style(Style::default().bg(Color::Rgb(25, 29, 40))); // Slightly different background
 
         let inner_area = preview_block.inner(area);
         frame.render_widget(preview_block, area);
@@ -1471,10 +1525,12 @@ impl Renderer {
         // Show centered empty state message
         let empty_msg = " 󰈈  No file selected";
         let paragraph = Paragraph::new(empty_msg)
-            .style(Style::default()
-                .fg(Color::Rgb(100, 110, 140))  // Muted color
-                .bg(Color::Rgb(25, 29, 40))
-                .add_modifier(Modifier::ITALIC))
+            .style(
+                Style::default()
+                    .fg(Color::Rgb(100, 110, 140)) // Muted color
+                    .bg(Color::Rgb(25, 29, 40))
+                    .add_modifier(Modifier::ITALIC),
+            )
             .alignment(ratatui::layout::Alignment::Center);
 
         // Center vertically
@@ -1511,61 +1567,26 @@ impl Renderer {
         let mut col_idx = 0;
         while col_idx < chars.len() {
             // Check if this character is in visual selection
-            let is_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
-                match mode {
-                    crate::mode::Mode::VisualBlock => {
-                        // Block mode: check if within the rectangular region
-                        line_idx >= sel_start_line && line_idx <= sel_end_line &&
-                        col_idx >= sel_start_col && col_idx <= sel_end_col
-                    }
-                    _ => {
-                        // Character-wise or line-wise visual mode
-                        if line_idx == sel_start_line && line_idx == sel_end_line {
-                            col_idx >= sel_start_col && col_idx <= sel_end_col
-                        } else if line_idx == sel_start_line {
-                            col_idx >= sel_start_col
-                        } else if line_idx == sel_end_line {
-                            col_idx <= sel_end_col
-                        } else if line_idx > sel_start_line && line_idx < sel_end_line {
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
-            } else {
-                false
-            };
-
-            // Check if this character is in a search match
-            let is_search_match = search_matches.iter().any(|(start, end)| {
-                col_idx >= *start && col_idx < *end
-            });
-
-            // Check if this character is in a syntax highlight (convert char index to byte index)
-            let byte_idx = byte_indices[col_idx];
-            let syntax_group = syntax_highlights.iter()
-                .find(|(range, _)| range.contains(&byte_idx))
-                .map(|(_, group)| *group);
-
-            // Determine how many characters share the same styling
-            let mut end_col = col_idx + 1;
-            while end_col < chars.len() {
-                let next_selected = if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) = visual_selection {
+            let is_selected =
+                if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
+                    visual_selection
+                {
                     match mode {
                         crate::mode::Mode::VisualBlock => {
                             // Block mode: check if within the rectangular region
-                            line_idx >= sel_start_line && line_idx <= sel_end_line &&
-                            end_col >= sel_start_col && end_col <= sel_end_col
+                            line_idx >= sel_start_line
+                                && line_idx <= sel_end_line
+                                && col_idx >= sel_start_col
+                                && col_idx <= sel_end_col
                         }
                         _ => {
                             // Character-wise or line-wise visual mode
                             if line_idx == sel_start_line && line_idx == sel_end_line {
-                                end_col >= sel_start_col && end_col <= sel_end_col
+                                col_idx >= sel_start_col && col_idx <= sel_end_col
                             } else if line_idx == sel_start_line {
-                                end_col >= sel_start_col
+                                col_idx >= sel_start_col
                             } else if line_idx == sel_end_line {
-                                end_col <= sel_end_col
+                                col_idx <= sel_end_col
                             } else if line_idx > sel_start_line && line_idx < sel_end_line {
                                 true
                             } else {
@@ -1577,20 +1598,68 @@ impl Renderer {
                     false
                 };
 
-                let next_search_match = search_matches.iter().any(|(start, end)| {
-                    end_col >= *start && end_col < *end
-                });
+            // Check if this character is in a search match
+            let is_search_match = search_matches
+                .iter()
+                .any(|(start, end)| col_idx >= *start && col_idx < *end);
+
+            // Check if this character is in a syntax highlight (convert char index to byte index)
+            let byte_idx = byte_indices[col_idx];
+            let syntax_group = syntax_highlights
+                .iter()
+                .find(|(range, _)| range.contains(&byte_idx))
+                .map(|(_, group)| *group);
+
+            // Determine how many characters share the same styling
+            let mut end_col = col_idx + 1;
+            while end_col < chars.len() {
+                let next_selected =
+                    if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
+                        visual_selection
+                    {
+                        match mode {
+                            crate::mode::Mode::VisualBlock => {
+                                // Block mode: check if within the rectangular region
+                                line_idx >= sel_start_line
+                                    && line_idx <= sel_end_line
+                                    && end_col >= sel_start_col
+                                    && end_col <= sel_end_col
+                            }
+                            _ => {
+                                // Character-wise or line-wise visual mode
+                                if line_idx == sel_start_line && line_idx == sel_end_line {
+                                    end_col >= sel_start_col && end_col <= sel_end_col
+                                } else if line_idx == sel_start_line {
+                                    end_col >= sel_start_col
+                                } else if line_idx == sel_end_line {
+                                    end_col <= sel_end_col
+                                } else if line_idx > sel_start_line && line_idx < sel_end_line {
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        }
+                    } else {
+                        false
+                    };
+
+                let next_search_match = search_matches
+                    .iter()
+                    .any(|(start, end)| end_col >= *start && end_col < *end);
 
                 // Convert char index to byte index for syntax highlight lookup
                 let next_byte_idx = byte_indices[end_col];
-                let next_syntax_group = syntax_highlights.iter()
+                let next_syntax_group = syntax_highlights
+                    .iter()
                     .find(|(range, _)| range.contains(&next_byte_idx))
                     .map(|(_, group)| *group);
 
                 // If styling changes, break
                 if next_selected != is_selected
                     || next_search_match != is_search_match
-                    || next_syntax_group != syntax_group {
+                    || next_syntax_group != syntax_group
+                {
                     break;
                 }
 

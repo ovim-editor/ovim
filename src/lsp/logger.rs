@@ -36,7 +36,10 @@ fn get_log_path() -> PathBuf {
     if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
         PathBuf::from(cache_dir).join("ovim").join("lsp.log")
     } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".cache").join("ovim").join("lsp.log")
+        PathBuf::from(home)
+            .join(".cache")
+            .join("ovim")
+            .join("lsp.log")
     } else {
         PathBuf::from("/tmp").join("ovim-lsp.log")
     }
@@ -70,7 +73,13 @@ pub fn log_message(level: LogLevel, context: &str, message: &str) {
     }
 
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let log_line = format!("[{}] [{}] [{}] {}\n", timestamp, level.as_str(), context, message);
+    let log_line = format!(
+        "[{}] [{}] [{}] {}\n",
+        timestamp,
+        level.as_str(),
+        context,
+        message
+    );
 
     if let Ok(mut log_file) = LSP_LOG_FILE.lock() {
         if let Some(ref mut file) = *log_file {
