@@ -3,6 +3,7 @@ mod completion;
 mod filetree;
 mod fold;
 mod input;
+mod lsp_state;
 mod macros;
 mod marks;
 mod motions;
@@ -21,6 +22,7 @@ pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
+pub use lsp_state::{LspAction, LspResultType, LspState};
 pub use macros::MacroManager;
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager};
 pub use motions::Motions;
@@ -73,16 +75,30 @@ use crate::syntax::{ColorScheme, ColorSchemeRegistry};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 
-/// Type of LSP result currently being displayed in picker
-#[derive(Debug, Clone, PartialEq)]
-enum LspResultType {
-    References,
-    DocumentSymbols,
-    WorkspaceSymbols,
-    CallHierarchy,
-    TypeHierarchy,
+/// Commands sent from background tasks to the LSP manager via channel
+#[derive(Debug)]
+pub enum LspCommand {
+    /// Start a language server
+    StartServer {
+        language: String,
+        command: String,
+        args: Vec<String>,
+        root_path: std::path::PathBuf,
+        response_tx: tokio::sync::oneshot::Sender<Result<()>>,
+    },
+    /// Send didOpen notification
+    DidOpen {
+        uri: lsp_types::Url,
+        language_id: String,
+        version: i32,
+        text: String,
+        response_tx: tokio::sync::oneshot::Sender<Result<()>>,
+    },
+    /// Start notification listener
+    StartNotificationListener { language_id: String },
 }
 
 /// The main editor state
@@ -139,30 +155,12 @@ pub struct Editor {
     leader_key: char,
     /// Waiting for leader sequence (e.g., after pressing space)
     pending_leader: bool,
-    /// LSP manager (optional, only if LSP is enabled)
-    lsp_manager: Option<Arc<TokioMutex<LspManager>>>,
-    /// Cached diagnostic count (errors, warnings, info, hints) for status line display
-    diagnostic_count: (usize, usize, usize, usize),
-    /// Pending LSP action to execute in async context
-    pending_lsp_action: Option<LspAction>,
-    /// Hover information to display (from LSP)
-    hover_info: Option<String>,
-    /// Scroll offset for hover window (line number)
-    hover_scroll: usize,
-    /// Flag to track if buffer was modified this iteration (for LSP didChange)
-    buffer_modified_this_iteration: bool,
-    /// Flag to track if buffer was saved this iteration (for LSP didSave)
-    buffer_saved_this_iteration: bool,
-    /// Last synced buffer content for incremental LSP sync (None = use full sync)
-    last_synced_content: Option<String>,
-    /// LSP status message (errors, warnings, or info)
-    lsp_status: String,
-    /// Active LSP servers (language_id -> server_name)
-    active_lsp_servers: HashMap<String, String>,
-    /// Flag to indicate LSP needs initialization for current file
-    needs_lsp_init: bool,
-    /// File path that needs didClose notification (set when switching files)
-    pending_did_close_file: Option<String>,
+    /// LSP-related state
+    lsp_state: LspState,
+    /// Channel sender for LSP commands from background tasks
+    lsp_command_tx: Option<mpsc::UnboundedSender<LspCommand>>,
+    /// Channel receiver for LSP commands from background tasks
+    lsp_command_rx: Option<mpsc::UnboundedReceiver<LspCommand>>,
     /// Lua context for configuration and plugins (optional)
     #[cfg(feature = "lua")]
     lua_context: Option<LuaContext>,
@@ -171,26 +169,8 @@ pub struct Editor {
     editor_bridge: Option<crate::lua::EditorBridge>,
     /// Last insert position (line, col) for gi command
     last_insert_position: Option<(usize, usize)>,
-    /// Available code actions at current cursor position
-    available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
-    /// Available completion items at current cursor position
-    available_completions: Vec<lsp_types::CompletionItem>,
     /// Completion menu popup
     completion_menu: CompletionMenu,
-    /// Available LSP references at current cursor position
-    available_references: Vec<lsp_types::Location>,
-    /// Available document symbols for current file
-    available_document_symbols: Vec<lsp_types::DocumentSymbol>,
-    /// Available workspace symbols
-    available_workspace_symbols: Vec<lsp_types::SymbolInformation>,
-    /// Available call hierarchy items (incoming or outgoing)
-    available_call_hierarchy: Vec<(String, lsp_types::Location)>,
-    /// Available type hierarchy items (supertypes and subtypes)
-    available_type_hierarchy: Vec<(String, lsp_types::Location)>,
-    /// Inlay hints for the visible region
-    inlay_hints: Vec<lsp_types::InlayHint>,
-    /// Currently active LSP result type (for picker navigation)
-    active_lsp_result_type: Option<LspResultType>,
     /// Preview cache for picker (file_path -> (content, syntax highlights))
     preview_cache: HashMap<String, PreviewCache>,
     /// Color scheme registry
@@ -233,25 +213,6 @@ pub struct PreviewCache {
     >,
     /// Detected language (if any)
     pub language: Option<crate::syntax::Language>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LspAction {
-    GoToDefinition,
-    GoToImplementation,
-    GoToType,
-    ShowHover,
-    Completion,
-    FormatDocument,
-    CodeActions,
-    TypeHierarchy,
-    CallHierarchyIncoming,
-    CallHierarchyOutgoing,
-    FindReferences,
-    DocumentSymbols,
-    WorkspaceSymbols,
-    OrganizeImports,
-    Rename(String), // New name for the symbol
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -297,33 +258,15 @@ impl Editor {
             picker: None,
             leader_key: ' ',
             pending_leader: false,
-            lsp_manager: None,
-            diagnostic_count: (0, 0, 0, 0),
-            pending_lsp_action: None,
-            hover_info: None,
-            hover_scroll: 0,
-            buffer_modified_this_iteration: false,
-            buffer_saved_this_iteration: false,
-            last_synced_content: None,
-            lsp_status: String::new(),
-            active_lsp_servers: HashMap::new(),
-            needs_lsp_init: false,
-            pending_did_close_file: None,
+            lsp_state: LspState::new(),
+            lsp_command_tx: None,
+            lsp_command_rx: None,
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
             editor_bridge: None,
             last_insert_position: None,
-            available_code_actions: Vec::new(),
-            available_completions: Vec::new(),
             completion_menu: CompletionMenu::new(),
-            available_references: Vec::new(),
-            available_document_symbols: Vec::new(),
-            available_workspace_symbols: Vec::new(),
-            available_call_hierarchy: Vec::new(),
-            available_type_hierarchy: Vec::new(),
-            inlay_hints: Vec::new(),
-            active_lsp_result_type: None,
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
@@ -371,33 +314,15 @@ impl Editor {
             picker: None,
             leader_key: ' ',
             pending_leader: false,
-            lsp_manager: None,
-            diagnostic_count: (0, 0, 0, 0),
-            pending_lsp_action: None,
-            hover_info: None,
-            hover_scroll: 0,
-            buffer_modified_this_iteration: false,
-            buffer_saved_this_iteration: false,
-            last_synced_content: None,
-            lsp_status: String::new(),
-            active_lsp_servers: HashMap::new(),
-            needs_lsp_init: false,
-            pending_did_close_file: None,
+            lsp_state: LspState::new(),
+            lsp_command_tx: None,
+            lsp_command_rx: None,
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
             editor_bridge: None,
             last_insert_position: None,
-            available_code_actions: Vec::new(),
-            available_completions: Vec::new(),
             completion_menu: CompletionMenu::new(),
-            available_references: Vec::new(),
-            available_document_symbols: Vec::new(),
-            available_workspace_symbols: Vec::new(),
-            available_call_hierarchy: Vec::new(),
-            available_type_hierarchy: Vec::new(),
-            inlay_hints: Vec::new(),
-            active_lsp_result_type: None,
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
@@ -417,12 +342,20 @@ impl Editor {
 
     /// Enables LSP support
     pub fn enable_lsp(&mut self) {
-        self.lsp_manager = Some(Arc::new(TokioMutex::new(LspManager::new())));
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.lsp_state.lsp_manager = Some(Arc::new(TokioMutex::new(LspManager::new())));
+        self.lsp_command_tx = Some(tx);
+        self.lsp_command_rx = Some(rx);
     }
 
     /// Gets a reference to the LSP manager
     pub fn lsp_manager(&self) -> Option<Arc<TokioMutex<LspManager>>> {
-        self.lsp_manager.clone()
+        self.lsp_state.lsp_manager.clone()
+    }
+
+    /// Gets a reference to the LSP command sender for background tasks
+    pub fn lsp_command_sender(&self) -> Option<mpsc::UnboundedSender<LspCommand>> {
+        self.lsp_command_tx.clone()
     }
 
     /// Enables Lua support
@@ -1013,13 +946,13 @@ impl Editor {
             }
 
             self.current_buffer_index = index;
-            self.needs_lsp_init = true;
+            self.lsp_state.needs_lsp_init = true;
 
             // Clear buffer-local marks (a-z) when switching files
             self.marks.clear();
 
             // Reset LSP sync state for new buffer
-            self.last_synced_content = None;
+            self.lsp_state.last_synced_content = None;
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
@@ -1040,13 +973,13 @@ impl Editor {
             }
 
             self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
-            self.needs_lsp_init = true;
+            self.lsp_state.needs_lsp_init = true;
 
             // Clear buffer-local marks (a-z) when switching files
             self.marks.clear();
 
             // Reset LSP sync state for new buffer
-            self.last_synced_content = None;
+            self.lsp_state.last_synced_content = None;
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
@@ -1071,13 +1004,13 @@ impl Editor {
             } else {
                 self.current_buffer_index - 1
             };
-            self.needs_lsp_init = true;
+            self.lsp_state.needs_lsp_init = true;
 
             // Clear buffer-local marks (a-z) when switching files
             self.marks.clear();
 
             // Reset LSP sync state for new buffer
-            self.last_synced_content = None;
+            self.lsp_state.last_synced_content = None;
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
@@ -1105,7 +1038,7 @@ impl Editor {
             self.current_buffer_index = self.buffers.len() - 1;
         }
 
-        self.needs_lsp_init = true;
+        self.lsp_state.needs_lsp_init = true;
         false
     }
 
@@ -1113,7 +1046,7 @@ impl Editor {
     pub fn add_buffer(&mut self, buffer: Buffer) {
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
-        self.needs_lsp_init = true;
+        self.lsp_state.needs_lsp_init = true;
     }
 
     /// Finds the index of a buffer with the given file path
@@ -1220,7 +1153,7 @@ impl Editor {
 
     /// Sends didClose notification for current file (called on shutdown)
     pub async fn close_current_file_lsp(&mut self) {
-        let Some(ref lsp) = self.lsp_manager else {
+        let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
         };
 
@@ -1516,7 +1449,7 @@ impl Editor {
 
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {
-            self.pending_did_close_file = old_file_path;
+            self.lsp_state.pending_did_close_file = old_file_path;
         }
 
         Ok(())
@@ -1531,7 +1464,7 @@ impl Editor {
 
     /// Checks if LSP initialization is needed and returns the file path
     pub fn needs_lsp_init(&self) -> Option<String> {
-        if self.needs_lsp_init {
+        if self.lsp_state.needs_lsp_init {
             self.buffer().file_path().map(|s| s.to_string())
         } else {
             None
@@ -1540,12 +1473,12 @@ impl Editor {
 
     /// Clears the LSP init flag (should be called after initializing LSP)
     pub fn clear_lsp_init_flag(&mut self) {
-        self.needs_lsp_init = false;
+        self.lsp_state.needs_lsp_init = false;
     }
 
     /// Requests LSP initialization for the current buffer
     pub fn request_lsp_init(&mut self) {
-        self.needs_lsp_init = true;
+        self.lsp_state.needs_lsp_init = true;
     }
 
     /// Starts building a composite change (e.g., when entering insert mode)
@@ -1850,7 +1783,7 @@ impl Editor {
     /// Gets diagnostics for the current file (async helper for UI)
     /// Returns None if LSP is not enabled or file has no URI
     pub async fn get_current_file_diagnostics(&self) -> Option<Vec<lsp_types::Diagnostic>> {
-        let lsp = self.lsp_manager.as_ref()?;
+        let lsp = self.lsp_state.lsp_manager.as_ref()?;
         let file_path = self.buffer().file_path()?;
         let uri = lsp_types::Url::from_file_path(file_path).ok()?;
 
@@ -1861,7 +1794,7 @@ impl Editor {
 
     /// Gets diagnostic count for the current file (errors, warnings, info, hints)
     pub async fn get_diagnostic_count(&self) -> (usize, usize, usize, usize) {
-        if let Some(lsp) = &self.lsp_manager {
+        if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
                     // Try to get lock without blocking - return (0,0,0,0) if busy
@@ -1876,57 +1809,57 @@ impl Editor {
 
     /// Updates the cached diagnostic count (should be called when diagnostics change)
     pub async fn update_diagnostic_cache(&mut self) {
-        self.diagnostic_count = self.get_diagnostic_count().await;
+        self.lsp_state.diagnostic_count = self.get_diagnostic_count().await;
     }
 
     /// Gets the cached diagnostic count (sync, suitable for UI rendering)
     pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
-        self.diagnostic_count
+        self.lsp_state.diagnostic_count
     }
 
     /// Sets the LSP status message
     pub fn set_lsp_status(&mut self, status: String) {
-        self.lsp_status = status;
+        self.lsp_state.lsp_status = status;
     }
 
     /// Gets the LSP status message
     pub fn lsp_status(&self) -> &str {
-        &self.lsp_status
+        &self.lsp_state.lsp_status
     }
 
     /// Registers an active LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
-        self.lsp_status = format!("LSP: {} ready", server_name);
-        self.active_lsp_servers.insert(language_id, server_name);
+        self.lsp_state.lsp_status = format!("LSP: {} ready", server_name);
+        self.lsp_state.active_lsp_servers.insert(language_id, server_name);
     }
 
     /// Unregisters an LSP server
     pub fn unregister_lsp_server(&mut self, language_id: &str) {
-        self.active_lsp_servers.remove(language_id);
-        if self.active_lsp_servers.is_empty() {
-            self.lsp_status.clear();
+        self.lsp_state.active_lsp_servers.remove(language_id);
+        if self.lsp_state.active_lsp_servers.is_empty() {
+            self.lsp_state.lsp_status.clear();
         }
     }
 
     /// Clears LSP UI state (hover, completions, code actions)
     /// Should be called when switching buffers or when state becomes stale
     fn clear_lsp_state(&mut self) {
-        self.hover_info = None;
-        self.hover_scroll = 0;
-        self.available_code_actions.clear();
-        self.available_completions.clear();
-        self.pending_lsp_action = None;
+        self.lsp_state.hover_info = None;
+        self.lsp_state.hover_scroll = 0;
+        self.lsp_state.available_code_actions.clear();
+        self.lsp_state.available_completions.clear();
+        self.lsp_state.pending_lsp_action = None;
         // Don't clear lsp_status - it's useful to keep for user feedback
     }
 
     /// Gets active LSP servers
     pub fn active_lsp_servers(&self) -> &HashMap<String, String> {
-        &self.active_lsp_servers
+        &self.lsp_state.active_lsp_servers
     }
 
     /// Gets current LSP progress message
     pub fn lsp_progress_message(&self) -> Option<String> {
-        if let Some(lsp_manager) = &self.lsp_manager {
+        if let Some(lsp_manager) = &self.lsp_state.lsp_manager {
             if let Ok(lsp) = lsp_manager.try_lock() {
                 return lsp.get_progress_message();
             }
@@ -1939,7 +1872,7 @@ impl Editor {
         let mut info = String::new();
 
         // LSP Manager status
-        if self.lsp_manager.is_some() {
+        if self.lsp_state.lsp_manager.is_some() {
             info.push_str("LSP Manager: Active\n");
         } else {
             info.push_str("LSP Manager: Not initialized\n");
@@ -1947,11 +1880,11 @@ impl Editor {
         }
 
         // Active servers
-        if self.active_lsp_servers.is_empty() {
+        if self.lsp_state.active_lsp_servers.is_empty() {
             info.push_str("\nActive Servers: None\n");
         } else {
             info.push_str("\nActive Servers:\n");
-            for (lang_id, server_name) in &self.active_lsp_servers {
+            for (lang_id, server_name) in &self.lsp_state.active_lsp_servers {
                 info.push_str(&format!("  {} -> {}\n", lang_id, server_name));
             }
         }
@@ -1962,7 +1895,7 @@ impl Editor {
         }
 
         // Diagnostic counts
-        let (errors, warnings, infos, hints) = self.diagnostic_count;
+        let (errors, warnings, infos, hints) = self.lsp_state.diagnostic_count;
         info.push_str(&format!("\nDiagnostics:\n"));
         info.push_str(&format!("  Errors: {}\n", errors));
         info.push_str(&format!("  Warnings: {}\n", warnings));
@@ -1970,8 +1903,8 @@ impl Editor {
         info.push_str(&format!("  Hints: {}\n", hints));
 
         // Current status
-        if !self.lsp_status.is_empty() {
-            info.push_str(&format!("\nStatus: {}\n", self.lsp_status));
+        if !self.lsp_state.lsp_status.is_empty() {
+            info.push_str(&format!("\nStatus: {}\n", self.lsp_state.lsp_status));
         }
 
         info
@@ -2010,129 +1943,129 @@ impl Editor {
 
     /// Request go to definition (sets pending action)
     pub fn request_goto_definition(&mut self) {
-        self.pending_lsp_action = Some(LspAction::GoToDefinition);
+        self.lsp_state.pending_lsp_action = Some(LspAction::GoToDefinition);
     }
 
     /// Request go to implementation (sets pending action)
     pub fn request_goto_implementation(&mut self) {
-        self.pending_lsp_action = Some(LspAction::GoToImplementation);
+        self.lsp_state.pending_lsp_action = Some(LspAction::GoToImplementation);
     }
 
     /// Request go to type definition (sets pending action)
     pub fn request_goto_type(&mut self) {
-        self.pending_lsp_action = Some(LspAction::GoToType);
+        self.lsp_state.pending_lsp_action = Some(LspAction::GoToType);
     }
 
     /// Requests hover information for current cursor position
     pub fn request_hover(&mut self) {
-        self.pending_lsp_action = Some(LspAction::ShowHover);
+        self.lsp_state.pending_lsp_action = Some(LspAction::ShowHover);
     }
 
     /// Requests code completion for current cursor position
     pub fn request_completion(&mut self) {
-        self.pending_lsp_action = Some(LspAction::Completion);
+        self.lsp_state.pending_lsp_action = Some(LspAction::Completion);
     }
 
     /// Requests document formatting
     pub fn request_format_document(&mut self) {
-        self.pending_lsp_action = Some(LspAction::FormatDocument);
+        self.lsp_state.pending_lsp_action = Some(LspAction::FormatDocument);
     }
 
     /// Requests code actions for current cursor position
     pub fn request_code_actions(&mut self) {
-        self.pending_lsp_action = Some(LspAction::CodeActions);
+        self.lsp_state.pending_lsp_action = Some(LspAction::CodeActions);
     }
 
     /// Requests call hierarchy incoming calls (who calls this method)
     pub fn request_call_hierarchy_incoming(&mut self) {
-        self.pending_lsp_action = Some(LspAction::CallHierarchyIncoming);
+        self.lsp_state.pending_lsp_action = Some(LspAction::CallHierarchyIncoming);
     }
 
     /// Requests call hierarchy outgoing calls (what this method calls)
     pub fn request_call_hierarchy_outgoing(&mut self) {
-        self.pending_lsp_action = Some(LspAction::CallHierarchyOutgoing);
+        self.lsp_state.pending_lsp_action = Some(LspAction::CallHierarchyOutgoing);
     }
 
     /// Requests type hierarchy (superclasses/interfaces and subclasses/implementations)
     pub fn request_type_hierarchy(&mut self) {
-        self.pending_lsp_action = Some(LspAction::TypeHierarchy);
+        self.lsp_state.pending_lsp_action = Some(LspAction::TypeHierarchy);
     }
 
     /// Requests organize imports command for Java
     pub fn request_organize_imports(&mut self) {
-        self.pending_lsp_action = Some(LspAction::OrganizeImports);
+        self.lsp_state.pending_lsp_action = Some(LspAction::OrganizeImports);
     }
 
     /// Requests find all references to symbol at cursor
     pub fn request_find_references(&mut self) {
-        self.pending_lsp_action = Some(LspAction::FindReferences);
+        self.lsp_state.pending_lsp_action = Some(LspAction::FindReferences);
     }
 
     /// Requests document symbols (outline)
     pub fn request_document_symbols(&mut self) {
-        self.pending_lsp_action = Some(LspAction::DocumentSymbols);
+        self.lsp_state.pending_lsp_action = Some(LspAction::DocumentSymbols);
     }
 
     /// Requests workspace-wide symbol search
     pub fn request_workspace_symbols(&mut self) {
-        self.pending_lsp_action = Some(LspAction::WorkspaceSymbols);
+        self.lsp_state.pending_lsp_action = Some(LspAction::WorkspaceSymbols);
     }
 
     /// Requests to rename the symbol at cursor
     pub fn request_rename(&mut self, new_name: String) {
-        self.pending_lsp_action = Some(LspAction::Rename(new_name));
+        self.lsp_state.pending_lsp_action = Some(LspAction::Rename(new_name));
     }
 
     /// Gets the current hover information (if any)
     pub fn hover_info(&self) -> Option<&str> {
-        self.hover_info.as_deref()
+        self.lsp_state.hover_info.as_deref()
     }
 
     /// Clears the hover information
     pub fn clear_hover(&mut self) {
-        self.hover_info = None;
-        self.hover_scroll = 0;
+        self.lsp_state.hover_info = None;
+        self.lsp_state.hover_scroll = 0;
     }
 
     /// Gets the hover scroll offset
     pub fn hover_scroll(&self) -> usize {
-        self.hover_scroll
+        self.lsp_state.hover_scroll
     }
 
     /// Scrolls the hover window down
     pub fn scroll_hover_down(&mut self, lines: usize) {
-        if self.hover_info.is_some() {
-            self.hover_scroll = self.hover_scroll.saturating_add(lines);
+        if self.lsp_state.hover_info.is_some() {
+            self.lsp_state.hover_scroll = self.lsp_state.hover_scroll.saturating_add(lines);
         }
     }
 
     /// Scrolls the hover window up
     pub fn scroll_hover_up(&mut self, lines: usize) {
-        self.hover_scroll = self.hover_scroll.saturating_sub(lines);
+        self.lsp_state.hover_scroll = self.lsp_state.hover_scroll.saturating_sub(lines);
     }
 
     /// Marks that the buffer was modified (for LSP notification)
     pub fn mark_buffer_modified(&mut self) {
-        self.buffer_modified_this_iteration = true;
+        self.lsp_state.buffer_modified_this_iteration = true;
     }
 
     /// Marks that the buffer was saved (for LSP notification)
     pub fn mark_buffer_saved(&mut self) {
-        self.buffer_saved_this_iteration = true;
+        self.lsp_state.buffer_saved_this_iteration = true;
     }
 
     /// Sets the last synced content for incremental LSP sync
     pub fn set_last_synced_content(&mut self, content: Option<String>) {
-        self.last_synced_content = content;
+        self.lsp_state.last_synced_content = content;
     }
 
     /// Sends didChange notification if buffer was modified, then resets the flag
     pub async fn send_lsp_changes_if_modified(&mut self) {
-        if !self.buffer_modified_this_iteration {
+        if !self.lsp_state.buffer_modified_this_iteration {
             return;
         }
 
-        let Some(ref lsp) = self.lsp_manager else {
+        let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
         };
 
@@ -2159,7 +2092,7 @@ impl Editor {
         let content = self.buffer().rope().to_string();
 
         // Pass last_synced_content for incremental sync
-        let old_content = self.last_synced_content.clone();
+        let old_content = self.lsp_state.last_synced_content.clone();
 
         // Try to get lock without blocking - if LSP is busy, retry next iteration
         let Ok(lsp_guard) = lsp.try_lock() else {
@@ -2171,15 +2104,15 @@ impl Editor {
             .await;
         drop(lsp_guard);
 
-        self.buffer_modified_this_iteration = false;
+        self.lsp_state.buffer_modified_this_iteration = false;
 
         match result {
             Ok(_) => {
-                self.last_synced_content = Some(content);
+                self.lsp_state.last_synced_content = Some(content);
             }
             Err(e) => {
                 // Restore flag so we retry the sync
-                self.buffer_modified_this_iteration = true;
+                self.lsp_state.buffer_modified_this_iteration = true;
                 self.set_lsp_status(format!("LSP: didChange failed: {}", e));
             }
         }
@@ -2187,11 +2120,11 @@ impl Editor {
 
     /// Sends didSave notification if buffer was saved, then resets the flag
     pub async fn send_lsp_save_if_needed(&mut self) {
-        if !self.buffer_saved_this_iteration {
+        if !self.lsp_state.buffer_saved_this_iteration {
             return;
         }
 
-        let Some(ref lsp) = self.lsp_manager else {
+        let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
         };
 
@@ -2224,22 +2157,22 @@ impl Editor {
         let result = lsp_guard.did_save(uri, language_id, text).await;
         drop(lsp_guard);
 
-        self.buffer_saved_this_iteration = false;
+        self.lsp_state.buffer_saved_this_iteration = false;
 
         if let Err(e) = result {
             // Restore flag so we retry and surface error
-            self.buffer_saved_this_iteration = true;
+            self.lsp_state.buffer_saved_this_iteration = true;
             self.set_lsp_status(format!("LSP: didSave failed: {}", e));
         }
     }
 
     /// Sends didClose notification for pending file (when switching files)
     pub async fn send_lsp_close_if_needed(&mut self) {
-        let Some(file_path) = self.pending_did_close_file.take() else {
+        let Some(file_path) = self.lsp_state.pending_did_close_file.take() else {
             return;
         };
 
-        let Some(ref lsp) = self.lsp_manager else {
+        let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
         };
 
@@ -2262,7 +2195,7 @@ impl Editor {
 
         // Try to get lock without blocking - if LSP is busy, put it back for retry
         let Ok(lsp_guard) = lsp.try_lock() else {
-            self.pending_did_close_file = Some(file_path);
+            self.lsp_state.pending_did_close_file = Some(file_path);
             return;
         };
 
@@ -2271,7 +2204,7 @@ impl Editor {
 
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
-        if let Some(action) = self.pending_lsp_action.take() {
+        if let Some(action) = self.lsp_state.pending_lsp_action.take() {
             let result = match &action {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
@@ -2303,7 +2236,7 @@ impl Editor {
 
                     if should_retry {
                         // Retry silently - put action back
-                        self.pending_lsp_action = Some(action);
+                        self.lsp_state.pending_lsp_action = Some(action);
                     } else {
                         // Permanent error - update status to show the error
                         let action_name = match &action {
@@ -2382,7 +2315,7 @@ impl Editor {
     /// Go to definition at current cursor position via LSP (implementation)
     async fn goto_definition_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -2505,7 +2438,7 @@ impl Editor {
     /// Go to implementation at current cursor position via LSP (implementation)
     async fn goto_implementation_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -2628,7 +2561,7 @@ impl Editor {
     /// Go to type definition at current cursor position via LSP (implementation)
     async fn goto_type_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -2751,7 +2684,7 @@ impl Editor {
     /// Find all references to symbol at current cursor position (implementation)
     async fn find_references_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -2819,8 +2752,8 @@ impl Editor {
         }
 
         // Store locations in storage vector
-        self.available_references = locations.clone();
-        self.active_lsp_result_type = Some(LspResultType::References);
+        self.lsp_state.available_references = locations.clone();
+        self.lsp_state.active_lsp_result_type = Some(LspResultType::References);
 
         // Format locations as picker items
         let items: Vec<String> = locations
@@ -2852,7 +2785,7 @@ impl Editor {
     /// Show document symbols (outline) (implementation)
     async fn document_symbols_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -2913,8 +2846,8 @@ impl Editor {
         }
 
         // Store symbols in storage vector
-        self.available_document_symbols = symbols.clone();
-        self.active_lsp_result_type = Some(LspResultType::DocumentSymbols);
+        self.lsp_state.available_document_symbols = symbols.clone();
+        self.lsp_state.active_lsp_result_type = Some(LspResultType::DocumentSymbols);
 
         // Format symbols as picker items
         let items: Vec<String> = symbols
@@ -2939,7 +2872,7 @@ impl Editor {
     /// Search workspace symbols (implementation)
     async fn workspace_symbols_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -2986,8 +2919,8 @@ impl Editor {
         }
 
         // Store symbols in storage vector
-        self.available_workspace_symbols = symbols.clone();
-        self.active_lsp_result_type = Some(LspResultType::WorkspaceSymbols);
+        self.lsp_state.available_workspace_symbols = symbols.clone();
+        self.lsp_state.active_lsp_result_type = Some(LspResultType::WorkspaceSymbols);
 
         // Format symbols as picker items
         let items: Vec<String> = symbols
@@ -3019,7 +2952,7 @@ impl Editor {
     /// Show incoming call hierarchy (implementation)
     async fn call_hierarchy_incoming_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3103,7 +3036,7 @@ impl Editor {
         };
 
         // Store call hierarchy data in storage vector
-        self.available_call_hierarchy = calls
+        self.lsp_state.available_call_hierarchy = calls
             .iter()
             .map(|call| {
                 let name = call.from.name.clone();
@@ -3114,7 +3047,7 @@ impl Editor {
                 (name, location)
             })
             .collect();
-        self.active_lsp_result_type = Some(LspResultType::CallHierarchy);
+        self.lsp_state.active_lsp_result_type = Some(LspResultType::CallHierarchy);
 
         // Format calls as picker items
         let items: Vec<String> = calls
@@ -3147,7 +3080,7 @@ impl Editor {
     /// Show outgoing call hierarchy (implementation)
     async fn call_hierarchy_outgoing_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3231,7 +3164,7 @@ impl Editor {
         };
 
         // Store call hierarchy data in storage vector
-        self.available_call_hierarchy = calls
+        self.lsp_state.available_call_hierarchy = calls
             .iter()
             .map(|call| {
                 let name = call.to.name.clone();
@@ -3242,7 +3175,7 @@ impl Editor {
                 (name, location)
             })
             .collect();
-        self.active_lsp_result_type = Some(LspResultType::CallHierarchy);
+        self.lsp_state.active_lsp_result_type = Some(LspResultType::CallHierarchy);
 
         // Format calls as picker items
         let items: Vec<String> = calls
@@ -3275,7 +3208,7 @@ impl Editor {
     /// Show type hierarchy (implementation)
     async fn type_hierarchy_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3400,8 +3333,8 @@ impl Editor {
         }
 
         // Store type hierarchy data in storage vector
-        self.available_type_hierarchy = all_types_data;
-        self.active_lsp_result_type = Some(LspResultType::TypeHierarchy);
+        self.lsp_state.available_type_hierarchy = all_types_data;
+        self.lsp_state.active_lsp_result_type = Some(LspResultType::TypeHierarchy);
 
         self.set_lsp_status(format!(
             "Found {} types in hierarchy",
@@ -3420,7 +3353,7 @@ impl Editor {
     /// Gets hover information at current cursor position via LSP (implementation)
     async fn hover_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3489,10 +3422,10 @@ impl Editor {
         drop(lsp_guard);
 
         // Store hover information and enter HoverWindow mode if available
-        self.hover_info = hover_text;
-        self.hover_scroll = 0; // Reset scroll position
+        self.lsp_state.hover_info = hover_text;
+        self.lsp_state.hover_scroll = 0; // Reset scroll position
 
-        if self.hover_info.is_some() {
+        if self.lsp_state.hover_info.is_some() {
             self.set_mode(Mode::HoverWindow);
             self.set_lsp_status("Hover window opened (q to close, j/k to scroll)".to_string());
             Ok(true)
@@ -3506,7 +3439,7 @@ impl Editor {
     /// Requests code completion at current cursor position via LSP (implementation)
     async fn completion_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3574,7 +3507,7 @@ impl Editor {
         }
 
         // Store completion items
-        self.available_completions = items.clone();
+        self.lsp_state.available_completions = items.clone();
 
         // Get the current word prefix for filtering
         let cursor_line = self.buffer().cursor().line();
@@ -3609,7 +3542,7 @@ impl Editor {
     /// Formats the current document via LSP (implementation)
     async fn format_document_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3680,7 +3613,7 @@ impl Editor {
     /// Gets code actions at current cursor position via LSP (implementation)
     async fn code_actions_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -3749,7 +3682,7 @@ impl Editor {
         }
 
         // Store actions and create picker
-        self.available_code_actions = actions.clone();
+        self.lsp_state.available_code_actions = actions.clone();
 
         // Extract action titles for picker
         let items: Vec<String> = actions
@@ -3808,12 +3741,12 @@ impl Editor {
     /// Applies a selected code action from the picker
     pub fn apply_code_action(&mut self, action_index: usize) {
         // Check if we have actions and the index is valid
-        if action_index >= self.available_code_actions.len() {
+        if action_index >= self.lsp_state.available_code_actions.len() {
             self.set_lsp_status("Invalid code action selection".to_string());
             return;
         }
 
-        let action = self.available_code_actions[action_index].clone();
+        let action = self.lsp_state.available_code_actions[action_index].clone();
 
         match action {
             lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
@@ -3983,7 +3916,7 @@ impl Editor {
                 };
 
                 // Execute command asynchronously
-                if let Some(lsp) = self.lsp_manager.clone() {
+                if let Some(lsp) = self.lsp_state.lsp_manager.clone() {
                     self.set_lsp_status(format!("Executing: {}", command_title));
 
                     tokio::spawn(async move {
@@ -4001,19 +3934,19 @@ impl Editor {
         }
 
         // Clear available actions after applying
-        self.available_code_actions.clear();
+        self.lsp_state.available_code_actions.clear();
     }
 
     /// Applies the selected completion item
     pub fn apply_completion(&mut self, completion_index: usize) {
         // Check if we have completions and the index is valid
-        if completion_index >= self.available_completions.len() {
+        if completion_index >= self.lsp_state.available_completions.len() {
             self.set_lsp_status("Invalid completion selection".to_string());
             return;
         }
 
         // Clone the completion data we need before mutable borrow
-        let completion = self.available_completions[completion_index].clone();
+        let completion = self.lsp_state.available_completions[completion_index].clone();
         let insert_text = completion
             .insert_text
             .as_ref()
@@ -4042,13 +3975,13 @@ impl Editor {
         self.set_lsp_status(format!("Inserted: {}", label));
 
         // Clear available completions after applying
-        self.available_completions.clear();
+        self.lsp_state.available_completions.clear();
     }
 
     /// Navigates to an LSP location from the picker selection
     pub fn navigate_to_lsp_location(&mut self, index: usize) {
         // Determine which LSP result type we're viewing
-        let result_type = match &self.active_lsp_result_type {
+        let result_type = match &self.lsp_state.active_lsp_result_type {
             Some(t) => t.clone(),
             None => {
                 self.set_lsp_status("No active LSP results".to_string());
@@ -4059,18 +3992,18 @@ impl Editor {
         // Get the location based on result type
         let location = match result_type {
             LspResultType::References => {
-                if index >= self.available_references.len() {
+                if index >= self.lsp_state.available_references.len() {
                     self.set_lsp_status("Invalid reference selection".to_string());
                     return;
                 }
-                self.available_references[index].clone()
+                self.lsp_state.available_references[index].clone()
             }
             LspResultType::DocumentSymbols => {
-                if index >= self.available_document_symbols.len() {
+                if index >= self.lsp_state.available_document_symbols.len() {
                     self.set_lsp_status("Invalid symbol selection".to_string());
                     return;
                 }
-                let symbol = &self.available_document_symbols[index];
+                let symbol = &self.lsp_state.available_document_symbols[index];
                 // For document symbols, the location is in the current file
                 let file_path = self.buffer().file_path().unwrap_or("").to_string();
                 let uri = match lsp_types::Url::from_file_path(&file_path) {
@@ -4086,17 +4019,17 @@ impl Editor {
                 }
             }
             LspResultType::WorkspaceSymbols => {
-                if index >= self.available_workspace_symbols.len() {
+                if index >= self.lsp_state.available_workspace_symbols.len() {
                     self.set_lsp_status("Invalid symbol selection".to_string());
                     return;
                 }
-                self.available_workspace_symbols[index].location.clone()
+                self.lsp_state.available_workspace_symbols[index].location.clone()
             }
             LspResultType::CallHierarchy | LspResultType::TypeHierarchy => {
                 let storage = if result_type == LspResultType::CallHierarchy {
-                    &self.available_call_hierarchy
+                    &self.lsp_state.available_call_hierarchy
                 } else {
-                    &self.available_type_hierarchy
+                    &self.lsp_state.available_type_hierarchy
                 };
 
                 if index >= storage.len() {
@@ -4137,7 +4070,7 @@ impl Editor {
     /// Organizes imports in the current file via LSP (implementation)
     async fn organize_imports_impl(&mut self) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -4220,7 +4153,7 @@ impl Editor {
     /// Performs LSP rename operation on the symbol at cursor
     async fn rename_impl(&mut self, new_name: String) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_manager {
+        let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -4747,7 +4680,7 @@ impl Editor {
                 .set_position(cursor_line, new_col);
 
             // Mark buffer as modified
-            self.buffer_modified_this_iteration = true;
+            self.lsp_state.buffer_modified_this_iteration = true;
         }
 
         // Hide the completion menu
@@ -4756,7 +4689,7 @@ impl Editor {
 
     /// Gets the inlay hints for the current file
     pub fn inlay_hints(&self) -> &[lsp_types::InlayHint] {
-        &self.inlay_hints
+        &self.lsp_state.inlay_hints
     }
 
     /// Gets the file tree

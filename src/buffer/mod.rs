@@ -58,14 +58,17 @@ impl Buffer {
     /// Creates a buffer from a string
     pub fn from_str(content: &str) -> Self {
         // Ensure content always ends with newline (Vim behavior)
-        let content_with_newline = if content.is_empty() || content.ends_with('\n') {
-            content.to_string()
+        let rope = if content.is_empty() || content.ends_with('\n') {
+            Rope::from_str(content)
         } else {
-            format!("{}\n", content)
+            // Only allocate when we need to add a newline
+            let mut rope = Rope::from_str(content);
+            rope.insert(rope.len_chars(), "\n");
+            rope
         };
 
         Self {
-            rope: Rope::from_str(&content_with_newline),
+            rope,
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: None,
@@ -127,6 +130,138 @@ impl Buffer {
         } else {
             None
         }
+    }
+
+    /// Gets a specific line as a RopeSlice (zero-allocation)
+    /// Prefer this over line() when you don't need ownership
+    pub fn line_slice(&self, idx: usize) -> Option<ropey::RopeSlice> {
+        if idx < self.line_count() {
+            Some(self.rope.line(idx))
+        } else {
+            None
+        }
+    }
+
+    /// Gets the length of a line in characters (excluding newline)
+    /// More efficient than getting the line and calling .len() on it
+    pub fn line_len(&self, idx: usize) -> usize {
+        if idx >= self.line_count() {
+            return 0;
+        }
+
+        let line_slice = self.rope.line(idx);
+        let mut len = line_slice.len_chars();
+
+        // Subtract 1 if line ends with newline
+        if len > 0 && line_slice.char(len - 1) == '\n' {
+            len -= 1;
+        }
+
+        len
+    }
+
+    /// Gets a character at a specific position in a line (zero-allocation)
+    /// Returns None if the line or column is out of bounds
+    pub fn char_at(&self, line_idx: usize, col: usize) -> Option<char> {
+        let line_slice = self.line_slice(line_idx)?;
+        let len = line_slice.len_chars();
+
+        // Exclude newline character
+        if col < len {
+            let ch = line_slice.char(col);
+            if ch != '\n' {
+                return Some(ch);
+            }
+        }
+        None
+    }
+
+    /// Checks if a line is blank (contains only whitespace, zero-allocation)
+    pub fn is_line_blank(&self, idx: usize) -> bool {
+        if let Some(line_slice) = self.line_slice(idx) {
+            // Check all characters in the line (excluding the newline)
+            for ch in line_slice.chars() {
+                if ch == '\n' {
+                    break;
+                }
+                if !ch.is_whitespace() {
+                    return false;
+                }
+            }
+            true
+        } else {
+            true
+        }
+    }
+
+    /// Finds the column of the first non-whitespace character on a line (zero-allocation)
+    /// Returns 0 if the line is blank or doesn't exist
+    pub fn first_non_blank_col(&self, idx: usize) -> usize {
+        if let Some(line_slice) = self.line_slice(idx) {
+            for (i, ch) in line_slice.chars().enumerate() {
+                if ch == '\n' {
+                    break;
+                }
+                if !ch.is_whitespace() {
+                    return i;
+                }
+            }
+        }
+        0
+    }
+
+    /// Finds the column of the last non-whitespace character on a line (zero-allocation)
+    /// Returns 0 if the line is blank or doesn't exist
+    pub fn last_non_blank_col(&self, idx: usize) -> usize {
+        if let Some(line_slice) = self.line_slice(idx) {
+            let mut last_non_blank = 0;
+            for (i, ch) in line_slice.chars().enumerate() {
+                if ch == '\n' {
+                    break;
+                }
+                if !ch.is_whitespace() {
+                    last_non_blank = i;
+                }
+            }
+            return last_non_blank;
+        }
+        0
+    }
+
+    /// Finds the position of a character in a line starting from a given column (zero-allocation)
+    /// Returns None if the character is not found
+    pub fn find_char_in_line(&self, line_idx: usize, start_col: usize, target: char) -> Option<usize> {
+        let line_slice = self.line_slice(line_idx)?;
+
+        for (i, ch) in line_slice.chars().enumerate() {
+            if ch == '\n' {
+                break;
+            }
+            if i >= start_col && ch == target {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Finds the position of a character in a line searching backwards from a given column (zero-allocation)
+    /// Returns None if the character is not found
+    pub fn find_char_in_line_rev(&self, line_idx: usize, start_col: usize, target: char) -> Option<usize> {
+        let line_slice = self.line_slice(line_idx)?;
+
+        let chars_up_to: Vec<(usize, char)> = line_slice
+            .chars()
+            .enumerate()
+            .take_while(|(_, ch)| *ch != '\n')
+            .take(start_col + 1)
+            .collect();
+
+        for (i, ch) in chars_up_to.iter().rev() {
+            if *ch == target {
+                return Some(*i);
+            }
+        }
+        None
     }
 
     /// Marks the buffer as unmodified (e.g., after saving)
@@ -352,9 +487,14 @@ impl Buffer {
             return None;
         }
 
-        let line_text = self.line(line_idx)?;
-        let line_text = line_text.trim_end_matches('\n');
-        let chars: Vec<char> = line_text.chars().collect();
+        // Use rope slice to avoid allocation until we need the final word
+        let line_slice = self.line_slice(line_idx)?;
+
+        // Build a chars vector from the slice (excluding newline)
+        let chars: Vec<char> = line_slice
+            .chars()
+            .take_while(|&c| c != '\n')
+            .collect();
 
         if chars.is_empty() || col >= chars.len() {
             return None;
@@ -379,6 +519,7 @@ impl Buffer {
             end += 1;
         }
 
+        // Only allocate String for the final word
         let word: String = chars[start..end].iter().collect();
         Some((word, start, end))
     }
