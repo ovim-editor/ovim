@@ -954,9 +954,6 @@ impl Editor {
             // Clear buffer-local marks (a-z) when switching files
             self.marks.clear();
 
-            // Reset LSP sync state for new buffer
-            self.lsp_state.last_synced_content = None;
-
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
@@ -980,9 +977,6 @@ impl Editor {
 
             // Clear buffer-local marks (a-z) when switching files
             self.marks.clear();
-
-            // Reset LSP sync state for new buffer
-            self.lsp_state.last_synced_content = None;
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
@@ -1012,9 +1006,6 @@ impl Editor {
             // Clear buffer-local marks (a-z) when switching files
             self.marks.clear();
 
-            // Reset LSP sync state for new buffer
-            self.lsp_state.last_synced_content = None;
-
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
@@ -1031,6 +1022,11 @@ impl Editor {
         if self.buffers.len() == 1 {
             // Last buffer - quit the editor
             return true;
+        }
+
+        // Remove current buffer (track sync state)
+        if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
+            self.lsp_state.document_sync.remove(&path);
         }
 
         // Remove current buffer
@@ -1164,20 +1160,19 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(file_path) else {
+        let file_path_string = file_path.to_string();
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string)) else {
             return;
         };
 
-        // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else if file_path.ends_with(".java") {
-            "java"
-        } else {
+        self.lsp_state
+            .document_sync
+            .remove(&file_path_string);
+
+        // Detect language from file path
+        let Some(language_id) =
+            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path_string)
+        else {
             return;
         };
 
@@ -2051,27 +2046,42 @@ impl Editor {
         self.lsp_state.hover_scroll = self.lsp_state.hover_scroll.saturating_sub(lines);
     }
 
+    /// Get (or create) the document sync state for the current buffer
+    fn document_sync_state_mut(&mut self) -> Option<&mut lsp_state::DocumentSyncState> {
+        let file_path = self.buffer().file_path()?.to_string();
+        Some(self
+            .lsp_state
+            .document_sync
+            .entry(file_path)
+            .or_default())
+    }
+
     /// Marks that the buffer was modified (for LSP notification)
     pub fn mark_buffer_modified(&mut self) {
-        self.lsp_state.buffer_modified_this_iteration = true;
+        if let Some(state) = self.document_sync_state_mut() {
+            state.buffer_modified = true;
+        }
     }
 
     /// Marks that the buffer was saved (for LSP notification)
     pub fn mark_buffer_saved(&mut self) {
-        self.lsp_state.buffer_saved_this_iteration = true;
+        if let Some(state) = self.document_sync_state_mut() {
+            state.buffer_saved = true;
+        }
     }
 
     /// Sets the last synced content for incremental LSP sync
-    pub fn set_last_synced_content(&mut self, content: Option<String>) {
-        self.lsp_state.last_synced_content = content;
+    pub fn set_last_synced_content(&mut self, file_path: &str, content: Option<String>) {
+        let state = self
+            .lsp_state
+            .document_sync
+            .entry(file_path.to_string())
+            .or_default();
+        state.last_synced_content = content;
     }
 
     /// Sends didChange notification if buffer was modified, then resets the flag
     pub async fn send_lsp_changes_if_modified(&mut self) {
-        if !self.lsp_state.buffer_modified_this_iteration {
-            return;
-        }
-
         let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
         };
@@ -2080,13 +2090,31 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(file_path)) else {
+        let file_path_string = file_path.to_string();
+
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string)) else {
             return;
+        };
+
+        let state_key = file_path_string.clone();
+
+        let old_content = {
+            let state = self
+                .lsp_state
+                .document_sync
+                .entry(state_key.clone())
+                .or_default();
+
+            if !state.buffer_modified {
+                return;
+            }
+
+            state.last_synced_content.clone()
         };
 
         // Detect language from file path
         let Some(language_id) =
-            crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path_string)
         else {
             return;
         };
@@ -2094,22 +2122,24 @@ impl Editor {
         // Send document sync with debouncing (incremental if supported)
         let content = self.buffer().rope().to_string();
 
-        // Pass last_synced_content for incremental sync
-        let old_content = self.lsp_state.last_synced_content.clone();
-
         let result = lsp
             .did_change(uri, language_id, content.clone(), old_content)
             .await;
 
-        self.lsp_state.buffer_modified_this_iteration = false;
+        let state = self
+            .lsp_state
+            .document_sync
+            .entry(state_key)
+            .or_default();
 
         match result {
             Ok(_) => {
-                self.lsp_state.last_synced_content = Some(content);
+                state.buffer_modified = false;
+                state.last_synced_content = Some(content);
             }
             Err(e) => {
                 // Restore flag so we retry the sync
-                self.lsp_state.buffer_modified_this_iteration = true;
+                state.buffer_modified = true;
                 self.set_lsp_status(format!("LSP: didChange failed: {}", e));
             }
         }
@@ -2117,10 +2147,6 @@ impl Editor {
 
     /// Sends didSave notification if buffer was saved, then resets the flag
     pub async fn send_lsp_save_if_needed(&mut self) {
-        if !self.lsp_state.buffer_saved_this_iteration {
-            return;
-        }
-
         let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
         };
@@ -2129,13 +2155,30 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(file_path)) else {
+        let file_path_string = file_path.to_string();
+
+        let Ok(uri) =
+            lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        else {
             return;
         };
 
+        let state_key = file_path_string.clone();
+
+        {
+            let state = self
+                .lsp_state
+                .document_sync
+                .entry(state_key.clone())
+                .or_default();
+            if !state.buffer_saved {
+                return;
+            }
+        }
+
         // Detect language from file path
         let Some(language_id) =
-            crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path_string)
         else {
             return;
         };
@@ -2144,11 +2187,17 @@ impl Editor {
 
         let result = lsp.did_save(uri, language_id, text).await;
 
-        self.lsp_state.buffer_saved_this_iteration = false;
+        let state = self
+            .lsp_state
+            .document_sync
+            .entry(state_key)
+            .or_default();
+
+        state.buffer_saved = false;
 
         if let Err(e) = result {
             // Restore flag so we retry and surface error
-            self.lsp_state.buffer_saved_this_iteration = true;
+            state.buffer_saved = true;
             self.set_lsp_status(format!("LSP: didSave failed: {}", e));
         }
     }
@@ -2169,13 +2218,19 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path)) else {
+        let file_path_string = file_path.clone();
+
+        let Ok(uri) =
+            lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        else {
             return;
         };
 
+        self.lsp_state.document_sync.remove(&file_path_string);
+
         // Detect language from file path
         let Some(language_id) =
-            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path_string)
         else {
             return;
         };
@@ -4539,7 +4594,7 @@ impl Editor {
                 .set_position(cursor_line, new_col);
 
             // Mark buffer as modified
-            self.lsp_state.buffer_modified_this_iteration = true;
+            self.mark_buffer_modified();
         }
 
         // Hide the completion menu

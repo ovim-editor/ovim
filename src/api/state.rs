@@ -99,6 +99,8 @@ pub struct RenderInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct LspStatusInfo {
     pub servers: Vec<LspServerInfoItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
 }
 
 /// Information about a single LSP server

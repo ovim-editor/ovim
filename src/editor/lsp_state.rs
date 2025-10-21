@@ -2,6 +2,14 @@ use crate::lsp::LspManager;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Per-document synchronisation state, keyed by canonical file path
+#[derive(Debug, Clone, Default)]
+pub struct DocumentSyncState {
+    pub buffer_modified: bool,
+    pub buffer_saved: bool,
+    pub last_synced_content: Option<String>,
+}
+
 /// LSP-related state for the editor
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LspResultType {
@@ -43,12 +51,8 @@ pub struct LspState {
     pub hover_info: Option<String>,
     /// Scroll offset for hover window (line number)
     pub hover_scroll: usize,
-    /// Flag to track if buffer was modified this iteration (for LSP didChange)
-    pub buffer_modified_this_iteration: bool,
-    /// Flag to track if buffer was saved this iteration (for LSP didSave)
-    pub buffer_saved_this_iteration: bool,
-    /// Last synced buffer content for incremental LSP sync (None = use full sync)
-    pub last_synced_content: Option<String>,
+    /// Per-document sync state (tracked by canonical file path)
+    pub document_sync: HashMap<String, DocumentSyncState>,
     /// LSP status message (errors, warnings, or info)
     pub lsp_status: String,
     /// Active LSP servers (language_id -> server_name)
@@ -86,9 +90,7 @@ impl LspState {
             pending_lsp_action: None,
             hover_info: None,
             hover_scroll: 0,
-            buffer_modified_this_iteration: false,
-            buffer_saved_this_iteration: false,
-            last_synced_content: None,
+            document_sync: HashMap::new(),
             lsp_status: String::new(),
             active_lsp_servers: HashMap::new(),
             needs_lsp_init: false,

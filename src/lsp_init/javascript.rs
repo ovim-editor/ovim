@@ -35,6 +35,8 @@ pub async fn initialize_javascript_lsp(editor: &mut Editor, abs_path: &Path) {
                     }
                 };
 
+                let path_str = abs_path.to_string_lossy().to_string();
+
                 match lsp_manager
                     .did_open(uri, language_id, 1, file_content.clone())
                     .await
@@ -43,7 +45,7 @@ pub async fn initialize_javascript_lsp(editor: &mut Editor, abs_path: &Path) {
                         // CRITICAL FIX: Initialize last_synced_content after successful didOpen
                         // Without this, the first didChange uses empty string as old_text,
                         // breaking incremental sync
-                        editor.set_last_synced_content(Some(file_content));
+                        editor.set_last_synced_content(&path_str, Some(file_content));
                         editor.set_lsp_status(format!("LSP: {} ready", server_command));
                     }
                     Err(e) => {
