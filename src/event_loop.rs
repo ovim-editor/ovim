@@ -70,9 +70,8 @@ pub async fn run_headless_loop(
             _ = lsp_interval.tick() => {
                 // Process LSP notifications (diagnostics, etc.)
                 if let Some(lsp_manager) = editor.lsp_manager() {
-                    let lsp = lsp_manager.lock().await;
-                    lsp.process_notifications().await;
-                    lsp.process_flush_requests().await;
+                    lsp_manager.process_notifications().await;
+                    lsp_manager.process_flush_requests().await;
                 }
 
                 // Initialize LSP for newly loaded files
@@ -101,9 +100,7 @@ pub async fn run_headless_loop(
 
                 // Update diagnostic cache only if diagnostics changed
                 if let Some(lsp_manager) = editor.lsp_manager() {
-                    let lsp = lsp_manager.lock().await;
-                    if lsp.diagnostics_changed() {
-                        drop(lsp); // Release lock before async call
+                    if lsp_manager.diagnostics_changed() {
                         editor.update_diagnostic_cache().await;
                     }
                 }
@@ -143,9 +140,8 @@ pub async fn run_event_loop(
 
         // Process LSP notifications (diagnostics, etc.)
         if let Some(lsp_manager) = editor.lsp_manager() {
-            let lsp = lsp_manager.lock().await;
-            lsp.process_notifications().await;
-            lsp.process_flush_requests().await;
+            lsp_manager.process_notifications().await;
+            lsp_manager.process_flush_requests().await;
         }
 
         // Initialize LSP for newly loaded files
@@ -156,9 +152,7 @@ pub async fn run_event_loop(
 
         // Update diagnostic cache only if diagnostics changed
         if let Some(lsp_manager) = editor.lsp_manager() {
-            let lsp = lsp_manager.lock().await;
-            if lsp.diagnostics_changed() {
-                drop(lsp); // Release lock before async call
+            if lsp_manager.diagnostics_changed() {
                 editor.update_diagnostic_cache().await;
             }
         }
@@ -444,8 +438,7 @@ async fn handle_api_request(
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
                 let servers = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
-                        let lsp_manager = lsp_manager_arc.lock().await;
-                        lsp_manager.get_lsp_status().await
+                        lsp_manager_arc.get_lsp_status().await
                     })
                 });
 
@@ -482,8 +475,7 @@ async fn handle_api_request(
                 let lsp_manager_arc = lsp_manager_arc.clone();
                 let servers = tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(async {
-                        let lsp_manager = lsp_manager_arc.lock().await;
-                        lsp_manager.get_lsp_status().await
+                        lsp_manager_arc.get_lsp_status().await
                     })
                 });
 

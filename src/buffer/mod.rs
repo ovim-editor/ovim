@@ -7,9 +7,20 @@ use crate::syntax::{HighlightGroup, LanguageRegistry, SyntaxHighlighter};
 use crate::GitStatus;
 use anyhow::{Context, Result};
 use ropey::Rope;
-use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+    };
+
+    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+}
 
 /// Represents a text buffer using a Rope data structure for efficient editing
 pub struct Buffer {
@@ -115,7 +126,9 @@ impl Buffer {
 
     /// Sets the file path
     pub fn set_file_path(&mut self, path: String) {
-        self.file_path = Some(path);
+        let path_buf = PathBuf::from(path);
+        let absolute_path = normalize_path(&path_buf);
+        self.file_path = Some(absolute_path.to_string_lossy().to_string());
     }
 
     /// Gets the number of lines in the buffer
@@ -338,10 +351,12 @@ impl Buffer {
 
     /// Loads a file into the buffer (async version)
     pub async fn load_file_async<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path_str = path.as_ref().to_string_lossy().to_string();
+        let path_ref = path.as_ref();
+        let absolute_path = normalize_path(path_ref);
+        let path_str = absolute_path.to_string_lossy().to_string();
 
         // Read as bytes first to validate UTF-8
-        let bytes = tokio::fs::read(&path)
+        let bytes = tokio::fs::read(&absolute_path)
             .await
             .context(format!("Failed to read file: {}", path_str))?;
 
@@ -383,8 +398,12 @@ impl Buffer {
 
     /// Loads a file into the buffer (blocking wrapper for async contexts)
     pub fn load_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path_ref = path.as_ref();
+        let absolute_path = normalize_path(path_ref);
+
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(Self::load_file_async(path))
+            tokio::runtime::Handle::current()
+                .block_on(Self::load_file_async(&absolute_path))
         })
     }
 
@@ -404,6 +423,8 @@ impl Buffer {
         use tokio::io::AsyncWriteExt;
 
         let path_ref = path.as_ref();
+        let absolute_path = normalize_path(path_ref);
+        let path_ref = absolute_path.as_path();
         let path_str = path_ref.to_string_lossy().to_string();
         let content = self.rope.to_string();
 

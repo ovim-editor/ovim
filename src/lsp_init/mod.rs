@@ -13,15 +13,22 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     let path = Path::new(file_path);
 
     // Convert to absolute path first
-    let abs_path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        match std::env::current_dir() {
-            Ok(cwd) => cwd.join(path),
-            Err(_) => {
-                editor.set_lsp_status("LSP: Failed to get current directory".to_string());
-                return;
+    let abs_path = {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(path),
+                Err(_) => {
+                    editor.set_lsp_status("LSP: Failed to get current directory".to_string());
+                    return;
+                }
             }
+        };
+
+        match std::fs::canonicalize(&absolute) {
+            Ok(canonical) => canonical,
+            Err(_) => absolute,
         }
     };
 

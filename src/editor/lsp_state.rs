@@ -1,7 +1,6 @@
 use crate::lsp::LspManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex as TokioMutex;
 
 /// LSP-related state for the editor
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,7 +34,7 @@ pub enum LspAction {
 /// Container for all LSP-related state in the editor
 pub struct LspState {
     /// LSP manager (optional, only if LSP is enabled)
-    pub lsp_manager: Option<Arc<TokioMutex<LspManager>>>,
+    pub lsp_manager: Option<Arc<LspManager>>,
     /// Cached diagnostic count (errors, warnings, info, hints) for status line display
     pub diagnostic_count: (usize, usize, usize, usize),
     /// Pending LSP action to execute in async context

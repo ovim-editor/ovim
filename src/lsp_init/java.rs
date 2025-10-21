@@ -1,6 +1,6 @@
 use ovim::editor::Editor;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 
 // Global channel for Java LSP status updates
@@ -38,16 +38,14 @@ pub fn find_jvm_project_root(file_path: &Path) -> &Path {
         current = dir.parent();
     }
     // Fall back to file's parent directory if no project root found
-    file_path
-        .parent()
-        .unwrap_or_else(|| Path::new("/"))
+    file_path.parent().unwrap_or_else(|| Path::new("/"))
 }
 
 /// Handle Java LSP initialization (for TUI mode - spawns background task)
 pub async fn handle_java_lsp(editor: &mut Editor, abs_path: PathBuf) {
     // We need to move values into the spawned task, so clone what we need
     let abs_path_clone = abs_path.clone();
-    let lsp_manager = editor.lsp_manager().map(|arc| arc.clone());
+    let lsp_manager = editor.lsp_manager();
 
     // Spawn Java LSP initialization in background
     tokio::spawn(async move {
@@ -59,7 +57,7 @@ pub async fn handle_java_lsp(editor: &mut Editor, abs_path: PathBuf) {
 
 /// Background Java LSP initialization that doesn't block the UI
 pub async fn initialize_java_lsp_background(
-    lsp_manager: Option<std::sync::Arc<tokio::sync::Mutex<ovim::lsp::LspManager>>>,
+    lsp_manager: Option<Arc<ovim::lsp::LspManager>>,
     file_path: PathBuf,
 ) {
     use ovim::java::{parser, JdtlsDownloader, JdtlsLauncher};
@@ -202,10 +200,8 @@ pub async fn initialize_java_lsp_background(
     let project_root_clone = project_root.to_path_buf();
 
     let mut start_task = tokio::spawn(async move {
-        ovim::lsp_debug!("Java", "Inside start_server task, acquiring lock...");
-        let lsp = lsp_clone.lock().await;
-        ovim::lsp_debug!("Java", "Lock acquired, calling start_server...");
-        let result = lsp
+        ovim::lsp_debug!("Java", "Inside start_server task...");
+        let result = lsp_clone
             .start_server(
                 "java",
                 &server_command_clone,
@@ -249,11 +245,10 @@ pub async fn initialize_java_lsp_background(
 
     send_java_status("Initializing LSP connection...".to_string());
 
-    // Start notification listener - acquire lock again
-    {
-        let lsp = lsp_manager.lock().await;
-        lsp.start_notification_listener("java".to_string()).await;
-    }
+    // Start notification listener
+    lsp_manager
+        .start_notification_listener("java".to_string())
+        .await;
 
     send_java_status("Opening file...".to_string());
 
@@ -275,15 +270,12 @@ pub async fn initialize_java_lsp_background(
         }
     };
 
-    {
-        let lsp = lsp_manager.lock().await;
-        match lsp.did_open(uri, "java", 1, file_content).await {
-            Ok(_) => {
-                send_java_status("Ready ✓".to_string());
-            }
-            Err(e) => {
-                send_java_status(format!("Failed to initialize: {}", e));
-            }
+    match lsp_manager.did_open(uri, "java", 1, file_content).await {
+        Ok(_) => {
+            send_java_status("Ready ✓".to_string());
+        }
+        Err(e) => {
+            send_java_status(format!("Failed to initialize: {}", e));
         }
     }
 }
@@ -452,8 +444,6 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
 
     // Start LSP server using the launch args
     if let Some(lsp_manager) = editor.lsp_manager() {
-        let lsp = lsp_manager.lock().await;
-
         // Extract java command and args
         if launch_args.is_empty() {
             editor.set_lsp_status("Java: Invalid launch configuration".to_string());
@@ -465,18 +455,18 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
 
         editor.set_lsp_status("Java: Starting LSP server...".to_string());
 
-        match lsp
+        match lsp_manager
             .start_server("java", server_command, server_args, project_root)
             .await
         {
             Ok(_) => {
-                drop(lsp);
                 editor.register_lsp_server("java".to_string(), "jdtls".to_string());
 
                 editor.set_lsp_status("Java: Initializing LSP connection...".to_string());
 
-                let lsp = lsp_manager.lock().await;
-                lsp.start_notification_listener("java".to_string()).await;
+                lsp_manager
+                    .start_notification_listener("java".to_string())
+                    .await;
 
                 editor.set_lsp_status("Java: Opening file...".to_string());
 
@@ -485,15 +475,16 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
                 let uri = match lsp_types::Url::from_file_path(file_path) {
                     Ok(uri) => uri,
                     Err(_) => {
-                        drop(lsp);
                         editor.set_lsp_status("Java: Invalid file path".to_string());
                         return;
                     }
                 };
 
-                match lsp.did_open(uri, "java", 1, file_content.clone()).await {
+                match lsp_manager
+                    .did_open(uri, "java", 1, file_content.clone())
+                    .await
+                {
                     Ok(_) => {
-                        drop(lsp);
                         // CRITICAL FIX: Initialize last_synced_content after successful didOpen
                         // Without this, the first didChange uses empty string as old_text,
                         // breaking incremental sync
@@ -501,13 +492,11 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
                         editor.set_lsp_status("Java: Ready ✓".to_string());
                     }
                     Err(e) => {
-                        drop(lsp);
                         editor.set_lsp_status(format!("Java: Failed to initialize: {}", e));
                     }
                 }
             }
             Err(e) => {
-                drop(lsp);
                 editor.set_lsp_status(format!("Java: Failed to start server: {}", e));
             }
         }
