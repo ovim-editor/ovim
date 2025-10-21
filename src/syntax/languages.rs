@@ -95,7 +95,7 @@ impl LanguageRegistry {
             "toml" => Some(Language::Toml),
 
             // Markdown
-            "md" | "markdown" | "mdown" | "mkd" | "mkdn" => Some(Language::Markdown),
+            "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdx" => Some(Language::Markdown),
 
             _ => None,
         }
@@ -183,10 +183,10 @@ impl LanguageRegistry {
             Language::Yaml => tree_sitter_yaml::language(),
             Language::Html => tree_sitter_html::LANGUAGE.into(),
             Language::Css => tree_sitter_css::LANGUAGE.into(),
-            // TOML and Markdown don't have compatible tree-sitter versions yet
+            // TOML doesn't have a bundled tree-sitter grammar in this project yet
             // Return a dummy language (use Rust as fallback to avoid panics)
             Language::Toml => tree_sitter_rust::LANGUAGE.into(),
-            Language::Markdown => tree_sitter_rust::LANGUAGE.into(),
+            Language::Markdown => tree_sitter_md::LANGUAGE.into(),
         }
     }
 
@@ -207,9 +207,9 @@ impl LanguageRegistry {
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Html => include_str!("queries/html.scm"),
             Language::Css => include_str!("queries/css.scm"),
-            // TOML and Markdown use fallback (empty query, no highlighting)
+            // TOML uses fallback (no bundled tree-sitter query yet)
             Language::Toml => "",
-            Language::Markdown => "",
+            Language::Markdown => include_str!("queries/markdown.scm"),
         }
     }
 

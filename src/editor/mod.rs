@@ -1591,6 +1591,8 @@ impl Editor {
     /// Marks that the picker selection moved (for debouncing preview loading)
     pub fn mark_picker_selection_changed(&mut self) {
         self.last_picker_selection_change = Some(std::time::Instant::now());
+        // Allow new preview to load for the freshly selected entry
+        self.loading_preview = None;
     }
 
     /// Checks if enough time has elapsed since picker query changed (for debouncing)
@@ -1658,6 +1660,7 @@ impl Editor {
         self.picker = None;
         // Clear preview cache when closing picker to free memory
         self.preview_cache.clear();
+        self.last_picker_selection_change = None;
     }
 
     /// Gets preview from cache or loads it (async version)
@@ -2360,6 +2363,17 @@ impl Editor {
 
         // Request definition
         self.set_lsp_status("Searching for definition...".to_string());
+
+        // CRITICAL FIX: Flush pending changes before goto definition
+        // Ensures LSP server has the latest content
+        {
+            let lsp_guard = lsp.lock().await;
+            let _ = lsp_guard.flush_pending_changes(&uri).await;
+            drop(lsp_guard); // Immediately release lock
+        }
+
+        // Small delay to let the LSP server process the didChange
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let lsp_guard = lsp.lock().await;
 
@@ -3350,8 +3364,20 @@ impl Editor {
         // Request hover information
         self.set_lsp_status("Requesting hover information...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        // CRITICAL FIX: Flush pending changes before hover
+        // The didChange notifications are debounced (150ms), so we need to flush
+        // to ensure the LSP server has the latest content
+        // We do this WITHOUT holding the LspManager lock to avoid blocking
+        {
+            let lsp_guard = lsp.lock().await;
+            let _ = lsp_guard.flush_pending_changes(&uri).await;
+            drop(lsp_guard); // Immediately release lock after flush
+        }
 
+        // Small delay to let the LSP server process the didChange
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        let lsp_guard = lsp.lock().await;
         let hover_text = lsp_guard.hover(&uri, line, character, language_id).await?;
 
         drop(lsp_guard);
