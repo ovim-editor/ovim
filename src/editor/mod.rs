@@ -76,7 +76,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex as TokioMutex;
 
 /// Commands sent from background tasks to the LSP manager via channel
 #[derive(Debug)]
@@ -347,13 +346,13 @@ impl Editor {
     /// Enables LSP support
     pub fn enable_lsp(&mut self) {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.lsp_state.lsp_manager = Some(Arc::new(TokioMutex::new(LspManager::new())));
+        self.lsp_state.lsp_manager = Some(Arc::new(LspManager::new()));
         self.lsp_command_tx = Some(tx);
         self.lsp_command_rx = Some(rx);
     }
 
     /// Gets a reference to the LSP manager
-    pub fn lsp_manager(&self) -> Option<Arc<TokioMutex<LspManager>>> {
+    pub fn lsp_manager(&self) -> Option<Arc<LspManager>> {
         self.lsp_state.lsp_manager.clone()
     }
 
@@ -1182,9 +1181,7 @@ impl Editor {
             return;
         };
 
-        let lsp_guard = lsp.lock().await;
-
-        let _ = lsp_guard.did_close(uri, language_id).await;
+        let _ = lsp.did_close(uri, language_id).await;
     }
 
     /// Gets the current count prefix
@@ -1802,8 +1799,7 @@ impl Editor {
         let file_path = self.buffer().file_path()?;
         let uri = lsp_types::Url::from_file_path(file_path).ok()?;
 
-        let lsp_guard = lsp.lock().await;
-        Some(lsp_guard.get_diagnostics(&uri).await)
+        Some(lsp.get_diagnostics(&uri).await)
     }
 
     /// Gets diagnostic count for the current file (errors, warnings, info, hints)
@@ -1811,8 +1807,7 @@ impl Editor {
         if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
-                    let lsp_guard = lsp.lock().await;
-                    return lsp_guard.count_diagnostics(&uri).await;
+                    return lsp.count_diagnostics(&uri).await;
                 }
             }
         }
@@ -1842,7 +1837,9 @@ impl Editor {
     /// Registers an active LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
         self.lsp_state.lsp_status = format!("LSP: {} ready", server_name);
-        self.lsp_state.active_lsp_servers.insert(language_id, server_name);
+        self.lsp_state
+            .active_lsp_servers
+            .insert(language_id, server_name);
     }
 
     /// Unregisters an LSP server
@@ -1872,9 +1869,7 @@ impl Editor {
     /// Gets current LSP progress message
     pub fn lsp_progress_message(&self) -> Option<String> {
         if let Some(lsp_manager) = &self.lsp_state.lsp_manager {
-            if let Ok(lsp) = lsp_manager.try_lock() {
-                return lsp.get_progress_message();
-            }
+            return lsp_manager.get_progress_message();
         }
         None
     }
@@ -2085,18 +2080,14 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(file_path) else {
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(file_path)) else {
             return;
         };
 
-        // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
+        // Detect language from file path
+        let Some(language_id) =
+            crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+        else {
             return;
         };
 
@@ -2106,12 +2097,9 @@ impl Editor {
         // Pass last_synced_content for incremental sync
         let old_content = self.lsp_state.last_synced_content.clone();
 
-        let lsp_guard = lsp.lock().await;
-
-        let result = lsp_guard
+        let result = lsp
             .did_change(uri, language_id, content.clone(), old_content)
             .await;
-        drop(lsp_guard);
 
         self.lsp_state.buffer_modified_this_iteration = false;
 
@@ -2141,27 +2129,20 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(file_path) else {
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(file_path)) else {
             return;
         };
 
-        // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else {
+        // Detect language from file path
+        let Some(language_id) =
+            crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+        else {
             return;
         };
 
         let text = Some(self.buffer().rope().to_string());
 
-        let lsp_guard = lsp.lock().await;
-
-        let result = lsp_guard.did_save(uri, language_id, text).await;
-        drop(lsp_guard);
+        let result = lsp.did_save(uri, language_id, text).await;
 
         self.lsp_state.buffer_saved_this_iteration = false;
 
@@ -2170,6 +2151,12 @@ impl Editor {
             self.lsp_state.buffer_saved_this_iteration = true;
             self.set_lsp_status(format!("LSP: didSave failed: {}", e));
         }
+    }
+
+    /// Ensures the current document state is synced with the LSP server
+    async fn ensure_lsp_document_synced(&mut self) {
+        self.send_lsp_changes_if_modified().await;
+        self.send_lsp_save_if_needed().await;
     }
 
     /// Sends didClose notification for pending file (when switching files)
@@ -2182,26 +2169,18 @@ impl Editor {
             return;
         };
 
-        let Ok(uri) = lsp_types::Url::from_file_path(&file_path) else {
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path)) else {
             return;
         };
 
-        // Detect language from file extension
-        let language_id = if file_path.ends_with(".rs") {
-            "rust"
-        } else if file_path.ends_with(".js") || file_path.ends_with(".ts") {
-            "javascript"
-        } else if file_path.ends_with(".py") {
-            "python"
-        } else if file_path.ends_with(".java") {
-            "java"
-        } else {
+        // Detect language from file path
+        let Some(language_id) =
+            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+        else {
             return;
         };
 
-        let lsp_guard = lsp.lock().await;
-
-        let _ = lsp_guard.did_close(uri, language_id).await;
+        let _ = lsp.did_close(uri, language_id).await;
     }
 
     /// Process any pending LSP actions
@@ -2364,24 +2343,19 @@ impl Editor {
         // Request definition
         self.set_lsp_status("Searching for definition...".to_string());
 
+        // Make sure the LSP server has the latest buffer contents
+        self.ensure_lsp_document_synced().await;
+
         // CRITICAL FIX: Flush pending changes before goto definition
         // Ensures LSP server has the latest content
-        {
-            let lsp_guard = lsp.lock().await;
-            let _ = lsp_guard.flush_pending_changes(&uri).await;
-            drop(lsp_guard); // Immediately release lock
-        }
+        let _ = lsp.flush_pending_changes(&uri).await;
 
         // Small delay to let the LSP server process the didChange
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let lsp_guard = lsp.lock().await;
-
-        let location = lsp_guard
+        let location = lsp
             .goto_definition(&uri, line, character, language_id)
             .await?;
-
-        drop(lsp_guard);
 
         // Jump to definition if found
         if let Some(location) = location {
@@ -2491,13 +2465,11 @@ impl Editor {
         // Request implementation
         self.set_lsp_status("Searching for implementation...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let location = lsp_guard
+        let location = lsp
             .implementation(&uri, line, character, language_id)
             .await?;
-
-        drop(lsp_guard);
 
         // Jump to implementation if found
         if let Some(location) = location {
@@ -2607,13 +2579,11 @@ impl Editor {
         // Request type definition
         self.set_lsp_status("Searching for type definition...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let location = lsp_guard
+        let location = lsp
             .type_definition(&uri, line, character, language_id)
             .await?;
-
-        drop(lsp_guard);
 
         // Jump to type definition if found
         if let Some(location) = location {
@@ -2723,13 +2693,11 @@ impl Editor {
         // Request references
         self.set_lsp_status("Searching for references...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let locations = lsp_guard
+        let locations = lsp
             .references(&uri, line, character, language_id, true)
             .await?;
-
-        drop(lsp_guard);
 
         // Display results in picker
         if locations.is_empty() {
@@ -2813,11 +2781,9 @@ impl Editor {
         // Request document symbols
         self.set_lsp_status("Loading document symbols...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let symbols = lsp_guard.document_symbols(&uri, language_id).await?;
-
-        drop(lsp_guard);
+        let symbols = lsp.document_symbols(&uri, language_id).await?;
 
         // Display results in picker
         if symbols.is_empty() {
@@ -2878,13 +2844,9 @@ impl Editor {
         // Request workspace symbols with empty query (gets all symbols)
         self.set_lsp_status("Loading workspace symbols...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let symbols = lsp_guard
-            .workspace_symbols(language_id, String::new())
-            .await?;
-
-        drop(lsp_guard);
+        let symbols = lsp.workspace_symbols(language_id, String::new()).await?;
 
         // Display results in picker
         if symbols.is_empty() {
@@ -2973,16 +2935,15 @@ impl Editor {
         // Request call hierarchy preparation
         self.set_lsp_status("Preparing call hierarchy...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let items = lsp_guard
+        let items = lsp
             .prepare_call_hierarchy(uri, line, character, language_id)
             .await?;
 
         let items = match items {
             Some(items) if !items.is_empty() => items,
             _ => {
-                drop(lsp_guard);
                 self.set_lsp_status("No call hierarchy item at cursor".to_string());
                 return Ok(false);
             }
@@ -2990,9 +2951,7 @@ impl Editor {
 
         // Get incoming calls for the first item
         let first_item = items.into_iter().next().unwrap();
-        let incoming = lsp_guard.incoming_calls(first_item, language_id).await?;
-
-        drop(lsp_guard);
+        let incoming = lsp.incoming_calls(first_item, language_id).await?;
 
         // Display results in picker
         let calls = match incoming {
@@ -3095,16 +3054,15 @@ impl Editor {
         // Request call hierarchy preparation
         self.set_lsp_status("Preparing call hierarchy...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let items = lsp_guard
+        let items = lsp
             .prepare_call_hierarchy(uri, line, character, language_id)
             .await?;
 
         let items = match items {
             Some(items) if !items.is_empty() => items,
             _ => {
-                drop(lsp_guard);
                 self.set_lsp_status("No call hierarchy item at cursor".to_string());
                 return Ok(false);
             }
@@ -3112,9 +3070,7 @@ impl Editor {
 
         // Get outgoing calls for the first item
         let first_item = items.into_iter().next().unwrap();
-        let outgoing = lsp_guard.outgoing_calls(first_item, language_id).await?;
-
-        drop(lsp_guard);
+        let outgoing = lsp.outgoing_calls(first_item, language_id).await?;
 
         // Display results in picker
         let calls = match outgoing {
@@ -3217,16 +3173,15 @@ impl Editor {
         // Request type hierarchy preparation
         self.set_lsp_status("Preparing type hierarchy...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let items = lsp_guard
+        let items = lsp
             .prepare_type_hierarchy(uri, line, character, language_id)
             .await?;
 
         let items = match items {
             Some(items) if !items.is_empty() => items,
             _ => {
-                drop(lsp_guard);
                 self.set_lsp_status("No type hierarchy item at cursor".to_string());
                 return Ok(false);
             }
@@ -3234,12 +3189,8 @@ impl Editor {
 
         // Get supertypes and subtypes for the first item
         let first_item = items.into_iter().next().unwrap();
-        let supertypes = lsp_guard
-            .supertypes(first_item.clone(), language_id)
-            .await?;
-        let subtypes = lsp_guard.subtypes(first_item, language_id).await?;
-
-        drop(lsp_guard);
+        let supertypes = lsp.supertypes(first_item.clone(), language_id).await?;
+        let subtypes = lsp.subtypes(first_item, language_id).await?;
 
         // Combine results and store in storage vector
         let mut all_types_display = Vec::new();
@@ -3364,23 +3315,18 @@ impl Editor {
         // Request hover information
         self.set_lsp_status("Requesting hover information...".to_string());
 
+        self.ensure_lsp_document_synced().await;
+
         // CRITICAL FIX: Flush pending changes before hover
         // The didChange notifications are debounced (150ms), so we need to flush
         // to ensure the LSP server has the latest content
         // We do this WITHOUT holding the LspManager lock to avoid blocking
-        {
-            let lsp_guard = lsp.lock().await;
-            let _ = lsp_guard.flush_pending_changes(&uri).await;
-            drop(lsp_guard); // Immediately release lock after flush
-        }
+        let _ = lsp.flush_pending_changes(&uri).await;
 
         // Small delay to let the LSP server process the didChange
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let lsp_guard = lsp.lock().await;
-        let hover_text = lsp_guard.hover(&uri, line, character, language_id).await?;
-
-        drop(lsp_guard);
+        let hover_text = lsp.hover(&uri, line, character, language_id).await?;
 
         // Store hover information and enter HoverWindow mode if available
         self.lsp_state.hover_info = hover_text;
@@ -3447,13 +3393,9 @@ impl Editor {
         // Request completion
         self.set_lsp_status("Requesting completion...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let items = lsp_guard
-            .completion(&uri, line, character, language_id)
-            .await?;
-
-        drop(lsp_guard);
+        let items = lsp.completion(&uri, line, character, language_id).await?;
 
         if items.is_empty() {
             self.set_lsp_status("No completion items found".to_string());
@@ -3538,13 +3480,11 @@ impl Editor {
         // Request formatting
         self.set_lsp_status("Formatting document...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let edits = lsp_guard
+        let edits = lsp
             .format_document(&uri, language_id, 4, true) // 4 spaces, insert spaces
             .await?;
-
-        drop(lsp_guard);
 
         if !edits.is_empty() {
             // Apply text edits to buffer
@@ -3607,14 +3547,12 @@ impl Editor {
         // Get diagnostics at cursor position for context
         self.set_lsp_status("Requesting code actions...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
-        let diagnostics = lsp_guard.get_diagnostics_for_line(&uri, line).await;
-        let actions = lsp_guard
+        let diagnostics = lsp.get_diagnostics_for_line(&uri, line).await;
+        let actions = lsp
             .code_actions(&uri, line, character, language_id, diagnostics)
             .await?;
-
-        drop(lsp_guard);
 
         if actions.is_empty() {
             self.set_lsp_status("No code actions available".to_string());
@@ -3860,8 +3798,7 @@ impl Editor {
                     self.set_lsp_status(format!("Executing: {}", command_title));
 
                     tokio::spawn(async move {
-                        let guard = lsp.lock().await;
-                        let _result = guard
+                        let _result = lsp
                             .execute_command(command_name, arguments, &language_id)
                             .await;
                         // Note: Result isn't sent back to editor - this is fire and forget
@@ -3963,7 +3900,9 @@ impl Editor {
                     self.set_lsp_status("Invalid symbol selection".to_string());
                     return;
                 }
-                self.lsp_state.available_workspace_symbols[index].location.clone()
+                self.lsp_state.available_workspace_symbols[index]
+                    .location
+                    .clone()
             }
             LspResultType::CallHierarchy | LspResultType::TypeHierarchy => {
                 let storage = if result_type == LspResultType::CallHierarchy {
@@ -4058,18 +3997,14 @@ impl Editor {
         // Request organize imports
         self.set_lsp_status("Organizing imports...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
         // Execute the organize imports command
         // For jdtls, the command is "java.action.organizeImports"
         let command = "java.action.organizeImports".to_string();
         let arguments = Some(vec![serde_json::to_value(&uri)?]);
 
-        let result = lsp_guard
-            .execute_command(command, arguments, language_id)
-            .await;
-
-        drop(lsp_guard);
+        let result = lsp.execute_command(command, arguments, language_id).await;
 
         match result {
             Ok(_) => {
@@ -4133,14 +4068,12 @@ impl Editor {
         // Request rename
         self.set_lsp_status("Renaming...".to_string());
 
-        let lsp_guard = lsp.lock().await;
+        self.ensure_lsp_document_synced().await;
 
         // Call the rename method with individual parameters (using UTF-16 character position)
-        let result = lsp_guard
+        let result = lsp
             .rename(&uri, line, character, language_id, new_name.clone())
             .await;
-
-        drop(lsp_guard);
 
         match result {
             Ok(Some(workspace_edit)) => {
