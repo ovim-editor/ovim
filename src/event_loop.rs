@@ -453,12 +453,16 @@ async fn handle_api_request(
                             has_capabilities: s.has_capabilities,
                         })
                         .collect(),
+                    progress: editor.lsp_progress_message(),
                 };
 
                 let _ = tx.send(ApiResponse::LspStatus(lsp_status_info));
             } else {
                 // No LSP manager available
-                let lsp_status_info = LspStatusInfo { servers: vec![] };
+                let lsp_status_info = LspStatusInfo {
+                    servers: vec![],
+                    progress: editor.lsp_progress_message(),
+                };
                 let _ = tx.send(ApiResponse::LspStatus(lsp_status_info));
             }
         }

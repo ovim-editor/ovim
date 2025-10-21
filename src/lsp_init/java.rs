@@ -488,7 +488,8 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
                         // CRITICAL FIX: Initialize last_synced_content after successful didOpen
                         // Without this, the first didChange uses empty string as old_text,
                         // breaking incremental sync
-                        editor.set_last_synced_content(Some(file_content));
+                        let path_str = file_path.to_string_lossy().to_string();
+                        editor.set_last_synced_content(&path_str, Some(file_content));
                         editor.set_lsp_status("Java: Ready ✓".to_string());
                     }
                     Err(e) => {
