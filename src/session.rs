@@ -77,11 +77,29 @@ impl SessionInfo {
         Ok(session_dir.join(format!("{}.json", self.session_name)))
     }
 
-    /// Write this session info to disk
+    /// Write this session info to disk atomically
     pub fn write(&self) -> Result<()> {
+        use std::io::Write;
+
         let path = self.session_file_path()?;
         let json = serde_json::to_string_pretty(self)?;
-        fs::write(&path, json)?;
+
+        // Use atomic write: write to temp file, then rename
+        let temp_path = path.with_extension("tmp");
+
+        // Write to temporary file
+        let mut temp_file = fs::File::create(&temp_path)
+            .context("Failed to create temporary session file")?;
+        temp_file
+            .write_all(json.as_bytes())
+            .context("Failed to write to temporary session file")?;
+        temp_file
+            .flush()
+            .context("Failed to flush temporary session file")?;
+
+        // Atomically replace the old file with the new one
+        fs::rename(&temp_path, &path).context("Failed to rename session file")?;
+
         Ok(())
     }
 

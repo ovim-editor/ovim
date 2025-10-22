@@ -200,7 +200,28 @@ pub struct Editor {
     loading_preview: Option<String>,
     /// Last successfully shown preview path (to show while new one loads)
     pub last_shown_preview: Option<String>,
+    /// Performance metrics: render count
+    render_count: u64,
+    /// Performance metrics: last render duration in microseconds
+    last_render_duration_micros: Option<u64>,
+    /// Performance metrics: last syntax highlighting duration in microseconds
+    last_syntax_duration_micros: Option<u64>,
+    /// Render dirty flag - set when UI needs redraw
+    render_dirty: bool,
+    /// Input latency samples in microseconds (circular buffer, max 1000 samples)
+    input_latency_samples: Vec<u64>,
+    /// Last LSP serialize (rope->string) duration in microseconds
+    last_lsp_serialize_micros: Option<u64>,
+    /// Last git status refresh duration in microseconds
+    last_git_status_micros: Option<u64>,
+    /// Last fold calculation duration in microseconds
+    last_fold_calc_micros: Option<u64>,
+    /// Last diagnostic query duration in microseconds
+    last_diagnostic_query_micros: Option<u64>,
 }
+
+/// Maximum number of input latency samples to keep for percentile calculation
+const MAX_LATENCY_SAMPLES: usize = 1000;
 
 /// Cached preview data for the picker
 #[derive(Clone)]
@@ -283,6 +304,15 @@ impl Editor {
             last_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
+            render_count: 0,
+            last_render_duration_micros: None,
+            last_syntax_duration_micros: None,
+            render_dirty: true, // Start dirty to force initial render
+            input_latency_samples: Vec::new(),
+            last_lsp_serialize_micros: None,
+            last_git_status_micros: None,
+            last_fold_calc_micros: None,
+            last_diagnostic_query_micros: None,
         }
     }
 
@@ -340,6 +370,15 @@ impl Editor {
             last_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
+            render_count: 0,
+            last_render_duration_micros: None,
+            last_syntax_duration_micros: None,
+            render_dirty: true, // Start dirty to force initial render
+            input_latency_samples: Vec::new(),
+            last_lsp_serialize_micros: None,
+            last_git_status_micros: None,
+            last_fold_calc_micros: None,
+            last_diagnostic_query_micros: None,
         }
     }
 
@@ -1811,7 +1850,10 @@ impl Editor {
 
     /// Updates the cached diagnostic count (should be called when diagnostics change)
     pub async fn update_diagnostic_cache(&mut self) {
+        let start = std::time::Instant::now();
         self.lsp_state.diagnostic_count = self.get_diagnostic_count().await;
+        let duration = start.elapsed().as_micros() as u64;
+        self.record_diagnostic_query_duration(duration);
     }
 
     /// Gets the cached diagnostic count (sync, suitable for UI rendering)
@@ -2120,11 +2162,16 @@ impl Editor {
         };
 
         // Send document sync with debouncing (incremental if supported)
+        let serialize_start = std::time::Instant::now();
         let content = self.buffer().rope().to_string();
+        let serialize_duration = serialize_start.elapsed().as_micros() as u64;
 
         let result = lsp
             .did_change(uri, language_id, content.clone(), old_content)
             .await;
+
+        // Record serialize duration after we're done using lsp reference
+        self.record_lsp_serialize_duration(serialize_duration);
 
         let state = self
             .lsp_state
@@ -4829,6 +4876,131 @@ impl Editor {
     /// Gets the number of tabs
     pub fn tab_count(&self) -> usize {
         self.tab_page_manager.tab_count()
+    }
+
+    /// Performance metrics: increment render count
+    pub fn increment_render_count(&mut self) {
+        self.render_count = self.render_count.saturating_add(1);
+    }
+
+    /// Performance metrics: record render duration
+    pub fn record_render_duration(&mut self, duration_micros: u64) {
+        self.last_render_duration_micros = Some(duration_micros);
+    }
+
+    /// Performance metrics: record syntax highlighting duration
+    pub fn record_syntax_duration(&mut self, duration_micros: u64) {
+        self.last_syntax_duration_micros = Some(duration_micros);
+    }
+
+    /// Performance metrics: get render count
+    pub fn render_count(&self) -> u64 {
+        self.render_count
+    }
+
+    /// Performance metrics: get last render duration
+    pub fn last_render_duration_micros(&self) -> Option<u64> {
+        self.last_render_duration_micros
+    }
+
+    /// Performance metrics: get last syntax duration
+    pub fn last_syntax_duration_micros(&self) -> Option<u64> {
+        self.last_syntax_duration_micros
+    }
+
+    /// Performance metrics: record input latency sample
+    pub fn record_input_latency(&mut self, latency_micros: u64) {
+        self.input_latency_samples.push(latency_micros);
+        // Keep only the most recent MAX_LATENCY_SAMPLES samples (circular buffer)
+        if self.input_latency_samples.len() > MAX_LATENCY_SAMPLES {
+            self.input_latency_samples.remove(0);
+        }
+    }
+
+    /// Performance metrics: compute latency percentile
+    fn compute_percentile(samples: &[u64], percentile: f64) -> Option<u64> {
+        if samples.is_empty() {
+            return None;
+        }
+        let mut sorted = samples.to_vec();
+        sorted.sort_unstable();
+        let index = ((percentile / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
+        Some(sorted[index])
+    }
+
+    /// Performance metrics: get input latency p50
+    pub fn input_latency_p50_micros(&self) -> Option<u64> {
+        Self::compute_percentile(&self.input_latency_samples, 50.0)
+    }
+
+    /// Performance metrics: get input latency p95
+    pub fn input_latency_p95_micros(&self) -> Option<u64> {
+        Self::compute_percentile(&self.input_latency_samples, 95.0)
+    }
+
+    /// Performance metrics: get input latency p99
+    pub fn input_latency_p99_micros(&self) -> Option<u64> {
+        Self::compute_percentile(&self.input_latency_samples, 99.0)
+    }
+
+    /// Performance metrics: get number of input latency samples
+    pub fn input_latency_sample_count(&self) -> usize {
+        self.input_latency_samples.len()
+    }
+
+    /// Performance metrics: record LSP serialize duration
+    pub fn record_lsp_serialize_duration(&mut self, duration_micros: u64) {
+        self.last_lsp_serialize_micros = Some(duration_micros);
+    }
+
+    /// Performance metrics: get last LSP serialize duration
+    pub fn last_lsp_serialize_micros(&self) -> Option<u64> {
+        self.last_lsp_serialize_micros
+    }
+
+    /// Performance metrics: record git status duration
+    pub fn record_git_status_duration(&mut self, duration_micros: u64) {
+        self.last_git_status_micros = Some(duration_micros);
+    }
+
+    /// Performance metrics: get last git status duration
+    pub fn last_git_status_micros(&self) -> Option<u64> {
+        self.last_git_status_micros
+    }
+
+    /// Performance metrics: record fold calculation duration
+    pub fn record_fold_calc_duration(&mut self, duration_micros: u64) {
+        self.last_fold_calc_micros = Some(duration_micros);
+    }
+
+    /// Performance metrics: get last fold calculation duration
+    pub fn last_fold_calc_micros(&self) -> Option<u64> {
+        self.last_fold_calc_micros
+    }
+
+    /// Performance metrics: record diagnostic query duration
+    pub fn record_diagnostic_query_duration(&mut self, duration_micros: u64) {
+        self.last_diagnostic_query_micros = Some(duration_micros);
+    }
+
+    /// Performance metrics: get last diagnostic query duration
+    pub fn last_diagnostic_query_micros(&self) -> Option<u64> {
+        self.last_diagnostic_query_micros
+    }
+
+    /// Marks the editor as needing a redraw
+    pub fn mark_dirty(&mut self) {
+        self.render_dirty = true;
+    }
+
+    /// Checks if the editor needs a redraw
+    pub fn is_dirty(&self) -> bool {
+        self.render_dirty
+    }
+
+    /// Marks the editor as clean (just rendered)
+    pub fn mark_clean(&mut self) {
+        self.render_dirty = false;
     }
 }
 
