@@ -8,6 +8,8 @@ pub struct DocumentSyncState {
     pub buffer_modified: bool,
     pub buffer_saved: bool,
     pub last_synced_content: Option<String>,
+    /// Track whether we've sent didOpen for this document
+    pub did_open_sent: bool,
 }
 
 /// LSP-related state for the editor

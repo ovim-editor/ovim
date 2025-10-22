@@ -14,8 +14,6 @@ use tokio::sync::mpsc;
 fn sanitize_session_name(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-        .collect::<String>()
-        .chars()
         .take(64) // Limit length
         .collect()
 }
@@ -97,7 +95,13 @@ async fn main() -> Result<()> {
         });
 
         // Wait for the server to start and get the actual port
-        let port = port_rx.await.expect("Failed to get server port");
+        let port = match port_rx.await {
+            Ok(port) => port,
+            Err(_) => {
+                eprintln!("Failed to receive port from API server");
+                return Err(anyhow::anyhow!("API server port channel closed"));
+            }
+        };
 
         // Write session info
         let session_name = args
@@ -123,8 +127,11 @@ async fn main() -> Result<()> {
         let session_info_for_cleanup = session_info.clone();
         let cleanup_handle = tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
-            let _ = session_info_for_cleanup.delete();
-            eprintln!("\nSession cleaned up");
+            match session_info_for_cleanup.delete() {
+                Ok(_) => eprintln!("\nSession cleaned up successfully"),
+                Err(e) => eprintln!("\nError during session cleanup: {}", e),
+            }
+            // Use a more graceful exit method
             std::process::exit(0);
         });
 

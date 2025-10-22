@@ -2255,6 +2255,67 @@ impl Editor {
         self.send_lsp_save_if_needed().await;
     }
 
+    /// Ensures the document is opened with the LSP server
+    /// Returns Ok(true) if document is opened, Ok(false) if not applicable, Err on failure
+    async fn ensure_document_opened(&mut self) -> Result<bool> {
+        let Some(ref lsp) = self.lsp_state.lsp_manager else {
+            return Ok(false);
+        };
+
+        let Some(file_path) = self.buffer().file_path() else {
+            return Ok(false);
+        };
+
+        let file_path_string = file_path.to_string();
+
+        // Convert to absolute path
+        let abs_path = if std::path::Path::new(&file_path_string).is_absolute() {
+            file_path_string.clone()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(&file_path_string).to_string_lossy().to_string(),
+                Err(_) => return Ok(false),
+            }
+        };
+
+        let uri = lsp_types::Url::from_file_path(&abs_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+
+        let state_key = abs_path.clone();
+
+        // Check if document is already opened
+        let is_opened = {
+            let state = self.lsp_state.document_sync
+                .entry(state_key.clone())
+                .or_default();
+            state.did_open_sent
+        };
+
+        if is_opened {
+            return Ok(true);
+        }
+
+        // Document not opened - send didOpen now
+        let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(&abs_path) else {
+            return Ok(false);
+        };
+
+        let content = self.buffer().rope().to_string();
+
+        match lsp.did_open(uri.clone(), language_id, 1, content.clone()).await {
+            Ok(_) => {
+                // Mark document as opened
+                let state = self.lsp_state.document_sync
+                    .entry(state_key)
+                    .or_default();
+                state.did_open_sent = true;
+                state.last_synced_content = Some(content);
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Sends didClose notification for pending file (when switching files)
     pub async fn send_lsp_close_if_needed(&mut self) {
         let Some(file_path) = self.lsp_state.pending_did_close_file.take() else {
@@ -2442,8 +2503,25 @@ impl Editor {
             }
         };
 
+        // Check if LSP server is ready
+        if let Some(server) = lsp.get_server(language_id).await {
+            if !server.is_ready().await {
+                self.set_lsp_status("LSP server still initializing (try again in a moment)".to_string());
+                return Ok(false);
+            }
+        } else {
+            self.set_lsp_status("LSP server not started for this language".to_string());
+            return Ok(false);
+        }
+
         // Request definition
         self.set_lsp_status("Searching for definition...".to_string());
+
+        // Ensure document is opened with LSP server
+        if let Err(e) = self.ensure_document_opened().await {
+            self.set_lsp_status(format!("Failed to open document with LSP: {}", e));
+            return Ok(false);
+        }
 
         // Make sure the LSP server has the latest buffer contents
         self.ensure_lsp_document_synced().await;
@@ -2452,8 +2530,14 @@ impl Editor {
         // Ensures LSP server has the latest content
         let _ = lsp.flush_pending_changes(&uri).await;
 
-        // Small delay to let the LSP server process the didChange
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        // Adaptive delay based on language server processing time
+        // rust-analyzer and jdtls need more time to index and process changes
+        let delay_ms = match language_id {
+            "rust" => 100,  // rust-analyzer needs more time
+            "java" => 150,  // jdtls needs even more
+            _ => 50,        // Other servers are faster
+        };
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 
         let location = lsp
             .goto_definition(&uri, line, character, language_id)
@@ -3414,8 +3498,25 @@ impl Editor {
             }
         };
 
+        // Check if LSP server is ready
+        if let Some(server) = lsp.get_server(language_id).await {
+            if !server.is_ready().await {
+                self.set_lsp_status("LSP server still initializing (try again in a moment)".to_string());
+                return Ok(false);
+            }
+        } else {
+            self.set_lsp_status("LSP server not started for this language".to_string());
+            return Ok(false);
+        }
+
         // Request hover information
         self.set_lsp_status("Requesting hover information...".to_string());
+
+        // Ensure document is opened with LSP server
+        if let Err(e) = self.ensure_document_opened().await {
+            self.set_lsp_status(format!("Failed to open document with LSP: {}", e));
+            return Ok(false);
+        }
 
         self.ensure_lsp_document_synced().await;
 
@@ -3425,8 +3526,14 @@ impl Editor {
         // We do this WITHOUT holding the LspManager lock to avoid blocking
         let _ = lsp.flush_pending_changes(&uri).await;
 
-        // Small delay to let the LSP server process the didChange
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        // Adaptive delay based on language server processing time
+        // rust-analyzer and jdtls need more time to index and process changes
+        let delay_ms = match language_id {
+            "rust" => 100,  // rust-analyzer needs more time
+            "java" => 150,  // jdtls needs even more
+            _ => 50,        // Other servers are faster
+        };
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 
         let hover_text = lsp.hover(&uri, line, character, language_id).await?;
 
@@ -4876,6 +4983,11 @@ impl Editor {
     /// Gets the number of tabs
     pub fn tab_count(&self) -> usize {
         self.tab_page_manager.tab_count()
+    }
+
+    /// Close all tabs except the current one
+    pub fn close_other_tabs(&mut self) {
+        self.tab_page_manager.close_other_tabs();
     }
 
     /// Performance metrics: increment render count

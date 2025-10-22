@@ -16,16 +16,42 @@ const LARGE_FILE_LINES: usize = 50_000;
 /// Large file threshold in bytes - files above this disable expensive features
 const LARGE_FILE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
+/// Normalizes a path to an absolute, canonical form.
+///
+/// CRITICAL: This function MUST be deterministic and stable across the file lifecycle.
+/// The path returned here becomes the URI for LSP communication. If it changes,
+/// LSP loses track of the document, causing "No definition found" and other failures.
+///
+/// Strategy:
+/// - Always make paths absolute (resolve relative paths)
+/// - For existing files: canonicalize to resolve symlinks and normalize separators
+/// - For non-existent files: use absolute path as-is (no canonicalization)
+/// - NEVER re-normalize after initial buffer creation
 fn normalize_path(path: &Path) -> PathBuf {
+    // Step 1: Make absolute
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(path)
+        // Resolve relative to current directory
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(path),
+            Err(_) => path.to_path_buf(), // Fallback if cwd fails
+        }
     };
 
-    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+    // Step 2: Canonicalize ONLY if file exists
+    // This prevents path changes when file is created later
+    match absolute.try_exists() {
+        Ok(true) => {
+            // File exists - safe to canonicalize
+            std::fs::canonicalize(&absolute).unwrap_or(absolute)
+        }
+        Ok(false) | Err(_) => {
+            // File doesn't exist or we can't determine - use absolute path as-is
+            // This ensures new files have stable URIs before their first save
+            absolute
+        }
+    }
 }
 
 /// Represents a text buffer using a Rope data structure for efficient editing
@@ -131,6 +157,13 @@ impl Buffer {
     }
 
     /// Sets the file path
+    ///
+    /// CRITICAL: This normalizes the path and should ONLY be called when:
+    /// 1. Creating a new buffer with a file path
+    /// 2. Explicitly changing the buffer's associated file (e.g., :w newfile.txt)
+    ///
+    /// DO NOT call this during regular saves - it will break LSP URI tracking!
+    /// The normalized path becomes the stable URI for LSP communication.
     pub fn set_file_path(&mut self, path: String) {
         let path_buf = PathBuf::from(path);
         let absolute_path = normalize_path(&path_buf);
@@ -429,7 +462,24 @@ impl Buffer {
         use tokio::io::AsyncWriteExt;
 
         let path_ref = path.as_ref();
-        let absolute_path = normalize_path(path_ref);
+        let path_str_input = path_ref.to_string_lossy();
+
+        // CRITICAL: Only normalize if this is a NEW path
+        // Re-normalizing an existing path can change URIs, breaking LSP tracking
+        let absolute_path = if let Some(existing_path) = &self.file_path {
+            // Check if input path matches existing path (regular save)
+            if path_str_input == existing_path.as_str() {
+                // Regular save - use existing path without re-normalization
+                PathBuf::from(existing_path)
+            } else {
+                // Save As with different path - normalize the new path
+                normalize_path(path_ref)
+            }
+        } else {
+            // No existing path (new buffer) - normalize it
+            normalize_path(path_ref)
+        };
+
         let path_ref = absolute_path.as_path();
         let path_str = path_ref.to_string_lossy().to_string();
         let content = self.rope.to_string();
@@ -470,7 +520,11 @@ impl Buffer {
             .await
             .context(format!("Failed to rename temp file to {}", path_str))?;
 
-        self.file_path = Some(path_str);
+        // CRITICAL: Only update file_path if it changed (Save As scenario)
+        // Preserves URI stability for LSP tracking
+        if self.file_path.as_deref() != Some(&path_str) {
+            self.file_path = Some(path_str);
+        }
         self.modified = false;
         Ok(())
     }

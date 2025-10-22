@@ -184,7 +184,15 @@ impl ApiState {
 }
 
 /// Parse a key string into KeyEvent
-pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
+/// Maximum allowed length for key string input to prevent DoS
+const MAX_KEY_STRING_LENGTH: usize = 1024;
+
+pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
+    // First, validate input length
+    if s.len() > MAX_KEY_STRING_LENGTH {
+        return Err(format!("Key string too long. Max length is {} characters", MAX_KEY_STRING_LENGTH));
+    }
+
     let mut events = Vec::new();
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -197,6 +205,10 @@ pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
             // Find the closing >
             if let Some(end) = s[i..].find('>') {
                 let key_name = &s[i + 1..i + end];
+                // Additional length check for special key names
+                if key_name.len() > 32 {
+                    return Err("Special key name too long".to_string());
+                }
                 if let Some(event) = parse_special_key(key_name) {
                     events.push(event);
                     i += end + 1;
@@ -210,7 +222,7 @@ pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
         i += 1;
     }
 
-    events
+    Ok(events)
 }
 
 /// Parse special key names like "CR", "Esc", "C-w"
