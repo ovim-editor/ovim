@@ -354,6 +354,24 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "tabonly" | "tabo" => {
+            // Close all tabs except the current one
+            if editor.tab_page_manager().is_single_tab() {
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Already only one tab".to_string()),
+                    line_count: None,
+                })
+            } else {
+                let closed_count = editor.tab_count() - 1;
+                editor.close_other_tabs();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Closed {} tabs", closed_count)),
+                    line_count: None,
+                })
+            }
+        }
         "tabs" => {
             // List all tabs
             let tabs = editor.tab_page_manager().tabs();

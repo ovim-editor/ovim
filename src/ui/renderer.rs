@@ -52,18 +52,34 @@ impl Renderer {
         let cursor_line = cursor_pos.line();
         let cursor_col = cursor_pos.col();
 
-        // Layout: [file tree (optional)] + main buffer + status line
+        // Layout: [tab bar (if multiple tabs)] + [file tree (optional)] + main buffer + status line
         let main_area = frame.area();
 
-        // First split: file tree (if visible) + rest
+        // First split: tab bar (if multiple tabs) + rest
+        let (tab_area, remaining_area) = if editor.tab_count() > 1 {
+            let vertical_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
+                .split(main_area);
+            (Some(vertical_chunks[0]), vertical_chunks[1])
+        } else {
+            (None, main_area)
+        };
+
+        // Render tab bar if we have multiple tabs
+        if let Some(tab_area) = tab_area {
+            Self::render_tab_bar(frame, editor, tab_area);
+        }
+
+        // Second split: file tree (if visible) + rest
         let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
             let horizontal_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(30), Constraint::Min(1)].as_ref())
-                .split(main_area);
+                .split(remaining_area);
             (Some(horizontal_chunks[0]), horizontal_chunks[1])
         } else {
-            (None, main_area)
+            (None, remaining_area)
         };
 
         // Second split: buffer + progress line (optional) + status line
@@ -533,6 +549,53 @@ impl Renderer {
         ]);
 
         let paragraph = Paragraph::new(progress_line).style(Style::default().bg(Color::Black));
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Renders the tab bar
+    fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
+        let tabs = editor.tab_page_manager().tabs();
+        let current_index = editor.current_tab_index();
+
+        let mut spans = Vec::new();
+
+        for (i, tab) in tabs.iter().enumerate() {
+            let is_current = i == current_index;
+
+            // Tab format: " {number} {title} "
+            let tab_text = format!(" {} {} ", i + 1, tab.title());
+
+            let style = if is_current {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::DarkGray)
+            };
+
+            spans.push(Span::styled(tab_text, style));
+
+            // Add separator between tabs
+            if i < tabs.len() - 1 {
+                spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
+            }
+        }
+
+        // Fill rest of line with background color
+        let content_width: usize = spans.iter().map(|s| s.content.len()).sum();
+        let remaining = (area.width as usize).saturating_sub(content_width);
+        if remaining > 0 {
+            spans.push(Span::styled(
+                " ".repeat(remaining),
+                Style::default().bg(Color::Black),
+            ));
+        }
+
+        let tab_line = Line::from(spans);
+        let paragraph = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
         frame.render_widget(paragraph, area);
     }
 

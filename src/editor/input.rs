@@ -186,6 +186,14 @@ impl InputHandler {
             let operator = editor.pending_operator().unwrap();
             let count = editor.effective_count();
 
+            // K is not a motion, so operator+K should just cancel the operator
+            if key_event.code == KeyCode::Char('K') {
+                editor.clear_pending_operator();
+                editor.clear_count();
+                // Don't process K further - just cancel the operator
+                return Ok(());
+            }
+
             // Handle indent/dedent with motions - these are always line-wise
             match (operator, key_event.code) {
                 (Operator::Indent, KeyCode::Char('G')) => {
@@ -1997,31 +2005,37 @@ impl InputHandler {
                 ('g', KeyCode::Char('d')) => {
                     // gd - go to definition (LSP)
                     editor.request_goto_definition();
+                    editor.clear_count();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('D')) => {
                     // gD - go to implementation (LSP)
                     editor.request_goto_implementation();
+                    editor.clear_count();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('y')) => {
                     // gy - go to type definition (LSP)
                     editor.request_goto_type();
+                    editor.clear_count();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('R')) => {
                     // gR - find references (LSP)
                     editor.request_find_references();
+                    editor.clear_count();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('c')) => {
                     // gc - show code actions (LSP)
                     editor.request_code_actions();
+                    editor.clear_count();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('q')) => {
                     // gq - format document (LSP)
                     editor.request_format_document();
+                    editor.clear_count();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('J')) => {
@@ -2465,6 +2479,8 @@ impl InputHandler {
             KeyCode::Char('K') => {
                 // K - show hover information (LSP)
                 editor.request_hover();
+                editor.clear_count();
+                return Ok(());
             }
             // Line motions
             KeyCode::Char('0') => {

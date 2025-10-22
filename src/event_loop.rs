@@ -372,28 +372,35 @@ async fn handle_api_request(
             let _ = tx.send(ApiResponse::Snapshot(snapshot));
         }
         ApiRequest::SendKeys(keys, tx) => {
-            let events = parse_key_string(&keys);
-            let mut success = true;
+            let events_result = parse_key_string(&keys);
+            let response = match events_result {
+                Ok(events) => {
+                    let mut success = true;
 
-            for event in events {
-                if let Err(_) = InputHandler::handle_key_event(editor, event) {
-                    success = false;
-                    break;
+                    for event in events {
+                        if let Err(_) = InputHandler::handle_key_event(editor, event) {
+                            success = false;
+                            break;
+                        }
+                    }
+
+                    // Process any LSP actions that were triggered by the keys
+                    editor.process_pending_lsp_actions().await;
+
+                    if success {
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: None,
+                            line_count: None,
+                        })
+                    } else {
+                        ApiResponse::Error(ErrorResponse {
+                            error: "Failed to process keys".to_string(),
+                        })
+                    }
                 }
-            }
-
-            // Process any LSP actions that were triggered by the keys
-            editor.process_pending_lsp_actions().await;
-
-            let response = if success {
-                ApiResponse::Success(SuccessResponse {
-                    success: true,
-                    message: None,
-                    line_count: None,
-                })
-            } else {
-                ApiResponse::Error(ErrorResponse {
-                    error: "Failed to process keys".to_string(),
+                Err(parse_error) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to parse keys: {}", parse_error),
                 })
             };
             let _ = tx.send(response);

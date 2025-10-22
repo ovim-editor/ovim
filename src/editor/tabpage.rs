@@ -186,6 +186,18 @@ impl TabPageManager {
     pub fn is_single_tab(&self) -> bool {
         self.tabs.len() == 1
     }
+
+    /// Close all tabs except the current one (:tabonly)
+    pub fn close_other_tabs(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let current_tab = self.tabs.remove(self.current_tab_index);
+        self.tabs.clear();
+        self.tabs.push(current_tab);
+        self.current_tab_index = 0;
+    }
 }
 
 impl Default for TabPageManager {
