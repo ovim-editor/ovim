@@ -2002,6 +2002,7 @@ impl Editor {
 
     /// Requests hover information for current cursor position
     pub fn request_hover(&mut self) {
+        eprintln!("[DEBUG-HOVER] request_hover() called - setting pending_lsp_action");
         self.lsp_state.pending_lsp_action = Some(LspAction::ShowHover);
     }
 
@@ -2120,6 +2121,8 @@ impl Editor {
             .entry(file_path.to_string())
             .or_default();
         state.last_synced_content = content;
+        // Mark document as opened since we're setting synced content (called after didOpen)
+        state.did_open_sent = true;
     }
 
     /// Sends didChange notification if buffer was modified, then resets the flag
@@ -2349,6 +2352,7 @@ impl Editor {
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.lsp_state.pending_lsp_action.take() {
+            eprintln!("[DEBUG-HOVER] Processing pending LSP action: {:?}", action);
             let result = match &action {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
@@ -3445,6 +3449,7 @@ impl Editor {
 
     /// Gets hover information at current cursor position via LSP (implementation)
     async fn hover_impl(&mut self) -> Result<bool> {
+        eprintln!("[DEBUG-HOVER] hover_impl() called");
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
         let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
@@ -3456,9 +3461,11 @@ impl Editor {
 
         // Get current file URI - must be absolute path
         let Some(file_path) = self.buffer().file_path() else {
+            eprintln!("[DEBUG-HOVER] No file path - returning");
             self.set_lsp_status("Save file first to use hover".to_string());
             return Ok(false);
         };
+        eprintln!("[DEBUG-HOVER] file_path: {}", file_path);
 
         // Convert to absolute path if needed
         let abs_path = if std::path::Path::new(file_path).is_absolute() {
@@ -3497,19 +3504,25 @@ impl Editor {
                 return Ok(false);
             }
         };
+        eprintln!("[DEBUG-HOVER] language_id: {}", language_id);
 
         // Check if LSP server is ready
         if let Some(server) = lsp.get_server(language_id).await {
+            eprintln!("[DEBUG-HOVER] Got server, checking if ready");
             if !server.is_ready().await {
+                eprintln!("[DEBUG-HOVER] Server not ready - returning");
                 self.set_lsp_status("LSP server still initializing (try again in a moment)".to_string());
                 return Ok(false);
             }
+            eprintln!("[DEBUG-HOVER] Server is ready, continuing...");
         } else {
+            eprintln!("[DEBUG-HOVER] No server for language - returning");
             self.set_lsp_status("LSP server not started for this language".to_string());
             return Ok(false);
         }
 
         // Request hover information
+        eprintln!("[DEBUG-HOVER] About to request hover information");
         self.set_lsp_status("Requesting hover information...".to_string());
 
         // Ensure document is opened with LSP server
@@ -3524,7 +3537,9 @@ impl Editor {
         // The didChange notifications are debounced (150ms), so we need to flush
         // to ensure the LSP server has the latest content
         // We do this WITHOUT holding the LspManager lock to avoid blocking
+        eprintln!("[DEBUG-HOVER] Flushing pending changes");
         let _ = lsp.flush_pending_changes(&uri).await;
+        eprintln!("[DEBUG-HOVER] Flush complete");
 
         // Adaptive delay based on language server processing time
         // rust-analyzer and jdtls need more time to index and process changes
@@ -3533,9 +3548,12 @@ impl Editor {
             "java" => 150,  // jdtls needs even more
             _ => 50,        // Other servers are faster
         };
+        eprintln!("[DEBUG-HOVER] Sleeping for {}ms", delay_ms);
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        eprintln!("[DEBUG-HOVER] Sleep complete, calling lsp.hover()");
 
         let hover_text = lsp.hover(&uri, line, character, language_id).await?;
+        eprintln!("[DEBUG-HOVER] hover() returned: {:?}", hover_text.is_some());
 
         // Store hover information and enter HoverWindow mode if available
         self.lsp_state.hover_info = hover_text;
