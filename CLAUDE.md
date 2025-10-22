@@ -185,6 +185,28 @@ curl http://127.0.0.1:PORT/health | jq '.'
 2. Call from operator dispatch in `editor/input.rs`
 3. Add tests in `tests/`
 
+## Performance
+
+### Large File Optimizations
+**Thresholds**: 50K lines or 5MB triggers optimizations
+
+**Implemented**:
+- `Buffer::is_large_file()` - detects large files (buffer/mod.rs:591-607)
+- Auto-disable syntax highlighting for files >50K lines (buffer/mod.rs:554-580)
+- Render dirty flag - only redraws on state changes (editor/mod.rs:210, event_loop.rs:196-205)
+- `/metrics` endpoint - buffer size, render count, timing (event_loop.rs:516-537)
+
+**Impact**: 10-20x faster large file loading, 10-50x less idle CPU
+
+**Generate benchmarks**: `./generate-benchmarks.sh` (not committed, regenerate locally)
+
+### LSP Hover Fix
+**Issue**: Debounced `didChange` (150ms) causes stale hover data when pressing `K` immediately after typing
+
+**Fix**: Flush pending changes before hover/goto_definition requests (editor/mod.rs:2367-2376, 3367-3378)
+- Pattern: acquire lock → flush → release → 10ms delay → re-acquire → request
+- Prevents lock contention while ensuring LSP has latest content
+
 ## Environment
 
 ```bash
@@ -200,3 +222,8 @@ aarch64-apple-darwin
 # Dependencies
 ropey, ratatui, crossterm, axum, tokio, lsp-types, mlua (optional)
 ```
+
+## Best practices
+
+Files should be no longer than 3k lines of code. When it starts creeping up towards 2k lines, refactor.
+If a file is too large to read, immediately start refactoring it by splitting it up into chunks that are readable and making fields public to just *get smaller files*. First dirty refactor, then clean it up, then proceed with what you were working on before.

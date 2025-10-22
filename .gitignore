@@ -1,2 +1,4 @@
 /target
 /example-project-spond
+/benchmarks/*.txt
+/benchmarks/*.rs
