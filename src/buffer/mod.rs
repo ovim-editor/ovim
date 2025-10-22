@@ -10,6 +10,12 @@ use ropey::Rope;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+/// Large file threshold in lines - files above this disable expensive features
+const LARGE_FILE_LINES: usize = 50_000;
+
+/// Large file threshold in bytes - files above this disable expensive features
+const LARGE_FILE_BYTES: usize = 5 * 1024 * 1024; // 5MB
+
 fn normalize_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -546,7 +552,18 @@ impl Buffer {
     }
 
     /// Enables syntax highlighting for this buffer based on file path
+    /// Automatically skips large files for performance
     pub fn enable_syntax_highlighting(&mut self) {
+        // Don't enable syntax for large files
+        if self.is_large_file() {
+            eprintln!(
+                "Syntax highlighting disabled for large file ({} lines, {:.2} MB)",
+                self.line_count(),
+                self.rope.len_bytes() as f64 / (1024.0 * 1024.0)
+            );
+            return;
+        }
+
         if let Some(ref path) = self.file_path {
             if let Some(lang) = LanguageRegistry::detect_from_path(path) {
                 if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
@@ -565,6 +582,11 @@ impl Buffer {
     /// Checks if syntax highlighting should be initialized (lazy loading)
     /// Returns true if the buffer has a file path with supported language but no syntax yet
     pub fn should_init_syntax(&self) -> bool {
+        // Don't initialize syntax for large files
+        if self.is_large_file() {
+            return false;
+        }
+
         // Has file path, no syntax yet, and language is supported
         if self.syntax.is_some() {
             return false;
@@ -575,6 +597,24 @@ impl Buffer {
         } else {
             false
         }
+    }
+
+    /// Checks if this is a large file (exceeds line or byte threshold)
+    pub fn is_large_file(&self) -> bool {
+        let line_count = self.line_count();
+        let byte_count = self.rope.len_bytes();
+
+        line_count > LARGE_FILE_LINES || byte_count > LARGE_FILE_BYTES
+    }
+
+    /// Gets the large file threshold for lines
+    pub fn large_file_line_threshold() -> usize {
+        LARGE_FILE_LINES
+    }
+
+    /// Gets the large file threshold for bytes
+    pub fn large_file_byte_threshold() -> usize {
+        LARGE_FILE_BYTES
     }
 
     /// Builds the highlight cache for all lines
@@ -845,9 +885,14 @@ impl Buffer {
     }
 
     /// Refreshes git status for this buffer
-    pub fn refresh_git_status(&mut self) {
+    /// Returns the duration in microseconds if git status was refreshed
+    pub fn refresh_git_status(&mut self) -> Option<u64> {
         if let Some(ref path) = self.file_path {
+            let start = std::time::Instant::now();
             self.git_status = GitStatus::from_file(path).unwrap_or_else(|_| GitStatus::new());
+            Some(start.elapsed().as_micros() as u64)
+        } else {
+            None
         }
     }
 

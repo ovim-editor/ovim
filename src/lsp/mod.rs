@@ -494,21 +494,19 @@ impl LspManager {
         text: String,
         old_text: Option<String>,
     ) -> Result<()> {
-        // Get or create debouncer for this document
-        let debouncer_arc = if let Some(existing) = self.change_debouncers.get(&uri) {
-            existing.value().clone()
-        } else {
-            // Create new debouncer
-            let debouncer = Arc::new(Mutex::new(ChangeDebouncer::new(
-                uri.clone(),
-                language_id.to_string(),
-                text.clone(),
-                old_text.clone(),
-            )));
-            self.change_debouncers
-                .insert(uri.clone(), debouncer.clone());
-            debouncer
-        };
+        // Get or create debouncer for this document atomically to prevent race conditions
+        let debouncer_arc = self
+            .change_debouncers
+            .entry(uri.clone())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(ChangeDebouncer::new(
+                    uri.clone(),
+                    language_id.to_string(),
+                    text.clone(),
+                    old_text.clone(),
+                )))
+            })
+            .clone();
 
         // Update pending change and restart timer
         let mut debouncer = debouncer_arc.lock().await;

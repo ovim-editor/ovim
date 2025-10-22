@@ -124,6 +124,7 @@ pub async fn run_event_loop(
 ) -> Result<()> {
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(100);
+    let mut last_input_time: Option<Instant> = None;
 
     // Create channel for async preview loading
     let (preview_tx, mut preview_rx) =
@@ -189,11 +190,26 @@ pub async fn run_event_loop(
         while let Ok(result) = file_rx.try_recv() {
             if let Some(picker) = editor.picker_mut() {
                 picker.add_file_result(result);
+                editor.mark_dirty(); // Picker results changed
             }
         }
 
-        // Render the editor
-        ui.renderer_mut().render(editor)?;
+        // Only render if the editor state has changed (dirty flag)
+        if editor.is_dirty() {
+            let start = std::time::Instant::now();
+            ui.renderer_mut().render(editor)?;
+            let duration = start.elapsed();
+
+            editor.record_render_duration(duration.as_micros() as u64);
+            editor.increment_render_count();
+            editor.mark_clean();
+
+            // Record input latency if we have a pending input time
+            if let Some(input_time) = last_input_time.take() {
+                let latency = input_time.elapsed().as_micros() as u64;
+                editor.record_input_latency(latency);
+            }
+        }
 
         // Check for API requests (non-blocking)
         if let Some(ref mut rx) = api_rx {
@@ -209,6 +225,9 @@ pub async fn run_event_loop(
         // Poll for events with a timeout to allow checking API requests
         if let Some(event) = InputHandler::poll_event()? {
             if let Event::Key(key_event) = event {
+                // Record input time for latency tracking
+                last_input_time = Some(Instant::now());
+
                 InputHandler::handle_key_event(editor, key_event)?;
                 // Reset debounce timer on any edit
                 last_edit = Instant::now();
@@ -512,6 +531,38 @@ async fn handle_api_request(
             };
 
             let _ = tx.send(ApiResponse::Health(health_info));
+        }
+        ApiRequest::GetMetrics(tx) => {
+            // Get memory usage (approximate)
+            let buffer = editor.buffer();
+            let buffer_byte_size = buffer.rope().len_bytes();
+            let buffer_line_count = buffer.rope().len_lines();
+
+            // Memory usage estimate in MB (rough approximation)
+            let memory_usage_mb = (buffer_byte_size as f64) / (1024.0 * 1024.0);
+
+            let metrics_info = ovim::api::MetricsInfo {
+                buffer_line_count,
+                buffer_byte_size,
+                syntax_enabled: buffer.has_syntax_highlighting(),
+                is_large_file: buffer_line_count > 50_000, // Threshold for "large file"
+                render_count: editor.render_count(),
+                last_render_duration_micros: editor.last_render_duration_micros(),
+                last_syntax_duration_micros: editor.last_syntax_duration_micros(),
+                memory_usage_mb,
+                // Input latency percentiles
+                input_latency_p50_micros: editor.input_latency_p50_micros(),
+                input_latency_p95_micros: editor.input_latency_p95_micros(),
+                input_latency_p99_micros: editor.input_latency_p99_micros(),
+                input_latency_samples: editor.input_latency_sample_count(),
+                // Operation timings
+                last_lsp_serialize_micros: editor.last_lsp_serialize_micros(),
+                last_git_status_micros: editor.last_git_status_micros(),
+                last_fold_calc_micros: editor.last_fold_calc_micros(),
+                last_diagnostic_query_micros: editor.last_diagnostic_query_micros(),
+            };
+
+            let _ = tx.send(ApiResponse::Metrics(metrics_info));
         }
     }
 }

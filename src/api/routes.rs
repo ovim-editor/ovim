@@ -1,6 +1,6 @@
 use super::handlers::{
-    execute_command, get_buffer, get_cursor, get_health, get_lsp_status, get_mode, get_render,
-    get_snapshot, send_keys, set_buffer,
+    execute_command, get_buffer, get_cursor, get_health, get_lsp_status, get_metrics, get_mode,
+    get_render, get_snapshot, send_keys, set_buffer,
 };
 use super::state::ApiState;
 use axum::{
@@ -21,5 +21,6 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/command", post(execute_command))
         .route("/render", get(get_render))
         .route("/lsp/status", get(get_lsp_status))
+        .route("/metrics", get(get_metrics))
         .with_state(state)
 }

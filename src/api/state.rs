@@ -16,6 +16,7 @@ pub enum ApiRequest {
     GetRender(oneshot::Sender<ApiResponse>),
     GetLspStatus(oneshot::Sender<ApiResponse>),
     GetHealth(oneshot::Sender<ApiResponse>),
+    GetMetrics(oneshot::Sender<ApiResponse>),
 }
 
 /// Response types that can be returned from the editor
@@ -29,6 +30,7 @@ pub enum ApiResponse {
     Render(RenderInfo),
     LspStatus(LspStatusInfo),
     Health(HealthInfo),
+    Metrics(MetricsInfo),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
@@ -121,6 +123,29 @@ pub struct HealthInfo {
     pub file: Option<String>,
     pub lsp_servers: HashMap<String, String>,
     pub ready: bool,
+}
+
+/// Performance metrics information
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricsInfo {
+    pub buffer_line_count: usize,
+    pub buffer_byte_size: usize,
+    pub syntax_enabled: bool,
+    pub is_large_file: bool,
+    pub render_count: u64,
+    pub last_render_duration_micros: Option<u64>,
+    pub last_syntax_duration_micros: Option<u64>,
+    pub memory_usage_mb: f64,
+    // Input latency percentiles (microseconds)
+    pub input_latency_p50_micros: Option<u64>,
+    pub input_latency_p95_micros: Option<u64>,
+    pub input_latency_p99_micros: Option<u64>,
+    pub input_latency_samples: usize,
+    // Operation timings (microseconds)
+    pub last_lsp_serialize_micros: Option<u64>,
+    pub last_git_status_micros: Option<u64>,
+    pub last_fold_calc_micros: Option<u64>,
+    pub last_diagnostic_query_micros: Option<u64>,
 }
 
 /// Visual selection range

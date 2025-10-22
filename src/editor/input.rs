@@ -29,7 +29,7 @@ impl InputHandler {
             editor.record_macro_event(key_event);
         }
 
-        match editor.mode() {
+        let result = match editor.mode() {
             Mode::Normal => Self::handle_normal_mode(editor, key_event),
             Mode::Insert => Self::handle_insert_mode(editor, key_event),
             Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
@@ -41,7 +41,13 @@ impl InputHandler {
             Mode::Picker => Self::handle_picker_mode(editor, key_event),
             Mode::HoverWindow => Self::handle_hover_window_mode(editor, key_event),
             Mode::FileTree => Self::handle_filetree_mode(editor, key_event),
-        }
+        };
+
+        // Mark the editor as dirty after processing any key event
+        // This ensures UI is redrawn on next render cycle
+        editor.mark_dirty();
+
+        result
     }
 
     /// Handles input in Normal mode

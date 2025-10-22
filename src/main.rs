@@ -10,6 +10,16 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 
+/// Sanitize session name to prevent path traversal attacks
+fn sanitize_session_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect::<String>()
+        .chars()
+        .take(64) // Limit length
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse_args();
@@ -22,8 +32,9 @@ async fn main() -> Result<()> {
     // Load file from command line argument if provided
     let mut editor = if let Some(file_path) = &args.file {
         let mut ed = Editor::new();
-        if let Err(_e) = ed.load_file(file_path) {
+        if let Err(e) = ed.load_file(file_path) {
             // If file doesn't exist, create empty buffer with that filename
+            eprintln!("Note: Could not load file '{}': {}. Starting with empty buffer.", file_path, e);
             ed = Editor::new();
             ed.buffer_mut().set_file_path(file_path.clone());
         }
@@ -93,6 +104,10 @@ async fn main() -> Result<()> {
             .session
             .clone()
             .unwrap_or_else(|| "default".to_string());
+
+        // Sanitize session name to prevent path traversal attacks
+        let session_name = sanitize_session_name(&session_name);
+
         let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
 
         if let Err(e) = session_info.write() {
