@@ -218,7 +218,7 @@ fn get_process_start_time(pid: u32) -> Option<u64> {
     // Alternative: use `ps -o lstart= -p PID` and parse it
     // But better: use the start time in seconds
     let output = Command::new("ps")
-        .args(&["-o", "lstart=", "-p", &pid.to_string()])
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
         .output()
         .ok()?;
 
@@ -234,7 +234,7 @@ fn get_process_start_time(pid: u32) -> Option<u64> {
     // Get the elapsed time and subtract from current time
 
     let output = Command::new("ps")
-        .args(&["-o", "etimes=", "-p", &pid.to_string()])
+        .args(["-o", "etimes=", "-p", &pid.to_string()])
         .output()
         .ok()?;
 

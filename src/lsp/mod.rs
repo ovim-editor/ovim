@@ -715,10 +715,10 @@ impl LspManager {
                                         lsp_types::WorkDoneProgress::Report(report) => {
                                             if let Some(msg) = &report.message {
                                                 Some(format!("{}: {}", language_id, msg))
-                                            } else if let Some(percentage) = report.percentage {
-                                                Some(format!("{}: {}%", language_id, percentage))
                                             } else {
-                                                None // Skip reports without useful info
+                                                report.percentage.map(|percentage| {
+                                                    format!("{}: {}%", language_id, percentage)
+                                                })
                                             }
                                         }
                                         lsp_types::WorkDoneProgress::End(end) => {
@@ -801,22 +801,18 @@ impl LspManager {
             let lang_id = language_id.clone();
 
             tokio::spawn(async move {
-                loop {
-                    if let Some(msg) = server.receive().await {
-                        if msg.is_notification() {
-                            // Send notification to manager for processing
-                            let notification = LspNotification {
-                                language_id: lang_id.clone(),
-                                message: msg,
-                            };
+                while let Some(msg) = server.receive().await {
+                    if msg.is_notification() {
+                        // Send notification to manager for processing
+                        let notification = LspNotification {
+                            language_id: lang_id.clone(),
+                            message: msg,
+                        };
 
-                            if let Err(e) = tx.send(notification).await {
-                                lsp_error!("Listener", "Failed to send notification: {}", e);
-                                break; // Manager dropped or channel full, stop listening
-                            }
+                        if let Err(e) = tx.send(notification).await {
+                            lsp_error!("Listener", "Failed to send notification: {}", e);
+                            break; // Manager dropped or channel full, stop listening
                         }
-                    } else {
-                        break; // Server closed
                     }
                 }
             });

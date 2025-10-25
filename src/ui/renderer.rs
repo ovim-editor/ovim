@@ -22,6 +22,12 @@ pub struct Renderer {
     theme: Theme,
 }
 
+impl Default for Renderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Renderer {
     /// Creates a new renderer
     pub fn new() -> Self {
@@ -48,7 +54,7 @@ impl Renderer {
         let scheme = editor
             .get_color_scheme()
             .cloned()
-            .unwrap_or_else(|| crate::syntax::ColorScheme::tokyonight());
+            .unwrap_or_else(crate::syntax::ColorScheme::tokyonight);
         let theme = Theme::from_scheme(scheme);
         let cursor_pos = editor.buffer().cursor();
         let cursor_line = cursor_pos.line();
@@ -282,9 +288,8 @@ impl Renderer {
         use unicode_width::UnicodeWidthChar;
 
         let mut display_col = 0;
-        let mut current_char_idx = 0;
 
-        for ch in text.chars() {
+        for (current_char_idx, ch) in text.chars().enumerate() {
             if current_char_idx >= char_col {
                 break;
             }
@@ -297,8 +302,6 @@ impl Renderer {
                 // Use display width (emojis = 2, most chars = 1, zero-width = 0)
                 display_col += ch.width().unwrap_or(1);
             }
-
-            current_char_idx += 1;
         }
 
         display_col
@@ -1185,11 +1188,11 @@ impl Renderer {
 
                 // Choose icon based on file type or result type
                 let icon = if result.line > 0 {
-                    " " // Search result icon
+                    "🔎" // Search result icon
                 } else if display.ends_with('/') {
-                    " " // Directory icon
+                    "📂" // Directory icon
                 } else {
-                    " " // File icon
+                    "📄" // File icon
                 };
 
                 let (icon_style, text_style, bg_color) = if is_selected {
@@ -1390,11 +1393,9 @@ impl Renderer {
                         // Cache highlights for the visible range
                         let mut cache = preview.highlighted_lines.borrow_mut();
                         for line_idx in start_line..end_line {
-                            if !cache.contains_key(&line_idx) {
-                                let highlights =
-                                    highlighter.highlights_for_line(line_idx, &preview.content);
-                                cache.insert(line_idx, highlights);
-                            }
+                            cache.entry(line_idx).or_insert_with(|| {
+                                highlighter.highlights_for_line(line_idx, &preview.content)
+                            });
                         }
                     }
 
@@ -1650,10 +1651,8 @@ impl Renderer {
                                 col_idx >= sel_start_col
                             } else if line_idx == sel_end_line {
                                 col_idx <= sel_end_col
-                            } else if line_idx > sel_start_line && line_idx < sel_end_line {
-                                true
                             } else {
-                                false
+                                line_idx > sel_start_line && line_idx < sel_end_line
                             }
                         }
                     }
@@ -1696,10 +1695,8 @@ impl Renderer {
                                     end_col >= sel_start_col
                                 } else if line_idx == sel_end_line {
                                     end_col <= sel_end_col
-                                } else if line_idx > sel_start_line && line_idx < sel_end_line {
-                                    true
                                 } else {
-                                    false
+                                    line_idx > sel_start_line && line_idx < sel_end_line
                                 }
                             }
                         }

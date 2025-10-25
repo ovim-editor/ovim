@@ -144,12 +144,10 @@ pub async fn run_event_loop(
             }
         }
 
-        if let Some(event) = InputHandler::poll_event()? {
-            if let Event::Key(key_event) = event {
-                last_input_time = Some(Instant::now());
-                InputHandler::handle_key_event(editor, key_event)?;
-                last_edit = Instant::now();
-            }
+        if let Some(Event::Key(key_event)) = InputHandler::poll_event()? {
+            last_input_time = Some(Instant::now());
+            InputHandler::handle_key_event(editor, key_event)?;
+            last_edit = Instant::now();
         }
 
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
@@ -183,7 +181,7 @@ async fn handle_api_request(
                     let mut success = true;
 
                     for event in events {
-                        if let Err(_) = InputHandler::handle_key_event(editor, event) {
+                        if InputHandler::handle_key_event(editor, event).is_err() {
                             success = false;
                             break;
                         }
