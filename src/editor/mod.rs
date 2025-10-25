@@ -1200,13 +1200,12 @@ impl Editor {
         };
 
         let file_path_string = file_path.to_string();
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string)) else {
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        else {
             return;
         };
 
-        self.lsp_state
-            .document_sync
-            .remove(&file_path_string);
+        self.lsp_state.document_sync.remove(&file_path_string);
 
         // Detect language from file path
         let Some(language_id) =
@@ -2001,7 +2000,10 @@ impl Editor {
 
     /// Requests hover information for current cursor position
     pub fn request_hover(&mut self) {
-        crate::lsp_debug!("LSP-HOVER", "request_hover() called - setting pending action");
+        crate::lsp_debug!(
+            "LSP-HOVER",
+            "request_hover() called - setting pending action"
+        );
         self.lsp_state.pending_lsp_action = Some(LspAction::ShowHover);
     }
 
@@ -2091,11 +2093,7 @@ impl Editor {
     /// Get (or create) the document sync state for the current buffer
     fn document_sync_state_mut(&mut self) -> Option<&mut lsp_state::DocumentSyncState> {
         let file_path = self.buffer().file_path()?.to_string();
-        Some(self
-            .lsp_state
-            .document_sync
-            .entry(file_path)
-            .or_default())
+        Some(self.lsp_state.document_sync.entry(file_path).or_default())
     }
 
     /// Marks that the buffer was modified (for LSP notification)
@@ -2136,7 +2134,8 @@ impl Editor {
 
         let file_path_string = file_path.to_string();
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string)) else {
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        else {
             return;
         };
 
@@ -2175,11 +2174,7 @@ impl Editor {
         // Record serialize duration after we're done using lsp reference
         self.record_lsp_serialize_duration(serialize_duration);
 
-        let state = self
-            .lsp_state
-            .document_sync
-            .entry(state_key)
-            .or_default();
+        let state = self.lsp_state.document_sync.entry(state_key).or_default();
 
         match result {
             Ok(_) => {
@@ -2206,8 +2201,7 @@ impl Editor {
 
         let file_path_string = file_path.to_string();
 
-        let Ok(uri) =
-            lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
         else {
             return;
         };
@@ -2236,11 +2230,7 @@ impl Editor {
 
         let result = lsp.did_save(uri, language_id, text).await;
 
-        let state = self
-            .lsp_state
-            .document_sync
-            .entry(state_key)
-            .or_default();
+        let state = self.lsp_state.document_sync.entry(state_key).or_default();
 
         state.buffer_saved = false;
 
@@ -2291,7 +2281,9 @@ impl Editor {
 
         // Check if document is already opened
         let is_opened = {
-            let state = self.lsp_state.document_sync
+            let state = self
+                .lsp_state
+                .document_sync
                 .entry(state_key.clone())
                 .or_default();
             state.did_open_sent
@@ -2302,21 +2294,27 @@ impl Editor {
             return Ok(true);
         }
 
-        crate::lsp_debug!("LSP-HOVER", "Document NOT opened yet for: {}, sending didOpen", state_key);
+        crate::lsp_debug!(
+            "LSP-HOVER",
+            "Document NOT opened yet for: {}, sending didOpen",
+            state_key
+        );
 
         // Document not opened - send didOpen now
-        let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(&abs_path) else {
+        let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(&abs_path)
+        else {
             return Ok(false);
         };
 
         let content = self.buffer().rope().to_string();
 
-        match lsp.did_open(uri.clone(), language_id, 1, content.clone()).await {
+        match lsp
+            .did_open(uri.clone(), language_id, 1, content.clone())
+            .await
+        {
             Ok(_) => {
                 // Mark document as opened
-                let state = self.lsp_state.document_sync
-                    .entry(state_key)
-                    .or_default();
+                let state = self.lsp_state.document_sync.entry(state_key).or_default();
                 state.did_open_sent = true;
                 state.last_synced_content = Some(content);
                 Ok(true)
@@ -2337,8 +2335,7 @@ impl Editor {
 
         let file_path_string = file_path.clone();
 
-        let Ok(uri) =
-            lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
         else {
             return;
         };
@@ -2358,7 +2355,11 @@ impl Editor {
     /// Process any pending LSP actions
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.lsp_state.pending_lsp_action.take() {
-            crate::lsp_debug!("LSP-HOVER", "process_pending_lsp_actions() - processing action: {:?}", action);
+            crate::lsp_debug!(
+                "LSP-HOVER",
+                "process_pending_lsp_actions() - processing action: {:?}",
+                action
+            );
             let result = match &action {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
@@ -2519,7 +2520,9 @@ impl Editor {
         // Check if LSP server is ready
         if let Some(server) = lsp.get_server(language_id).await {
             if !server.is_ready().await {
-                self.set_lsp_status("LSP server still initializing (try again in a moment)".to_string());
+                self.set_lsp_status(
+                    "LSP server still initializing (try again in a moment)".to_string(),
+                );
                 return Ok(false);
             }
         } else {
@@ -2546,9 +2549,9 @@ impl Editor {
         // Adaptive delay based on language server processing time
         // rust-analyzer and jdtls need more time to index and process changes
         let delay_ms = match language_id {
-            "rust" => 100,  // rust-analyzer needs more time
-            "java" => 150,  // jdtls needs even more
-            _ => 50,        // Other servers are faster
+            "rust" => 100, // rust-analyzer needs more time
+            "java" => 150, // jdtls needs even more
+            _ => 50,       // Other servers are faster
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 
@@ -3517,7 +3520,9 @@ impl Editor {
         // Check if LSP server is ready
         if let Some(server) = lsp.get_server(language_id).await {
             if !server.is_ready().await {
-                self.set_lsp_status("LSP server still initializing (try again in a moment)".to_string());
+                self.set_lsp_status(
+                    "LSP server still initializing (try again in a moment)".to_string(),
+                );
                 return Ok(false);
             }
         } else {
@@ -3545,9 +3550,9 @@ impl Editor {
         // Adaptive delay based on language server processing time
         // rust-analyzer and jdtls need more time to index and process changes
         let delay_ms = match language_id {
-            "rust" => 100,  // rust-analyzer needs more time
-            "java" => 150,  // jdtls needs even more
-            _ => 50,        // Other servers are faster
+            "rust" => 100, // rust-analyzer needs more time
+            "java" => 150, // jdtls needs even more
+            _ => 50,       // Other servers are faster
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 

@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(info.pid, pid);
         // Note: verify() may fail on busy systems due to PID reuse, so we just check it doesn't error
         match info.verify() {
-            Ok(_) => {}, // Either true or false is acceptable
+            Ok(_) => {} // Either true or false is acceptable
             Err(e) => panic!("verify() should not error, got: {}", e),
         }
     }
@@ -409,7 +409,7 @@ mod tests {
         // Should verify successfully (or at least not error)
         // On busy systems, PID might be reused, so we just check no error occurs
         match info.verify() {
-            Ok(_) => {}, // Either true or false is acceptable
+            Ok(_) => {} // Either true or false is acceptable
             Err(e) => panic!("verify() should not error, got: {}", e),
         }
 

@@ -120,12 +120,7 @@ impl RegisterManager {
     }
 
     /// Sets a register value with explicit type
-    pub fn set_with_type(
-        &mut self,
-        register: Option<char>,
-        value: String,
-        reg_type: RegisterType,
-    ) {
+    pub fn set_with_type(&mut self, register: Option<char>, value: String, reg_type: RegisterType) {
         let content = RegisterContent::new(value.clone(), reg_type);
         match register {
             None => {

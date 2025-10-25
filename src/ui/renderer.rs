@@ -573,9 +573,7 @@ impl Renderer {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
+                Style::default().fg(Color::White).bg(Color::DarkGray)
             };
 
             spans.push(Span::styled(tab_text, style));

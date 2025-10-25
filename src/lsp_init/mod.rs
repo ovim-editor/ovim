@@ -43,7 +43,9 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     // Determine language and LSP server based on file extension
     match extension {
         "rs" => rust::initialize_rust_lsp(editor, &abs_path).await,
-        "js" | "ts" | "jsx" | "tsx" => javascript::initialize_javascript_lsp(editor, &abs_path).await,
+        "js" | "ts" | "jsx" | "tsx" => {
+            javascript::initialize_javascript_lsp(editor, &abs_path).await
+        }
         "py" => python::initialize_python_lsp(editor, &abs_path).await,
         _ => return, // No LSP support for this file type
     }

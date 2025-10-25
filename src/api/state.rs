@@ -190,7 +190,10 @@ const MAX_KEY_STRING_LENGTH: usize = 1024;
 pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
     // First, validate input length
     if s.len() > MAX_KEY_STRING_LENGTH {
-        return Err(format!("Key string too long. Max length is {} characters", MAX_KEY_STRING_LENGTH));
+        return Err(format!(
+            "Key string too long. Max length is {} characters",
+            MAX_KEY_STRING_LENGTH
+        ));
     }
 
     let mut events = Vec::new();
