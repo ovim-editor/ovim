@@ -1188,13 +1188,13 @@ impl Renderer {
                 let display =
                     crate::editor::Picker::truncate_path(&result.display, max_display_len);
 
-                // Choose icon based on file type or result type
+                // Choose icon based on file type or result type (using Nerd Font glyphs)
                 let icon = if result.line > 0 {
-                    "🔎" // Search result icon
+                    "\u{f002}" // Search result icon (magnifying glass)
                 } else if display.ends_with('/') {
-                    "📂" // Directory icon
+                    "\u{f024b}" // Directory icon (folder)
                 } else {
-                    "📄" // File icon
+                    "\u{f15b}" // File icon (document)
                 };
 
                 let (icon_style, text_style, bg_color) = if is_selected {
