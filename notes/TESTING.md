@@ -1,5 +1,7 @@
 # Manual Testing Guide for ovim REST API
 
+TODO: When you see this, immediately refactor this to use ovim-ctl.
+
 ## Setup
 
 1. **Start ovim with REST API enabled:**
