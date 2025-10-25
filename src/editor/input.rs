@@ -2864,7 +2864,7 @@ impl InputHandler {
                 if col > 0 {
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
-                        let chars_count = line_text.chars().count();
+                        let _chars_count = line_text.chars().count();
 
                         // Calculate start column (delete count chars before cursor)
                         let start_col = col.saturating_sub(count);
@@ -3196,7 +3196,7 @@ impl InputHandler {
                     // Move cursor left when exiting insert mode (unless at column 0)
 
                     // If we were in visual block mode, move cursor to appropriate line
-                    if let Some((start_line, end_line, col, is_append, move_to_end)) =
+                    if let Some((start_line, end_line, _col, is_append, move_to_end)) =
                         should_move_to_end_line
                     {
                         // For visual block, calculate the correct final cursor position
@@ -4218,7 +4218,7 @@ impl InputHandler {
                     if let Some(line) = editor.buffer().line(line_idx) {
                         all_deleted.push(line.to_string());
 
-                        let line_len = line.trim_end_matches('\n').chars().count();
+                        let _line_len = line.trim_end_matches('\n').chars().count();
 
                         // Calculate character range
                         let start_char = editor.buffer().rope().line_to_char(line_idx);
@@ -5082,7 +5082,7 @@ impl InputHandler {
             let max_col = if line_len > 0 { line_len - 1 } else { 0 };
             let cursor = editor.buffer_mut().cursor_mut();
             let desired = cursor.desired_col();
-            let old_col = cursor.col();
+            let _old_col = cursor.col();
 
             // In VisualBlock mode, preserve desired column even if beyond line end
             let target_col = if mode == Mode::VisualBlock {
