@@ -88,8 +88,8 @@ impl SessionInfo {
         let temp_path = path.with_extension("tmp");
 
         // Write to temporary file
-        let mut temp_file = fs::File::create(&temp_path)
-            .context("Failed to create temporary session file")?;
+        let mut temp_file =
+            fs::File::create(&temp_path).context("Failed to create temporary session file")?;
         temp_file
             .write_all(json.as_bytes())
             .context("Failed to write to temporary session file")?;

@@ -3165,8 +3165,11 @@ impl InputHandler {
                                     editor.pop_last_change();
 
                                     // Create composite for all insert changes
-                                    let insert_composite =
-                                        Change::composite(all_changes, cursor_before, cursor_before);
+                                    let insert_composite = Change::composite(
+                                        all_changes,
+                                        cursor_before,
+                                        cursor_before,
+                                    );
 
                                     // Check if there's a delete composite on the stack (from visual block 'c')
                                     // If so, combine delete + insert into a super-composite
@@ -4683,7 +4686,9 @@ impl InputHandler {
                         let line_content = line_text.trim_end_matches('\n');
 
                         // Skip the final empty line (implicit from trailing newline)
-                        if line_content.is_empty() && target_line == editor.buffer().line_count() - 1 {
+                        if line_content.is_empty()
+                            && target_line == editor.buffer().line_count() - 1
+                        {
                             break;
                         }
 
@@ -4706,8 +4711,11 @@ impl InputHandler {
                         };
 
                         // Insert the block line at the column
-                        let change =
-                            Change::insert((target_line, insert_col), block_line.to_string(), cursor_before);
+                        let change = Change::insert(
+                            (target_line, insert_col),
+                            block_line.to_string(),
+                            cursor_before,
+                        );
                         change.apply(editor.buffer_mut());
                         editor.add_change(change);
                         last_pasted_line = target_line;
@@ -4717,7 +4725,10 @@ impl InputHandler {
 
                 // Position cursor at the end of the last pasted block line
                 let new_col = paste_col + last_pasted_text.chars().count();
-                editor.buffer_mut().cursor_mut().set_position(last_pasted_line, new_col);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(last_pasted_line, new_col);
             }
             RegisterType::Line => {
                 // Line paste - insert after current line
@@ -4836,7 +4847,8 @@ impl InputHandler {
                                 eprintln!("[DEBUG] Line {}: deleted={:?}", line_idx, deleted);
 
                                 // Create individual Change for each line deletion
-                                let range = Range::new((line_idx, start_col), (line_idx, actual_end_col));
+                                let range =
+                                    Range::new((line_idx, start_col), (line_idx, actual_end_col));
                                 let change = Change::delete(range, deleted.clone(), cursor_before);
                                 changes.push(change);
                                 deleted_lines.push(deleted);

@@ -282,7 +282,12 @@ impl Buffer {
 
     /// Finds the position of a character in a line starting from a given column (zero-allocation)
     /// Returns None if the character is not found
-    pub fn find_char_in_line(&self, line_idx: usize, start_col: usize, target: char) -> Option<usize> {
+    pub fn find_char_in_line(
+        &self,
+        line_idx: usize,
+        start_col: usize,
+        target: char,
+    ) -> Option<usize> {
         let line_slice = self.line_slice(line_idx)?;
 
         for (i, ch) in line_slice.chars().enumerate() {
@@ -298,7 +303,12 @@ impl Buffer {
 
     /// Finds the position of a character in a line searching backwards from a given column (zero-allocation)
     /// Returns None if the character is not found
-    pub fn find_char_in_line_rev(&self, line_idx: usize, start_col: usize, target: char) -> Option<usize> {
+    pub fn find_char_in_line_rev(
+        &self,
+        line_idx: usize,
+        start_col: usize,
+        target: char,
+    ) -> Option<usize> {
         let line_slice = self.line_slice(line_idx)?;
 
         let chars_up_to: Vec<(usize, char)> = line_slice
@@ -441,8 +451,7 @@ impl Buffer {
         let absolute_path = normalize_path(path_ref);
 
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(Self::load_file_async(&absolute_path))
+            tokio::runtime::Handle::current().block_on(Self::load_file_async(&absolute_path))
         })
     }
 
@@ -572,10 +581,7 @@ impl Buffer {
         let line_slice = self.line_slice(line_idx)?;
 
         // Build a chars vector from the slice (excluding newline)
-        let chars: Vec<char> = line_slice
-            .chars()
-            .take_while(|&c| c != '\n')
-            .collect();
+        let chars: Vec<char> = line_slice.chars().take_while(|&c| c != '\n').collect();
 
         if chars.is_empty() || col >= chars.len() {
             return None;
