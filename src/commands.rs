@@ -421,8 +421,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 .or_else(|| command.strip_prefix("tabe "))
                 .or_else(|| command.strip_prefix("tabedit "))
             {
-                // Create new tab and load file
+                // Create new tab and load file (or create if doesn't exist)
                 editor.new_tab(None);
+
+                // Try to load the file, if it doesn't exist create an empty buffer
                 match editor.load_file(filename) {
                     Ok(_) => {
                         let tab_index = editor.current_tab_index() + 1;
@@ -432,9 +434,35 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             line_count: None,
                         })
                     }
-                    Err(e) => ApiResponse::Error(ErrorResponse {
-                        error: format!("Failed to load file: {}", e),
-                    }),
+                    Err(e) => {
+                        // Check if error is because file doesn't exist
+                        if e.to_string().contains("Failed to read file") || e.to_string().contains("No such file") {
+                            // Create a new empty buffer with the given filename
+                            use crate::buffer::Buffer;
+                            let mut new_buffer = Buffer::new();
+                            // Normalize the path
+                            let absolute_path = std::path::absolute(filename)
+                                .unwrap_or_else(|_| std::path::PathBuf::from(filename));
+                            let path_str = absolute_path.to_string_lossy().to_string();
+                            new_buffer.set_file_path(path_str.clone());
+                            editor.add_buffer(new_buffer);
+                            editor.mark_dirty();
+
+                            // Update tab title to match the new file
+                            editor.update_current_tab_title();
+
+                            let tab_index = editor.current_tab_index() + 1;
+                            ApiResponse::Success(SuccessResponse {
+                                success: true,
+                                message: Some(format!("Created new file {} in tab {}", filename, tab_index)),
+                                line_count: None,
+                            })
+                        } else {
+                            ApiResponse::Error(ErrorResponse {
+                                error: format!("Failed to load file: {}", e),
+                            })
+                        }
+                    }
                 }
             // Handle :w <filename>
             } else if let Some(filename) = command
