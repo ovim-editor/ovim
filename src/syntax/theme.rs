@@ -478,7 +478,7 @@ impl ColorScheme {
         let bg_dark = Color::Rgb(22, 22, 30); // #16161e
         let bg_highlight = Color::Rgb(41, 46, 66); // #292e42
         let fg = Color::Rgb(192, 202, 245); // #c0caf5
-        let fg_dark = Color::Rgb(169, 177, 214); // #a9b1d6
+        let _fg_dark = Color::Rgb(169, 177, 214); // #a9b1d6
         let comment = Color::Rgb(86, 95, 137); // #565f89
 
         // Accent colors

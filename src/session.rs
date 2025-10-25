@@ -226,8 +226,8 @@ fn get_process_start_time(pid: u32) -> Option<u64> {
         return None;
     }
 
-    let start_str = String::from_utf8(output.stdout).ok()?;
-    let start_str = start_str.trim();
+    let _start_str = String::from_utf8(output.stdout).ok()?;
+    let start_str = _start_str.trim();
 
     // Parse the date string (format: "Tue Oct 20 10:30:45 2025")
     // We'll convert this to epoch seconds

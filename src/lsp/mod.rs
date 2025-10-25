@@ -38,7 +38,7 @@ use lsp_types::{
 };
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
@@ -127,9 +127,6 @@ pub struct LspManager {
     /// Diagnostics per file URI
     diagnostics: Mutex<HashMap<Url, Vec<Diagnostic>>>,
 
-    /// Next request ID
-    next_request_id: AtomicU64,
-
     /// Document versions for change tracking
     document_versions: Mutex<HashMap<Url, i32>>,
 
@@ -161,7 +158,6 @@ impl LspManager {
         Self {
             servers: DashMap::new(),
             diagnostics: Mutex::new(HashMap::new()),
-            next_request_id: AtomicU64::new(1),
             document_versions: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
@@ -171,11 +167,6 @@ impl LspManager {
             diagnostics_changed: AtomicBool::new(false),
             current_progress: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// Generates a unique request ID
-    fn next_request_id(&self) -> RequestId {
-        RequestId::Number(self.next_request_id.fetch_add(1, Ordering::SeqCst))
     }
 
     /// Checks if diagnostics have changed and resets the flag
@@ -2153,13 +2144,6 @@ impl Default for LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_lsp_manager_creation() {
-        let manager = LspManager::new();
-        assert_eq!(manager.next_request_id(), RequestId::Number(1));
-        assert_eq!(manager.next_request_id(), RequestId::Number(2));
-    }
 
     #[tokio::test]
     async fn test_diagnostics_storage() {

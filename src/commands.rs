@@ -438,10 +438,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     }),
                 }
             // Handle :lua <code>
-            } else if let Some(code) = command.strip_prefix("lua ") {
+            } else if let Some(_code) = command.strip_prefix("lua ") {
                 #[cfg(feature = "lua")]
                 {
-                    match editor.execute_lua(code) {
+                    match editor.execute_lua(_code) {
                         Ok(result) => ApiResponse::Success(SuccessResponse {
                             success: true,
                             message: Some(result),
@@ -459,13 +459,13 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     })
                 }
             // Handle :luafile <path>
-            } else if let Some(path) = command.strip_prefix("luafile ") {
+            } else if let Some(_path) = command.strip_prefix("luafile ") {
                 #[cfg(feature = "lua")]
                 {
-                    match editor.execute_lua_file(path) {
+                    match editor.execute_lua_file(_path) {
                         Ok(_) => ApiResponse::Success(SuccessResponse {
                             success: true,
-                            message: Some(format!("Executed {}", path)),
+                            message: Some(format!("Executed {}", _path)),
                             line_count: None,
                         }),
                         Err(e) => ApiResponse::Error(ErrorResponse {

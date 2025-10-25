@@ -1,4 +1,3 @@
-use crate::buffer::Buffer;
 use crate::editor::WindowManager;
 
 /// Represents a single tab page

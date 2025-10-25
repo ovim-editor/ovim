@@ -232,7 +232,6 @@ impl Change {
                     .set_position(cursor_before.0, cursor_before.1);
             }
             Self::NumberOperation {
-                delta,
                 cursor_before,
                 old_range,
                 old_text,

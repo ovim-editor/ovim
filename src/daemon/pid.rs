@@ -111,7 +111,7 @@ impl DaemonPidInfo {
 pub fn process_exists(pid: i32) -> bool {
     #[cfg(unix)]
     {
-        use nix::sys::signal::{kill, Signal};
+        use nix::sys::signal::kill;
         use nix::unistd::Pid;
 
         // Signal 0 checks existence without sending signal
@@ -172,7 +172,6 @@ pub fn get_process_start_time(pid: i32) -> Result<SystemTime> {
 #[cfg(target_os = "macos")]
 pub fn get_process_start_time(pid: i32) -> Result<SystemTime> {
     use std::process::Command;
-    use std::time::UNIX_EPOCH;
 
     // Use ps to get process start time in epoch seconds
     // The 'etime' format shows elapsed time, but we need absolute start time
@@ -189,7 +188,7 @@ pub fn get_process_start_time(pid: i32) -> Result<SystemTime> {
         anyhow::bail!("ps command failed for PID {}", pid);
     }
 
-    let lstart_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let _lstart_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
     // lstart format: "Tue Jan  7 14:23:45 2025"
     // We'll use a simpler approach: get elapsed time and subtract from now

@@ -1,4 +1,3 @@
-use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,42 +157,6 @@ impl Picker {
     pub fn set_prompt(&mut self, _prompt: String) {
         // Prompt display is handled by the UI layer
         // This is a placeholder for API compatibility
-    }
-
-    /// Recursively finds all files in a directory, respecting .gitignore
-    fn find_files_recursive(dir: &Path) -> Vec<PickerResult> {
-        let mut results = Vec::new();
-
-        // Check if directory exists first
-        if !dir.exists() || !dir.is_dir() {
-            return results;
-        }
-
-        // Use ignore crate's WalkBuilder which respects .gitignore, .ignore, and other ignore files
-        let walker = WalkBuilder::new(dir)
-            .hidden(false) // Don't automatically skip hidden files (let gitignore handle it)
-            .git_ignore(true) // Respect .gitignore files
-            .git_global(true) // Respect global gitignore
-            .git_exclude(true) // Respect .git/info/exclude
-            .build();
-
-        for entry in walker.filter_map(|e| e.ok()) {
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Ok(relative_path) = path.strip_prefix(dir) {
-                    let display_path = relative_path.to_string_lossy().to_string();
-                    results.push(PickerResult {
-                        display: display_path,
-                        location: path.to_string_lossy().to_string(),
-                        line: 0,
-                        col: 0,
-                    });
-                }
-            }
-        }
-
-        results
     }
 
     /// Performs live grep using ripgrep or grep
