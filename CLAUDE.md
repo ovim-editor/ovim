@@ -239,3 +239,7 @@ If a file is too large to read, immediately start refactoring it by splitting it
 ## Documentation
 
 Document the structure of the codebase in the docs/ folder. Keep it neat and organized.
+
+## User instructions
+
+User instructions are located in PRIORITIES.md and should be prioritized before other tasks. Only check off the tasks (when done and verified), don't edit the text.
