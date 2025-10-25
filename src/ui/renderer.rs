@@ -564,11 +564,13 @@ impl Renderer {
 
         let mut spans = Vec::new();
 
-        for (i, tab) in tabs.iter().enumerate() {
+        for (i, _tab) in tabs.iter().enumerate() {
             let is_current = i == current_index;
 
+            // Get the appropriate title for this tab (filename or [No Name])
+            let title = editor.get_tab_title(i);
             // Tab format: " {number} {title} "
-            let tab_text = format!(" {} {} ", i + 1, tab.title());
+            let tab_text = format!(" {} {} ", i + 1, title);
 
             let style = if is_current {
                 Style::default()

@@ -107,6 +107,13 @@ impl TabPageManager {
         self.tabs.get_mut(index)
     }
 
+    /// Sets the title of the current tab
+    pub fn set_current_tab_title(&mut self, title: String) {
+        if !self.tabs.is_empty() {
+            self.tabs[self.current_tab_index].set_title(title);
+        }
+    }
+
     /// Creates a new tab page
     pub fn new_tab(&mut self, title: Option<String>) {
         let tab_number = self.tabs.len() + 1;

@@ -1477,6 +1477,9 @@ impl Editor {
         // Update current file register
         self.registers.set_current_file(path_str);
 
+        // Update tab title to match the loaded file
+        self.update_current_tab_title();
+
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {
             self.lsp_state.pending_did_close_file = old_file_path;
@@ -4963,7 +4966,45 @@ impl Editor {
 
     /// Creates a new tab page
     pub fn new_tab(&mut self, title: Option<String>) {
-        self.tab_page_manager.new_tab(title);
+        // Default to "[No Name]" if no title provided
+        let default_title = title.unwrap_or_else(|| "[No Name]".to_string());
+        self.tab_page_manager.new_tab(Some(default_title));
+    }
+
+    /// Gets the display title for a tab at the given index
+    /// Returns filename if file is open, otherwise "[No Name]"
+    pub fn get_tab_title(&self, tab_index: usize) -> String {
+        if let Some(tabs) = self.tab_page_manager.tabs().get(tab_index) {
+            let title = tabs.title();
+            // If title starts with "[", it's already a special marker like [No Name]
+            // Otherwise it might be an old numeric title - treat as "[No Name]"
+            if title.starts_with('[') {
+                title.to_string()
+            } else if title.len() <= 2 && title.chars().all(|c| c.is_numeric()) {
+                // Old numeric title - return [No Name]
+                "[No Name]".to_string()
+            } else {
+                // It's a filename
+                title.to_string()
+            }
+        } else {
+            "[No Name]".to_string()
+        }
+    }
+
+    /// Updates the current tab's title to the current buffer's filename
+    fn update_current_tab_title(&mut self) {
+        let title = if let Some(path) = self.buffer().file_path() {
+            // Extract filename from path
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("[No Name]")
+                .to_string()
+        } else {
+            "[No Name]".to_string()
+        };
+        self.tab_page_manager_mut().set_current_tab_title(title);
     }
 
     /// Closes the current tab
