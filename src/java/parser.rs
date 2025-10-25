@@ -34,8 +34,8 @@ impl JavaVersion {
     /// Parse from version number
     pub fn from_number(version: u32) -> Option<Self> {
         match version {
-            8 | 1_8 => Some(JavaVersion::Java8),
-            11 | 1_11 => Some(JavaVersion::Java11),
+            8 => Some(JavaVersion::Java8),
+            11 => Some(JavaVersion::Java11),
             17 => Some(JavaVersion::Java17),
             21 => Some(JavaVersion::Java21),
             24 => Some(JavaVersion::Java24),
