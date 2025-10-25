@@ -257,6 +257,8 @@ pub async fn initialize_java_lsp_background(
 }
 
 /// Old version that requires mutable editor (used in headless mode)
+/// (Reserved for alternative Java LSP initialization path)
+#[allow(dead_code)]
 pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
     use ovim::java::{parser, JdtlsDownloader, JdtlsLauncher};
 

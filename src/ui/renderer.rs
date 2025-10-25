@@ -17,6 +17,8 @@ use std::ops::Range;
 /// Handles rendering the editor state to the terminal
 pub struct Renderer {
     terminal: RatatuiTerminal<CrosstermBackend<io::Stdout>>,
+    /// Reserved for future theme application
+    #[allow(dead_code)]
     theme: Theme,
 }
 

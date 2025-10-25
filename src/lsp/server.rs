@@ -75,8 +75,10 @@ pub enum ServerState {
 }
 
 /// Operations that can be queued during initialization
+/// (Reserved for request queueing during server initialization)
 #[derive(Debug, Clone)]
-enum PendingOperation {
+#[allow(dead_code)]
+pub enum PendingOperation {
     DidOpen {
         uri: Url,
         language_id: String,
@@ -144,6 +146,8 @@ struct LanguageServerInner {
     process: Mutex<Option<Child>>,
 
     /// Stdin writer (wrapped in Arc to allow cloning for writer task)
+    /// (Reserved for direct stdin communication with server)
+    #[allow(dead_code)]
     stdin: Arc<Mutex<ChildStdin>>,
 
     /// Current server state (explicit state machine)
@@ -749,6 +753,8 @@ impl LanguageServer {
     }
 
     /// Queues an operation if server is not ready, or executes immediately if ready
+    /// (Reserved for request queueing implementation)
+    #[allow(dead_code)]
     async fn queue_or_execute<F, Fut>(&self, op: PendingOperation, execute: F) -> Result<()>
     where
         F: FnOnce() -> Fut,

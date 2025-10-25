@@ -148,6 +148,8 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
 }
 
 /// Reads a JSON-RPC message with Content-Length header framing
+/// (Reserved for alternative message reading implementation)
+#[allow(dead_code)]
 pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<JsonRpcMessage> {
     let mut buf_reader = BufReader::new(reader);
     let mut headers = Vec::new();
