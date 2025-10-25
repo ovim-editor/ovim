@@ -668,7 +668,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
         return None;
     }
 
-    let mut start_col = search_col;
+    let start_col = search_col;
     let mut end_col = start_col;
 
     // Check for hex (0x), binary (0b), or octal (0o) prefix

@@ -1289,7 +1289,7 @@ impl Renderer {
         let selected_result = picker.selected_result().cloned();
 
         // Drop immutable borrow of picker before calling functions that need mutable borrow
-        drop(picker);
+        let _ = picker;
 
         // Render preview panel if enabled
         if show_preview {
