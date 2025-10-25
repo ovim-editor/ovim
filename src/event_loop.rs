@@ -18,7 +18,53 @@ use ovim::session::SessionInfo;
 use ovim::syntax::LanguageRegistry;
 use ovim::ui::UI;
 
-/// Runs the headless event loop (API only, no TUI)
+/// Shared editor tick for both loops.
+/// Handles LSP, diagnostics, syntax, Lua, and background file tasks.
+async fn process_editor_tick(
+    editor: &mut Editor,
+    java_status_rx: &mut mpsc::UnboundedReceiver<String>,
+    preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
+    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
+) {
+    while let Ok(status) = java_status_rx.try_recv() {
+        editor.set_lsp_status(status);
+    }
+
+    if let Some(lsp_manager) = editor.lsp_manager() {
+        lsp_manager.process_notifications().await;
+        lsp_manager.process_flush_requests().await;
+    }
+
+    if let Some(file_path) = editor.needs_lsp_init() {
+        crate::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
+        editor.clear_lsp_init_flag();
+    }
+
+    if let Some(lsp_manager) = editor.lsp_manager() {
+        if lsp_manager.diagnostics_changed() {
+            editor.update_diagnostic_cache().await;
+        }
+    }
+
+    if editor.buffer().should_init_syntax() {
+        editor.buffer_mut().enable_syntax_highlighting();
+    }
+
+    editor.process_pending_lsp_actions().await;
+
+    #[cfg(feature = "lua")]
+    let _ = editor.process_lua_commands();
+
+    if editor.mode() == Mode::Picker {
+        spawn_picker_preview_loading(editor, preview_tx);
+        spawn_file_finder_loading(editor, file_tx);
+    }
+
+    editor.send_lsp_changes_if_modified().await;
+    editor.send_lsp_save_if_needed().await;
+}
+
+/// Headless (API-only) event loop.
 pub async fn run_headless_loop(
     editor: &mut Editor,
     mut api_rx: mpsc::UnboundedReceiver<ApiRequest>,
@@ -26,96 +72,33 @@ pub async fn run_headless_loop(
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
 ) -> Result<()> {
-    // Create channel for async preview loading
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
-
-    // Create channel for async file loading
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
-
-    // Periodic interval for LSP processing (100ms - 10 times per second instead of 100)
     let mut lsp_interval = interval(Duration::from_millis(100));
     lsp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        // Event-driven loop using tokio::select! - blocks until an event occurs
         tokio::select! {
-            // API request received
             Some(request) = api_rx.recv() => {
                 handle_api_request(editor, request, start_time, &session_info).await;
-                // Check if quit was requested
-                if editor.should_quit() {
-                    break;
-                }
+                if editor.should_quit() { break; }
             }
-
-            // Java status update received
-            Some(status) = java_status_rx.recv() => {
-                editor.set_lsp_status(status);
+            Some((path, cache)) = preview_rx.recv() => {
+                editor.insert_preview(path, cache);
             }
-
-            // Completed preview received
-            Some((file_path, cache)) = preview_rx.recv() => {
-                editor.insert_preview(file_path, cache);
-            }
-
-            // File result received
             Some(result) = file_rx.recv() => {
-                if let Some(picker) = editor.picker_mut() {
-                    picker.add_file_result(result);
-                }
+                if let Some(picker) = editor.picker_mut() { picker.add_file_result(result); }
             }
-
-            // Periodic LSP processing tick
             _ = lsp_interval.tick() => {
-                // Process LSP notifications (diagnostics, etc.)
-                if let Some(lsp_manager) = editor.lsp_manager() {
-                    lsp_manager.process_notifications().await;
-                    lsp_manager.process_flush_requests().await;
-                }
-
-                // Initialize LSP for newly loaded files
-                if let Some(file_path) = editor.needs_lsp_init() {
-                    crate::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
-                    editor.clear_lsp_init_flag();
-                }
-
-                // Initialize syntax highlighting lazily (after file is displayed)
-                if editor.buffer().should_init_syntax() {
-                    editor.buffer_mut().enable_syntax_highlighting();
-                }
-
-                // Process any pending LSP actions
-                editor.process_pending_lsp_actions().await;
-
-                // Process any pending Lua commands
-                #[cfg(feature = "lua")]
-                let _ = editor.process_lua_commands();
-
-                // Spawn async preview loading if needed (non-blocking!)
-                if editor.mode() == Mode::Picker {
-                    spawn_picker_preview_loading(editor, &preview_tx);
-                    spawn_file_finder_loading(editor, &file_tx);
-                }
-
-                // Update diagnostic cache only if diagnostics changed
-                if let Some(lsp_manager) = editor.lsp_manager() {
-                    if lsp_manager.diagnostics_changed() {
-                        editor.update_diagnostic_cache().await;
-                    }
-                }
-
-                // Send LSP notifications if needed
-                editor.send_lsp_changes_if_modified().await;
-                editor.send_lsp_save_if_needed().await;
+                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
             }
         }
     }
-
     Ok(())
 }
 
-/// Runs the main TUI event loop
+/// TUI event loop (optionally with API).
 pub async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
@@ -125,239 +108,61 @@ pub async fn run_event_loop(
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(100);
     let mut last_input_time: Option<Instant> = None;
-
-    // Create channel for async preview loading
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
-
-    // Create channel for async file loading
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
 
     while !editor.should_quit() {
-        // Check for Java LSP status updates
-        while let Ok(status) = java_status_rx.try_recv() {
-            editor.set_lsp_status(status);
+        process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
+
+        while let Ok((path, cache)) = preview_rx.try_recv() {
+            editor.insert_preview(path, cache);
         }
-
-        // Process LSP notifications (diagnostics, etc.)
-        if let Some(lsp_manager) = editor.lsp_manager() {
-            lsp_manager.process_notifications().await;
-            lsp_manager.process_flush_requests().await;
-        }
-
-        // Initialize LSP for newly loaded files
-        if let Some(file_path) = editor.needs_lsp_init() {
-            crate::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
-            editor.clear_lsp_init_flag();
-        }
-
-        // Update diagnostic cache only if diagnostics changed
-        if let Some(lsp_manager) = editor.lsp_manager() {
-            if lsp_manager.diagnostics_changed() {
-                editor.update_diagnostic_cache().await;
-            }
-        }
-
-        // Initialize syntax highlighting lazily (after file is displayed)
-        if editor.buffer().should_init_syntax() {
-            editor.buffer_mut().enable_syntax_highlighting();
-        }
-
-        // Check if enough time has passed since last edit for re-highlighting
-        if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
-            editor.process_pending_rehighlight().await;
-        }
-
-        // Process any pending LSP actions
-        editor.process_pending_lsp_actions().await;
-
-        // Process any pending Lua commands
-        #[cfg(feature = "lua")]
-        let _ = editor.process_lua_commands();
-
-        // Spawn async preview loading if needed (non-blocking!)
-        if editor.mode() == Mode::Picker {
-            spawn_picker_preview_loading(editor, &preview_tx);
-            spawn_file_finder_loading(editor, &file_tx);
-        }
-
-        // Poll for completed previews (non-blocking)
-        while let Ok((file_path, cache)) = preview_rx.try_recv() {
-            editor.insert_preview(file_path, cache);
-        }
-
-        // Poll for file results (non-blocking)
         while let Ok(result) = file_rx.try_recv() {
             if let Some(picker) = editor.picker_mut() {
                 picker.add_file_result(result);
-                editor.mark_dirty(); // Picker results changed
+                editor.mark_dirty();
             }
         }
 
-        // Only render if the editor state has changed (dirty flag)
         if editor.is_dirty() {
-            let start = std::time::Instant::now();
+            let start = Instant::now();
             ui.renderer_mut().render(editor)?;
-            let duration = start.elapsed();
-
-            editor.record_render_duration(duration.as_micros() as u64);
+            editor.record_render_duration(start.elapsed().as_micros() as u64);
             editor.increment_render_count();
             editor.mark_clean();
-
-            // Record input latency if we have a pending input time
             if let Some(input_time) = last_input_time.take() {
-                let latency = input_time.elapsed().as_micros() as u64;
-                editor.record_input_latency(latency);
+                editor.record_input_latency(input_time.elapsed().as_micros() as u64);
             }
         }
 
-        // Check for API requests (non-blocking)
         if let Some(ref mut rx) = api_rx {
             while let Ok(request) = rx.try_recv() {
-                // For TUI mode, use dummy start time and session info since /health isn't typically used
                 let dummy_start = SystemTime::now();
-                let dummy_session =
-                    Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".to_string())));
+                let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".into())));
                 handle_api_request(editor, request, dummy_start, &dummy_session).await;
             }
         }
 
-        // Poll for events with a timeout to allow checking API requests
         if let Some(event) = InputHandler::poll_event()? {
             if let Event::Key(key_event) = event {
-                // Record input time for latency tracking
                 last_input_time = Some(Instant::now());
-
                 InputHandler::handle_key_event(editor, key_event)?;
-                // Reset debounce timer on any edit
                 last_edit = Instant::now();
             }
         }
 
-        // Send LSP notifications if needed
-        editor.send_lsp_changes_if_modified().await;
-        editor.send_lsp_save_if_needed().await;
+        if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
+            editor.process_pending_rehighlight().await;
+        }
+
         editor.send_lsp_close_if_needed().await;
+
+        tokio::task::yield_now().await;
     }
 
-    // Send didClose for current file on shutdown
     editor.close_current_file_lsp().await;
-
     Ok(())
-}
-
-/// Spawns a background task to load picker preview if debounce time has elapsed
-/// Returns immediately without blocking input handling
-fn spawn_picker_preview_loading(
-    editor: &mut Editor,
-    preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
-) {
-    if !editor.should_load_picker_preview(200) {
-        return;
-    }
-
-    // Get the file to load (returns None if already cached/loading)
-    if let Some(file_path) = editor.get_preview_to_load() {
-        let tx = preview_tx.clone();
-
-        // Spawn background task - doesn't block!
-        tokio::spawn(async move {
-            // Load preview asynchronously
-            if let Some(cache) = load_preview_async(&file_path).await {
-                // Send result back (non-blocking)
-                let _ = tx.send((file_path, cache)).await;
-            }
-        });
-    }
-}
-
-/// Spawns a background task to load files for file finder picker
-/// Returns immediately without blocking - files are sent via channel as they're discovered
-fn spawn_file_finder_loading(
-    editor: &mut Editor,
-    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
-) {
-    // Check if we should spawn file loading
-    if let Some(picker) = editor.picker() {
-        if !picker.should_spawn_file_loading() {
-            return;
-        }
-
-        // Get the base directory for file search
-        let base_dir = picker.base_dir().to_path_buf();
-
-        // Mark as spawned to avoid spawning multiple tasks
-        if let Some(picker_mut) = editor.picker_mut() {
-            picker_mut.mark_loading_spawned();
-        }
-
-        let tx = file_tx.clone();
-
-        // Spawn background task - doesn't block!
-        tokio::spawn(async move {
-            use ignore::WalkBuilder;
-
-            // Use ignore crate's WalkBuilder which respects .gitignore
-            let walker = WalkBuilder::new(&base_dir)
-                .hidden(false) // Don't automatically skip hidden files
-                .git_ignore(true) // Respect .gitignore files
-                .git_global(true) // Respect global gitignore
-                .git_exclude(true) // Respect .git/info/exclude
-                .build();
-
-            // Walk the directory tree and send files as we find them
-            for entry in walker.filter_map(|e| e.ok()) {
-                let path = entry.path();
-
-                if path.is_file() {
-                    if let Ok(relative_path) = path.strip_prefix(&base_dir) {
-                        let display_path = relative_path.to_string_lossy().to_string();
-                        let result = editor::PickerResult {
-                            display: display_path,
-                            location: path.to_string_lossy().to_string(),
-                            line: 0,
-                            col: 0,
-                        };
-
-                        // Send result back (non-blocking)
-                        // If channel is closed (picker was closed), task will exit
-                        if tx.send(result).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-    }
-}
-
-/// Loads a file preview asynchronously (can be called from background task)
-async fn load_preview_async(file_path: &str) -> Option<editor::PreviewCache> {
-    // Check file size before loading (max 1MB for preview)
-    const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
-    if let Ok(metadata) = tokio::fs::metadata(file_path).await {
-        if metadata.len() > MAX_PREVIEW_SIZE {
-            // File too large, create a placeholder
-            return Some(editor::PreviewCache {
-                content: format!("File too large for preview ({} bytes)", metadata.len()),
-                highlighted_lines: std::cell::RefCell::new(HashMap::new()),
-                language: None,
-            });
-        }
-    }
-
-    // Load the file
-    let content = tokio::fs::read_to_string(file_path).await.ok()?;
-
-    // Detect language
-    let language = LanguageRegistry::detect_from_path(file_path);
-
-    // Create cache entry
-    Some(editor::PreviewCache {
-        content,
-        highlighted_lines: std::cell::RefCell::new(HashMap::new()),
-        language,
-    })
 }
 
 async fn handle_api_request(
@@ -572,6 +377,91 @@ async fn handle_api_request(
     }
 }
 
+/// Spawns a background task to load picker preview if debounce time has elapsed
+/// Returns immediately without blocking input handling
+fn spawn_picker_preview_loading(
+    editor: &mut Editor,
+    preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
+) {
+    if !editor.should_load_picker_preview(200) {
+        return;
+    }
+
+    // Get the file to load (returns None if already cached/loading)
+    if let Some(file_path) = editor.get_preview_to_load() {
+        let tx = preview_tx.clone();
+
+        // Spawn background task - doesn't block!
+        tokio::spawn(async move {
+            // Load preview asynchronously
+            if let Some(cache) = load_preview_async(&file_path).await {
+                // Send result back (non-blocking)
+                let _ = tx.send((file_path, cache)).await;
+            }
+        });
+    }
+}
+
+/// Spawns a background task to load files for file finder picker
+/// Returns immediately without blocking - files are sent via channel as they're discovered
+fn spawn_file_finder_loading(
+    editor: &mut Editor,
+    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
+) {
+    // Check if we should spawn file loading
+    if let Some(picker) = editor.picker() {
+        if !picker.should_spawn_file_loading() {
+            return;
+        }
+
+        // Get the base directory for file search
+        let base_dir = picker.base_dir().to_path_buf();
+
+        // Mark as spawned to avoid spawning multiple tasks
+        if let Some(picker_mut) = editor.picker_mut() {
+            picker_mut.mark_loading_spawned();
+        }
+
+        let tx = file_tx.clone();
+
+        // Spawn background task - doesn't block!
+        tokio::spawn(async move {
+            use ignore::WalkBuilder;
+
+            // Use ignore crate's WalkBuilder which respects .gitignore
+            let walker = WalkBuilder::new(&base_dir)
+                .hidden(false) // Don't automatically skip hidden files
+                .git_ignore(true) // Respect .gitignore files
+                .git_global(true) // Respect global gitignore
+                .git_exclude(true) // Respect .git/info/exclude
+                .build();
+
+            // Walk the directory tree and send files as we find them
+            for entry in walker.filter_map(|e| e.ok()) {
+                let path = entry.path();
+
+                if path.is_file() {
+                    if let Ok(relative_path) = path.strip_prefix(&base_dir) {
+                        let display_path = relative_path.to_string_lossy().to_string();
+                        let result = editor::PickerResult {
+                            display: display_path,
+                            location: path.to_string_lossy().to_string(),
+                            line: 0,
+                            col: 0,
+                        };
+
+                        // Send result back (non-blocking)
+                        // If channel is closed (picker was closed), task will exit
+                        if tx.send(result).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     let buffer_info = create_buffer_info(editor);
     let cursor = editor.buffer().cursor();
@@ -670,4 +560,33 @@ fn create_buffer_info(editor: &Editor) -> BufferInfo {
         line_count,
         file_path,
     }
+}
+
+/// Loads a file preview asynchronously (can be called from background task)
+async fn load_preview_async(file_path: &str) -> Option<editor::PreviewCache> {
+    // Check file size before loading (max 1MB for preview)
+    const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
+    if let Ok(metadata) = tokio::fs::metadata(file_path).await {
+        if metadata.len() > MAX_PREVIEW_SIZE {
+            // File too large, create a placeholder
+            return Some(editor::PreviewCache {
+                content: format!("File too large for preview ({} bytes)", metadata.len()),
+                highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+                language: None,
+            });
+        }
+    }
+
+    // Load the file
+    let content = tokio::fs::read_to_string(file_path).await.ok()?;
+
+    // Detect language
+    let language = LanguageRegistry::detect_from_path(file_path);
+
+    // Create cache entry
+    Some(editor::PreviewCache {
+        content,
+        highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+        language,
+    })
 }
