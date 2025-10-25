@@ -6288,7 +6288,7 @@ impl InputHandler {
         let mut start_col = search_col;
 
         // Check if we're on a sign, and if so, verify there's a digit after it
-        if (chars[start_col] == '-' || chars[start_col] == '+') {
+        if chars[start_col] == '-' || chars[start_col] == '+' {
             if start_col + 1 < chars.len() && chars[start_col + 1].is_ascii_digit() {
                 // Keep the sign as part of the number
             } else {

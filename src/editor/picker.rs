@@ -586,7 +586,8 @@ impl Picker {
                 // Can't fit this part, but check if we can fit it without the leading parts
                 if i > 0 && current_len + needed + 4 <= max_len {
                     included_parts.insert(0, part);
-                    current_len += needed;
+                    let current_len = current_len + needed;
+                    let _ = current_len; // Suppress warning for now
                 }
                 break;
             }
