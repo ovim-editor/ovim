@@ -5,7 +5,7 @@ use anyhow::Result;
 pub type Position = (usize, usize);
 
 /// Range in the buffer
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
