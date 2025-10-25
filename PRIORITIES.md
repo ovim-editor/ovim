@@ -1,3 +1,3 @@
-- [ ] Refactor event_loop.rs so that `run_event_loop` and `run_headless_loop` doesn't duplicate logic. Keep it async.
-- [ ] Pull in tree-sitter language wrappers into this repo so we don't get versioning problems (search repo for `[tag:tree-sitter-dockerfile-issue]`)
-- [ ] Finsih the refactor from input.rs.bak. `:tabe`, etc. was disabled as a result of the refactor. It currently only works in headless mode when the command endpoint is called. Criteria: Should work when sending the keys too.
+- [x] Refactor event_loop.rs so that `run_event_loop` and `run_headless_loop` doesn't duplicate logic. Keep it async.
+- [x] Pull in tree-sitter language wrappers into this repo so we don't get versioning problems (search repo for `[tag:tree-sitter-dockerfile-issue]`)
+- [x] Finsih the refactor from input.rs.bak. `:tabe`, etc. was disabled as a result of the refactor. It currently only works in headless mode when the command endpoint is called. Criteria: Should work when sending the keys too.
