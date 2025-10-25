@@ -609,7 +609,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     ] {
         let content = reg_manager.get(Some(*reg_name));
         if !content.is_empty() {
-            registers.insert(reg_name.to_string(), content.to_string());
+            registers.insert(reg_name.to_string(), content);
         }
     }
 
