@@ -6,7 +6,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Char(ch) => {
-            eprintln!("Got a character");
             // Add character to command line
             editor.append_to_command_line(ch);
         }
