@@ -1,3 +1,6 @@
+/**
+ * This is an example Java file.
+ */
 public class TestJava {
     private String name;
     private int value;
