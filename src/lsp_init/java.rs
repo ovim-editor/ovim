@@ -250,34 +250,10 @@ pub async fn initialize_java_lsp_background(
         .start_notification_listener("java".to_string())
         .await;
 
-    send_java_status("Opening file...".to_string());
-
-    // Send didOpen notification - acquire lock again
-    let uri = match lsp_types::Url::from_file_path(&file_path) {
-        Ok(uri) => uri,
-        Err(_) => {
-            send_java_status(format!("Invalid file path: {:?}", file_path));
-            return;
-        }
-    };
-
-    // Read the actual file content (async to avoid blocking)
-    let file_content = match tokio::fs::read_to_string(&file_path).await {
-        Ok(content) => content,
-        Err(e) => {
-            send_java_status(format!("Failed to read file: {}", e));
-            String::new()
-        }
-    };
-
-    match lsp_manager.did_open(uri, "java", 1, file_content).await {
-        Ok(_) => {
-            send_java_status("Ready ✓".to_string());
-        }
-        Err(e) => {
-            send_java_status(format!("Failed to initialize: {}", e));
-        }
-    }
+    // IMPORTANT: Don't send didOpen here - it will be handled by ensure_document_opened
+    // when the editor actually needs to use LSP features. This avoids race conditions
+    // and duplicate didOpen notifications.
+    send_java_status("Ready ✓".to_string());
 }
 
 /// Old version that requires mutable editor (used in headless mode)
@@ -468,34 +444,10 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
                     .start_notification_listener("java".to_string())
                     .await;
 
-                editor.set_lsp_status("Java: Opening file...".to_string());
-
-                // Send didOpen notification
-                let file_content = editor.buffer().rope().to_string();
-                let uri = match lsp_types::Url::from_file_path(file_path) {
-                    Ok(uri) => uri,
-                    Err(_) => {
-                        editor.set_lsp_status("Java: Invalid file path".to_string());
-                        return;
-                    }
-                };
-
-                match lsp_manager
-                    .did_open(uri, "java", 1, file_content.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        // CRITICAL FIX: Initialize last_synced_content after successful didOpen
-                        // Without this, the first didChange uses empty string as old_text,
-                        // breaking incremental sync
-                        let path_str = file_path.to_string_lossy().to_string();
-                        editor.set_last_synced_content(&path_str, Some(file_content));
-                        editor.set_lsp_status("Java: Ready ✓".to_string());
-                    }
-                    Err(e) => {
-                        editor.set_lsp_status(format!("Java: Failed to initialize: {}", e));
-                    }
-                }
+                // IMPORTANT: Don't send didOpen here - it will be handled by ensure_document_opened
+                // when the editor actually needs to use LSP features. This avoids race conditions
+                // and duplicate didOpen notifications.
+                editor.set_lsp_status("Java: Ready ✓".to_string());
             }
             Err(e) => {
                 editor.set_lsp_status(format!("Java: Failed to start server: {}", e));
