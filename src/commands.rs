@@ -38,26 +38,50 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Api
 pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
     match command {
         "q" | "quit" => {
-            if editor.is_modified() {
-                ApiResponse::Error(ErrorResponse {
-                    error: "No write since last change (add ! to override)".to_string(),
-                })
+            // If there are multiple tabs, close current tab. Otherwise quit.
+            if editor.tab_page_manager().is_single_tab() {
+                // Single tab - check modifications and quit
+                if editor.is_modified() {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No write since last change (add ! to override)".to_string(),
+                    })
+                } else {
+                    editor.quit();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("Quitting".to_string()),
+                        line_count: None,
+                    })
+                }
             } else {
-                editor.quit();
+                // Multiple tabs - close current tab
+                editor.close_current_tab();
+                let tab_index = editor.current_tab_index() + 1;
                 ApiResponse::Success(SuccessResponse {
                     success: true,
-                    message: Some("Quitting".to_string()),
+                    message: Some(format!("Tab closed. Now on tab {}", tab_index)),
                     line_count: None,
                 })
             }
         }
         "q!" | "quit!" => {
-            editor.quit();
-            ApiResponse::Success(SuccessResponse {
-                success: true,
-                message: Some("Quitting (forced)".to_string()),
-                line_count: None,
-            })
+            // Force quit or close tab
+            if editor.tab_page_manager().is_single_tab() {
+                editor.quit();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Quitting (forced)".to_string()),
+                    line_count: None,
+                })
+            } else {
+                editor.close_current_tab();
+                let tab_index = editor.current_tab_index() + 1;
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Tab closed. Now on tab {}", tab_index)),
+                    line_count: None,
+                })
+            }
         }
         "qa" | "qall" => {
             // Quit all - same as quit for single buffer
