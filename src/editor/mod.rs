@@ -1458,6 +1458,8 @@ impl Editor {
                 self.current_buffer_index = i;
                 // Update current file register
                 self.registers.set_current_file(path_str);
+                // Still need to initialize LSP for this file if it hasn't been yet
+                self.lsp_state.needs_lsp_init = true;
                 return Ok(());
             }
         }
