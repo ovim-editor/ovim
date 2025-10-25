@@ -4993,7 +4993,7 @@ impl Editor {
     }
 
     /// Updates the current tab's title to the current buffer's filename
-    fn update_current_tab_title(&mut self) {
+    pub fn update_current_tab_title(&mut self) {
         let title = if let Some(path) = self.buffer().file_path() {
             // Extract filename from path
             std::path::Path::new(path)
