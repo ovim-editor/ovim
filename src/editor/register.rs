@@ -1,5 +1,57 @@
 use std::collections::HashMap;
 
+/// System clipboard provider using arboard
+/// This is a helper to gracefully handle clipboard operations
+/// which might fail in certain environments (e.g., SSH, headless)
+#[derive(Debug, Clone)]
+struct ClipboardProvider {
+    /// Last synced clipboard content (fallback if clipboard is unavailable)
+    cached: String,
+}
+
+impl ClipboardProvider {
+    fn new() -> Self {
+        Self {
+            cached: String::new(),
+        }
+    }
+
+    /// Write text to system clipboard with fallback to cache
+    fn write(&mut self, text: String) {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(_e) = clipboard.set_text(text.clone()) {
+                    // Clipboard write failed, but still cache the value
+                    self.cached = text;
+                } else {
+                    self.cached = text;
+                }
+            }
+            Err(_e) => {
+                // Clipboard unavailable (SSH, headless, etc.), cache the value
+                self.cached = text;
+            }
+        }
+    }
+
+    /// Read text from system clipboard with fallback to cache
+    fn read(&self) -> String {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => match clipboard.get_text() {
+                Ok(text) => text,
+                Err(_e) => {
+                    // Clipboard read failed, return cached value
+                    self.cached.clone()
+                }
+            },
+            Err(_e) => {
+                // Clipboard unavailable, return cached value
+                self.cached.clone()
+            }
+        }
+    }
+}
+
 /// Type of content stored in a register
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisterType {
@@ -41,7 +93,8 @@ pub struct RegisterManager {
     last_inserted: String,  // . - last inserted text
     last_command: String,   // : - last command
     last_search: String,    // / - last search pattern
-    clipboard: String,      // + and * - system clipboard
+    /// System clipboard provider (+ and * registers)
+    clipboard: ClipboardProvider,
 }
 
 impl RegisterManager {
@@ -57,7 +110,7 @@ impl RegisterManager {
             last_inserted: String::new(),
             last_command: String::new(),
             last_search: String::new(),
-            clipboard: String::new(),
+            clipboard: ClipboardProvider::new(),
         }
     }
 
@@ -86,9 +139,8 @@ impl RegisterManager {
                 self.yank = content;
             }
             Some('+') | Some('*') => {
-                // System clipboard
-                self.clipboard = value;
-                // TODO: Actually integrate with system clipboard using arboard or clipboard crate
+                // System clipboard - sync with system
+                self.clipboard.write(value);
             }
             Some('_') => {
                 // Black hole register - do nothing
@@ -109,64 +161,69 @@ impl RegisterManager {
     }
 
     /// Gets a register value (text only, for backward compatibility)
-    pub fn get(&self, register: Option<char>) -> &str {
+    pub fn get(&self, register: Option<char>) -> String {
         match register {
-            None | Some('"') => &self.unnamed.text,
-            Some('0') => &self.yank.text,
-            Some('%') => &self.current_file,
-            Some('#') => &self.alternate_file,
-            Some('.') => &self.last_inserted,
-            Some(':') => &self.last_command,
-            Some('/') => &self.last_search,
-            Some('+') | Some('*') => &self.clipboard,
-            Some('_') => "", // Black hole register always returns empty
+            None | Some('"') => self.unnamed.text.clone(),
+            Some('0') => self.yank.text.clone(),
+            Some('%') => self.current_file.clone(),
+            Some('#') => self.alternate_file.clone(),
+            Some('.') => self.last_inserted.clone(),
+            Some(':') => self.last_command.clone(),
+            Some('/') => self.last_search.clone(),
+            Some('+') | Some('*') => self.clipboard.read(),
+            Some('_') => String::new(), // Black hole register always returns empty
             Some(c) if c.is_ascii_digit() => {
                 let idx = c.to_digit(10).unwrap() as usize;
                 if idx > 0 && idx <= self.delete_history.len() {
-                    &self.delete_history[idx - 1]
+                    self.delete_history[idx - 1].clone()
                 } else {
-                    ""
+                    String::new()
                 }
             }
             Some(c) if c.is_ascii_lowercase() => self
                 .registers
                 .get(&c)
-                .map(|c| c.text.as_str())
-                .unwrap_or(""),
+                .map(|c| c.text.clone())
+                .unwrap_or_default(),
             Some(c) if c.is_ascii_uppercase() => {
                 // Uppercase reads from lowercase register
                 let lowercase = c.to_ascii_lowercase();
                 self.registers
                     .get(&lowercase)
-                    .map(|c| c.text.as_str())
-                    .unwrap_or("")
+                    .map(|c| c.text.clone())
+                    .unwrap_or_default()
             }
-            _ => "",
+            _ => String::new(),
         }
     }
 
     /// Gets a register value with its type
-    pub fn get_with_type(&self, register: Option<char>) -> (&str, RegisterType) {
+    /// Note: Returns owned String for clipboard to support dynamic reads
+    pub fn get_with_type(&self, register: Option<char>) -> (String, RegisterType) {
         match register {
-            None | Some('"') => (&self.unnamed.text, self.unnamed.reg_type),
-            Some('0') => (&self.yank.text, self.yank.reg_type),
-            Some('%') | Some('#') | Some('.') | Some(':') | Some('/') | Some('+')
-            | Some('*') => (self.get(register), RegisterType::Character),
-            Some('_') => ("", RegisterType::Character),
-            Some(c) if c.is_ascii_digit() => (self.get(register), RegisterType::Character),
+            None | Some('"') => (self.unnamed.text.clone(), self.unnamed.reg_type),
+            Some('0') => (self.yank.text.clone(), self.yank.reg_type),
+            Some('%') => (self.current_file.clone(), RegisterType::Character),
+            Some('#') => (self.alternate_file.clone(), RegisterType::Character),
+            Some('.') => (self.last_inserted.clone(), RegisterType::Character),
+            Some(':') => (self.last_command.clone(), RegisterType::Character),
+            Some('/') => (self.last_search.clone(), RegisterType::Character),
+            Some('+') | Some('*') => (self.clipboard.read(), RegisterType::Character),
+            Some('_') => (String::new(), RegisterType::Character),
+            Some(c) if c.is_ascii_digit() => (self.get(Some(c)), RegisterType::Character),
             Some(c) if c.is_ascii_lowercase() => self
                 .registers
                 .get(&c)
-                .map(|c| (c.text.as_str(), c.reg_type))
-                .unwrap_or(("", RegisterType::Character)),
+                .map(|c| (c.text.clone(), c.reg_type))
+                .unwrap_or_else(|| (String::new(), RegisterType::Character)),
             Some(c) if c.is_ascii_uppercase() => {
                 let lowercase = c.to_ascii_lowercase();
                 self.registers
                     .get(&lowercase)
-                    .map(|c| (c.text.as_str(), c.reg_type))
-                    .unwrap_or(("", RegisterType::Character))
+                    .map(|c| (c.text.clone(), c.reg_type))
+                    .unwrap_or_else(|| (String::new(), RegisterType::Character))
             }
-            _ => ("", RegisterType::Character),
+            _ => (String::new(), RegisterType::Character),
         }
     }
 
@@ -235,8 +292,7 @@ impl RegisterManager {
 
     /// Updates the clipboard registers (+ and *)
     pub fn set_clipboard(&mut self, text: String) {
-        self.clipboard = text;
-        // TODO: Actually integrate with system clipboard using arboard or clipboard crate
+        self.clipboard.write(text);
     }
 
     /// Gets the current file name
@@ -264,9 +320,9 @@ impl RegisterManager {
         &self.last_search
     }
 
-    /// Gets the clipboard content
-    pub fn get_clipboard(&self) -> &str {
-        &self.clipboard
+    /// Gets the clipboard content (reads from system clipboard with fallback to cache)
+    pub fn get_clipboard(&self) -> String {
+        self.clipboard.read()
     }
 }
 

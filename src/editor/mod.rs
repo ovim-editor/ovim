@@ -1306,7 +1306,7 @@ impl Editor {
     /// Gets text from the appropriate register (pending_register or default)
     pub fn get_from_register(&mut self) -> String {
         let text = if let Some(reg) = self.pending_register {
-            self.registers.get(Some(reg)).to_string()
+            self.registers.get(Some(reg))
         } else {
             self.registers.get_default().to_string()
         };
@@ -1317,8 +1317,7 @@ impl Editor {
     /// Gets text and type from the appropriate register (pending_register or default)
     pub fn get_from_register_with_type(&mut self) -> (String, RegisterType) {
         let (text, reg_type) = if let Some(reg) = self.pending_register {
-            let (t, rt) = self.registers.get_with_type(Some(reg));
-            (t.to_string(), rt)
+            self.registers.get_with_type(Some(reg))
         } else {
             let (t, rt) = self.registers.get_default_with_type();
             (t.to_string(), rt)
