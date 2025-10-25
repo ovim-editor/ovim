@@ -401,7 +401,7 @@ async fn handle_api_request(
                 }
                 Err(parse_error) => ApiResponse::Error(ErrorResponse {
                     error: format!("Failed to parse keys: {}", parse_error),
-                })
+                }),
             };
             let _ = tx.send(response);
         }
@@ -463,9 +463,8 @@ async fn handle_api_request(
             // Get LSP status from the editor's LSP manager
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
                 let servers = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        lsp_manager_arc.get_lsp_status().await
-                    })
+                    tokio::runtime::Handle::current()
+                        .block_on(async { lsp_manager_arc.get_lsp_status().await })
                 });
 
                 let lsp_status_info = LspStatusInfo {
@@ -504,9 +503,8 @@ async fn handle_api_request(
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
                 let lsp_manager_arc = lsp_manager_arc.clone();
                 let servers = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        lsp_manager_arc.get_lsp_status().await
-                    })
+                    tokio::runtime::Handle::current()
+                        .block_on(async { lsp_manager_arc.get_lsp_status().await })
                 });
 
                 for server in servers {
