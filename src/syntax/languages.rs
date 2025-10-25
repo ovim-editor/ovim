@@ -156,6 +156,8 @@ impl LanguageRegistry {
                 } else if lower.starts_with(".bash") || lower.starts_with(".zsh") {
                     Some(Language::Bash)
                 } else if lower.contains("dockerfile") {
+                    // TODO: tree-sitter-dockerfile depends on a different tree-sitter version. Pulling
+                    //       the wrappers into this repo makes sense. [tag:tree-sitter-dockerfile-issue]
                     Some(Language::Bash)
                 } else if lower.ends_with("makefile") {
                     Some(Language::Bash)
@@ -216,23 +218,23 @@ impl LanguageRegistry {
     /// Get LSP language identifier from file path
     /// Returns None if language is not supported by LSP
     pub fn get_lsp_language_id(file_path: &str) -> Option<&'static str> {
-        Self::detect_from_path(file_path).and_then(|lang| match lang {
-            Language::Rust => Some("rust"),
-            Language::JavaScript => Some("javascript"),
-            Language::TypeScript => Some("typescript"),
-            Language::Python => Some("python"),
-            Language::Java => Some("java"),
-            Language::Go => Some("go"),
-            Language::C => Some("c"),
-            Language::Cpp => Some("cpp"),
-            Language::Ruby => Some("ruby"),
-            Language::Bash => Some("bash"),
-            Language::Json => Some("json"),
-            Language::Yaml => Some("yaml"),
-            Language::Html => Some("html"),
-            Language::Css => Some("css"),
-            Language::Toml => Some("toml"),
-            Language::Markdown => Some("markdown"),
+        Self::detect_from_path(file_path).map(|lang| match lang {
+            Language::Rust => "rust",
+            Language::JavaScript => "javascript",
+            Language::TypeScript => "typescript",
+            Language::Python => "python",
+            Language::Java => "java",
+            Language::Go => "go",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Ruby => "ruby",
+            Language::Bash => "bash",
+            Language::Json => "json",
+            Language::Yaml => "yaml",
+            Language::Html => "html",
+            Language::Css => "css",
+            Language::Toml => "toml",
+            Language::Markdown => "markdown",
         })
     }
 

@@ -75,7 +75,7 @@ impl JdtlsDownloader {
             .context("Failed to create install directory")?;
 
         // Try multiple download URLs in order of preference
-        let urls = vec![
+        let urls = &[
             // Latest snapshot (may not exist)
             "https://download.eclipse.org/jdtls/snapshots/jdt-language-server-latest.tar.gz".to_string(),
             // Milestone release (stable)

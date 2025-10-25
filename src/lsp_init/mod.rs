@@ -47,6 +47,6 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             javascript::initialize_javascript_lsp(editor, &abs_path).await
         }
         "py" => python::initialize_python_lsp(editor, &abs_path).await,
-        _ => return, // No LSP support for this file type
+        _ => (), // No LSP support for this file type
     }
 }

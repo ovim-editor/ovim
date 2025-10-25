@@ -586,7 +586,7 @@ impl LanguageServer {
                     additional_properties_support: Some(false),
                 }),
             }),
-            show_document: None,
+            ..Default::default()
         });
 
         #[allow(deprecated)]
@@ -1036,7 +1036,7 @@ impl LanguageServer {
         let is_alive = {
             let process = self.inner.process.lock().await;
             if let Some(ref child) = *process {
-                !child.id().is_none()
+                child.id().is_some()
             } else {
                 false
             }

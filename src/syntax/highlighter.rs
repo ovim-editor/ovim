@@ -104,17 +104,8 @@ impl SyntaxHighlighter {
                     // Check if this capture overlaps with this line
                     if start_byte < line_end_byte && end_byte > line_start_byte {
                         // Convert to column range relative to line start
-                        let col_start = if start_byte >= line_start_byte {
-                            start_byte - line_start_byte
-                        } else {
-                            0
-                        };
-
-                        let col_end = if end_byte <= line_end_byte {
-                            end_byte - line_start_byte
-                        } else {
-                            line_end_byte - line_start_byte
-                        };
+                        let col_start = start_byte.saturating_sub(line_start_byte);
+                        let col_end = end_byte.saturating_sub(line_start_byte);
 
                         line_highlights[line_idx].push((col_start..col_end, group));
                     }
@@ -169,11 +160,7 @@ impl SyntaxHighlighter {
                     let group = Self::capture_to_highlight_group(capture_name);
 
                     // Convert to column range relative to line start
-                    let col_start = if start_byte >= line_start_byte {
-                        start_byte - line_start_byte
-                    } else {
-                        0
-                    };
+                    let col_start = start_byte.saturating_sub(line_start_byte);
 
                     let col_end = if end_byte <= line_end_byte {
                         end_byte - line_start_byte

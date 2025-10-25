@@ -1,3 +1,6 @@
+// Snake case makes sense for 'P', and it's tests.
+#![allow(non_snake_case)]
+
 mod helpers;
 use helpers::EditorTest;
 

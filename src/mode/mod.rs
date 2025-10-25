@@ -1,7 +1,8 @@
 /// Represents the different modes in the editor
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// Normal mode - for navigation and commands
+    #[default]
     Normal,
     /// Insert mode - for inserting text
     Insert,
@@ -46,11 +47,5 @@ impl Mode {
     /// Returns whether this mode is a visual mode
     pub fn is_visual(&self) -> bool {
         matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
-    }
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Normal
     }
 }
