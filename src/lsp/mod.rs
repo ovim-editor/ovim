@@ -50,6 +50,8 @@ const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 
 /// Maximum LSP message size in bytes (50MB)
 /// Prevents protocol buffer overflow and server OOM
+/// (Reserved for future message size validation)
+#[allow(dead_code)]
 const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 
 /// Debounce duration for textDocument/didChange notifications (milliseconds)
