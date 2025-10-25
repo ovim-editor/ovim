@@ -16,7 +16,7 @@ pub struct GlobalMark {
 }
 
 /// Manages marks (a-z for buffer-local marks, A-Z for global marks)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct MarkManager {
     /// Buffer-local marks (a-z)
     marks: HashMap<char, Mark>,
@@ -101,7 +101,7 @@ impl MarkManager {
 }
 
 /// Manages the jump list for navigating through cursor positions
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct JumpList {
     /// List of jump positions (line, col)
     jumps: Vec<(usize, usize)>,

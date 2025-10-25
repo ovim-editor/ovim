@@ -69,7 +69,7 @@ pub struct PickerResultInfo {
 }
 
 /// Buffer information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct BufferInfo {
     pub content: String,
     pub line_count: usize,
@@ -77,20 +77,20 @@ pub struct BufferInfo {
 }
 
 /// Cursor position
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CursorPosition {
     pub line: usize,
     pub column: usize,
 }
 
 /// Mode information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ModeInfo {
     pub mode: String,
 }
 
 /// Rendered output with ANSI codes
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct RenderInfo {
     pub width: u16,
     pub height: u16,
