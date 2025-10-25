@@ -753,7 +753,7 @@ impl LanguageServer {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<()>>,
     {
-        let prefix = self.log_prefix();
+        let _prefix = self.log_prefix();
         let mut state = self.inner.state.lock().await;
 
         match &mut *state {
@@ -853,12 +853,12 @@ impl LanguageServer {
 
         match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(result)) => {
-                let elapsed = start_time.elapsed();
-                // eprintln!("[LSP-RESPONSE] Success: {} | Took: {:?} | Request ID: {:?}", method, elapsed, request_id);
+                let _elapsed = start_time.elapsed();
+                // eprintln!("[LSP-RESPONSE] Success: {} | Took: {:?} | Request ID: {:?}", method, _elapsed, request_id);
                 result.context(format!("LSP request '{}' failed", method))
             }
             Ok(Err(_)) => {
-                let elapsed = start_time.elapsed();
+                let _elapsed = start_time.elapsed();
                 // eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);
                 Err(anyhow!("Response channel closed for method '{}'", method))
             }

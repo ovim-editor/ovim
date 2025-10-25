@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use git2::{Diff, DiffOptions, Repository};
+use anyhow::Result;
+use git2::{DiffOptions, Repository};
 use std::collections::HashMap;
 use std::path::Path;
 

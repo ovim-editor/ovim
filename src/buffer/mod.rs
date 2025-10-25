@@ -411,7 +411,7 @@ impl Buffer {
             )
         })?;
 
-        let mut buffer = Self {
+        let buffer = Self {
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, 0),
             modified: false,
@@ -675,14 +675,6 @@ impl Buffer {
     fn build_highlight_cache(&mut self, highlighter: &SyntaxHighlighter, source: &str) {
         // Use the efficient single-pass method that queries the tree once
         self.cached_highlights = Some(highlighter.highlights_for_all_lines(source));
-    }
-
-    /// Invalidates the highlight cache (called on buffer edits)
-    fn invalidate_highlight_cache(&mut self) {
-        // Clear cache - will be empty until next re-parse
-        self.cached_highlights = None;
-        // Increment version to invalidate any in-flight async re-parse
-        self.highlight_version = self.highlight_version.wrapping_add(1);
     }
 
     /// Shifts highlights after an insertion
