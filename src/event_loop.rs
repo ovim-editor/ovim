@@ -156,10 +156,21 @@ pub async fn run_event_loop(
             }
         }
 
-        if let Some(Event::Key(key_event)) = InputHandler::poll_event()? {
-            last_input_time = Some(Instant::now());
-            InputHandler::handle_key_event(editor, key_event)?;
-            last_edit = Instant::now();
+        if let Some(event) = InputHandler::poll_event()? {
+            match event {
+                Event::Key(key_event) => {
+                    last_input_time = Some(Instant::now());
+                    InputHandler::handle_key_event(editor, key_event)?;
+                    last_edit = Instant::now();
+                }
+                Event::Resize(_, _) => {
+                    // Terminal was resized - mark editor dirty to force re-render
+                    editor.mark_dirty();
+                }
+                _ => {
+                    // Ignore other events (mouse, focus, etc.)
+                }
+            }
         }
 
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
