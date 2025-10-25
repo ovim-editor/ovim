@@ -585,10 +585,11 @@ impl LanguageServer {
             show_document: None,
         });
 
+        #[allow(deprecated)]
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(root_uri.clone()),
-            root_path: None,
+            root_path: None, // Deprecated, use root_uri or workspace_folders
             initialization_options: None,
             capabilities,
             trace: None,
