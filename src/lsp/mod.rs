@@ -1488,16 +1488,18 @@ impl LspManager {
             let doc_symbols = symbols
                 .into_iter()
                 .map(|sym| {
-                    lsp_types::DocumentSymbol {
+                    #[allow(deprecated)]
+                    let symbol = lsp_types::DocumentSymbol {
                         name: sym.name,
                         detail: None,
                         kind: sym.kind,
                         tags: sym.tags,
-                        deprecated: None, // Use tags instead
+                        deprecated: None, // Deprecated in favor of tags
                         range: sym.location.range,
                         selection_range: sym.location.range,
                         children: None,
-                    }
+                    };
+                    symbol
                 })
                 .collect();
             return Ok(doc_symbols);
@@ -1596,14 +1598,18 @@ impl LspManager {
                     // WorkspaceSymbol has OneOf<Location, WorkspaceLocation>
                     // We only support full Location for now
                     match sym.location {
-                        lsp_types::OneOf::Left(location) => Some(lsp_types::SymbolInformation {
-                            name: sym.name,
-                            kind: sym.kind,
-                            tags: sym.tags,
-                            deprecated: None,
-                            location,
-                            container_name: sym.container_name,
-                        }),
+                        lsp_types::OneOf::Left(location) => {
+                            #[allow(deprecated)]
+                            let info = lsp_types::SymbolInformation {
+                                name: sym.name,
+                                kind: sym.kind,
+                                tags: sym.tags,
+                                deprecated: None, // Deprecated in favor of tags
+                                location,
+                                container_name: sym.container_name,
+                            };
+                            Some(info)
+                        }
                         lsp_types::OneOf::Right(_workspace_location) => {
                             // Skip workspace locations (URIs without ranges) for now
                             // These need to be resolved separately
