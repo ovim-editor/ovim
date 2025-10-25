@@ -32,7 +32,10 @@ async fn main() -> Result<()> {
         let mut ed = Editor::new();
         if let Err(e) = ed.load_file(file_path) {
             // If file doesn't exist, create empty buffer with that filename
-            eprintln!("Note: Could not load file '{}': {}. Starting with empty buffer.", file_path, e);
+            eprintln!(
+                "Note: Could not load file '{}': {}. Starting with empty buffer.",
+                file_path, e
+            );
             ed = Editor::new();
             ed.buffer_mut().set_file_path(file_path.clone());
         }
