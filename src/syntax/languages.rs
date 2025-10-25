@@ -13,6 +13,7 @@ pub enum Language {
     Cpp,
     Ruby,
     Bash,
+    Dockerfile,
     Json,
     Yaml,
     Html,
@@ -123,6 +124,9 @@ impl LanguageRegistry {
                 Some(Language::Bash)
             }
 
+            // Dockerfile special files
+            "dockerfile" | "dockerfile.prod" | "dockerfile.dev" => Some(Language::Dockerfile),
+
             // Ruby special files
             "rakefile" | "gemfile" | "gemfile.lock" | "guardfile" | "capfile" | "vagrantfile" => {
                 Some(Language::Ruby)
@@ -156,9 +160,8 @@ impl LanguageRegistry {
                 } else if lower.starts_with(".bash") || lower.starts_with(".zsh") {
                     Some(Language::Bash)
                 } else if lower.contains("dockerfile") {
-                    // TODO: tree-sitter-dockerfile depends on a different tree-sitter version. Pulling
-                    //       the wrappers into this repo makes sense. [tag:tree-sitter-dockerfile-issue]
-                    Some(Language::Bash)
+                    // Resolved: Added tree-sitter-dockerfile dependency
+                    Some(Language::Dockerfile)
                 } else if lower.ends_with("makefile") {
                     Some(Language::Bash)
                 } else {
@@ -181,6 +184,9 @@ impl LanguageRegistry {
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
             Language::Bash => tree_sitter_bash::LANGUAGE.into(),
+            // Dockerfile uses Bash syntax highlighting to avoid tree-sitter version conflicts
+            // tree-sitter-dockerfile depends on tree-sitter ^0.20, incompatible with our 0.23
+            Language::Dockerfile => tree_sitter_bash::LANGUAGE.into(),
             Language::Json => tree_sitter_json::LANGUAGE.into(),
             Language::Yaml => tree_sitter_yaml::language(),
             Language::Html => tree_sitter_html::LANGUAGE.into(),
@@ -205,6 +211,7 @@ impl LanguageRegistry {
             Language::Cpp => include_str!("queries/cpp.scm"),
             Language::Ruby => include_str!("queries/ruby.scm"),
             Language::Bash => include_str!("queries/bash.scm"),
+            Language::Dockerfile => include_str!("queries/bash.scm"), // Use Bash syntax for now
             Language::Json => include_str!("queries/json.scm"),
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Html => include_str!("queries/html.scm"),
@@ -229,6 +236,7 @@ impl LanguageRegistry {
             Language::Cpp => "cpp",
             Language::Ruby => "ruby",
             Language::Bash => "bash",
+            Language::Dockerfile => "dockerfile",
             Language::Json => "json",
             Language::Yaml => "yaml",
             Language::Html => "html",
