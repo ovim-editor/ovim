@@ -25,33 +25,10 @@ pub async fn initialize_javascript_lsp(editor: &mut Editor, abs_path: &Path) {
                     .start_notification_listener(language_id.to_string())
                     .await;
 
-                // Send didOpen notification
-                let file_content = editor.buffer().rope().to_string();
-                let uri = match lsp_types::Url::from_file_path(abs_path) {
-                    Ok(uri) => uri,
-                    Err(_) => {
-                        editor.set_lsp_status("LSP: Invalid file path".to_string());
-                        return;
-                    }
-                };
-
-                let path_str = abs_path.to_string_lossy().to_string();
-
-                match lsp_manager
-                    .did_open(uri, language_id, 1, file_content.clone())
-                    .await
-                {
-                    Ok(_) => {
-                        // CRITICAL FIX: Initialize last_synced_content after successful didOpen
-                        // Without this, the first didChange uses empty string as old_text,
-                        // breaking incremental sync
-                        editor.set_last_synced_content(&path_str, Some(file_content));
-                        editor.set_lsp_status(format!("LSP: {} ready", server_command));
-                    }
-                    Err(e) => {
-                        editor.set_lsp_status(format!("LSP: didOpen failed: {}", e));
-                    }
-                }
+                // IMPORTANT: Don't send didOpen here - it will be handled by ensure_document_opened
+                // when the editor actually needs to use LSP features. This avoids race conditions
+                // and duplicate didOpen notifications.
+                editor.set_lsp_status(format!("LSP: {} ready", server_command));
             }
             Err(e) => {
                 editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
