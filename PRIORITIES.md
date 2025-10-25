@@ -1,0 +1,1 @@
+- [ ] Refactor event_loop.rs so that `run_event_loop` and `run_headless_loop` doesn't duplicate logic. Keep it async.
