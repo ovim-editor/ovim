@@ -6,6 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Char(ch) => {
+            eprintln!("Got a character");
             // Add character to command line
             editor.append_to_command_line(ch);
         }
@@ -73,13 +74,12 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
     let ignore_case = flags.contains('i');
 
     // Determine the range using the new parser (returns inclusive range)
-    let (start_line, end_line) =
-        if let Some((start, end)) = parse_range(editor, range_str) {
-            (start, end)
-        } else {
-            // Invalid range
-            return Ok(());
-        };
+    let (start_line, end_line) = if let Some((start, end)) = parse_range(editor, range_str) {
+        (start, end)
+    } else {
+        // Invalid range
+        return Ok(());
+    };
 
     // Compile the regex pattern
     use regex::RegexBuilder;
@@ -337,11 +337,9 @@ fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
                             .buffer_mut()
                             .delete_range(line_idx, 0, line_idx, line_len);
                         let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
-                        let delete_change =
-                            Change::delete(delete_range, deleted, cursor_before);
+                        let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
-                        let insert_change =
-                            Change::insert((line_idx, 0), new_text, cursor_before);
+                        let insert_change = Change::insert((line_idx, 0), new_text, cursor_before);
                         insert_change.apply(editor.buffer_mut());
 
                         editor.add_change(delete_change);
@@ -470,14 +468,13 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
 
     // First, try to parse range from command
     // Format: :[range]command
-    let (range_str, cmd_part) = if let Some(first_alpha) =
-        command.chars().position(|c| c.is_alphabetic() || c == '!')
-    {
-        (&command[..first_alpha], &command[first_alpha..])
-    } else {
-        // No command part, might be just a line number (goto)
-        (command, "")
-    };
+    let (range_str, cmd_part) =
+        if let Some(first_alpha) = command.chars().position(|c| c.is_alphabetic() || c == '!') {
+            (&command[..first_alpha], &command[first_alpha..])
+        } else {
+            // No command part, might be just a line number (goto)
+            (command, "")
+        };
 
     // Handle goto line (just a number or range without command)
     if cmd_part.is_empty() && !range_str.is_empty() {
@@ -517,8 +514,7 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
             editor.delete_to_register(deleted_text.clone());
 
             // Position cursor at start of deleted range
-            let new_cursor_line =
-                start_line.min(editor.buffer().line_count().saturating_sub(1));
+            let new_cursor_line = start_line.min(editor.buffer().line_count().saturating_sub(1));
             editor
                 .buffer_mut()
                 .cursor_mut()

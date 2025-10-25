@@ -104,6 +104,8 @@ cargo test
 ./ovim-ctl kill test
 ```
 
+More details in ./notes/TESTING.md
+
 ### Lua Configuration
 
 Create `~/.config/ovim/init.lua`:
@@ -230,5 +232,10 @@ If a file is too large to read, immediately start refactoring it by splitting it
 
 ## Note taking
 
-- Keep your notes within the notes folder at the root of the repo
+- Keep notes within the notes folder at the root of the repo
 - Keep notes structured and up to date
+- Notes include IMPLEMENTATION_STATUS.md, DESIGN.md, etc. Keep these up to date.
+
+## Documentation
+
+Document the structure of the codebase in the docs/ folder. Keep it neat and organized.
