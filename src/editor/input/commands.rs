@@ -1,3 +1,4 @@
+use crate::api::ApiResponse;
 use crate::editor::{Change, Editor, Mode, Range};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -465,6 +466,33 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     // Update the : register with the command
     editor.registers_mut().set_last_command(command.to_string());
 
+    // First, try to delegate to the top-level commands module which has all the standard commands
+    let response = crate::commands::execute_command(editor, command);
+    match response {
+        ApiResponse::Success(success_resp) => {
+            // Command executed successfully
+            if let Some(msg) = success_resp.message {
+                editor.set_lsp_status(msg);
+            }
+            return Ok(());
+        }
+        ApiResponse::Error(err_resp) => {
+            // Check if it's an "unknown command" error
+            if err_resp.error.contains("Not an editor command") {
+                // Fall through to custom input-specific command handling below
+            } else {
+                // It's a real error from a known command
+                editor.set_lsp_status(err_resp.error);
+                return Ok(());
+            }
+        }
+        _ => {
+            // Other response types from commands module - just ignore
+            return Ok(());
+        }
+    }
+
+    // If we reach here, it's an unknown command - try custom input-specific handling
     // First, try to parse range from command
     // Format: :[range]command
     let (range_str, cmd_part) =

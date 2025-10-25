@@ -64,6 +64,25 @@ async fn process_editor_tick(
     editor.send_lsp_save_if_needed().await;
 }
 
+/// Helper to process preview and file picker results
+fn process_picker_results(
+    editor: &mut Editor,
+    preview_rx: &mut tokio::sync::mpsc::Receiver<(String, editor::PreviewCache)>,
+    file_rx: &mut tokio::sync::mpsc::Receiver<editor::PickerResult>,
+) {
+    // Try to drain pending preview loads
+    while let Ok((path, cache)) = preview_rx.try_recv() {
+        editor.insert_preview(path, cache);
+    }
+    // Try to drain pending file results
+    while let Ok(result) = file_rx.try_recv() {
+        if let Some(picker) = editor.picker_mut() {
+            picker.add_file_result(result);
+            editor.mark_dirty();
+        }
+    }
+}
+
 /// Headless (API-only) event loop.
 pub async fn run_headless_loop(
     editor: &mut Editor,
@@ -115,15 +134,8 @@ pub async fn run_event_loop(
     while !editor.should_quit() {
         process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
 
-        while let Ok((path, cache)) = preview_rx.try_recv() {
-            editor.insert_preview(path, cache);
-        }
-        while let Ok(result) = file_rx.try_recv() {
-            if let Some(picker) = editor.picker_mut() {
-                picker.add_file_result(result);
-                editor.mark_dirty();
-            }
-        }
+        // Drain pending picker results
+        process_picker_results(editor, &mut preview_rx, &mut file_rx);
 
         if editor.is_dirty() {
             let start = Instant::now();
