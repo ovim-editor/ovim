@@ -986,7 +986,7 @@ impl LspManager {
             HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        lsp_debug!(
+        lsp_info!(
             "LSP-HOVER",
             "hover() called | URI: {} | line: {}, char: {} | language: {}",
             uri,
@@ -1000,15 +1000,15 @@ impl LspManager {
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
-        lsp_debug!("LSP-HOVER", "Server found for language: {}", language_id);
+        lsp_info!("LSP-HOVER", "Server found for language: {}", language_id);
 
         // Check if server supports hover
         if !server.supports_hover().await {
-            lsp_debug!("LSP-HOVER", "Server does not support hover");
+            lsp_info!("LSP-HOVER", "Server does not support hover - returning None");
             return Ok(None); // Gracefully return None if not supported
         }
 
-        lsp_debug!("LSP-HOVER", "Server supports hover, sending request");
+        lsp_info!("LSP-HOVER", "Server supports hover, sending request");
 
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -1022,16 +1022,11 @@ impl LspManager {
             .request("textDocument/hover", serde_json::to_value(params)?)
             .await?;
 
-        lsp_debug!("LSP-HOVER", "Received response: {}", result);
-
         // Handle null response (valid LSP response meaning no hover info)
         let response: Option<lsp_types::Hover> = if result.is_null() {
-            lsp_debug!("LSP-HOVER", "Response is null");
             None
         } else {
-            let parsed = serde_json::from_value(result.clone()).ok();
-            lsp_debug!("LSP-HOVER", "Parsed response: {:?}", parsed.is_some());
-            parsed
+            serde_json::from_value(result.clone()).ok()
         };
 
         // Extract text from hover response
