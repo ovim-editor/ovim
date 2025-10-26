@@ -2295,11 +2295,11 @@ impl Editor {
         };
 
         if is_opened {
-            crate::lsp_debug!("LSP-HOVER", "Document already opened for: {}", state_key);
+            crate::lsp_info!("LSP-HOVER", "Document already opened for: {}", state_key);
             return Ok(true);
         }
 
-        crate::lsp_debug!(
+        crate::lsp_info!(
             "LSP-HOVER",
             "Document NOT opened yet for: {}, sending didOpen",
             state_key
@@ -2308,10 +2308,12 @@ impl Editor {
         // Document not opened - send didOpen now
         let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(&abs_path)
         else {
+            crate::lsp_info!("LSP-HOVER", "Could not determine language ID for: {}", abs_path);
             return Ok(false);
         };
 
         let content = self.buffer().rope().to_string();
+        crate::lsp_info!("LSP-HOVER", "Sending didOpen for language: {}, content length: {} bytes", language_id, content.len());
 
         match lsp
             .did_open(uri.clone(), language_id, 1, content.clone())
@@ -2322,9 +2324,13 @@ impl Editor {
                 let state = self.lsp_state.document_sync.entry(state_key).or_default();
                 state.did_open_sent = true;
                 state.last_synced_content = Some(content);
+                crate::lsp_info!("LSP-HOVER", "didOpen sent successfully");
                 Ok(true)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                crate::lsp_info!("LSP-HOVER", "didOpen failed: {}", e);
+                Err(e)
+            }
         }
     }
 
