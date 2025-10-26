@@ -3511,14 +3511,6 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        crate::lsp_debug!(
-            "HOVER-DEBUG",
-            "Cursor: line={}, col={} | UTF-16 char={}",
-            cursor.line(),
-            cursor.col(),
-            character
-        );
-
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
             Some(id) => id,

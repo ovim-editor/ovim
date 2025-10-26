@@ -13,7 +13,7 @@ use lsp_types::{
     ClientCapabilities, InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
     TextDocumentContentChangeEvent, Url, WorkspaceFolder,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -590,11 +590,69 @@ impl LanguageServer {
         });
 
         #[allow(deprecated)]
+        // Initialize with rust-analyzer specific configuration
+        // These options are necessary for proper semantic analysis and hover support
+        let initialization_options = Some(json!({
+            "checkOnSave": {
+                "command": "clippy",
+                "extraArgs": ["--", "-D", "warnings"]
+            },
+            "hover": {
+                "documentation": true,
+                "relatedInformation": true
+            },
+            "inlayHints": {
+                "bindingModeHints": {
+                    "enable": false
+                },
+                "chainingHints": {
+                    "enable": true
+                },
+                "closureReturnTypeHints": {
+                    "enable": "never"
+                },
+                "closureStyle": "impl_fn",
+                "discriminantHints": {
+                    "enable": "never"
+                },
+                "expressionAdjustmentHints": {
+                    "enable": "never"
+                },
+                "genericPlaceholderHints": {
+                    "enable": true
+                },
+                "implicitDrops": {
+                    "enable": false
+                },
+                "lifetimeElisionHints": {
+                    "enable": "never"
+                },
+                "maxLength": null,
+                "parameterHints": {
+                    "enable": true
+                },
+                "rangeHints": {
+                    "enable": false
+                },
+                "renderColons": true,
+                "typeHints": {
+                    "enable": true,
+                    "hideClosureInitialization": false,
+                    "hideNamedConstructor": false
+                }
+            },
+            "typing": {
+                "autoClosingAngleBrackets": {
+                    "enable": true
+                }
+            }
+        }));
+
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(root_uri.clone()),
             root_path: None, // Deprecated, use root_uri or workspace_folders
-            initialization_options: None,
+            initialization_options,
             capabilities,
             trace: None,
             workspace_folders: Some(vec![WorkspaceFolder {
