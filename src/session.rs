@@ -13,6 +13,9 @@ use std::path::PathBuf;
 use std::process;
 use std::time::SystemTime;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 /// Information about a running headless session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -90,12 +93,28 @@ impl SessionInfo {
         // Write to temporary file
         let mut temp_file =
             fs::File::create(&temp_path).context("Failed to create temporary session file")?;
+
+        // SECURITY: Set restrictive permissions (0o600 = rw-------) to prevent information
+        // disclosure on multi-user systems. Session files contain sensitive data like port
+        // numbers and file paths that should only be readable by the owner.
+        #[cfg(unix)]
+        {
+            let mut perms = temp_file.metadata()?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&temp_path, perms)?;
+        }
+
         temp_file
             .write_all(json.as_bytes())
             .context("Failed to write to temporary session file")?;
         temp_file
             .flush()
             .context("Failed to flush temporary session file")?;
+
+        // Ensure data is written to disk before atomic rename to prevent data loss on crash
+        temp_file
+            .sync_all()
+            .context("Failed to sync session file to disk")?;
 
         // Atomically replace the old file with the new one
         fs::rename(&temp_path, &path).context("Failed to rename session file")?;
@@ -112,10 +131,15 @@ impl SessionInfo {
     /// Delete this session file
     pub fn delete(&self) -> Result<()> {
         let path = self.session_file_path()?;
-        if path.exists() {
-            fs::remove_file(path)?;
+
+        // Remove file directly without checking exists() first to avoid TOCTOU race.
+        // An attacker could replace the file with a symlink between the check and removal.
+        // remove_file is idempotent - if the file doesn't exist, we treat that as success.
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
         }
-        Ok(())
     }
 
     /// Read a session by name
@@ -334,7 +358,7 @@ fn is_process_exists(_pid: u32) -> bool {
 pub fn cleanup_stale_sessions() -> Result<()> {
     let session_dir = SessionInfo::session_dir()?;
 
-    for entry in fs::read_dir(session_dir)? {
+    for entry in fs::read_dir(&session_dir)? {
         let entry = entry?;
         let path = entry.path();
 
@@ -351,5 +375,125 @@ pub fn cleanup_stale_sessions() -> Result<()> {
         }
     }
 
+    // Clean up orphaned .tmp files older than 1 hour
+    // These are created during atomic writes (write + rename) but can be left behind
+    // if the process crashes or the write fails between creating the temp file and renaming it
+    for entry in fs::read_dir(&session_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().and_then(|s| s.to_str()) == Some("tmp") {
+            // Only delete old temp files (>1 hour old) to avoid races with concurrent writers
+            if let Ok(metadata) = fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(elapsed) = modified.elapsed() {
+                        if elapsed > std::time::Duration::from_secs(3600) {
+                            let _ = fs::remove_file(&path); // Best-effort cleanup
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Guard that ensures session cleanup on drop (even during panic)
+///
+/// This struct wraps SessionInfo and implements Drop to guarantee that
+/// the session file is deleted when the guard goes out of scope, whether
+/// due to normal exit, Ctrl+C, or panic unwinding.
+///
+/// # Example
+///
+/// ```no_run
+/// let session_info = SessionInfo::new(8080, Some("file.txt".to_string()), "dev".to_string());
+/// let _guard = SessionGuard::new(session_info.clone());
+/// // Session file will be cleaned up automatically when _guard is dropped
+/// ```
+pub struct SessionGuard {
+    session_info: SessionInfo,
+}
+
+impl SessionGuard {
+    /// Create a new session guard
+    pub fn new(session_info: SessionInfo) -> Self {
+        Self { session_info }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        // Best-effort cleanup on panic/normal exit
+        // We ignore errors since:
+        // 1. We're already panicking or exiting
+        // 2. The file might already be cleaned up by signal handler
+        // 3. Logging during drop/panic can cause issues
+        let _ = self.session_info.delete();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic;
+
+    #[test]
+    fn test_session_guard_cleans_up_on_drop() {
+        let session_info =
+            SessionInfo::new(9999, Some("test.txt".to_string()), "guard_test".to_string());
+        session_info.write().unwrap();
+
+        let session_file_path = session_info.session_file_path().unwrap();
+        assert!(
+            session_file_path.exists(),
+            "Session file should exist before drop"
+        );
+
+        // Create and immediately drop the guard
+        {
+            let _guard = SessionGuard::new(session_info.clone());
+        }
+
+        // Give filesystem a moment
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        assert!(
+            !session_file_path.exists(),
+            "Session file should be deleted after guard drops"
+        );
+    }
+
+    #[test]
+    fn test_session_guard_cleans_up_on_panic() {
+        let session_info = SessionInfo::new(
+            9998,
+            Some("panic_test.txt".to_string()),
+            "panic_guard_test".to_string(),
+        );
+        session_info.write().unwrap();
+
+        let session_file_path = session_info.session_file_path().unwrap();
+        assert!(
+            session_file_path.exists(),
+            "Session file should exist before panic"
+        );
+
+        // Trigger panic with guard in scope
+        let result = panic::catch_unwind(|| {
+            let _guard = SessionGuard::new(session_info.clone());
+            panic!("Test panic!");
+        });
+
+        assert!(result.is_err(), "Panic should have occurred");
+
+        // Give filesystem a moment
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        assert!(
+            !session_file_path.exists(),
+            "Session file should be deleted after panic"
+        );
+    }
 }

@@ -2443,14 +2443,18 @@ impl Editor {
         }
 
         let line_text = rope.line(line);
-        let char_count = line_text.chars().count();
 
-        // Clamp col to valid range
-        let safe_col = col.min(char_count);
+        // CRITICAL: rope.line() includes the trailing newline, but LSP positions
+        // should NOT include it. Exclude newline when calculating char count
+        // and when iterating for UTF-16 conversion to prevent off-by-one errors
+        // at end-of-line positions (hover, goto definition, etc.)
+        let chars_without_newline = line_text.chars().take_while(|&c| c != '\n').count();
+        let safe_col = col.min(chars_without_newline);
 
-        // Convert to UTF-16 code units
+        // Convert to UTF-16 code units, excluding the newline
         line_text
             .chars()
+            .take_while(|&c| c != '\n')
             .take(safe_col)
             .map(|c| c.len_utf16() as u32)
             .sum()
@@ -3163,7 +3167,12 @@ impl Editor {
         };
 
         // Get incoming calls for the first item
-        let first_item = items.into_iter().next().unwrap();
+        // Safety: items vector is guaranteed non-empty by the check above (lines 3157-3163),
+        // but we handle None defensively to avoid panics in edge cases
+        let first_item = items
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No call hierarchy items available"))?;
         let incoming = lsp.incoming_calls(first_item, language_id).await?;
 
         // Display results in picker
@@ -3282,7 +3291,12 @@ impl Editor {
         };
 
         // Get outgoing calls for the first item
-        let first_item = items.into_iter().next().unwrap();
+        // Safety: items vector is guaranteed non-empty by the check above (lines 3276-3282),
+        // but we handle None defensively to avoid panics in edge cases
+        let first_item = items
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No call hierarchy items available"))?;
         let outgoing = lsp.outgoing_calls(first_item, language_id).await?;
 
         // Display results in picker
@@ -3401,7 +3415,12 @@ impl Editor {
         };
 
         // Get supertypes and subtypes for the first item
-        let first_item = items.into_iter().next().unwrap();
+        // Safety: items vector is guaranteed non-empty by the check above (lines 3395-3401),
+        // but we handle None defensively to avoid panics in edge cases
+        let first_item = items
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No type hierarchy items available"))?;
         let supertypes = lsp.supertypes(first_item.clone(), language_id).await?;
         let subtypes = lsp.subtypes(first_item, language_id).await?;
 
