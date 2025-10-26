@@ -3550,6 +3550,7 @@ impl Editor {
         // The didChange notifications are debounced (150ms), so we need to flush
         // to ensure the LSP server has the latest content
         // We do this WITHOUT holding the LspManager lock to avoid blocking
+        crate::lsp_info!("LSP-HOVER", "Flushing pending changes before hover");
         let _ = lsp.flush_pending_changes(&uri).await;
 
         // Adaptive delay based on language server processing time
@@ -3559,8 +3560,10 @@ impl Editor {
             "java" => 150, // jdtls needs even more
             _ => 50,       // Other servers are faster
         };
+        crate::lsp_info!("LSP-HOVER", "Waiting {}ms before hover request", delay_ms);
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 
+        crate::lsp_info!("LSP-HOVER", "Sending hover request for URI: {}, line: {}, char: {}, lang: {}", uri, line, character, language_id);
         let hover_text = lsp.hover(&uri, line, character, language_id).await?;
 
         // Store hover information and enter HoverWindow mode if available
@@ -3572,8 +3575,12 @@ impl Editor {
             self.set_lsp_status("Hover window opened (q to close, j/k to scroll)".to_string());
             Ok(true)
         } else {
-            // Provide helpful status message - LSP might still be indexing
-            self.set_lsp_status("No hover info (try again, LSP may be indexing...)".to_string());
+            // No hover info - could be many reasons:
+            // 1. Cursor is not on a valid symbol
+            // 2. LSP server hasn't indexed this location yet
+            // 3. This language/position doesn't have hover info available
+            crate::lsp_info!("LSP-HOVER", "Hover returned empty for: URI={}, line={}, char={}", uri, line, character);
+            self.set_lsp_status("No hover info at this location (may not be a symbol)".to_string());
             Ok(false)
         }
     }
