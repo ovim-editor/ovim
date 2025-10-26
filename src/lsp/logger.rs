@@ -25,7 +25,11 @@ pub fn init_lsp_logging() -> std::io::Result<()> {
         .append(true)
         .open(&log_path)?;
 
-    let mut log_file = LSP_LOG_FILE.lock().unwrap();
+    // Handle mutex poisoning gracefully by recovering the guard
+    let mut log_file = match LSP_LOG_FILE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     *log_file = Some(file);
 
     Ok(())

@@ -10,7 +10,7 @@ use super::protocol::{write_message, JsonRpcMessage, RequestId};
 use super::supervisor::{RestartPolicy, TaskHealth, TaskSupervisor};
 use anyhow::{anyhow, Context, Result};
 use lsp_types::{
-    ClientCapabilities, InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
+    InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
     TextDocumentContentChangeEvent, Url, WorkspaceFolder,
 };
 use serde_json::{json, Value};
@@ -574,20 +574,45 @@ impl LanguageServer {
         })
         .await;
 
-        // Build client capabilities with work done progress support
-        let mut capabilities = ClientCapabilities::default();
-
-        // Enable work done progress so LSP servers (especially jdtls) send progress notifications
-        // This allows us to show "Indexing...", "Building workspace...", etc.
-        capabilities.window = Some(lsp_types::WindowClientCapabilities {
-            work_done_progress: Some(true),
-            show_message: Some(lsp_types::ShowMessageRequestClientCapabilities {
-                message_action_item: Some(lsp_types::MessageActionItemCapabilities {
-                    additional_properties_support: Some(false),
+        // Build comprehensive client capabilities to advertise supported features
+        // This tells the LSP server what features the client can handle
+        let client_capabilities = lsp_types::ClientCapabilities {
+            // Window capabilities
+            window: Some(lsp_types::WindowClientCapabilities {
+                work_done_progress: Some(true),
+                show_message: Some(lsp_types::ShowMessageRequestClientCapabilities {
+                    message_action_item: Some(lsp_types::MessageActionItemCapabilities {
+                        additional_properties_support: Some(false),
+                    }),
                 }),
+                ..Default::default()
             }),
+
+            // Text document capabilities - advertise support for common LSP features
+            text_document: Some(lsp_types::TextDocumentClientCapabilities {
+                completion: Some(Default::default()),
+                hover: Some(Default::default()),
+                signature_help: Some(Default::default()),
+                declaration: Some(Default::default()),
+                definition: Some(Default::default()),
+                references: Some(Default::default()),
+                document_highlight: Some(Default::default()),
+                document_symbol: Some(Default::default()),
+                code_action: Some(Default::default()),
+                rename: Some(Default::default()),
+                formatting: Some(Default::default()),
+                range_formatting: Some(Default::default()),
+                ..Default::default()
+            }),
+
+            // Workspace capabilities
+            workspace: Some(lsp_types::WorkspaceClientCapabilities {
+                apply_edit: Some(true),
+                ..Default::default()
+            }),
+
             ..Default::default()
-        });
+        };
 
         #[allow(deprecated)]
         // Initialize with rust-analyzer specific configuration
@@ -653,7 +678,7 @@ impl LanguageServer {
             root_uri: Some(root_uri.clone()),
             root_path: None, // Deprecated, use root_uri or workspace_folders
             initialization_options,
-            capabilities,
+            capabilities: client_capabilities,
             trace: None,
             workspace_folders: Some(vec![WorkspaceFolder {
                 uri: root_uri,
@@ -965,6 +990,29 @@ impl LanguageServer {
             .send(msg)
             .await
             .map_err(|_| anyhow!("Failed to send notification"))?;
+        Ok(())
+    }
+
+    /// Sends a response to a request from the server
+    pub async fn send_response(&self, response: JsonRpcMessage) -> Result<()> {
+        // Check message size
+        let serialized_size = serde_json::to_vec(&response)
+            .context("Failed to estimate response size")?
+            .len();
+        if serialized_size > MAX_MESSAGE_SIZE {
+            return Err(anyhow!(
+                "Response too large: {} bytes (max {} bytes / {:.1} MB)",
+                serialized_size,
+                MAX_MESSAGE_SIZE,
+                MAX_MESSAGE_SIZE as f64 / (1024.0 * 1024.0)
+            ));
+        }
+
+        self.inner
+            .outgoing_tx
+            .send(response)
+            .await
+            .map_err(|_| anyhow!("Failed to send response"))?;
         Ok(())
     }
 

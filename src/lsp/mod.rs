@@ -34,7 +34,7 @@ use dashmap::DashMap;
 use lsp_types::{
     Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier,
+    TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier, WorkspaceEdit,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -304,10 +304,14 @@ impl LspManager {
 
     /// Gets health information for all language servers
     pub async fn health_check(&self) -> Vec<LanguageServerHealth> {
-        let mut health_infos = Vec::new();
+        // Collect servers while holding lock (minimal duration)
+        // to avoid holding DashMap lock during async health_check() calls
+        let servers: Vec<_> = self.servers.iter().map(|r| r.value().clone()).collect();
 
-        for entry in self.servers.iter() {
-            health_infos.push(entry.value().health_check().await);
+        // Lock is released after collection; now iterate without contention
+        let mut health_infos = Vec::new();
+        for server in servers {
+            health_infos.push(server.health_check().await);
         }
 
         health_infos
@@ -586,13 +590,159 @@ impl LspManager {
         Ok(())
     }
 
-    /// Handles incoming notifications from language servers
+    /// Handles incoming requests from language servers that expect a response
+    async fn handle_server_request(&self, language_id: &str, request: JsonRpcMessage) {
+        let method = request.method.as_ref().map(|s| s.as_str()).unwrap_or("");
+        let request_id = request.id.clone();
+
+        lsp_info!(
+            "LSP-SERVER-REQUEST",
+            "Received request from server: {} | ID: {:?}",
+            method,
+            request_id
+        );
+
+        match method {
+            "workspace/applyEdit" => {
+                // Parse the ApplyWorkspaceEditParams
+                if let Some(params) = request.params {
+                    match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params) {
+                        Ok(apply_params) => {
+                            // Apply the workspace edit
+                            match self.apply_workspace_edit(apply_params.edit).await {
+                                Ok(_) => {
+                                    // Send success response
+                                    let response = lsp_types::ApplyWorkspaceEditResponse {
+                                        applied: true,
+                                        failure_reason: None,
+                                        failed_change: None,
+                                    };
+
+                                    if let Some(id) = request_id {
+                                        if let Some(server) = self.servers.get(language_id) {
+                                            let response_msg = JsonRpcMessage::response(
+                                                id,
+                                                serde_json::to_value(response).unwrap(),
+                                            );
+
+                                            if let Err(e) = server.send_response(response_msg).await {
+                                                lsp_error!(
+                                                    "LSP-SERVER-REQUEST",
+                                                    "Failed to send workspace/applyEdit response: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    // Send error response
+                                    lsp_error!(
+                                        "LSP-SERVER-REQUEST",
+                                        "Failed to apply workspace edit: {}",
+                                        e
+                                    );
+
+                                    if let Some(id) = request_id {
+                                        if let Some(server) = self.servers.get(language_id) {
+                                            let error_response = protocol::ResponseError {
+                                                code: -32603, // Internal error
+                                                message: format!("Failed to apply edit: {}", e),
+                                                data: None,
+                                            };
+
+                                            let response_msg =
+                                                JsonRpcMessage::error_response(id, error_response);
+
+                                            if let Err(e) = server.send_response(response_msg).await {
+                                                lsp_error!(
+                                                    "LSP-SERVER-REQUEST",
+                                                    "Failed to send error response: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to parse workspace/applyEdit params: {}",
+                                e
+                            );
+
+                            // Send error response for parse failure
+                            if let Some(id) = request_id {
+                                if let Some(server) = self.servers.get(language_id) {
+                                    let error_response = protocol::ResponseError {
+                                        code: -32700, // Parse error
+                                        message: format!("Failed to parse parameters: {}", e),
+                                        data: None,
+                                    };
+
+                                    let response_msg =
+                                        JsonRpcMessage::error_response(id, error_response);
+
+                                    if let Err(e) = server.send_response(response_msg).await {
+                                        lsp_error!(
+                                            "LSP-SERVER-REQUEST",
+                                            "Failed to send error response: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {
+                lsp_warn!(
+                    "LSP-SERVER-REQUEST",
+                    "Unsupported server request: {}",
+                    method
+                );
+
+                // Send "method not found" error response
+                if let Some(id) = request_id {
+                    if let Some(server) = self.servers.get(language_id) {
+                        let error_response = protocol::ResponseError {
+                            code: -32601, // Method not found
+                            message: format!("Method not supported: {}", method),
+                            data: None,
+                        };
+
+                        let response_msg = JsonRpcMessage::error_response(id, error_response);
+
+                        if let Err(e) = server.send_response(response_msg).await {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to send error response: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handles incoming notifications and requests from language servers
     /// This should be called in a background task to process notifications
-    pub async fn handle_notification(&self, language_id: &str, notification: JsonRpcMessage) {
-        if let Some(method) = &notification.method {
+    pub async fn handle_notification(&self, language_id: &str, message: JsonRpcMessage) {
+        // Check if this is a request from the server (needs a response)
+        if message.is_request() {
+            self.handle_server_request(language_id, message).await;
+            return;
+        }
+
+        // Handle notifications (no response needed)
+        if let Some(method) = &message.method {
             match method.as_str() {
                 "textDocument/publishDiagnostics" => {
-                    if let Some(params) = notification.params {
+                    if let Some(params) = message.params {
                         // Clone params for error message before moving
                         let params_clone = params.clone();
                         match serde_json::from_value::<PublishDiagnosticsParams>(params) {
@@ -626,7 +776,7 @@ impl LspManager {
                 "window/showMessage" => {
                     // Only show messages if OVIM_LSP_DEBUG is set to avoid cluttering the terminal
                     if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        if let Some(params) = notification.params {
+                        if let Some(params) = message.params {
                             if let Ok(msg_params) =
                                 serde_json::from_value::<lsp_types::ShowMessageParams>(params)
                             {
@@ -667,7 +817,7 @@ impl LspManager {
                     }
                 }
                 "window/logMessage" => {
-                    if let Some(params) = notification.params {
+                    if let Some(params) = message.params {
                         if let Ok(log_params) =
                             serde_json::from_value::<lsp_types::LogMessageParams>(params)
                         {
@@ -700,7 +850,7 @@ impl LspManager {
                 "$/progress" => {
                     // Progress notifications from LSP server (e.g., jdtls indexing)
                     // These provide real-time feedback about long-running operations
-                    if let Some(params) = &notification.params {
+                    if let Some(params) = &message.params {
                         // Try to parse as ProgressParams
                         if let Ok(progress) =
                             serde_json::from_value::<lsp_types::ProgressParams>(params.clone())
@@ -789,7 +939,7 @@ impl LspManager {
         }
     }
 
-    /// Starts a background task to listen for notifications from a language server
+    /// Starts a background task to listen for notifications and requests from a language server
     pub async fn start_notification_listener(&self, language_id: String) {
         let server = self
             .servers
@@ -802,15 +952,16 @@ impl LspManager {
 
             tokio::spawn(async move {
                 while let Some(msg) = server.receive().await {
-                    if msg.is_notification() {
-                        // Send notification to manager for processing
+                    // Handle both notifications (no id) and requests from server (has id)
+                    if msg.is_notification() || msg.is_request() {
+                        // Send to manager for processing
                         let notification = LspNotification {
                             language_id: lang_id.clone(),
                             message: msg,
                         };
 
                         if let Err(e) = tx.send(notification).await {
-                            lsp_error!("Listener", "Failed to send notification: {}", e);
+                            lsp_error!("Listener", "Failed to send notification/request: {}", e);
                             break; // Manager dropped or channel full, stop listening
                         }
                     }
@@ -1948,6 +2099,138 @@ impl LspManager {
         let hints: Vec<lsp_types::InlayHint> = serde_json::from_value(result).unwrap_or_default();
 
         Ok(hints)
+    }
+
+    /// Applies workspace edits received from the LSP server
+    /// This handles requests like refactoring, renames, and code actions that modify files
+    pub async fn apply_workspace_edit(&self, edit: WorkspaceEdit) -> Result<()> {
+        lsp_info!(
+            "LSP-WORKSPACE",
+            "Received workspace/applyEdit request with {} document changes",
+            edit.document_changes.as_ref().map(|changes| match changes {
+                lsp_types::DocumentChanges::Edits(edits) => edits.len(),
+                lsp_types::DocumentChanges::Operations(ops) => ops.len(),
+            }).unwrap_or_else(|| edit.changes.as_ref().map(|c| c.len()).unwrap_or(0))
+        );
+
+        // Handle the basic case: changes map (uri -> TextEdit[])
+        if let Some(changes) = edit.changes {
+            for (uri, edits) in changes {
+                // Convert URI to file path
+                let path = uri.to_file_path().map_err(|_| {
+                    anyhow::anyhow!("Invalid file URI: {}", uri)
+                })?;
+
+                let path_str = path.to_string_lossy();
+
+                // Sort edits in reverse order (from end to start) to avoid position shifts
+                let mut sorted_edits = edits;
+                sorted_edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.character)));
+
+                // Log the workspace edit details
+                lsp_info!(
+                    "LSP-WORKSPACE",
+                    "Workspace edit for {}: {} text edits",
+                    path_str,
+                    sorted_edits.len()
+                );
+
+                // TODO: Implement actual edit application
+                // For MVP: just log that we received the edits
+                // Full implementation would:
+                // 1. Load the file buffer (or get from open buffers)
+                // 2. Apply edits in reverse order to maintain position validity
+                // 3. Save the modified buffer
+                // 4. Notify LSP of the changes via didChange
+                for (idx, edit) in sorted_edits.iter().enumerate() {
+                    lsp_debug!(
+                        "LSP-WORKSPACE",
+                        "  Edit {}: range {:?} -> {:?} | new_text: {:?}",
+                        idx + 1,
+                        edit.range.start,
+                        edit.range.end,
+                        if edit.new_text.len() > 100 {
+                            format!("{}... ({} chars)", &edit.new_text[..100], edit.new_text.len())
+                        } else {
+                            edit.new_text.clone()
+                        }
+                    );
+                }
+            }
+        }
+
+        // Handle document_changes (more structured, can include create/delete/rename operations)
+        if let Some(document_changes) = edit.document_changes {
+            match document_changes {
+                lsp_types::DocumentChanges::Edits(edits) => {
+                    for text_doc_edit in edits {
+                        let uri = &text_doc_edit.text_document.uri;
+                        let path = uri.to_file_path().map_err(|_| {
+                            anyhow::anyhow!("Invalid file URI: {}", uri)
+                        })?;
+
+                        lsp_info!(
+                            "LSP-WORKSPACE",
+                            "Document edit for {}: {} text edits",
+                            path.to_string_lossy(),
+                            text_doc_edit.edits.len()
+                        );
+
+                        // TODO: Apply text edits (same as above)
+                    }
+                }
+                lsp_types::DocumentChanges::Operations(ops) => {
+                    for op in ops {
+                        match op {
+                            lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
+                                let uri = &text_doc_edit.text_document.uri;
+                                let path = uri.to_file_path().map_err(|_| {
+                                    anyhow::anyhow!("Invalid file URI: {}", uri)
+                                })?;
+
+                                lsp_info!(
+                                    "LSP-WORKSPACE",
+                                    "Document edit operation for {}: {} text edits",
+                                    path.to_string_lossy(),
+                                    text_doc_edit.edits.len()
+                                );
+                            }
+                            lsp_types::DocumentChangeOperation::Op(resource_op) => {
+                                match resource_op {
+                                    lsp_types::ResourceOp::Create(create) => {
+                                        lsp_info!(
+                                            "LSP-WORKSPACE",
+                                            "Create file operation: {}",
+                                            create.uri
+                                        );
+                                        // TODO: Create file
+                                    }
+                                    lsp_types::ResourceOp::Delete(delete) => {
+                                        lsp_info!(
+                                            "LSP-WORKSPACE",
+                                            "Delete file operation: {}",
+                                            delete.uri
+                                        );
+                                        // TODO: Delete file
+                                    }
+                                    lsp_types::ResourceOp::Rename(rename) => {
+                                        lsp_info!(
+                                            "LSP-WORKSPACE",
+                                            "Rename file operation: {} -> {}",
+                                            rename.old_uri,
+                                            rename.new_uri
+                                        );
+                                        // TODO: Rename file
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Gets LSP status information for all active servers

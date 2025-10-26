@@ -4789,10 +4789,6 @@ impl InputHandler {
             editor.buffer().cursor().line(),
             editor.buffer().cursor().col(),
         );
-        eprintln!(
-            "[DEBUG delete_visual_selection] cursor_before=({},{})",
-            cursor_before.0, cursor_before.1
-        );
 
         if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
             match mode {
@@ -4816,10 +4812,6 @@ impl InputHandler {
                 }
                 Mode::VisualBlock => {
                     // Delete rectangular block
-                    eprintln!(
-                        "[DEBUG] VisualBlock delete: start=({},{}), end=({},{})",
-                        start_line, start_col, end_line, end_col
-                    );
                     let mut deleted_lines = Vec::new();
                     let mut changes = Vec::new();
 
@@ -4827,24 +4819,15 @@ impl InputHandler {
                     for line_idx in (start_line..=end_line).rev() {
                         if let Some(line_text) = editor.buffer().line(line_idx) {
                             let line_len = line_text.trim_end_matches('\n').chars().count();
-                            eprintln!(
-                                "[DEBUG] Line {}: len={}, text={:?}",
-                                line_idx,
-                                line_len,
-                                line_text.trim_end_matches('\n')
-                            );
                             // Only delete if the line is long enough
                             if start_col < line_len {
                                 let actual_end_col = (end_col + 1).min(line_len);
-                                eprintln!("[DEBUG] Line {}: deleting cols {}..{} (end_col={}, actual_end_col={})",
-                                    line_idx, start_col, actual_end_col, end_col, actual_end_col);
                                 let deleted = editor.buffer_mut().delete_range(
                                     line_idx,
                                     start_col,
                                     line_idx,
                                     actual_end_col,
                                 );
-                                eprintln!("[DEBUG] Line {}: deleted={:?}", line_idx, deleted);
 
                                 // Create individual Change for each line deletion
                                 let range =
@@ -4853,10 +4836,6 @@ impl InputHandler {
                                 changes.push(change);
                                 deleted_lines.push(deleted);
                             } else {
-                                eprintln!(
-                                    "[DEBUG] Line {}: start_col >= line_len, skipping",
-                                    line_idx
-                                );
                                 deleted_lines.push(String::new());
                             }
                         }

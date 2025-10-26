@@ -4,10 +4,11 @@ mod lsp_init;
 use anyhow::Result;
 use ovim::cli::Args;
 use ovim::editor::Editor;
-use ovim::session::SessionInfo;
+use ovim::session::{SessionGuard, SessionInfo};
 use ovim::ui::UI;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
 /// Sanitize session name to prevent path traversal attacks
@@ -126,15 +127,40 @@ async fn main() -> Result<()> {
             );
         }
 
-        // Set up cleanup on exit
-        let session_info_for_cleanup = session_info.clone();
-        let cleanup_handle = tokio::spawn(async move {
+        // Create a guard to ensure cleanup on panic
+        // This guard will automatically delete the session file when dropped,
+        // even if the process panics before the signal handlers run
+        let _session_guard = SessionGuard::new(session_info.clone());
+
+        // Set up cleanup on exit - handle both SIGINT and SIGTERM
+        // This fixes stale session file accumulation when killed with `kill` or `ovim-ctl kill`
+
+        // Handle SIGINT (Ctrl+C)
+        let session_info_for_sigint = session_info.clone();
+        let sigint_handle = tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
-            match session_info_for_cleanup.delete() {
-                Ok(_) => eprintln!("\nSession cleaned up successfully"),
+            match session_info_for_sigint.delete() {
+                Ok(_) => eprintln!("\nSession cleaned up successfully (SIGINT)"),
                 Err(e) => eprintln!("\nError during session cleanup: {}", e),
             }
-            // Use a more graceful exit method
+            std::process::exit(0);
+        });
+
+        // Handle SIGTERM (kill command, ovim-ctl kill)
+        let session_info_for_sigterm = session_info.clone();
+        let sigterm_handle = tokio::spawn(async move {
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to register SIGTERM handler: {}", e);
+                    return;
+                }
+            };
+            sigterm.recv().await;
+            match session_info_for_sigterm.delete() {
+                Ok(_) => eprintln!("\nSession cleaned up successfully (SIGTERM)"),
+                Err(e) => eprintln!("\nError during session cleanup: {}", e),
+            }
             std::process::exit(0);
         });
 
@@ -151,7 +177,8 @@ async fn main() -> Result<()> {
             session_info_arc,
         )
         .await?;
-        cleanup_handle.abort();
+        sigint_handle.abort();
+        sigterm_handle.abort();
         return Ok(());
     } else {
         None

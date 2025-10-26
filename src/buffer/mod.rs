@@ -99,8 +99,32 @@ impl Buffer {
     }
 
     /// Creates a buffer from a string
+    ///
+    /// # Behavior
+    /// - Empty string → empty rope (0 chars, 1 empty line)
+    /// - Content without trailing newline → content + "\n" added
+    /// - Content with trailing newline → content unchanged
+    ///
+    /// # Examples
+    /// ```
+    /// use ovim::buffer::Buffer;
+    ///
+    /// // Empty buffer has 0 chars, 1 empty line
+    /// let buf = Buffer::from_str("");
+    /// assert_eq!(buf.rope().len_chars(), 0);
+    /// assert_eq!(buf.line_count(), 1);
+    ///
+    /// // Content gets trailing newline added if missing
+    /// let buf = Buffer::from_str("hello");
+    /// assert_eq!(buf.rope().to_string(), "hello\n");
+    ///
+    /// // Content with newline unchanged
+    /// let buf = Buffer::from_str("hello\n");
+    /// assert_eq!(buf.rope().to_string(), "hello\n");
+    /// ```
     pub fn from_str(content: &str) -> Self {
         // Ensure content always ends with newline (Vim behavior)
+        // Empty string is valid and creates an empty rope (0 chars, 1 empty line)
         let rope = if content.is_empty() || content.ends_with('\n') {
             Rope::from_str(content)
         } else {
@@ -109,6 +133,37 @@ impl Buffer {
             rope.insert(rope.len_chars(), "\n");
             rope
         };
+
+        // Debug assertions to validate expected rope state
+        #[cfg(debug_assertions)]
+        {
+            if content.is_empty() {
+                // Empty input creates empty rope (0 chars)
+                assert_eq!(
+                    rope.len_chars(),
+                    0,
+                    "Empty buffer should have 0 chars, got {}",
+                    rope.len_chars()
+                );
+                assert_eq!(
+                    rope.len_lines(),
+                    1,
+                    "Empty buffer should have 1 empty line, got {}",
+                    rope.len_lines()
+                );
+            } else {
+                // Non-empty content must end with newline
+                assert!(
+                    rope.to_string().ends_with('\n'),
+                    "Buffer content must end with newline"
+                );
+                // Must have at least 1 character (the newline)
+                assert!(
+                    rope.len_chars() > 0,
+                    "Non-empty buffer must have at least 1 char (newline)"
+                );
+            }
+        }
 
         Self {
             rope,
@@ -366,16 +421,25 @@ impl Buffer {
             return String::new();
         }
 
+        // Validate start column is within line bounds to prevent addition overflow
+        let start_line_len = self.line_len(start_line);
+        let actual_start_col = start_col.min(start_line_len);
+
         let start_line_char = self.rope.line_to_char(start_line);
-        let start_pos = start_line_char + start_col;
+        let start_pos = start_line_char + actual_start_col;
 
         let end_pos = if end_line >= self.line_count() {
             self.rope.len_chars()
         } else {
+            // Validate end column is within line bounds to prevent addition overflow
+            let end_line_len = self.line_len(end_line);
+            let actual_end_col = end_col.min(end_line_len);
+
             let end_line_char = self.rope.line_to_char(end_line);
-            end_line_char + end_col
+            end_line_char + actual_end_col
         };
 
+        // Final safety clamp to buffer length (should be redundant after column validation)
         let start_pos = start_pos.min(self.rope.len_chars());
         let end_pos = end_pos.min(self.rope.len_chars());
 
@@ -1012,5 +1076,112 @@ impl Buffer {
 impl Default for Buffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_str_empty_buffer() {
+        // Empty string creates empty rope with 1 empty line
+        let buf = Buffer::from_str("");
+
+        assert_eq!(buf.rope().len_chars(), 0, "Empty buffer should have 0 chars");
+        assert_eq!(buf.rope().len_lines(), 1, "Empty buffer should have 1 empty line");
+        assert_eq!(buf.line_count(), 1, "Empty buffer should report 1 line");
+        assert_eq!(buf.line(0), Some("".to_string()), "First line should be empty string");
+        assert_eq!(buf.cursor().line(), 0, "Cursor should be at line 0");
+        assert_eq!(buf.cursor().col(), 0, "Cursor should be at col 0");
+        assert!(!buf.is_modified(), "New buffer should not be modified");
+    }
+
+    #[test]
+    fn test_from_str_single_newline() {
+        // Single newline creates rope with 1 char, 2 lines (one empty, one after newline)
+        let buf = Buffer::from_str("\n");
+
+        assert_eq!(buf.rope().len_chars(), 1, "Single newline should have 1 char");
+        assert_eq!(buf.rope().len_lines(), 2, "Single newline should have 2 lines");
+        assert_eq!(buf.rope().to_string(), "\n", "Content should be just newline");
+    }
+
+    #[test]
+    fn test_from_str_content_without_newline() {
+        // Content without trailing newline gets one added
+        let buf = Buffer::from_str("hello");
+
+        assert_eq!(buf.rope().to_string(), "hello\n", "Newline should be added");
+        assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
+        assert_eq!(buf.rope().len_lines(), 2, "Should have 2 lines (content + empty)");
+        assert_eq!(buf.line_count(), 2, "Should report 2 lines");
+        assert_eq!(buf.line(0), Some("hello\n".to_string()), "First line should include newline");
+    }
+
+    #[test]
+    fn test_from_str_content_with_newline() {
+        // Content with trailing newline is unchanged
+        let buf = Buffer::from_str("hello\n");
+
+        assert_eq!(buf.rope().to_string(), "hello\n", "Content should be unchanged");
+        assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
+        assert_eq!(buf.rope().len_lines(), 2, "Should have 2 lines");
+    }
+
+    #[test]
+    fn test_from_str_multiple_lines() {
+        // Multiple lines with trailing newline
+        let buf = Buffer::from_str("line1\nline2\nline3\n");
+
+        assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Content should be unchanged");
+        assert_eq!(buf.line_count(), 4, "Should have 4 lines (3 + empty)");
+        assert_eq!(buf.line(0), Some("line1\n".to_string()));
+        assert_eq!(buf.line(1), Some("line2\n".to_string()));
+        assert_eq!(buf.line(2), Some("line3\n".to_string()));
+    }
+
+    #[test]
+    fn test_from_str_multiple_lines_no_trailing_newline() {
+        // Multiple lines without trailing newline gets one added
+        let buf = Buffer::from_str("line1\nline2\nline3");
+
+        assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Newline should be added");
+        assert_eq!(buf.line_count(), 4, "Should have 4 lines");
+        assert_eq!(buf.line(2), Some("line3\n".to_string()), "Last line should have newline added");
+    }
+
+    #[test]
+    fn test_from_str_preserves_internal_empty_lines() {
+        // Empty lines in the middle should be preserved
+        let buf = Buffer::from_str("line1\n\nline3\n");
+
+        assert_eq!(buf.rope().to_string(), "line1\n\nline3\n");
+        assert_eq!(buf.line_count(), 4, "Should have 4 lines");
+        assert_eq!(buf.line(0), Some("line1\n".to_string()));
+        assert_eq!(buf.line(1), Some("\n".to_string()), "Middle line should be just newline");
+        assert_eq!(buf.line(2), Some("line3\n".to_string()));
+    }
+
+    #[test]
+    fn test_from_str_initial_state() {
+        // Verify all initial state is set correctly
+        let buf = Buffer::from_str("test");
+
+        assert_eq!(buf.cursor().line(), 0);
+        assert_eq!(buf.cursor().col(), 0);
+        assert!(!buf.is_modified());
+        assert!(buf.file_path().is_none());
+    }
+
+    #[test]
+    fn test_new_vs_from_str_empty() {
+        // new() and from_str("") should create equivalent buffers
+        let buf1 = Buffer::new();
+        let buf2 = Buffer::from_str("");
+
+        assert_eq!(buf1.rope().len_chars(), buf2.rope().len_chars());
+        assert_eq!(buf1.rope().len_lines(), buf2.rope().len_lines());
+        assert_eq!(buf1.line_count(), buf2.line_count());
     }
 }
