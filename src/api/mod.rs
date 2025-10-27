@@ -9,7 +9,7 @@ pub use routes::create_router;
 pub use state::{
     parse_key_string, format_context_window, ApiRequest, ApiResponse, ApiState, BufferInfo, ContextWindowInfo, CursorPosition,
     EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, MetricsInfo,
-    ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
+    ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SendKeysResult, SuccessResponse, VisualSelection,
 };
 
 use anyhow::Result;

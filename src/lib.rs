@@ -11,6 +11,7 @@ pub mod java;
 pub mod lsp;
 #[cfg(feature = "lua")]
 pub mod lua;
+pub mod mcp_stdio_server;
 pub mod mode;
 pub mod session;
 pub mod subcommands;

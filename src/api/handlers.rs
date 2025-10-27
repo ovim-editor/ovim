@@ -139,6 +139,32 @@ pub async fn get_mode(State(state): State<ApiState>) -> Response {
     }
 }
 
+/// Handler for POST /mode
+#[derive(Deserialize)]
+pub struct SetModeRequest {
+    pub mode: String,
+}
+
+pub async fn set_mode(
+    State(state): State<ApiState>,
+    JsonExtractor(payload): JsonExtractor<SetModeRequest>,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+
+    if state
+        .tx
+        .send(ApiRequest::SetMode(payload.mode, tx))
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to set mode"),
+    }
+}
+
 /// Handler for POST /command
 #[derive(Deserialize)]
 pub struct ExecuteCommandRequest {

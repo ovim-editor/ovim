@@ -34,8 +34,19 @@ pub enum ApiResponse {
     Health(HealthInfo),
     Metrics(MetricsInfo),
     ContextWindow(ContextWindowInfo),
+    SendKeysResult(SendKeysResult),
     Success(SuccessResponse),
     Error(ErrorResponse),
+}
+
+/// Result of send_keys operation with context window
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendKeysResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Context window showing result of key operation
+    pub context: ContextWindowInfo,
 }
 
 /// Complete snapshot of editor state

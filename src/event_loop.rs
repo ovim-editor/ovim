@@ -214,10 +214,33 @@ async fn handle_api_request(
                     editor.process_pending_lsp_actions().await;
 
                     if success {
-                        ApiResponse::Success(SuccessResponse {
+                        // Create context window showing the result of the key operation
+                        let buffer = editor.buffer();
+                        let cursor = buffer.cursor();
+                        let buffer_content = buffer.rope().to_string();
+                        let file_path = buffer.file_path();
+                        let mode_str = editor.mode().display_name().to_string();
+
+                        let context_str = ovim::api::format_context_window(
+                            &buffer_content,
+                            cursor.line(),
+                            cursor.col(),
+                            file_path,
+                            &mode_str,
+                        );
+
+                        let context_info = ovim::api::ContextWindowInfo {
+                            context: context_str,
+                            file: file_path.map(|s| s.to_string()),
+                            mode: mode_str,
+                            line: cursor.line(),
+                            column: cursor.col(),
+                        };
+
+                        ApiResponse::SendKeysResult(ovim::api::SendKeysResult {
                             success: true,
                             message: None,
-                            line_count: None,
+                            context: context_info,
                         })
                     } else {
                         ApiResponse::Error(ErrorResponse {
