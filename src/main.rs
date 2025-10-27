@@ -193,6 +193,34 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Create session for TUI mode with random ID and timestamp
+    let session_name = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let timestamp = now.as_secs();
+        let nanos = now.subsec_nanos();
+        let pid = std::process::id();
+        // Combine nanos and pid for uniqueness
+        let random_part = ((nanos as u64) ^ (pid as u64)).wrapping_mul(31);
+        format!("tui_{}_{}", random_part, timestamp)
+    };
+
+    let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
+
+    if let Err(e) = session_info.write() {
+        eprintln!("Warning: Failed to write session info: {}", e);
+    } else {
+        eprintln!(
+            "Session '{}' created at ~/.cache/ovim/sessions/{}.json",
+            session_name, session_name
+        );
+    }
+
+    // Create a guard to ensure cleanup on panic
+    let _session_guard = SessionGuard::new(session_info.clone());
+
     // Create UI for TUI mode
     let mut ui = if let Some(dimensions) = args.dimension {
         UI::with_dimensions(Some(dimensions))?

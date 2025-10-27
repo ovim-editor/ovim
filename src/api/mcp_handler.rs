@@ -80,8 +80,11 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
 
             match rx.await {
                 Ok(response) => {
-                    if let super::state::ApiResponse::Success(_) = response {
-                        Ok(mcp::tool_result(vec![mcp::text_content("Keys sent successfully")]))
+                    if let super::state::ApiResponse::SendKeysResult(result) = response {
+                        // Return the context window as the response
+                        let json_str = serde_json::to_string_pretty(&result.context)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
                     } else {

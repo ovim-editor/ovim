@@ -1,4 +1,4 @@
-# ovim
+u ovim
 
 A Vim clone in Rust with LSP support and seamless headless mode for testing and automation.
 
@@ -14,40 +14,8 @@ cargo build --release
 ./target/release/ovim myfile.rs --headless --session dev
 ```
 
-## Development Workflow
-
-### Headless Mode (Recommended)
-
-Start a named session:
-```bash
-ovim --headless --session myproject src/main.rs
-```
-
-Control it from another terminal:
-```bash
-# List sessions with LSP status
-./ovim-ctl list
-
-# Send commands (no port needed!)
-./ovim-ctl send myproject "ggK"      # Go to top, trigger hover
-./ovim-ctl send myproject "iHello<Esc>"
-
-# Check health & LSP readiness
-./ovim-ctl health myproject
-
-# View LSP status
-./ovim-ctl lsp myproject
-
-# Wait for LSP to be ready (useful in scripts)
-./ovim-ctl wait myproject 30
-
-# Kill session (auto-cleanup)
-./ovim-ctl kill myproject
-```
-
-### Session Management
-
-- Sessions stored in `~/Library/Caches/ovim/sessions/` (Mac) or `~/.cache/ovim/sessions/` (Linux)
+# Development Workflow
+~/.cache/ovim/sessions/` (Mac) or `~/.cache/ovim/sessions/` (Linux)
 - Auto-cleanup on exit or manual `./ovim-ctl kill`
 - Multiple concurrent sessions with different names
 - LSP readiness tracking per session
