@@ -1,27 +1,130 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
-#[command(about = "A Neovim clone written in Rust", long_about = None)]
-pub struct Args {
-    /// File to open
+#[command(about = "A Neovim clone written in Rust with MCP support", long_about = None)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// File to open (when no subcommand is given)
+    #[arg(global = true)]
     pub file: Option<String>,
 
     /// Run in headless mode with REST API enabled (no TUI)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub headless: bool,
 
     /// Session name for headless mode (default: "default")
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub session: Option<String>,
 
     /// Set viewport dimensions (e.g., 80x24)
-    #[arg(long, value_parser = parse_dimensions)]
+    #[arg(long, global = true, value_parser = parse_dimensions)]
     pub dimension: Option<(u16, u16)>,
 
     /// Render the editor to ANSI and exit (useful for debugging)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub render: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// List all running ovim sessions
+    Sessions,
+
+    /// Send key sequence to a session
+    Send {
+        /// Session name
+        session: String,
+        /// Key sequence (Vim keybindings)
+        keys: String,
+    },
+
+    /// Execute an ex command in a session
+    Exec {
+        /// Session name
+        session: String,
+        /// Ex command (without leading colon)
+        command: String,
+    },
+
+    /// Get snapshot of a session's state
+    Snapshot {
+        /// Session name
+        session: String,
+        /// Output format (json or pretty)
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+
+    /// Get buffer content from a session
+    Buffer {
+        /// Session name
+        session: String,
+    },
+
+    /// Send MCP JSON-RPC request to a session
+    Mcp {
+        /// Session name
+        session: String,
+        /// MCP method (e.g., initialize, tools/list, tools/call)
+        method: String,
+        /// JSON parameters (optional, defaults to {})
+        #[arg(default_value = "{}")]
+        params: String,
+        /// Request ID (defaults to 1)
+        #[arg(long, default_value = "1")]
+        id: i64,
+    },
+
+    /// Kill a running session
+    Kill {
+        /// Session name
+        session: String,
+    },
+
+    /// Check health of a session
+    Health {
+        /// Session name
+        session: String,
+    },
+
+    /// Get LSP status from a session
+    LspStatus {
+        /// Session name
+        session: String,
+    },
+
+    /// Install ovim as MCP server for supported editors
+    Install {
+        /// Editor to install for (claude, cursor, or all)
+        #[arg(value_name = "EDITOR", default_value = "claude")]
+        editor: String,
+
+        /// Show what would be installed without making changes
+        #[arg(long)]
+        show_config: bool,
+
+        /// Workspace directory for ovim sessions
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+
+    /// Start ovim as a long-running MCP server
+    McpServer {
+        /// Workspace directory for ovim sessions
+        #[arg(long)]
+        workspace: Option<String>,
+
+        /// Port to listen on (default: auto)
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Session name for this server instance
+        #[arg(long)]
+        session: Option<String>,
+    },
 }
 
 /// Parse dimension string like "80x24" into (width, height)
@@ -48,8 +151,34 @@ fn parse_dimensions(s: &str) -> Result<(u16, u16), String> {
     Ok((width, height))
 }
 
-impl Args {
+impl Cli {
     pub fn parse_args() -> Self {
-        Args::parse()
+        Cli::parse()
     }
+
+    /// Check if running in editor mode (no subcommand)
+    pub fn is_editor_mode(&self) -> bool {
+        self.command.is_none()
+    }
+
+    /// Get editor args (for backward compatibility)
+    pub fn editor_args(&self) -> EditorArgs {
+        EditorArgs {
+            file: self.file.clone(),
+            headless: self.headless,
+            session: self.session.clone(),
+            dimension: self.dimension,
+            render: self.render,
+        }
+    }
+}
+
+/// Legacy args structure for editor mode (backward compatibility)
+#[derive(Debug, Clone)]
+pub struct EditorArgs {
+    pub file: Option<String>,
+    pub headless: bool,
+    pub session: Option<String>,
+    pub dimension: Option<(u16, u16)>,
+    pub render: bool,
 }

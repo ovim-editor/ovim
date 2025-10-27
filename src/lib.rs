@@ -1,6 +1,7 @@
 pub mod api;
 pub mod buffer;
 pub mod cli;
+pub mod client;
 pub mod commands;
 pub mod config;
 pub mod daemon;
@@ -12,6 +13,7 @@ pub mod lsp;
 pub mod lua;
 pub mod mode;
 pub mod session;
+pub mod subcommands;
 pub mod syntax;
 pub mod ui;
 

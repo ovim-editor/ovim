@@ -1,7 +1,10 @@
 mod handlers;
+mod mcp;
+mod mcp_handler;
 mod routes;
 mod state;
 
+pub use mcp::{JsonRpcRequest, JsonRpcResponse};
 pub use routes::create_router;
 pub use state::{
     parse_key_string, ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition,
