@@ -3,7 +3,13 @@ use std::path::Path;
 
 /// Initialize JavaScript/TypeScript LSP (typescript-language-server)
 pub async fn initialize_javascript_lsp(editor: &mut Editor, abs_path: &Path) {
-    let language_id = "javascript";
+    // Determine language ID based on file extension
+    let language_id = if abs_path.extension().and_then(|e| e.to_str()) == Some("ts") ||
+                         abs_path.extension().and_then(|e| e.to_str()) == Some("tsx") {
+        "typescript"
+    } else {
+        "javascript"
+    };
     let server_command = "typescript-language-server";
     let server_args = vec!["--stdio".to_string()];
 

@@ -615,73 +615,113 @@ impl LanguageServer {
         };
 
         #[allow(deprecated)]
-        // Initialize with rust-analyzer specific configuration
-        // These options are necessary for proper semantic analysis and hover support
-        let initialization_options = Some(json!({
-            "checkOnSave": {
-                "command": "clippy",
-                "extraArgs": ["--", "-D", "warnings"]
+        // Language-specific initialization options
+        // Each language server has different requirements for optimal behavior
+        let initialization_options = match self.inner.language.as_str() {
+            "rust" => {
+                // rust-analyzer specific configuration
+                Some(json!({
+                    "checkOnSave": {
+                        "command": "clippy",
+                        "extraArgs": ["--", "-D", "warnings"]
+                    },
+                    "hover": {
+                        "documentation": true,
+                        "relatedInformation": true
+                    },
+                    "cargo": {
+                        "buildScripts": { "enable": true }
+                    },
+                    "procMacro": { "enable": true },
+                    "inlayHints": {
+                        "bindingModeHints": {
+                            "enable": false
+                        },
+                        "chainingHints": {
+                            "enable": true
+                        },
+                        "closureReturnTypeHints": {
+                            "enable": "never"
+                        },
+                        "closureStyle": "impl_fn",
+                        "discriminantHints": {
+                            "enable": "never"
+                        },
+                        "expressionAdjustmentHints": {
+                            "enable": "never"
+                        },
+                        "genericPlaceholderHints": {
+                            "enable": true
+                        },
+                        "implicitDrops": {
+                            "enable": false
+                        },
+                        "lifetimeElisionHints": {
+                            "enable": "never"
+                        },
+                        "maxLength": null,
+                        "parameterHints": {
+                            "enable": true
+                        },
+                        "rangeHints": {
+                            "enable": false
+                        },
+                        "renderColons": true,
+                        "typeHints": {
+                            "enable": true,
+                            "hideClosureInitialization": false,
+                            "hideNamedConstructor": false
+                        }
+                    },
+                    "typing": {
+                        "autoClosingAngleBrackets": {
+                            "enable": true
+                        }
+                    }
+                }))
             },
-            "hover": {
-                "documentation": true,
-                "relatedInformation": true
+            "javascript" | "typescript" => {
+                // TypeScript language server configuration
+                Some(json!({
+                    "preferences": {
+                        "includeInlayParameterNameHints": "all",
+                        "includeInlayFunctionParameterTypeHints": true,
+                        "includeInlayVariableTypeHints": true,
+                        "includeInlayPropertyDeclarationTypeHints": true,
+                        "includeInlayEnumMemberValueHints": true,
+                        "quotePreference": "auto",
+                        "importModuleSpecifierPreference": "relative"
+                    },
+                    "hostInfo": "ovim"
+                }))
             },
-            "inlayHints": {
-                "bindingModeHints": {
-                    "enable": false
-                },
-                "chainingHints": {
-                    "enable": true
-                },
-                "closureReturnTypeHints": {
-                    "enable": "never"
-                },
-                "closureStyle": "impl_fn",
-                "discriminantHints": {
-                    "enable": "never"
-                },
-                "expressionAdjustmentHints": {
-                    "enable": "never"
-                },
-                "genericPlaceholderHints": {
-                    "enable": true
-                },
-                "implicitDrops": {
-                    "enable": false
-                },
-                "lifetimeElisionHints": {
-                    "enable": "never"
-                },
-                "maxLength": null,
-                "parameterHints": {
-                    "enable": true
-                },
-                "rangeHints": {
-                    "enable": false
-                },
-                "renderColons": true,
-                "typeHints": {
-                    "enable": true,
-                    "hideClosureInitialization": false,
-                    "hideNamedConstructor": false
-                }
+            "python" => {
+                // pyright/pylsp configuration
+                Some(json!({
+                    "python": {
+                        "analysis": {
+                            "typeCheckingMode": "basic",
+                            "autoSearchPaths": true,
+                            "diagnosticMode": "workspace"
+                        }
+                    }
+                }))
             },
-            "typing": {
-                "autoClosingAngleBrackets": {
-                    "enable": true
-                }
+            _ => {
+                // No specific initialization options for other languages
+                None
             }
-        }));
+        };
 
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(root_uri.clone()),
             root_path: None, // Deprecated, use root_uri or workspace_folders
-            initialization_options,
+            initialization_options: initialization_options.clone(),
             capabilities: client_capabilities,
             trace: None,
             workspace_folders: Some(vec![WorkspaceFolder {
-                uri: root_uri,
+                uri: root_uri.clone(),
                 name: "workspace".to_string(),
             }]),
             client_info: Some(lsp_types::ClientInfo {
@@ -691,6 +731,14 @@ impl LanguageServer {
             locale: None,
             work_done_progress_params: Default::default(),
         };
+
+        crate::lsp_info!(
+            &self.log_prefix(),
+            "LSP Initialize | Language: {} | Root: {} | InitOptions: {}",
+            self.inner.language,
+            root_uri,
+            initialization_options.as_ref().map(|opts| opts.to_string()).unwrap_or_else(|| "None".to_string())
+        );
 
         let result = self
             .request("initialize", serde_json::to_value(params)?)
@@ -943,8 +991,27 @@ impl LanguageServer {
 
         match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(result)) => {
-                let _elapsed = start_time.elapsed();
-                // eprintln!("[LSP-RESPONSE] Success: {} | Took: {:?} | Request ID: {:?}", method, _elapsed, request_id);
+                let elapsed = start_time.elapsed();
+                let result_preview = match &result {
+                    Ok(value) if value.is_null() => "null".to_string(),
+                    Ok(value) => {
+                        let json_str = serde_json::to_string(value).unwrap_or_else(|_| "?".to_string());
+                        if json_str.len() > 200 {
+                            format!("{}...", &json_str[..200])
+                        } else {
+                            json_str
+                        }
+                    },
+                    Err(e) => format!("Error: {}", e)
+                };
+                crate::lsp_info!(
+                    &self.log_prefix(),
+                    "LSP-RESPONSE: {} | {:?} | ID: {:?} | Result: {}",
+                    method,
+                    elapsed,
+                    request_id,
+                    result_preview
+                );
                 result.context(format!("LSP request '{}' failed", method))
             }
             Ok(Err(_)) => {

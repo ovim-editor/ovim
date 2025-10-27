@@ -1173,15 +1173,27 @@ impl LspManager {
             .request("textDocument/hover", serde_json::to_value(params)?)
             .await?;
 
+        lsp_info!("LSP-HOVER", "Received hover result: {:?}", result);
+
         // Handle null response (valid LSP response meaning no hover info)
         let response: Option<lsp_types::Hover> = if result.is_null() {
+            lsp_info!("LSP-HOVER", "Result is null");
             None
         } else {
-            serde_json::from_value(result.clone()).ok()
+            match serde_json::from_value(result.clone()) {
+                Ok(hover) => {
+                    lsp_info!("LSP-HOVER", "Successfully parsed hover response");
+                    Some(hover)
+                }
+                Err(e) => {
+                    lsp_warn!("LSP-HOVER", "Failed to parse hover response: {} | Raw: {:?}", e, result);
+                    None
+                }
+            }
         };
 
         // Extract text from hover response
-        Ok(response.and_then(|hover| match hover.contents {
+        let hover_text = response.and_then(|hover| match hover.contents {
             lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
             lsp_types::HoverContents::Array(contents) => {
                 let texts: Vec<String> = contents.into_iter().map(marked_string_to_text).collect();
@@ -1192,7 +1204,10 @@ impl LspManager {
                 }
             }
             lsp_types::HoverContents::Markup(content) => Some(content.value),
-        }))
+        });
+
+        lsp_info!("LSP-HOVER", "Extracted hover text: {:?}", hover_text);
+        Ok(hover_text)
     }
 
     /// Requests code completion for a position in a document
