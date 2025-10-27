@@ -290,13 +290,23 @@ fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Re
     });
 
     match editor.to_lowercase().as_str() {
-        "claude" => install_claude_desktop(&mcp_config, show_config)?,
+        "claude-code" | "code" => install_claude_code(&mcp_config, show_config)?,
+        "claude-desktop" | "desktop" => install_claude_desktop(&mcp_config, show_config)?,
+        "claude" => {
+            // Default: install for both Claude Code and Claude Desktop
+            install_claude_code(&mcp_config, show_config)?;
+            install_claude_desktop(&mcp_config, show_config)?;
+        }
         "cursor" => install_cursor(&mcp_config, show_config)?,
         "all" => {
+            install_claude_code(&mcp_config, show_config)?;
             install_claude_desktop(&mcp_config, show_config)?;
             install_cursor(&mcp_config, show_config)?;
         }
-        _ => anyhow::bail!("Unknown editor: {}. Supported: claude, cursor, all", editor),
+        _ => anyhow::bail!(
+            "Unknown editor: {}. Supported: claude (both), claude-code, claude-desktop, cursor, all",
+            editor
+        ),
     }
 
     if !show_config {
@@ -305,6 +315,49 @@ fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Re
         println!("1. Restart the editor to load the new MCP server");
         println!("2. The ovim MCP server will auto-spawn sessions as needed");
         println!("3. Any queries involving your code will automatically use ovim's LSP features");
+    }
+
+    Ok(())
+}
+
+/// Install for Claude Code (.mcp.json)
+fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let config_path = PathBuf::from(".mcp.json");
+
+    // Read existing config or create new one
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .context("Failed to read existing .mcp.json")?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure mcpServers object exists
+    if !config.get("mcpServers").is_some() {
+        config["mcpServers"] = serde_json::json!({});
+    }
+
+    // Add or update ovim entry (don't override other servers)
+    config["mcpServers"]["ovim"] = mcp_config.clone();
+
+    if show_config {
+        println!("\n📋 Claude Code config to be added/merged to .mcp.json:");
+        println!("{}", serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?);
+        println!(
+            "\nWill be saved to: {}",
+            config_path.to_string_lossy()
+        );
+    } else {
+        // Write updated config
+        fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config)?,
+        ).context("Failed to write .mcp.json")?;
+        println!("✓ Updated .mcp.json for Claude Code");
     }
 
     Ok(())
