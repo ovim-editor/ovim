@@ -202,6 +202,123 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 Err(_) => Err(JsonRpcError::internal_error("Failed to trigger LSP action")),
             }
         }
+        "get_snapshot" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetSnapshot(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::Snapshot(snapshot) = response {
+                        let json_str = serde_json::to_string_pretty(&snapshot)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get snapshot")),
+            }
+        }
+        "get_health" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetHealth(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::Health(health) = response {
+                        let json_str = serde_json::to_string_pretty(&health)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get health")),
+            }
+        }
+        "get_lsp_status" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetLspStatus(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::LspStatus(lsp_status) = response {
+                        let json_str = serde_json::to_string_pretty(&lsp_status)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get LSP status")),
+            }
+        }
+        "list_sessions" => {
+            // This tool doesn't require editor state, just return the list of all sessions
+            match crate::session::SessionInfo::list_all() {
+                Ok(sessions) => {
+                    let json_str = serde_json::to_string_pretty(&sessions)
+                        .unwrap_or_else(|_| "[]".to_string());
+                    Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                }
+                Err(e) => Err(JsonRpcError::internal_error(&format!("Failed to list sessions: {}", e))),
+            }
+        }
+        "set_mode" => {
+            let mode_str = arguments
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| JsonRpcError::invalid_params("Missing 'mode' argument"))?;
+
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::SetMode(mode_str.to_string(), tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::Success(success) = response {
+                        let msg = success.message.unwrap_or_else(|| format!("Mode set to {}", mode_str));
+                        Ok(mcp::tool_result(vec![mcp::text_content(&msg)]))
+                    } else if let super::state::ApiResponse::Error(err) = response {
+                        Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to set mode")),
+            }
+        }
+        "get_context_window" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetContextWindow(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::ContextWindow(ctx) = response {
+                        let json_str = serde_json::to_string_pretty(&ctx)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get context window")),
+            }
+        }
         _ => Err(JsonRpcError::invalid_params(&format!("Unknown tool: {}", tool_name))),
     }
 }
@@ -214,6 +331,30 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
         .ok_or_else(|| JsonRpcError::invalid_params("Missing 'uri' field"))?;
 
     match uri {
+        "ovim://context-window" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetContextWindow(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::ContextWindow(ctx) = response {
+                        Ok(json!({
+                            "contents": [{
+                                "uri": uri,
+                                "mimeType": "text/plain",
+                                "text": ctx.context
+                            }]
+                        }))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get context window")),
+            }
+        }
         "ovim://buffer" => {
             let (tx, rx) = oneshot::channel();
             state

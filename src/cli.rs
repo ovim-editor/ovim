@@ -96,6 +96,12 @@ pub enum Command {
         session: String,
     },
 
+    /// Get 21-line context window around cursor
+    Context {
+        /// Session name
+        session: String,
+    },
+
     /// Install ovim as MCP server for supported editors
     Install {
         /// Editor to install for (claude, cursor, or all)

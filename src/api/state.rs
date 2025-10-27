@@ -12,11 +12,13 @@ pub enum ApiRequest {
     SetBuffer(String, oneshot::Sender<ApiResponse>),
     GetCursor(oneshot::Sender<ApiResponse>),
     GetMode(oneshot::Sender<ApiResponse>),
+    SetMode(String, oneshot::Sender<ApiResponse>),
     ExecuteCommand(String, oneshot::Sender<ApiResponse>),
     GetRender(oneshot::Sender<ApiResponse>),
     GetLspStatus(oneshot::Sender<ApiResponse>),
     GetHealth(oneshot::Sender<ApiResponse>),
     GetMetrics(oneshot::Sender<ApiResponse>),
+    GetContextWindow(oneshot::Sender<ApiResponse>),
 }
 
 /// Response types that can be returned from the editor
@@ -31,6 +33,7 @@ pub enum ApiResponse {
     LspStatus(LspStatusInfo),
     Health(HealthInfo),
     Metrics(MetricsInfo),
+    ContextWindow(ContextWindowInfo),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
@@ -148,6 +151,21 @@ pub struct MetricsInfo {
     pub last_diagnostic_query_micros: Option<u64>,
 }
 
+/// Context window information (21-line view around cursor)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextWindowInfo {
+    /// Formatted context window with line numbers and cursor markers
+    pub context: String,
+    /// Current file name or path
+    pub file: Option<String>,
+    /// Current mode (NORMAL, INSERT, etc)
+    pub mode: String,
+    /// Current cursor line (0-indexed)
+    pub line: usize,
+    /// Current cursor column (0-indexed)
+    pub column: usize,
+}
+
 /// Visual selection range
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualSelection {
@@ -203,7 +221,44 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
     while i < chars.len() {
         let c = chars[i];
 
-        // Handle special keys
+        // Handle escape sequences: \e, \c, \n, \\
+        if c == '\\' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            match next {
+                'e' => {
+                    // \e = Escape
+                    events.push(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    i += 2;
+                    continue;
+                }
+                'c' => {
+                    // \c = Ctrl+C
+                    events.push(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+                    i += 2;
+                    continue;
+                }
+                'n' => {
+                    // \n = Enter/newline
+                    events.push(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    i += 2;
+                    continue;
+                }
+                '\\' => {
+                    // \\ = Literal backslash
+                    events.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    // Not a recognized escape sequence, treat backslash as literal
+                    events.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Handle special keys with <> notation
         if c == '<' {
             // Find the closing >
             if let Some(end) = s[i..].find('>') {
@@ -249,4 +304,77 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
         "Right" => Some(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
         _ => None,
     }
+}
+
+/// Format a 21-line context window around the cursor
+///
+/// Shows 10 lines above, current line (with >> marker), and 10 lines below
+/// Includes line numbers, cursor position indicator (^), and truncates long lines
+pub fn format_context_window(
+    buffer_content: &str,
+    cursor_line: usize,
+    cursor_column: usize,
+    file_path: Option<&str>,
+    mode: &str,
+) -> String {
+    let lines: Vec<&str> = buffer_content.lines().collect();
+    let total_lines = lines.len();
+
+    // Calculate visible range: 10 lines above, current, 10 below
+    let start_line = if cursor_line > 10 { cursor_line - 10 } else { 0 };
+    let end_line = (cursor_line + 11).min(total_lines);
+
+    // Determine max line number width for padding
+    let max_line_num = (total_lines - 1).max(cursor_line);
+    let line_num_width = max_line_num.to_string().len();
+
+    // Build header
+    let file_display = file_path
+        .and_then(|p| p.split('/').last())
+        .unwrap_or("unnamed");
+    let header = format!(
+        "[ovim: {} | {} | L{}:C{}]",
+        file_display, mode, cursor_line + 1, cursor_column + 1
+    );
+
+    let mut result = String::new();
+    result.push_str(&header);
+    result.push('\n');
+
+    // Show context lines
+    for line_idx in start_line..end_line {
+        let is_current = line_idx == cursor_line;
+        let marker = if is_current { ">>" } else { "  " };
+
+        // Line number
+        let line_num_str = format!("{:width$}", line_idx + 1, width = line_num_width);
+        result.push_str(&format!("{} {} | ", marker, line_num_str));
+
+        // Line content with truncation
+        let line = if line_idx < lines.len() {
+            let content = lines[line_idx];
+            if content.len() > 80 {
+                format!("{}...", &content[..77])
+            } else {
+                content.to_string()
+            }
+        } else {
+            String::new()
+        };
+        result.push_str(&line);
+        result.push('\n');
+
+        // Add cursor indicator for current line
+        if is_current && cursor_column <= lines[line_idx].len() {
+            let spaces = " ".repeat(marker.len() + 1 + line_num_width + 3 + cursor_column);
+            result.push_str(&format!("{}{}\n", spaces, "^"));
+        }
+    }
+
+    // Add FILE END marker if we're showing the end
+    if end_line >= total_lines && total_lines > 0 {
+        result.push_str("FILE END\n");
+    }
+
+    result
 }

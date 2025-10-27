@@ -171,6 +171,10 @@ pub fn get_tools() -> Vec<Tool> {
                     "keys": {
                         "type": "string",
                         "description": "Vim key sequence (e.g., 'gg' for top, 'dd' for delete line, 'iHello<Esc>' for insert)"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use. If omitted, uses current session or auto-discovers if only one exists"
                     }
                 },
                 "required": ["keys"]
@@ -181,7 +185,12 @@ pub fn get_tools() -> Vec<Tool> {
             description: "Get the current buffer content".to_string(),
             input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
             }),
         },
         Tool {
@@ -193,6 +202,10 @@ pub fn get_tools() -> Vec<Tool> {
                     "content": {
                         "type": "string",
                         "description": "The new content for the buffer"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
                     }
                 },
                 "required": ["content"]
@@ -203,7 +216,12 @@ pub fn get_tools() -> Vec<Tool> {
             description: "Get the current cursor position".to_string(),
             input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
             }),
         },
         Tool {
@@ -215,6 +233,10 @@ pub fn get_tools() -> Vec<Tool> {
                     "command": {
                         "type": "string",
                         "description": "Ex command without the leading colon"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
                     }
                 },
                 "required": ["command"]
@@ -225,7 +247,12 @@ pub fn get_tools() -> Vec<Tool> {
             description: "Get LSP hover information at cursor position".to_string(),
             input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
             }),
         },
         Tool {
@@ -233,7 +260,90 @@ pub fn get_tools() -> Vec<Tool> {
             description: "Jump to definition using LSP".to_string(),
             input_schema: json!({
                 "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "get_snapshot".to_string(),
+            description: "Get complete editor state (buffer, cursor, mode, registers, marks)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "get_health".to_string(),
+            description: "Get session health and status information".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "list_sessions".to_string(),
+            description: "List all active ovim sessions".to_string(),
+            input_schema: json!({
+                "type": "object",
                 "properties": {}
+            }),
+        },
+        Tool {
+            name: "get_lsp_status".to_string(),
+            description: "Get LSP server status and information".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "set_mode".to_string(),
+            description: "Set the editor mode (NORMAL, INSERT, VISUAL, VISUAL_LINE, VISUAL_BLOCK, COMMAND, SEARCH, PICKER)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "description": "Target mode: NORMAL, INSERT, VISUAL, VISUAL_LINE, VISUAL_BLOCK, COMMAND, SEARCH, PICKER"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                },
+                "required": ["mode"]
+            }),
+        },
+        Tool {
+            name: "get_context_window".to_string(),
+            description: "Get a 21-line context window around cursor (10 above, current, 10 below) with line numbers and cursor position".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
             }),
         },
     ]
@@ -248,6 +358,12 @@ pub fn handle_tools_list() -> Result<Value, JsonRpcError> {
 /// Get all available resources
 pub fn get_resources(file_path: Option<&str>) -> Vec<Resource> {
     let mut resources = vec![
+        Resource {
+            uri: "ovim://context-window".to_string(),
+            name: "Context Window".to_string(),
+            description: Some("21-line context around cursor (10 above, current, 10 below) - AI-optimized".to_string()),
+            mime_type: Some("text/plain".to_string()),
+        },
         Resource {
             uri: "ovim://buffer".to_string(),
             name: "Current Buffer".to_string(),

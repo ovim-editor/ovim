@@ -14,8 +14,9 @@ cargo build --release
 
 # Control sessions (integrated CLI - no separate tool needed!)
 ./target/release/ovim sessions                # List all sessions
-./target/release/ovim send dev "ggK"          # Send commands
-./target/release/ovim buffer dev              # Get buffer content
+./target/release/ovim send dev "ggK"          # Send commands (with \e, \c, \n escapes)
+./target/release/ovim context dev             # Get 21-line context around cursor (AI-optimized!)
+./target/release/ovim buffer dev              # Get full buffer content
 ./target/release/ovim mcp dev tools/list      # MCP requests
 ./target/release/ovim health dev              # Health check
 ./target/release/ovim lsp-status dev          # LSP server status
@@ -101,8 +102,76 @@ curl http://127.0.0.1:PORT/health      # LSP readiness check
 
 **Supported MCP Methods**:
 - `initialize` - Capability negotiation
-- `tools/list` - List available tools (send_keys, get_buffer, set_buffer, get_cursor, execute_command, lsp_hover, lsp_goto_definition)
+- `tools/list` - List available tools
 - `tools/call` - Execute tools
+
+**Available Tools**:
+- `send_keys` - Send Vim key sequences to editor
+- `get_buffer` - Get current buffer content
+- `set_buffer` - Replace buffer content
+- `get_cursor` - Get cursor position
+- `set_mode` - Change editor mode (NORMAL, INSERT, VISUAL, etc.)
+- `execute_command` - Execute ex commands
+- `lsp_hover` - Get LSP hover information
+- `lsp_goto_definition` - Jump to definition
+- `get_snapshot` - Get complete editor state
+- `get_health` - Get session health and LSP readiness
+- `get_lsp_status` - Get language server status
+- `get_context_window` - Get 21-line context around cursor (AI-optimized)
+- `list_sessions` - List all active sessions
+
+**Escape Sequences** (for `send_keys`):
+When sending key sequences, use these escape sequences for special keys:
+```
+\e      Escape key
+\c      Ctrl+C (cancel/interrupt)
+\n      Enter/newline
+\\      Literal backslash
+```
+
+Examples:
+```
+send_keys("/pattern\n")         # Search for pattern and confirm
+send_keys("i\e")                # Insert mode, then escape
+send_keys("d3w\\e")             # Delete 3 words (literal backslash at end)
+```
+
+**Context Window** (AI-First Feature):
+The `get_context_window` tool returns a 21-line view (10 above, current, 10 below) with:
+- Header showing filename, mode, and cursor position: `[ovim: file.rs | NORMAL | L42:C15]`
+- Line numbers with cursor marker (`>>`) and position indicator (`^`)
+- Automatic line truncation at 80 characters with `...`
+- `FILE END` marker when end of file is visible
+
+Example:
+```json
+{
+  "context": "[ovim: main.rs | NORMAL | L17:C7]\n   15 | // Start line\n   16 | \n>> 17 | let x = calculate(data);\n                   ^\n   18 | print(x);\nFILE END\n",
+  "file": "main.rs",
+  "mode": "NORMAL",
+  "line": 16,
+  "column": 7
+}
+```
+
+This tool is optimized for AI workflows - use it to get contextual information without fetching the entire buffer.
+
+**Session Parameter**:
+All tools (except `list_sessions`) support an optional `session` parameter to explicitly specify which session to use. This is useful when multiple ovim sessions are running:
+
+```
+send_keys(keys="ggdd", session="tui_12345_1234567890")
+set_mode(mode="INSERT", session="my_session")
+```
+
+If `session` is omitted:
+- Single session running: Auto-discovers and uses it ✓
+- Multiple sessions running: Returns error with list of available sessions
+- Current session (from previous calls): Uses it if available
+
+This ensures predictable behavior when working with multiple sessions simultaneously.
+
+**Resources**:
 - `resources/list` - List available resources (buffer, snapshot, lsp/status, current file)
 - `resources/read` - Read resource content
 - `prompts/list` - List available prompts (empty for now)
@@ -124,17 +193,55 @@ curl -X POST http://127.0.0.1:PORT/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_keys","arguments":{"keys":"gg"}}}'
 
+# Set editor mode (ensures correct state before operations)
+curl -X POST http://127.0.0.1:PORT/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"set_mode","arguments":{"mode":"NORMAL"}}}'
+
 # Read resource
 curl -X POST http://127.0.0.1:PORT/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"ovim://buffer"}}'
+  -d '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"ovim://buffer"}}'
 ```
 
 **Available Resources**:
+- `ovim://context-window` - 21-line context around cursor (text/plain, AI-optimized!)
 - `ovim://buffer` - Current buffer content (text/plain)
 - `ovim://snapshot` - Complete editor state (application/json)
 - `ovim://lsp/status` - LSP server status (application/json)
 - `file://PATH` - Current file being edited (text/plain)
+
+### Auto-Injection for Claude Code
+
+For seamless AI editing with Claude Code CLI, set up auto-context injection:
+
+**Option 1: Using `ovim context` (Recommended)**
+Every time you message Claude Code, automatically include the current editor context:
+
+```bash
+# In .claude/hooks/before_response.sh (create if needed)
+#!/bin/bash
+SESSION=$(./target/release/ovim sessions | grep -o 'tui[^ ]*' | head -1)
+if [ -n "$SESSION" ]; then
+  ./target/release/ovim context "$SESSION" | head -30
+fi
+```
+
+Then Claude Code will whisper the context into every response automatically.
+
+**Option 2: Manual context fetching**
+Just ask for context when you need it:
+
+```bash
+./target/release/ovim context my-session
+```
+
+**Why this matters:**
+- **Before**: Blind, asking for full buffers (116+ lines of JSON)
+- **Now**: Always see context (21 lines, formatted for reading)
+- **Impact**: AI can work with surgical precision, not bulk replacements
+
+The context window includes the header `[ovim: file.rs | NORMAL | L42:C15]` so you (and Claude) always know where you are.
 
 ### Testing
 
