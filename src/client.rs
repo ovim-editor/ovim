@@ -2,7 +2,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::api::{BufferInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo};
+use crate::api::{BufferInfo, ContextWindowInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo};
 use crate::session::SessionInfo;
 
 /// Client for making requests to an ovim session
@@ -67,6 +67,23 @@ impl OvimClient {
             .to_string())
     }
 
+    /// Set the editor mode
+    pub fn set_mode(&self, mode: &str) -> Result<()> {
+        let response = self
+            .client
+            .post(&format!("{}/mode", self.base_url))
+            .json(&json!({ "mode": mode }))
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
+            anyhow::bail!("Failed to set mode: {:?}", error);
+        }
+
+        Ok(())
+    }
+
     /// Get the editor snapshot
     pub fn get_snapshot(&self) -> Result<EditorSnapshot> {
         let response = self
@@ -97,6 +114,23 @@ impl OvimClient {
         }
 
         Ok(response.json()?)
+    }
+
+    /// Set buffer content
+    pub fn set_buffer(&self, content: &str) -> Result<()> {
+        let response = self
+            .client
+            .put(&format!("{}/buffer", self.base_url))
+            .json(&json!({ "content": content }))
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
+            anyhow::bail!("Failed to set buffer: {:?}", error);
+        }
+
+        Ok(())
     }
 
     /// Get cursor position
@@ -145,6 +179,47 @@ impl OvimClient {
         }
 
         Ok(response.json()?)
+    }
+
+    /// Get context window (21-line view around cursor)
+    pub fn get_context_window(&self) -> Result<ContextWindowInfo> {
+        let response = self
+            .client
+            .post(&format!("{}/mcp", self.base_url))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_context_window",
+                    "arguments": {}
+                }
+            }))
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
+            anyhow::bail!("Failed to get context window: {:?}", error);
+        }
+
+        // Parse the MCP response to extract the tool result
+        let mcp_response: Value = response.json()?;
+        if let Some(result) = mcp_response.get("result").and_then(|r| r.get("content")) {
+            if let Some(text_obj) = result.get(0).and_then(|c| c.get("text")) {
+                if let Some(text) = text_obj.as_str() {
+                    return Ok(ContextWindowInfo {
+                        context: text.to_string(),
+                        file: None,
+                        mode: String::new(),
+                        line: 0,
+                        column: 0,
+                    });
+                }
+            }
+        }
+
+        anyhow::bail!("Failed to parse context window response")
     }
 
     /// Send MCP JSON-RPC request

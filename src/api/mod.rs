@@ -1,13 +1,13 @@
 mod handlers;
-mod mcp;
+pub mod mcp;
 mod mcp_handler;
 mod routes;
 mod state;
 
-pub use mcp::{JsonRpcRequest, JsonRpcResponse};
+pub use mcp::{JsonRpcRequest, JsonRpcResponse, get_tools, get_resources};
 pub use routes::create_router;
 pub use state::{
-    parse_key_string, ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition,
+    parse_key_string, format_context_window, ApiRequest, ApiResponse, ApiState, BufferInfo, ContextWindowInfo, CursorPosition,
     EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, MetricsInfo,
     ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
 };

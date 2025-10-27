@@ -23,6 +23,7 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::Kill { session } => cmd_kill(&session),
         Command::Health { session } => cmd_health(&session),
         Command::LspStatus { session } => cmd_lsp_status(&session),
+        Command::Context { session } => cmd_context(&session),
         Command::Install {
             editor,
             show_config,
@@ -260,14 +261,55 @@ fn cmd_lsp_status(session_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get context window from a session
+fn cmd_context(session_name: &str) -> Result<()> {
+    let session = SessionInfo::read(session_name)
+        .context(format!("Failed to find session '{}'", session_name))?;
+
+    let client = OvimClient::new(&session);
+
+    // Use send_mcp_request directly to get the raw response
+    let response = client
+        .send_mcp_request(
+            "tools/call",
+            serde_json::json!({
+                "name": "get_context_window",
+                "arguments": {}
+            }),
+            1,
+        )
+        .context("Failed to get context window")?;
+
+    // Extract the context string from the MCP response
+    // The response structure is: result.content[0].text contains JSON-serialized ContextWindowInfo
+    if let Some(text_field) = response.get("result").and_then(|r| r.get("content")).and_then(|c| c.get(0)).and_then(|c| c.get("text")) {
+        if let Some(text_str) = text_field.as_str() {
+            // Parse the JSON string to extract ContextWindowInfo
+            if let Ok(context_info) = serde_json::from_str::<serde_json::Value>(text_str) {
+                if let Some(context_text) = context_info.get("context").and_then(|c| c.as_str()) {
+                    // Print the context, which has \n escape sequences that will be rendered as newlines
+                    println!("{}", context_text);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    anyhow::bail!("Failed to extract context from MCP response")
+}
+
 /// Install ovim as MCP server for supported editors
 fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Result<()> {
     use std::fs;
     use std::path::PathBuf;
 
-    // Determine ovim binary path
+    // Determine ovim binary path (canonicalized to avoid symlink/double-slash issues)
     let ovim_path = std::env::current_exe().context("Failed to get current executable path")?;
-    let ovim_bin = ovim_path.to_string_lossy().to_string();
+    let ovim_bin = ovim_path
+        .canonicalize()
+        .unwrap_or(ovim_path)
+        .to_string_lossy()
+        .to_string();
 
     // Determine workspace directory
     let workspace_dir = if let Some(w) = workspace {
@@ -282,9 +324,9 @@ fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Re
         fs::create_dir_all(&workspace_dir).context("Failed to create workspace directory")?;
     }
 
-    // Generate MCP configuration
+    // Generate MCP configuration (stdio-based server)
     let mcp_config = serde_json::json!({
-        "type": "command",
+        "type": "stdio",
         "command": ovim_bin,
         "args": ["mcp-server", "--workspace", workspace_dir.to_string_lossy().to_string()]
     });
@@ -327,6 +369,11 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
 
     let config_path = PathBuf::from(".mcp.json");
 
+    // Get absolute path for display
+    let abs_path = std::fs::canonicalize(".")
+        .map(|p| p.join(".mcp.json"))
+        .unwrap_or_else(|_| config_path.clone());
+
     // Read existing config or create new one
     let mut config: serde_json::Value = if config_path.exists() {
         let content = fs::read_to_string(&config_path)
@@ -347,10 +394,7 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
     if show_config {
         println!("\n📋 Claude Code config to be added/merged to .mcp.json:");
         println!("{}", serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?);
-        println!(
-            "\nWill be saved to: {}",
-            config_path.to_string_lossy()
-        );
+        println!("\nWill be saved to: {}", abs_path.display());
     } else {
         // Write updated config
         fs::write(
@@ -358,6 +402,13 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
             serde_json::to_string_pretty(&config)?,
         ).context("Failed to write .mcp.json")?;
         println!("✓ Updated .mcp.json for Claude Code");
+        println!("  Location: {}", abs_path.display());
+        println!("\n⚠️  Important: This file is created in the current directory.");
+        println!("  Make sure you run this command from your project root.");
+        println!("  If Claude Code isn't finding ovim after restart:");
+        println!("  1. Run: cd /path/to/your/project");
+        println!("  2. Run: ovim install claude-code");
+        println!("  3. Restart Claude Code");
     }
 
     Ok(())
@@ -464,7 +515,7 @@ fn install_cursor(mcp_config: &serde_json::Value, show_config: bool) -> Result<(
 /// Start ovim as a long-running MCP server
 fn cmd_mcp_server(
     workspace: Option<String>,
-    port: Option<u16>,
+    _port: Option<u16>,
     _session: Option<String>,
 ) -> Result<()> {
     use std::path::PathBuf;
@@ -477,19 +528,6 @@ fn cmd_mcp_server(
         PathBuf::from(home).join(".ovim-workspace")
     };
 
-    println!("Starting ovim MCP server...");
-    println!("Workspace: {}", workspace_dir.display());
-    if let Some(p) = port {
-        println!("Port: {}", p);
-    } else {
-        println!("Port: auto (from OS)");
-    }
-
-    println!(
-        "\n\x1b[33mNote:\x1b[0m This command should be run by editors via the MCP configuration."
-    );
-    println!("If you're testing, ovim is already running in headless mode on demand.");
-    println!("\nTo use with Claude Desktop, run: ovim install claude");
-
-    Ok(())
+    // Start the MCP stdio server
+    crate::mcp_stdio_server::run_mcp_server(workspace_dir)
 }

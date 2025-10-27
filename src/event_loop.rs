@@ -260,6 +260,31 @@ async fn handle_api_request(
             };
             let _ = tx.send(ApiResponse::Mode(mode_info));
         }
+        ApiRequest::SetMode(mode_str, tx) => {
+            let new_mode = match mode_str.to_uppercase().as_str() {
+                "NORMAL" => Mode::Normal,
+                "INSERT" => Mode::Insert,
+                "VISUAL" => Mode::Visual,
+                "VISUAL_LINE" => Mode::VisualLine,
+                "VISUAL_BLOCK" => Mode::VisualBlock,
+                "COMMAND" => Mode::Command,
+                "SEARCH" => Mode::Search,
+                "PICKER" => Mode::Picker,
+                _ => {
+                    let _ = tx.send(ApiResponse::Error(ErrorResponse {
+                        error: format!("Invalid mode: {}. Valid modes: NORMAL, INSERT, VISUAL, VISUAL_LINE, VISUAL_BLOCK, COMMAND, SEARCH, PICKER", mode_str),
+                    }));
+                    return;
+                }
+            };
+
+            editor.set_mode(new_mode);
+            let _ = tx.send(ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Mode set to {}", mode_str.to_uppercase())),
+                line_count: None,
+            }));
+        }
         ApiRequest::ExecuteCommand(command, tx) => {
             let response = commands::execute_command(editor, &command);
             let _ = tx.send(response);
@@ -394,6 +419,34 @@ async fn handle_api_request(
             };
 
             let _ = tx.send(ApiResponse::Metrics(metrics_info));
+        }
+        ApiRequest::GetContextWindow(tx) => {
+            let buffer = editor.buffer();
+            let cursor = buffer.cursor();
+            let cursor_line = cursor.line();
+            let cursor_column = cursor.col();
+
+            let buffer_content = buffer.rope().to_string();
+            let file_path = buffer.file_path();
+            let mode_str = editor.mode().display_name().to_string();
+
+            let context_str = ovim::api::format_context_window(
+                &buffer_content,
+                cursor_line,
+                cursor_column,
+                file_path,
+                &mode_str,
+            );
+
+            let context_info = ovim::api::ContextWindowInfo {
+                context: context_str,
+                file: file_path.map(|s| s.to_string()),
+                mode: mode_str,
+                line: cursor_line,
+                column: cursor_column,
+            };
+
+            let _ = tx.send(ApiResponse::ContextWindow(context_info));
         }
     }
 }
