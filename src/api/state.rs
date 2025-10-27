@@ -36,7 +36,7 @@ pub enum ApiResponse {
 }
 
 /// Complete snapshot of editor state
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorSnapshot {
     pub buffer: BufferInfo,
     pub cursor: CursorPosition,
@@ -51,7 +51,7 @@ pub struct EditorSnapshot {
 }
 
 /// Picker state information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PickerInfo {
     pub mode: String,
     pub query: String,
@@ -60,7 +60,7 @@ pub struct PickerInfo {
 }
 
 /// Picker result information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PickerResultInfo {
     pub display: String,
     pub location: String,
@@ -69,7 +69,7 @@ pub struct PickerResultInfo {
 }
 
 /// Buffer information
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BufferInfo {
     pub content: String,
     pub line_count: usize,
@@ -98,7 +98,7 @@ pub struct RenderInfo {
 }
 
 /// LSP status information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspStatusInfo {
     pub servers: Vec<LspServerInfoItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,7 +106,7 @@ pub struct LspStatusInfo {
 }
 
 /// Information about a single LSP server
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerInfoItem {
     pub language: String,
     pub command: String,
@@ -116,7 +116,7 @@ pub struct LspServerInfoItem {
 }
 
 /// Health check information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthInfo {
     pub status: String,
     pub uptime_seconds: u64,
@@ -149,7 +149,7 @@ pub struct MetricsInfo {
 }
 
 /// Visual selection range
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualSelection {
     pub start: CursorPosition,
     pub end: CursorPosition,

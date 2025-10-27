@@ -8,20 +8,21 @@ A Neovim clone in Rust with LSP support and seamless headless mode.
 # Build
 cargo build --release
 
-# Run
+# Run editor
 ./target/release/ovim file.txt
-
-# Headless with session
 ./target/release/ovim file.rs --headless --session dev
 
-# Session control (no port needed!)
-./ovim-ctl list                    # Show all sessions with LSP status
-./ovim-ctl send dev "ggK"          # Send commands
-./ovim-ctl health dev              # Health check
-./ovim-ctl lsp dev                 # LSP server status
-./ovim-ctl wait dev 30             # Wait for LSP ready
-./ovim-ctl kill dev                # Kill & cleanup
+# Control sessions (integrated CLI - no separate tool needed!)
+./target/release/ovim sessions                # List all sessions
+./target/release/ovim send dev "ggK"          # Send commands
+./target/release/ovim buffer dev              # Get buffer content
+./target/release/ovim mcp dev tools/list      # MCP requests
+./target/release/ovim health dev              # Health check
+./target/release/ovim lsp-status dev          # LSP server status
+./target/release/ovim kill dev                # Kill & cleanup
 ```
+
+**New in v0.1**: ovim now includes built-in session control! The same binary acts as both editor and client. See [CLI_SUBCOMMANDS.md](docs/CLI_SUBCOMMANDS.md) for details.
 
 ## Architecture
 
@@ -79,6 +80,8 @@ curl http://127.0.0.1:PORT/health      # LSP readiness check
 
 ### REST API Endpoints
 
+**HTTP Server**: Always runs on both headless and UI modes on `http://127.0.0.1:PORT`
+
 | Endpoint | Method | Use Case |
 |----------|--------|----------|
 | `/health` | GET | Health + LSP readiness |
@@ -90,6 +93,48 @@ curl http://127.0.0.1:PORT/health      # LSP readiness check
 | `/keys` | POST | Send keystrokes (e.g., `{"keys": "ggK"}`) |
 | `/command` | POST | Execute ex command (e.g., `{"command": "w"}`) |
 | `/render` | GET | ANSI rendering |
+| `/mcp` | POST | Model Context Protocol (MCP) JSON-RPC 2.0 endpoint |
+
+### MCP (Model Context Protocol) Support
+
+**ovim** is MCP-compliant, exposing its capabilities as an MCP server via JSON-RPC 2.0.
+
+**Supported MCP Methods**:
+- `initialize` - Capability negotiation
+- `tools/list` - List available tools (send_keys, get_buffer, set_buffer, get_cursor, execute_command, lsp_hover, lsp_goto_definition)
+- `tools/call` - Execute tools
+- `resources/list` - List available resources (buffer, snapshot, lsp/status, current file)
+- `resources/read` - Read resource content
+- `prompts/list` - List available prompts (empty for now)
+
+**Example MCP Usage**:
+```bash
+# Initialize
+curl -X POST http://127.0.0.1:PORT/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"client","version":"1.0"}}}'
+
+# List tools
+curl -X POST http://127.0.0.1:PORT/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+
+# Call tool (send keys)
+curl -X POST http://127.0.0.1:PORT/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_keys","arguments":{"keys":"gg"}}}'
+
+# Read resource
+curl -X POST http://127.0.0.1:PORT/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"ovim://buffer"}}'
+```
+
+**Available Resources**:
+- `ovim://buffer` - Current buffer content (text/plain)
+- `ovim://snapshot` - Complete editor state (application/json)
+- `ovim://lsp/status` - LSP server status (application/json)
+- `file://PATH` - Current file being edited (text/plain)
 
 ### Testing
 
@@ -167,7 +212,62 @@ curl http://127.0.0.1:PORT/lsp/status | jq '.'
 curl http://127.0.0.1:PORT/health | jq '.'
 ```
 
+## AI-First IDE
+
+ovim is designed as an **AI-first IDE** with native MCP support and integrated CLI:
+
+**Multi-Session Workflows:**
+```bash
+# Spawn sessions for multiple files
+ovim --headless --session main src/main.rs &
+ovim --headless --session lib src/lib.rs &
+
+# Query and edit via CLI
+ovim mcp main tools/call '{"name":"get_buffer"}'
+ovim send lib "ggdd"
+
+# Coordinate changes
+ovim sessions  # See all active sessions
+ovim kill main lib  # Cleanup
+```
+
+### MCP for Any LLM Client
+
+The **HTTP `/mcp` endpoint** is the primary MCP interface. Any tool can use ovim's MCP by:
+
+1. **Discovering sessions**: Read `~/.cache/ovim/sessions/*.json` for port info
+2. **Sending MCP requests**: POST JSON-RPC 2.0 to `http://127.0.0.1:PORT/mcp`
+3. **Using the CLI**: `ovim mcp SESSION_NAME METHOD PARAMS`
+
+**Supported MCP clients:**
+- Claude Desktop (via `ovim install claude`)
+- Cursor IDE (via `ovim install cursor`)
+- Custom tools (POST to `/mcp` endpoint)
+- Any MCP-compatible client
+
+**Example workflows:**
+```bash
+# Install for Claude/Cursor
+ovim install claude
+ovim install cursor
+
+# Or just use HTTP directly with any tool
+curl -X POST http://127.0.0.1:PORT/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+```
+
+See:
+- [CLI_SUBCOMMANDS.md](docs/CLI_SUBCOMMANDS.md) - Complete CLI reference
+- [AI_WORKFLOWS.md](docs/AI_WORKFLOWS.md) - AI workflow examples
+- [MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) - MCP specification
+
 ## Common Tasks
+
+**Add new CLI subcommand:**
+1. Add variant to `Command` enum in `cli.rs`
+2. Implement handler in `subcommands.rs`
+3. Use `OvimClient` for HTTP/MCP requests
 
 **Add new REST API endpoint:**
 1. Add variant to `ApiRequest` in `api/state.rs`
@@ -175,6 +275,11 @@ curl http://127.0.0.1:PORT/health | jq '.'
 3. Add handler in `api/handlers.rs`
 4. Add route in `api/routes.rs`
 5. Handle in `handle_api_request()` in `main.rs`
+
+**Add new MCP tool:**
+1. Add tool definition in `api/mcp.rs::get_tools()`
+2. Handle in `mcp_handler.rs::handle_tool_call()`
+3. Map to existing `ApiRequest` or add new one
 
 **Add new LSP feature:**
 1. Add method to `LspManager` in `lsp/mod.rs`

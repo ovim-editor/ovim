@@ -2,9 +2,10 @@ mod event_loop;
 mod lsp_init;
 
 use anyhow::Result;
-use ovim::cli::Args;
+use ovim::cli::{Cli, EditorArgs};
 use ovim::editor::Editor;
 use ovim::session::{SessionGuard, SessionInfo};
+use ovim::subcommands;
 use ovim::ui::UI;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -21,7 +22,16 @@ fn sanitize_session_name(name: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse_args();
+    let cli = Cli::parse_args();
+
+    // Check if we're running a subcommand (client mode)
+    if let Some(command) = cli.command {
+        // Run subcommand and exit
+        return subcommands::execute_subcommand(command);
+    }
+
+    // Otherwise, run editor mode
+    let args = cli.editor_args();
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
@@ -84,29 +94,30 @@ async fn main() -> Result<()> {
         editor.clear_lsp_init_flag(); // Clear flag to prevent duplicate initialization in event loop
     }
 
-    // Set up API server if requested
-    let api_rx = if args.headless {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let (port_tx, port_rx) = tokio::sync::oneshot::channel();
+    // Set up API server (always start in both headless and UI modes)
+    let (tx, rx) = mpsc::unbounded_channel();
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel();
 
-        // Spawn API server in a separate task
-        // Port 0 means "pick any available port"
-        let tx_clone = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
-                eprintln!("API server error: {}", e);
-            }
-        });
+    // Spawn API server in a separate task
+    // Port 0 means "pick any available port"
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
+            eprintln!("API server error: {}", e);
+        }
+    });
 
-        // Wait for the server to start and get the actual port
-        let port = match port_rx.await {
-            Ok(port) => port,
-            Err(_) => {
-                eprintln!("Failed to receive port from API server");
-                return Err(anyhow::anyhow!("API server port channel closed"));
-            }
-        };
+    // Wait for the server to start and get the actual port
+    let port = match port_rx.await {
+        Ok(port) => port,
+        Err(_) => {
+            eprintln!("Failed to receive port from API server");
+            return Err(anyhow::anyhow!("API server port channel closed"));
+        }
+    };
 
+    // Handle headless mode
+    if args.headless {
         // Write session info
         let session_name = args
             .session
@@ -180,19 +191,20 @@ async fn main() -> Result<()> {
         sigint_handle.abort();
         sigterm_handle.abort();
         return Ok(());
-    } else {
-        None
-    };
+    }
 
-    // Create UI only if not running in API mode
+    // Create UI for TUI mode
     let mut ui = if let Some(dimensions) = args.dimension {
         UI::with_dimensions(Some(dimensions))?
     } else {
         UI::new()?
     };
 
-    // Main event loop with TUI
-    event_loop::run_event_loop(&mut ui, &mut editor, api_rx, java_status_rx).await?;
+    // Print API server info for TUI mode
+    eprintln!("REST API server listening on http://127.0.0.1:{}", port);
+
+    // Main event loop with TUI (now with API support)
+    event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx).await?;
 
     Ok(())
 }
