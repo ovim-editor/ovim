@@ -1,0 +1,179 @@
+{
+  "description": "TypeScript Language Server Hover Example - Complete Message Flow",
+  "test_file": {
+    "path": "/tmp/test_ts_lsp.ts",
+    "content": "const greeting: string = \"Hello\";\nfunction add(a: number, b: number): number {\n    return a + b;\n}\n"
+  },
+  "message_sequence": [
+    {
+      "step": 1,
+      "name": "Initialize Request",
+      "direction": "client → server",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "processId": null,
+          "rootUri": "file:///tmp",
+          "capabilities": {
+            "textDocument": {
+              "hover": {
+                "contentFormat": ["markdown", "plaintext"]
+              }
+            }
+          },
+          "initializationOptions": {}
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "capabilities": {
+            "textDocumentSync": 2,
+            "hoverProvider": true,
+            "definitionProvider": true,
+            "completionProvider": {
+              "triggerCharacters": [".", "\"", "'", "/", "@", "<"],
+              "resolveProvider": true
+            }
+          }
+        }
+      },
+      "note": "Server reports its capabilities including hoverProvider: true"
+    },
+    {
+      "step": 2,
+      "name": "Initialized Notification",
+      "direction": "client → server",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+      },
+      "response": "None (notification)",
+      "note": "Signals that client is ready"
+    },
+    {
+      "step": 3,
+      "name": "didOpen Notification",
+      "direction": "client → server",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+          "textDocument": {
+            "uri": "file:///tmp/test_ts_lsp.ts",
+            "languageId": "typescript",
+            "version": 1,
+            "text": "const greeting: string = \"Hello\";\nfunction add(a: number, b: number): number {\n    return a + b;\n}\n"
+          }
+        }
+      },
+      "response": "None (notification)",
+      "note": "Server now has the file content and can provide hover info IMMEDIATELY"
+    },
+    {
+      "step": 4,
+      "name": "Hover Request",
+      "direction": "client → server",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/hover",
+        "params": {
+          "textDocument": {
+            "uri": "file:///tmp/test_ts_lsp.ts"
+          },
+          "position": {
+            "line": 0,
+            "character": 6
+          }
+        }
+      },
+      "position_info": {
+        "line": 0,
+        "character": 6,
+        "context": "const greeting: string = \"Hello\";",
+        "hovering_on": "greeting (the variable name)"
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "\n```typescript\nconst greeting: string\n```\n"
+          },
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 6
+            },
+            "end": {
+              "line": 0,
+              "character": 14
+            }
+          }
+        }
+      },
+      "note": "Server provides type information in markdown format with range"
+    }
+  ],
+  "additional_examples": [
+    {
+      "name": "Hover on function",
+      "position": {
+        "line": 1,
+        "character": 9
+      },
+      "hovering_on": "add (function name)",
+      "response": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```typescript\nfunction add(a: number, b: number): number\n```\n"
+        }
+      }
+    },
+    {
+      "name": "Hover on parameter",
+      "position": {
+        "line": 1,
+        "character": 13
+      },
+      "hovering_on": "a (parameter)",
+      "response": {
+        "contents": {
+          "kind": "markdown",
+          "value": "\n```typescript\n(parameter) a: number\n```\n"
+        }
+      }
+    },
+    {
+      "name": "Hover on whitespace",
+      "position": {
+        "line": 0,
+        "character": 0
+      },
+      "hovering_on": "whitespace before 'const'",
+      "response": {
+        "result": null
+      },
+      "note": "No hover info available - returns null, not an error"
+    }
+  ],
+  "timing_notes": {
+    "after_didOpen": "NO WAIT NEEDED - hover works immediately",
+    "after_didChange": "NO WAIT NEEDED - synchronous processing",
+    "response_time": "Typically 100-500ms",
+    "debouncing": "NOT REQUIRED - unlike rust-analyzer"
+  },
+  "key_insights": [
+    "TypeScript LSP processes changes synchronously",
+    "No delays needed between messages",
+    "Null result indicates no hover info (not an error)",
+    "All content is markdown with code blocks",
+    "Range indicates the exact identifier span"
+  ]
+}
