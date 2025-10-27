@@ -35,44 +35,49 @@ pub enum Command {
 
     /// Send key sequence to a session
     Send {
-        /// Session name
-        session: String,
         /// Key sequence (Vim keybindings)
         keys: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Execute an ex command in a session
     Exec {
-        /// Session name
-        session: String,
         /// Ex command (without leading colon)
         command: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Get snapshot of a session's state
     Snapshot {
-        /// Session name
-        session: String,
         /// Output format (json or pretty)
         #[arg(long, default_value = "json")]
         format: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Get buffer content from a session
     Buffer {
-        /// Session name
-        session: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Send MCP JSON-RPC request to a session
     Mcp {
-        /// Session name
-        session: String,
         /// MCP method (e.g., initialize, tools/list, tools/call)
         method: String,
         /// JSON parameters (optional, defaults to {})
         #[arg(default_value = "{}")]
         params: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
         /// Request ID (defaults to 1)
         #[arg(long, default_value = "1")]
         id: i64,
@@ -80,26 +85,30 @@ pub enum Command {
 
     /// Kill a running session
     Kill {
-        /// Session name
-        session: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Check health of a session
     Health {
-        /// Session name
-        session: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Get LSP status from a session
     LspStatus {
-        /// Session name
-        session: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Get 21-line context window around cursor
     Context {
-        /// Session name
-        session: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Install ovim as MCP server for supported editors

@@ -6,24 +6,34 @@ use crate::cli::Command;
 use crate::client::OvimClient;
 use crate::session::SessionInfo;
 
+/// Helper to resolve session - auto-discover if not provided
+fn resolve_session(session_name: Option<String>) -> Result<SessionInfo> {
+    match session_name {
+        Some(name) => SessionInfo::read(&name)
+            .context(format!("Failed to find session '{}'", name)),
+        None => SessionInfo::auto_discover()
+            .context("Failed to auto-discover session")
+    }
+}
+
 /// Execute a subcommand
 pub fn execute_subcommand(command: Command) -> Result<()> {
     match command {
         Command::Sessions => cmd_sessions(),
-        Command::Send { session, keys } => cmd_send(&session, &keys),
-        Command::Exec { session, command } => cmd_exec(&session, &command),
-        Command::Snapshot { session, format } => cmd_snapshot(&session, &format),
-        Command::Buffer { session } => cmd_buffer(&session),
+        Command::Send { session, keys } => cmd_send(session, &keys),
+        Command::Exec { session, command } => cmd_exec(session, &command),
+        Command::Snapshot { session, format } => cmd_snapshot(session, &format),
+        Command::Buffer { session } => cmd_buffer(session),
         Command::Mcp {
             session,
             method,
             params,
             id,
-        } => cmd_mcp(&session, &method, &params, id),
-        Command::Kill { session } => cmd_kill(&session),
-        Command::Health { session } => cmd_health(&session),
-        Command::LspStatus { session } => cmd_lsp_status(&session),
-        Command::Context { session } => cmd_context(&session),
+        } => cmd_mcp(session, &method, &params, id),
+        Command::Kill { session } => cmd_kill(session),
+        Command::Health { session } => cmd_health(session),
+        Command::LspStatus { session } => cmd_lsp_status(session),
+        Command::Context { session } => cmd_context(session),
         Command::Install {
             editor,
             show_config,
@@ -83,23 +93,21 @@ fn cmd_sessions() -> Result<()> {
 }
 
 /// Send keys to a session
-fn cmd_send(session_name: &str, keys: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_send(session_name: Option<String>, keys: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     client
         .send_keys(keys)
         .context("Failed to send keys to session")?;
 
-    println!("Keys sent to session '{}'", session_name);
+    println!("Keys sent to session '{}'", session.session_name);
     Ok(())
 }
 
 /// Execute ex command in a session
-fn cmd_exec(session_name: &str, command: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_exec(session_name: Option<String>, command: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     let result = client
@@ -111,9 +119,8 @@ fn cmd_exec(session_name: &str, command: &str) -> Result<()> {
 }
 
 /// Get snapshot from a session
-fn cmd_snapshot(session_name: &str, format: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_snapshot(session_name: Option<String>, format: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     let snapshot = client.get_snapshot().context("Failed to get snapshot")?;
@@ -146,9 +153,8 @@ fn cmd_snapshot(session_name: &str, format: &str) -> Result<()> {
 }
 
 /// Get buffer content from a session
-fn cmd_buffer(session_name: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_buffer(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     let buffer = client.get_buffer().context("Failed to get buffer")?;
@@ -158,9 +164,8 @@ fn cmd_buffer(session_name: &str) -> Result<()> {
 }
 
 /// Send MCP request to a session
-fn cmd_mcp(session_name: &str, method: &str, params_str: &str, id: i64) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_mcp(session_name: Option<String>, method: &str, params_str: &str, id: i64) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     // Parse params as JSON
     let params: Value = serde_json::from_str(params_str)
@@ -176,28 +181,26 @@ fn cmd_mcp(session_name: &str, method: &str, params_str: &str, id: i64) -> Resul
 }
 
 /// Kill a session
-fn cmd_kill(session_name: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_kill(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     client
         .kill_session(&session)
         .context("Failed to kill session")?;
 
-    println!("\x1b[32mSession '{}' (PID: {}) killed\x1b[0m", session_name, session.pid);
+    println!("\x1b[32mSession '{}' (PID: {}) killed\x1b[0m", session.session_name, session.pid);
     Ok(())
 }
 
 /// Check health of a session
-fn cmd_health(session_name: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_health(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     let health = client.get_health().context("Failed to get health")?;
 
-    println!("Session: {}", session_name);
+    println!("Session: {}", session.session_name);
     println!("Status: {}", health.status);
     println!("Uptime: {} seconds", health.uptime_seconds);
     if let Some(file) = &health.file {
@@ -221,9 +224,8 @@ fn cmd_health(session_name: &str) -> Result<()> {
 }
 
 /// Get LSP status from a session
-fn cmd_lsp_status(session_name: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_lsp_status(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     let lsp_status = client
@@ -235,7 +237,7 @@ fn cmd_lsp_status(session_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("LSP Servers for session '{}':\n", session_name);
+    println!("LSP Servers for session '{}':\n", session.session_name);
 
     for server in &lsp_status.servers {
         let state_colored = if server.has_capabilities {
@@ -262,9 +264,8 @@ fn cmd_lsp_status(session_name: &str) -> Result<()> {
 }
 
 /// Get context window from a session
-fn cmd_context(session_name: &str) -> Result<()> {
-    let session = SessionInfo::read(session_name)
-        .context(format!("Failed to find session '{}'", session_name))?;
+fn cmd_context(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
 
