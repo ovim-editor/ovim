@@ -12,18 +12,23 @@ cargo build --release
 ./target/release/ovim file.txt
 ./target/release/ovim file.rs --headless --session dev
 
-# Control sessions (integrated CLI - no separate tool needed!)
+# Control sessions (auto-discovers by default!)
 ./target/release/ovim sessions                # List all sessions
-./target/release/ovim send dev "ggK"          # Send commands (with \e, \c, \n escapes)
-./target/release/ovim context dev             # Get 21-line context around cursor (AI-optimized!)
-./target/release/ovim buffer dev              # Get full buffer content
-./target/release/ovim mcp dev tools/list      # MCP requests
-./target/release/ovim health dev              # Health check
-./target/release/ovim lsp-status dev          # LSP server status
-./target/release/ovim kill dev                # Kill & cleanup
+./target/release/ovim send "ggK"              # Auto-discover session, send commands (with \e, \c, \n escapes)
+./target/release/ovim context                 # Auto-discover & get 21-line context around cursor (AI-optimized!)
+./target/release/ovim buffer                  # Auto-discover & get full buffer content
+./target/release/ovim mcp tools/list          # Auto-discover & send MCP requests
+./target/release/ovim health                  # Auto-discover & check health
+./target/release/ovim lsp-status              # Auto-discover & get LSP server status
+./target/release/ovim kill                    # Auto-discover & kill session
+
+# Explicit session override (when multiple sessions running)
+./target/release/ovim send "ggK" --session dev
+./target/release/ovim context --session dev
+./target/release/ovim buffer --session dev
 ```
 
-**New in v0.1**: ovim now includes built-in session control! The same binary acts as both editor and client. See [CLI_SUBCOMMANDS.md](docs/CLI_SUBCOMMANDS.md) for details.
+**New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed). See [CLI_SUBCOMMANDS.md](docs/CLI_SUBCOMMANDS.md) for details.
 
 ## Architecture
 
@@ -50,13 +55,40 @@ src/
 ### Headless Mode (Recommended)
 
 1. **Start session**: `ovim --headless --session myproject src/main.rs`
-2. **Control it**: `./ovim-ctl send myproject "ggK"` (no port needed!)
-3. **Check LSP**: `./ovim-ctl lsp myproject`
-4. **Kill it**: `./ovim-ctl kill myproject` (auto-cleanup)
+2. **Control it**: `./ovim send "ggK"` (auto-discovers session!)
+3. **Check LSP**: `./ovim lsp-status` (auto-discovers)
+4. **Kill it**: `./ovim kill` (auto-discovers and cleans up)
 
 Sessions stored in:
 - macOS: `~/Library/Caches/ovim/sessions/`
 - Linux: `~/.cache/ovim/sessions/`
+
+### Session Auto-Discovery
+
+All CLI commands support automatic session discovery:
+
+**Single session** (most common case):
+```bash
+ovim send "ggK"                    # Just works!
+ovim context                       # Gets context window
+ovim buffer                        # Gets buffer content
+ovim exec "set number"             # Executes ex command
+ovim snapshot --format json        # Gets editor state
+```
+
+**Multiple sessions** (use --session flag to specify):
+```bash
+ovim send "ggK" --session projectA
+ovim context --session projectB
+ovim kill --session projectA
+```
+
+**Discovery priority** (when multiple sessions exist):
+1. Named sessions first (e.g., `--session myproject`)
+2. Most recent auto-generated session (by timestamp)
+3. Falls back to `default` if no named sessions
+
+This makes the common single-session workflow frictionless while still supporting complex multi-session setups.
 
 ### LSP Features
 
