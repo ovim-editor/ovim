@@ -451,6 +451,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             // Update tab title to match the new file
                             editor.update_current_tab_title();
 
+                            // Sync tab's buffer index to match the new buffer
+                            editor.sync_current_tab_buffer_index();
+
                             let tab_index = editor.current_tab_index() + 1;
                             ApiResponse::Success(SuccessResponse {
                                 success: true,
