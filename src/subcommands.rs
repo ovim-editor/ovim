@@ -363,12 +363,15 @@ fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Re
     Ok(())
 }
 
-/// Install for Claude Code (.mcp.json)
+/// Install for Claude Code (.mcp.json and .claude/settings.json with hooks)
 fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
     use std::fs;
     use std::path::PathBuf;
 
     let config_path = PathBuf::from(".mcp.json");
+    let claude_dir = PathBuf::from(".claude");
+    let claude_settings_path = claude_dir.join("settings.json");
+    let hook_script_path = claude_dir.join("hooks/inject_context.sh");
 
     // Get absolute path for display
     let abs_path = std::fs::canonicalize(".")
@@ -396,15 +399,101 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
         println!("\n📋 Claude Code config to be added/merged to .mcp.json:");
         println!("{}", serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?);
         println!("\nWill be saved to: {}", abs_path.display());
+        println!("\n📋 Claude Code hook config (UserPromptSubmit event):");
+        let parent = abs_path.parent().unwrap_or(&abs_path);
+        println!("Hooks directory: {}", parent.join(".claude/hooks").display());
+        println!("Settings file: {}", parent.join(".claude/settings.json").display());
+        println!("Hook script: {}", parent.join(".claude/hooks/inject_context.sh").display());
     } else {
-        // Write updated config
+        // Create .claude directory and hooks subdirectory
+        fs::create_dir_all(claude_dir.join("hooks"))
+            .context("Failed to create .claude/hooks directory")?;
+
+        // Create hook script that auto-injects context
+        // This hook receives JSON via stdin (UserPromptSubmit event)
+        // and outputs context that Claude Code will inject into the message
+        let hook_script = "#!/bin/bash\n\
+# Auto-inject ovim context into Claude Code messages\n\
+# Runs on UserPromptSubmit event - outputs context to be injected\n\
+\n\
+# Try to find ovim binary (prefer installed, fallback to local build)\n\
+if command -v ovim &>/dev/null; then\n\
+  context_output=$(ovim context 2>/dev/null)\n\
+elif [ -x ./target/release/ovim ]; then\n\
+  context_output=$(./target/release/ovim context 2>/dev/null)\n\
+elif [ -x ./target/debug/ovim ]; then\n\
+  context_output=$(./target/debug/ovim context 2>/dev/null)\n\
+fi\n\
+\n\
+# Exit code 0 and stdout will be injected as context\n\
+if [ -n \"$context_output\" ]; then\n\
+  echo \"$context_output\"\n\
+fi\n\
+";
+        fs::write(&hook_script_path, hook_script)
+            .context("Failed to write hook script")?;
+
+        // Make hook executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook_script_path, fs::Permissions::from_mode(0o755))
+                .context("Failed to make hook executable")?;
+        }
+
+        // Create or update .claude/settings.json with hook configuration
+        let mut claude_settings: serde_json::Value = if claude_settings_path.exists() {
+            let content = fs::read_to_string(&claude_settings_path)
+                .context("Failed to read existing .claude/settings.json")?;
+            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        // Ensure hooks object exists
+        if claude_settings.get("hooks").is_none() {
+            claude_settings["hooks"] = serde_json::json!({});
+        }
+
+        // Add UserPromptSubmit hook to auto-inject context (append, don't replace)
+        // This hook runs when the user submits a prompt, and its output is injected as context
+        let mut hooks = claude_settings["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        // Only add if not already present
+        let new_hook = serde_json::json!({
+            "type": "command",
+            "command": ".claude/hooks/inject_context.sh"
+        });
+
+        let hook_exists = hooks.iter().any(|h| {
+            h.get("command").and_then(|c| c.as_str()) == Some(".claude/hooks/inject_context.sh")
+        });
+
+        if !hook_exists {
+            hooks.push(new_hook);
+            claude_settings["hooks"]["UserPromptSubmit"] = serde_json::Value::Array(hooks);
+            println!("✓ Added ovim context hook to .claude/settings.json");
+        } else {
+            println!("✓ Hook already exists in .claude/settings.json (skipped)");
+        }
+
+        fs::write(&claude_settings_path, serde_json::to_string_pretty(&claude_settings)?)
+            .context("Failed to write .claude/settings.json")?;
+
+        // Write MCP config
         fs::write(
             &config_path,
             serde_json::to_string_pretty(&config)?,
         ).context("Failed to write .mcp.json")?;
+
         println!("✓ Updated .mcp.json for Claude Code");
         println!("  Location: {}", abs_path.display());
-        println!("\n⚠️  Important: This file is created in the current directory.");
+        println!("  Hook script: {}", hook_script_path.display());
+        println!("  Context will auto-inject on every message you send!");
+        println!("\n⚠️  Important: Files are created in the current directory.");
         println!("  Make sure you run this command from your project root.");
         println!("  If Claude Code isn't finding ovim after restart:");
         println!("  1. Run: cd /path/to/your/project");
