@@ -1458,6 +1458,8 @@ impl Editor {
                 self.current_buffer_index = i;
                 // Update current file register
                 self.registers.set_current_file(path_str);
+                // Sync tab's buffer index to match the existing buffer
+                self.sync_current_tab_buffer_index();
                 // Still need to initialize LSP for this file if it hasn't been yet
                 self.lsp_state.needs_lsp_init = true;
                 return Ok(());
@@ -1481,6 +1483,9 @@ impl Editor {
 
         // Update tab title to match the loaded file
         self.update_current_tab_title();
+
+        // Sync tab's buffer index to match the newly loaded buffer
+        self.sync_current_tab_buffer_index();
 
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {
@@ -4992,9 +4997,30 @@ impl Editor {
 
     /// Creates a new tab page
     pub fn new_tab(&mut self, title: Option<String>) {
-        // Default to "[No Name]" if no title provided
+        // Save current buffer index to current tab before creating new tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Create a new empty buffer for the new tab
+        let new_buffer = Buffer::new();
+        self.buffers.push(new_buffer);
+        let new_buffer_index = self.buffers.len() - 1;
+
+        // Create the new tab
         let default_title = title.unwrap_or_else(|| "[No Name]".to_string());
         self.tab_page_manager.new_tab(Some(default_title));
+
+        // Set the new tab's buffer index to the newly created buffer
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(new_tab_idx) {
+            tab.set_current_buffer_index(new_buffer_index);
+        }
+
+        // Switch editor to the new buffer
+        self.current_buffer_index = new_buffer_index;
+        self.lsp_state.needs_lsp_init = true;
     }
 
     /// Gets the display title for a tab at the given index
@@ -5033,6 +5059,14 @@ impl Editor {
         self.tab_page_manager_mut().set_current_tab_title(title);
     }
 
+    /// Syncs the current tab's buffer index to match the editor's current buffer index
+    pub fn sync_current_tab_buffer_index(&mut self) {
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+    }
+
     /// Closes the current tab
     pub fn close_current_tab(&mut self) {
         self.tab_page_manager.close_current_tab();
@@ -5040,27 +5074,92 @@ impl Editor {
 
     /// Switches to the next tab
     pub fn next_tab(&mut self) {
+        // Save current buffer index to current tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Switch tab
         self.tab_page_manager.next_tab();
+
+        // Restore buffer index from new current tab
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
+            self.current_buffer_index = tab.current_buffer_index();
+        }
     }
 
     /// Switches to the previous tab
     pub fn previous_tab(&mut self) {
+        // Save current buffer index to current tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Switch tab
         self.tab_page_manager.previous_tab();
+
+        // Restore buffer index from new current tab
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
+            self.current_buffer_index = tab.current_buffer_index();
+        }
     }
 
     /// Switches to a specific tab by index (0-based)
     pub fn goto_tab(&mut self, index: usize) {
+        // Save current buffer index to current tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Switch tab
         self.tab_page_manager.switch_to_tab(index);
+
+        // Restore buffer index from new current tab
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
+            self.current_buffer_index = tab.current_buffer_index();
+        }
     }
 
     /// Switches to the first tab
     pub fn first_tab(&mut self) {
+        // Save current buffer index to current tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Switch tab
         self.tab_page_manager.first_tab();
+
+        // Restore buffer index from new current tab
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
+            self.current_buffer_index = tab.current_buffer_index();
+        }
     }
 
     /// Switches to the last tab
     pub fn last_tab(&mut self) {
+        // Save current buffer index to current tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Switch tab
         self.tab_page_manager.last_tab();
+
+        // Restore buffer index from new current tab
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
+            self.current_buffer_index = tab.current_buffer_index();
+        }
     }
 
     /// Gets the current tab index
