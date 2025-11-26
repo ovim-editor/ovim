@@ -798,6 +798,12 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "auto".to_string())
             ),
+            "textwidth" | "tw" => format!(
+                "  textwidth={}",
+                opts.textwidth
+                    .map(|w| w.to_string())
+                    .unwrap_or_else(|| "0".to_string())
+            ),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -910,6 +916,30 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                 }
                 Ok(_) => ApiResponse::Error(ErrorResponse {
                     error: "scroll must be greater than 0".to_string(),
+                }),
+                Err(_) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Invalid number: {}", value),
+                }),
+            },
+            "textwidth" | "tw" => match value.parse::<usize>() {
+                Ok(0) => {
+                    editor.options.textwidth = None;
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("  textwidth=0".to_string()),
+                        line_count: None,
+                    })
+                }
+                Ok(n) if n >= 20 => {
+                    editor.options.textwidth = Some(n);
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  textwidth={}", n)),
+                        line_count: None,
+                    })
+                }
+                Ok(_) => ApiResponse::Error(ErrorResponse {
+                    error: "textwidth must be 0 (disabled) or at least 20".to_string(),
                 }),
                 Err(_) => ApiResponse::Error(ErrorResponse {
                     error: format!("Invalid number: {}", value),
