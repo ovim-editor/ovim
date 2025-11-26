@@ -51,6 +51,9 @@ pub struct EditorOptions {
     pub relative_number: bool,
     /// Number of lines to scroll for half-page movements (default: None = calculate from viewport)
     pub scroll: Option<usize>,
+    /// Maximum width of text content (default: None = use full terminal width)
+    /// When set, content is centered horizontally with margins on both sides
+    pub textwidth: Option<usize>,
 }
 
 impl Default for EditorOptions {
@@ -62,6 +65,7 @@ impl Default for EditorOptions {
             number: false,
             relative_number: false,
             scroll: None,
+            textwidth: None,
         }
     }
 }

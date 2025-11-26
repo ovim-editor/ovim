@@ -28,7 +28,7 @@ cargo build --release
 ./target/release/ovim buffer --session dev
 ```
 
-**New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed). See [CLI_SUBCOMMANDS.md](docs/CLI_SUBCOMMANDS.md) for details.
+**New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed). See [CLI_SUBCOMMANDS.md](code-docs/CLI_SUBCOMMANDS.md) for details.
 
 ## Architecture
 
@@ -397,9 +397,9 @@ curl -X POST http://127.0.0.1:PORT/mcp \
 ```
 
 See:
-- [CLI_SUBCOMMANDS.md](docs/CLI_SUBCOMMANDS.md) - Complete CLI reference
-- [AI_WORKFLOWS.md](docs/AI_WORKFLOWS.md) - AI workflow examples
-- [MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) - MCP specification
+- [CLI_SUBCOMMANDS.md](code-docs/CLI_SUBCOMMANDS.md) - Complete CLI reference
+- [AI_WORKFLOWS.md](code-docs/AI_WORKFLOWS.md) - AI workflow examples
+- [MCP_INTEGRATION.md](code-docs/MCP_INTEGRATION.md) - MCP specification
 
 ## Common Tasks
 
@@ -482,7 +482,9 @@ If a file is too large to read, immediately start refactoring it by splitting it
 
 ## Documentation
 
-Document the structure of the codebase in the docs/ folder. Keep it neat and organized.
+Document the structure of the codebase in the code-docs/ folder. Keep it neat and organized.
+
+Document usage in the user-docs/ folder. It should be well organized and easy to understand for users.
 
 ## User instructions
 

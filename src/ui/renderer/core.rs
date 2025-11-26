@@ -118,8 +118,26 @@ impl Renderer {
             render_file_tree(frame, editor, tree_area);
         }
 
+        // Calculate text area, centering if textwidth is set
+        let buffer_area = if let Some(textwidth) = editor.options.textwidth {
+            let max_width = textwidth as u16;
+            if chunks[0].width > max_width {
+                let margin = (chunks[0].width - max_width) / 2;
+                Rect {
+                    x: chunks[0].x + margin,
+                    y: chunks[0].y,
+                    width: max_width,
+                    height: chunks[0].height,
+                }
+            } else {
+                chunks[0]
+            }
+        } else {
+            chunks[0]
+        };
+
         // Render the main text area
-        let viewport_start = render_buffer(frame, editor, &theme, chunks[0]);
+        let viewport_start = render_buffer(frame, editor, &theme, buffer_area);
 
         // Render progress line if present
         if has_progress {
@@ -146,24 +164,24 @@ impl Renderer {
         // Render hover window if in HoverWindow mode
         if editor.mode() == crate::mode::Mode::HoverWindow {
             if let Some(hover_text) = editor.hover_info() {
-                render_hover_window(frame, hover_text, editor.hover_scroll(), chunks[0]);
+                render_hover_window(frame, hover_text, editor.hover_scroll(), buffer_area);
             }
         }
 
         // Render completion menu if visible (in Insert mode)
         if editor.completion_menu().is_visible() {
-            render_completion_menu(frame, editor, chunks[0], viewport_start);
+            render_completion_menu(frame, editor, buffer_area, viewport_start);
         }
 
         // Set hardware cursor position
-        Self::set_cursor_position(frame, editor, &chunks, viewport_start, status_chunk);
+        Self::set_cursor_position(frame, editor, buffer_area, viewport_start, status_chunk);
     }
 
     /// Sets the hardware cursor position based on the current mode
     fn set_cursor_position(
         frame: &mut Frame,
         editor: &mut Editor,
-        chunks: &[Rect],
+        buffer_area: Rect,
         viewport_start: usize,
         status_chunk: Rect,
     ) {
@@ -183,19 +201,19 @@ impl Renderer {
                 frame.set_cursor_position((cursor_x, cursor_y));
             }
         } else if editor.mode() == crate::mode::Mode::Command {
-            // Position cursor in command line (use status_chunk, not chunks[1])
+            // Position cursor in command line
             let cmd_cursor_x = (editor.command_line().len() + 1)
                 .min(status_chunk.width.saturating_sub(1) as usize);
             frame.set_cursor_position((status_chunk.x + cmd_cursor_x as u16, status_chunk.y));
         } else if editor.mode() == crate::mode::Mode::Search {
-            // Position cursor in search line (use status_chunk, not chunks[1])
+            // Position cursor in search line
             let search_cursor_x = (editor.search_buffer().len() + 1)
                 .min(status_chunk.width.saturating_sub(1) as usize);
             frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
         } else {
             // Position cursor in text buffer (accounting for gutter, tabs, and wide chars)
             let screen_line = cursor_line.saturating_sub(viewport_start);
-            let cursor_y = screen_line.min(chunks[0].height.saturating_sub(1) as usize);
+            let cursor_y = screen_line.min(buffer_area.height.saturating_sub(1) as usize);
 
             // Get the line text and convert character column to display column
             let rope = editor.buffer().rope();
@@ -209,7 +227,7 @@ impl Renderer {
             // Convert character column to display column (accounting for tabs and emojis)
             let tab_width = editor.options.tab_width;
             let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
-            let cursor_x = display_col.min(chunks[0].width.saturating_sub(1) as usize);
+            let cursor_x = display_col.min(buffer_area.width.saturating_sub(1) as usize);
 
             // Calculate gutter width for cursor offset
             let show_numbers = editor.options.number || editor.options.relative_number;
@@ -227,8 +245,8 @@ impl Renderer {
             };
 
             frame.set_cursor_position((
-                chunks[0].x + gutter_width as u16 + cursor_x as u16,
-                chunks[0].y + cursor_y as u16,
+                buffer_area.x + gutter_width as u16 + cursor_x as u16,
+                buffer_area.y + cursor_y as u16,
             ));
         }
     }
