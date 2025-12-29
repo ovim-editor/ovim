@@ -445,6 +445,45 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "ls" | "buffers" | "files" => {
+            // List all buffers
+            let buffer_list = editor.list_buffers();
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(buffer_list),
+                line_count: None,
+            })
+        }
+        "bnext" | "bn" => {
+            // Switch to next buffer
+            editor.next_buffer();
+            let buffer_index = editor.current_buffer_index() + 1; // 1-indexed for display
+            let buffer_name = editor.buffer().file_path()
+                .map(|p| std::path::Path::new(p).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("[No Name]"))
+                .unwrap_or("[No Name]");
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Buffer {} - {}", buffer_index, buffer_name)),
+                line_count: None,
+            })
+        }
+        "bprev" | "bp" | "bprevious" => {
+            // Switch to previous buffer
+            editor.prev_buffer();
+            let buffer_index = editor.current_buffer_index() + 1; // 1-indexed for display
+            let buffer_name = editor.buffer().file_path()
+                .map(|p| std::path::Path::new(p).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("[No Name]"))
+                .unwrap_or("[No Name]");
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Buffer {} - {}", buffer_index, buffer_name)),
+                line_count: None,
+            })
+        }
         "tabonly" | "tabo" => {
             // Close all tabs except the current one
             if editor.tab_page_manager().is_single_tab() {
