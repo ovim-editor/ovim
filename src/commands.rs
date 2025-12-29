@@ -891,6 +891,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             ),
             "ignorecase" | "ic" => format!("  {}ignorecase", if opts.ignorecase { "" } else { "no" }),
             "smartcase" | "scs" => format!("  {}smartcase", if opts.smartcase { "" } else { "no" }),
+            "cursorline" | "cul" => format!("  {}cursorline", if opts.cursorline { "" } else { "no" }),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -983,6 +984,22 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             return ApiResponse::Success(SuccessResponse {
                 success: true,
                 message: Some("  nosmartcase".to_string()),
+                line_count: None,
+            });
+        }
+        "cursorline" | "cul" => {
+            editor.options.cursorline = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  cursorline".to_string()),
+                line_count: None,
+            });
+        }
+        "nocursorline" | "nocul" => {
+            editor.options.cursorline = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  nocursorline".to_string()),
                 line_count: None,
             });
         }

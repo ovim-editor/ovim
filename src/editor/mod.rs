@@ -59,6 +59,8 @@ pub struct EditorOptions {
     /// Smart case: case-insensitive if pattern is all lowercase, case-sensitive otherwise (default: false)
     /// Only applies when ignorecase is also set
     pub smartcase: bool,
+    /// Highlight the current line (default: false)
+    pub cursorline: bool,
 }
 
 impl Default for EditorOptions {
@@ -73,6 +75,7 @@ impl Default for EditorOptions {
             textwidth: None,
             ignorecase: false,
             smartcase: false,
+            cursorline: false,
         }
     }
 }
