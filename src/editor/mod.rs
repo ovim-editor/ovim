@@ -1637,6 +1637,13 @@ impl Editor {
 
         // Load new buffer
         let new_buffer = Buffer::load_file_async(path).await?;
+
+        // Parse and apply modeline options from the loaded file
+        let content = new_buffer.rope().to_string();
+        if let Some(modeline) = crate::modeline::Modeline::parse(&content) {
+            self.apply_modeline(&modeline);
+        }
+
         self.add_buffer(new_buffer);
 
         // Update current file register
@@ -1661,6 +1668,47 @@ impl Editor {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.load_file_async(path))
         })
+    }
+
+    /// Apply modeline options to editor settings
+    fn apply_modeline(&mut self, modeline: &crate::modeline::Modeline) {
+        // Indentation options
+        if let Some(ts) = modeline.get_int("tabstop", "ts") {
+            self.options.tab_width = ts;
+        }
+        if let Some(sw) = modeline.get_int("shiftwidth", "sw") {
+            self.options.shift_width = sw;
+        }
+        if let Some(et) = modeline.get_bool("expandtab", "et") {
+            self.options.expand_tab = et;
+        }
+
+        // Display options
+        if let Some(tw) = modeline.get_int("textwidth", "tw") {
+            self.options.textwidth = Some(tw);
+        }
+        if let Some(nu) = modeline.get_bool("number", "nu") {
+            self.options.number = nu;
+        }
+        if let Some(rnu) = modeline.get_bool("relativenumber", "rnu") {
+            self.options.relative_number = rnu;
+        }
+        if let Some(cul) = modeline.get_bool("cursorline", "cul") {
+            self.options.cursorline = cul;
+        }
+
+        // Search options
+        if let Some(ic) = modeline.get_bool("ignorecase", "ic") {
+            self.options.ignorecase = ic;
+        }
+        if let Some(scs) = modeline.get_bool("smartcase", "scs") {
+            self.options.smartcase = scs;
+        }
+
+        // Other options
+        if let Some(sm) = modeline.get_bool("showmatch", "sm") {
+            self.options.showmatch = sm;
+        }
     }
 
     /// Checks if LSP initialization is needed and returns the file path
