@@ -527,10 +527,14 @@ fn spawn_file_finder_loading(
 
             // Use ignore crate's WalkBuilder which respects .gitignore
             let walker = WalkBuilder::new(&base_dir)
-                .hidden(false) // Don't automatically skip hidden files
+                .hidden(false) // Don't automatically skip hidden files (keep .env, .eslintrc, etc.)
                 .git_ignore(true) // Respect .gitignore files
                 .git_global(true) // Respect global gitignore
                 .git_exclude(true) // Respect .git/info/exclude
+                .filter_entry(|entry| {
+                    // Skip .git directory (not in .gitignore but shouldn't be shown)
+                    entry.file_name() != ".git"
+                })
                 .build();
 
             // Walk the directory tree and send files as we find them
