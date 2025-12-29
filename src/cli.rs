@@ -140,6 +140,67 @@ pub enum Command {
         #[arg(long)]
         session: Option<String>,
     },
+
+    /// Trigger goto-definition and return new location as JSON
+    GotoDefinition {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Trigger find-references and return list from picker
+    FindReferences {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Trigger hover and return hover_info
+    Hover {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Search for pattern and jump to first match
+    Search {
+        /// Search pattern
+        pattern: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Jump to next match and return position
+    NextMatch {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Return LSP diagnostic info
+    Diagnostics {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// List document symbols
+    Symbols {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Wait for LSP to be ready (blocks until ready)
+    WaitLsp {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+        /// Timeout in milliseconds (default: 30000)
+        #[arg(long, default_value = "30000")]
+        timeout: u64,
+    },
 }
 
 /// Parse dimension string like "80x24" into (width, height)
