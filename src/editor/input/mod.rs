@@ -44,6 +44,7 @@ impl InputHandler {
             Mode::Picker => Self::handle_picker_mode(editor, key_event),
             Mode::HoverWindow => Self::handle_hover_window_mode(editor, key_event),
             Mode::FileTree => Self::handle_filetree_mode(editor, key_event),
+            Mode::SubstituteConfirm => Self::handle_substitute_confirm_mode(editor, key_event),
         };
 
         // Mark the editor as dirty after processing any key event
@@ -5800,6 +5801,38 @@ impl InputHandler {
             }
             _ => {
                 // Ignore other keys
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles input in SubstituteConfirm mode
+    /// Keys: y (yes), n (no/skip), a (all), q (quit), l (last - substitute and quit)
+    fn handle_substitute_confirm_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Confirm this substitution
+                editor.confirm_substitute();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                // Skip this match
+                editor.skip_substitute();
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                // Substitute all remaining matches
+                editor.confirm_all_substitutes();
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                // Quit without substituting remaining matches
+                editor.end_substitute_confirm();
+            }
+            KeyCode::Char('l') | KeyCode::Char('L') => {
+                // Substitute this match and quit
+                editor.confirm_substitute_and_quit();
+            }
+            _ => {
+                // Show prompt in status
+                editor.set_lsp_status("replace with ... (y/n/a/q/l)".to_string());
             }
         }
         Ok(())
