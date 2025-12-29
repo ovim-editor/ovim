@@ -11,6 +11,114 @@ use ratatui::{
 use super::helpers::expand_tabs_with_mapping;
 use super::styles::{get_git_sign_style, get_line_number_style, remap_highlights};
 
+/// Apply a style to a specific column in a line
+fn apply_style_at_column(line: &mut Line<'static>, target_col: usize, style: Style) {
+    let mut current_col = 0;
+    for span in &mut line.spans {
+        let span_len = span.content.chars().count();
+        if target_col >= current_col && target_col < current_col + span_len {
+            // Target column is in this span - need to split it
+            let offset = target_col - current_col;
+            let chars: Vec<char> = span.content.chars().collect();
+            if offset == 0 && chars.len() == 1 {
+                // Simple case: span is exactly the bracket character
+                span.style = span.style.patch(style);
+            } else {
+                // Need to split: this is complex, so just apply style to whole span for now
+                // A proper implementation would split the span into 3 parts
+                span.style = span.style.patch(style);
+            }
+            return;
+        }
+        current_col += span_len;
+    }
+}
+
+/// Find matching bracket position if cursor is on a bracket
+fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usize, usize)> {
+    let cursor = buffer.cursor();
+    let rope = buffer.rope();
+    let line_idx = cursor.line();
+
+    if line_idx >= rope.len_lines() {
+        return None;
+    }
+
+    let line = rope.line(line_idx);
+    let col = cursor.col();
+
+    if col >= line.len_chars() {
+        return None;
+    }
+
+    let current_char = line.char(col);
+
+    // Check if on a bracket
+    let (matching_char, search_forward) = match current_char {
+        '(' => (')', true),
+        ')' => ('(', false),
+        '[' => (']', true),
+        ']' => ('[', false),
+        '{' => ('}', true),
+        '}' => ('{', false),
+        '<' => ('>', true),
+        '>' => ('<', false),
+        _ => return None,
+    };
+
+    // Calculate absolute position
+    let abs_pos = rope.line_to_char(line_idx) + col;
+    let total_chars = rope.len_chars();
+
+    // Search for matching bracket
+    let mut depth = 1;
+    let mut pos = abs_pos;
+
+    if search_forward {
+        pos += 1;
+        while pos < total_chars && depth > 0 {
+            let c = rope.char(pos);
+            if c == current_char {
+                depth += 1;
+            } else if c == matching_char {
+                depth -= 1;
+            }
+            if depth > 0 {
+                pos += 1;
+            }
+        }
+    } else {
+        if pos == 0 {
+            return None;
+        }
+        pos -= 1;
+        while depth > 0 {
+            let c = rope.char(pos);
+            if c == current_char {
+                depth += 1;
+            } else if c == matching_char {
+                depth -= 1;
+            }
+            if depth > 0 {
+                if pos == 0 {
+                    return None;
+                }
+                pos -= 1;
+            }
+        }
+    }
+
+    if depth == 0 {
+        // Convert absolute position to line/col
+        let match_line = rope.char_to_line(pos);
+        let line_start = rope.line_to_char(match_line);
+        let match_col = pos - line_start;
+        Some((match_line, match_col))
+    } else {
+        None
+    }
+}
+
 /// Renders the buffer content and returns the viewport start line
 pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) -> usize {
     let buffer = editor.buffer();
@@ -57,6 +165,17 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
 
     // Get current search if active
     let current_search = editor.current_search();
+
+    // Find matching bracket position if showmatch is enabled
+    let bracket_positions: Option<((usize, usize), (usize, usize))> = if editor.options.showmatch {
+        if let Some(matching_pos) = find_matching_bracket_position(buffer) {
+            Some(((cursor.line(), cursor.col()), matching_pos))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Build the gutter lines
     if let Some(gutter_area) = gutter_area {
@@ -108,11 +227,23 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
             // Check if this is the cursor line and cursorline option is on
             let is_cursor_line = cursorline && line_idx == cursor_line_idx;
 
+            // Check if this line has a bracket to highlight
+            let bracket_col = bracket_positions.and_then(|((l1, c1), (l2, c2))| {
+                if line_idx == l1 {
+                    Some(c1)
+                } else if line_idx == l2 {
+                    Some(c2)
+                } else {
+                    None
+                }
+            });
+
             // Always use character-by-character rendering if we have any highlighting
             let needs_detailed_rendering = has_visual_selection
                 || !search_matches.is_empty()
                 || !syntax_highlights.is_empty()
-                || is_cursor_line;
+                || is_cursor_line
+                || bracket_col.is_some();
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -137,6 +268,13 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                         // Preserve foreground color but add background
                         span.style = span.style.bg(cursorline_bg);
                     }
+                }
+                // Apply bracket highlighting
+                if let Some(col) = bracket_col {
+                    let bracket_style = Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD);
+                    apply_style_at_column(&mut line, col, bracket_style);
                 }
                 lines.push(line);
             } else {
