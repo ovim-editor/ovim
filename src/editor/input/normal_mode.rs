@@ -137,6 +137,70 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
             }
         }
 
+        // Handle '[' prefix for section navigation (outside leader mode)
+        if let Some('[') = editor.pending_command() {
+            editor.clear_pending_command();
+            let count = editor.effective_count();
+
+            match key_event.code {
+                KeyCode::Char('[') => {
+                    // [[ - jump to previous section start
+                    Motions::section_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char(']') => {
+                    // [] - jump to previous section end
+                    Motions::section_end_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char('{') => {
+                    // [{ - jump to enclosing opening brace
+                    Motions::jump_to_enclosing_open_brace(editor.buffer_mut());
+                    editor.clear_count();
+                    return Ok(());
+                }
+                _ => {
+                    // Invalid sequence
+                    editor.clear_count();
+                    return Ok(());
+                }
+            }
+        }
+
+        // Handle ']' prefix for section navigation (outside leader mode)
+        if let Some(']') = editor.pending_command() {
+            editor.clear_pending_command();
+            let count = editor.effective_count();
+
+            match key_event.code {
+                KeyCode::Char(']') => {
+                    // ]] - jump to next section start
+                    Motions::section_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char('[') => {
+                    // ][ - jump to next section end
+                    Motions::section_end_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char('}') => {
+                    // ]} - jump to enclosing closing brace
+                    Motions::jump_to_enclosing_close_brace(editor.buffer_mut());
+                    editor.clear_count();
+                    return Ok(());
+                }
+                _ => {
+                    // Invalid sequence
+                    editor.clear_count();
+                    return Ok(());
+                }
+            }
+        }
+
         // Handle pending operator + motion (like 'dw', 'dd', 'yy')
         // Skip this block if we have a pending text object prefix ('i' or 'a')
         // to allow text objects like di{ to be handled later
@@ -2763,6 +2827,13 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                 let count = editor.effective_count();
                 Motions::sentence_backward(editor.buffer_mut(), count);
                 editor.clear_count();
+            }
+            // Section navigation - set pending command for two-key sequences
+            KeyCode::Char('[') => {
+                editor.set_pending_command('[');
+            }
+            KeyCode::Char(']') => {
+                editor.set_pending_command(']');
             }
             // Operators
             KeyCode::Char('d') => {
