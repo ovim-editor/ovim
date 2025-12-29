@@ -218,6 +218,8 @@ struct LanguageServerInner {
     cap_execute_command: AtomicBool,
     /// Cached: supports inlay hints
     cap_inlay_hint: AtomicBool,
+    /// Cached: supports semantic tokens
+    cap_semantic_tokens: AtomicBool,
 }
 
 impl LanguageServerInner {
@@ -312,6 +314,7 @@ impl LanguageServer {
             cap_type_hierarchy: AtomicBool::new(false),
             cap_execute_command: AtomicBool::new(false),
             cap_inlay_hint: AtomicBool::new(false),
+            cap_semantic_tokens: AtomicBool::new(false),
         });
 
         let server = Self {
@@ -1375,6 +1378,11 @@ impl LanguageServer {
         self.inner
             .cap_inlay_hint
             .store(caps.inlay_hint_provider.is_some(), Ordering::Relaxed);
+
+        // Cache semantic tokens support
+        self.inner
+            .cap_semantic_tokens
+            .store(caps.semantic_tokens_provider.is_some(), Ordering::Relaxed);
     }
 
     /// Gets the server capabilities
@@ -1496,6 +1504,11 @@ impl LanguageServer {
     /// Checks if the server supports inlay hints (lock-free)
     pub async fn supports_inlay_hints(&self) -> bool {
         self.inner.cap_inlay_hint.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports semantic tokens (lock-free)
+    pub async fn supports_semantic_tokens(&self) -> bool {
+        self.inner.cap_semantic_tokens.load(Ordering::Relaxed)
     }
 
     /// Gets the current server state (alias for introspection)
