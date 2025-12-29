@@ -34,7 +34,7 @@ use dashmap::DashMap;
 use lsp_types::{
     Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier, WorkspaceEdit,
+    TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -149,6 +149,11 @@ pub struct LspManager {
 
     /// Current progress messages from LSP servers (language_id -> message)
     current_progress: Mutex<HashMap<String, String>>,
+
+    /// Channel for workspace edits that need to be applied by the Editor
+    /// These come from server-initiated workspace/applyEdit requests
+    workspace_edit_tx: mpsc::Sender<lsp_types::WorkspaceEdit>,
+    workspace_edit_rx: Mutex<mpsc::Receiver<lsp_types::WorkspaceEdit>>,
 }
 
 impl LspManager {
@@ -157,6 +162,7 @@ impl LspManager {
         // Use bounded channel to prevent unbounded memory growth from notifications
         let (notification_tx, notification_rx) = mpsc::channel(1000);
         let (flush_tx, flush_rx) = mpsc::channel(100);
+        let (workspace_edit_tx, workspace_edit_rx) = mpsc::channel(100);
         Self {
             servers: DashMap::new(),
             diagnostics: Mutex::new(HashMap::new()),
@@ -168,6 +174,8 @@ impl LspManager {
             flush_rx: Mutex::new(Some(flush_rx)),
             diagnostics_changed: AtomicBool::new(false),
             current_progress: Mutex::new(HashMap::new()),
+            workspace_edit_tx,
+            workspace_edit_rx: Mutex::new(workspace_edit_rx),
         }
     }
 
@@ -608,10 +616,23 @@ impl LspManager {
                 if let Some(params) = request.params {
                     match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params) {
                         Ok(apply_params) => {
-                            // Apply the workspace edit
-                            match self.apply_workspace_edit(apply_params.edit).await {
+                            // Queue the workspace edit for the Editor to apply
+                            // The Editor has access to buffers, we just queue the edits here
+                            let edit = apply_params.edit;
+
+                            lsp_info!(
+                                "LSP-WORKSPACE",
+                                "Queuing workspace edit with {} document changes",
+                                edit.document_changes.as_ref().map(|changes| match changes {
+                                    lsp_types::DocumentChanges::Edits(edits) => edits.len(),
+                                    lsp_types::DocumentChanges::Operations(ops) => ops.len(),
+                                }).unwrap_or_else(|| edit.changes.as_ref().map(|c| c.len()).unwrap_or(0))
+                            );
+
+                            // Send to channel for Editor to process
+                            match self.workspace_edit_tx.send(edit).await {
                                 Ok(_) => {
-                                    // Send success response
+                                    // Send success response to LSP server
                                     let response = lsp_types::ApplyWorkspaceEditResponse {
                                         applied: true,
                                         failure_reason: None,
@@ -636,10 +657,10 @@ impl LspManager {
                                     }
                                 }
                                 Err(e) => {
-                                    // Send error response
+                                    // Channel send failed
                                     lsp_error!(
                                         "LSP-SERVER-REQUEST",
-                                        "Failed to apply workspace edit: {}",
+                                        "Failed to queue workspace edit: {}",
                                         e
                                     );
 
@@ -647,7 +668,7 @@ impl LspManager {
                                         if let Some(server) = self.servers.get(language_id) {
                                             let error_response = protocol::ResponseError {
                                                 code: -32603, // Internal error
-                                                message: format!("Failed to apply edit: {}", e),
+                                                message: format!("Failed to queue edit: {}", e),
                                                 data: None,
                                             };
 
@@ -937,6 +958,21 @@ impl LspManager {
                 }
             }
         }
+    }
+
+    /// Polls for pending workspace edits that need to be applied by the Editor
+    /// Returns a Vec of workspace edits that should be applied (in order)
+    /// This is called from the main event loop which has access to the Editor
+    pub async fn poll_pending_workspace_edits(&self) -> Vec<lsp_types::WorkspaceEdit> {
+        let mut rx = self.workspace_edit_rx.lock().await;
+        let mut edits = Vec::new();
+
+        // Drain all pending workspace edits (non-blocking)
+        while let Ok(edit) = rx.try_recv() {
+            edits.push(edit);
+        }
+
+        edits
     }
 
     /// Starts a background task to listen for notifications and requests from a language server
@@ -2114,138 +2150,6 @@ impl LspManager {
         let hints: Vec<lsp_types::InlayHint> = serde_json::from_value(result).unwrap_or_default();
 
         Ok(hints)
-    }
-
-    /// Applies workspace edits received from the LSP server
-    /// This handles requests like refactoring, renames, and code actions that modify files
-    pub async fn apply_workspace_edit(&self, edit: WorkspaceEdit) -> Result<()> {
-        lsp_info!(
-            "LSP-WORKSPACE",
-            "Received workspace/applyEdit request with {} document changes",
-            edit.document_changes.as_ref().map(|changes| match changes {
-                lsp_types::DocumentChanges::Edits(edits) => edits.len(),
-                lsp_types::DocumentChanges::Operations(ops) => ops.len(),
-            }).unwrap_or_else(|| edit.changes.as_ref().map(|c| c.len()).unwrap_or(0))
-        );
-
-        // Handle the basic case: changes map (uri -> TextEdit[])
-        if let Some(changes) = edit.changes {
-            for (uri, edits) in changes {
-                // Convert URI to file path
-                let path = uri.to_file_path().map_err(|_| {
-                    anyhow::anyhow!("Invalid file URI: {}", uri)
-                })?;
-
-                let path_str = path.to_string_lossy();
-
-                // Sort edits in reverse order (from end to start) to avoid position shifts
-                let mut sorted_edits = edits;
-                sorted_edits.sort_by_key(|e| std::cmp::Reverse((e.range.start.line, e.range.start.character)));
-
-                // Log the workspace edit details
-                lsp_info!(
-                    "LSP-WORKSPACE",
-                    "Workspace edit for {}: {} text edits",
-                    path_str,
-                    sorted_edits.len()
-                );
-
-                // TODO: Implement actual edit application
-                // For MVP: just log that we received the edits
-                // Full implementation would:
-                // 1. Load the file buffer (or get from open buffers)
-                // 2. Apply edits in reverse order to maintain position validity
-                // 3. Save the modified buffer
-                // 4. Notify LSP of the changes via didChange
-                for (idx, edit) in sorted_edits.iter().enumerate() {
-                    lsp_debug!(
-                        "LSP-WORKSPACE",
-                        "  Edit {}: range {:?} -> {:?} | new_text: {:?}",
-                        idx + 1,
-                        edit.range.start,
-                        edit.range.end,
-                        if edit.new_text.len() > 100 {
-                            format!("{}... ({} chars)", &edit.new_text[..100], edit.new_text.len())
-                        } else {
-                            edit.new_text.clone()
-                        }
-                    );
-                }
-            }
-        }
-
-        // Handle document_changes (more structured, can include create/delete/rename operations)
-        if let Some(document_changes) = edit.document_changes {
-            match document_changes {
-                lsp_types::DocumentChanges::Edits(edits) => {
-                    for text_doc_edit in edits {
-                        let uri = &text_doc_edit.text_document.uri;
-                        let path = uri.to_file_path().map_err(|_| {
-                            anyhow::anyhow!("Invalid file URI: {}", uri)
-                        })?;
-
-                        lsp_info!(
-                            "LSP-WORKSPACE",
-                            "Document edit for {}: {} text edits",
-                            path.to_string_lossy(),
-                            text_doc_edit.edits.len()
-                        );
-
-                        // TODO: Apply text edits (same as above)
-                    }
-                }
-                lsp_types::DocumentChanges::Operations(ops) => {
-                    for op in ops {
-                        match op {
-                            lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
-                                let uri = &text_doc_edit.text_document.uri;
-                                let path = uri.to_file_path().map_err(|_| {
-                                    anyhow::anyhow!("Invalid file URI: {}", uri)
-                                })?;
-
-                                lsp_info!(
-                                    "LSP-WORKSPACE",
-                                    "Document edit operation for {}: {} text edits",
-                                    path.to_string_lossy(),
-                                    text_doc_edit.edits.len()
-                                );
-                            }
-                            lsp_types::DocumentChangeOperation::Op(resource_op) => {
-                                match resource_op {
-                                    lsp_types::ResourceOp::Create(create) => {
-                                        lsp_info!(
-                                            "LSP-WORKSPACE",
-                                            "Create file operation: {}",
-                                            create.uri
-                                        );
-                                        // TODO: Create file
-                                    }
-                                    lsp_types::ResourceOp::Delete(delete) => {
-                                        lsp_info!(
-                                            "LSP-WORKSPACE",
-                                            "Delete file operation: {}",
-                                            delete.uri
-                                        );
-                                        // TODO: Delete file
-                                    }
-                                    lsp_types::ResourceOp::Rename(rename) => {
-                                        lsp_info!(
-                                            "LSP-WORKSPACE",
-                                            "Rename file operation: {} -> {}",
-                                            rename.old_uri,
-                                            rename.new_uri
-                                        );
-                                        // TODO: Rename file
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Gets LSP status information for all active servers
