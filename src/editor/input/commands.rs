@@ -40,6 +40,44 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
     Ok(())
 }
 
+/// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax ($1, $2, $0, $0)
+fn convert_vim_backrefs(replacement: &str) -> String {
+    let mut result = String::with_capacity(replacement.len() * 2);
+    let mut chars = replacement.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(&next) = chars.peek() {
+                match next {
+                    '0'..='9' => {
+                        // \1 -> $1, \2 -> $2, etc.
+                        result.push('$');
+                        result.push(chars.next().unwrap());
+                    }
+                    '\\' => {
+                        // \\ -> \
+                        result.push('\\');
+                        chars.next();
+                    }
+                    _ => {
+                        // Keep other escapes as-is
+                        result.push(ch);
+                    }
+                }
+            } else {
+                result.push(ch);
+            }
+        } else if ch == '&' {
+            // & means whole match in Vim, $0 in Rust
+            result.push_str("$0");
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 /// Handles substitute command (:s/pattern/replacement/flags)
 fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
     // Parse the command to extract range, pattern, replacement, and flags
@@ -66,7 +104,8 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     let pattern = parts[1];
-    let replacement = parts[2];
+    // Convert Vim-style backreferences to Rust regex syntax
+    let replacement = convert_vim_backrefs(parts[2]);
     let flags = if parts.len() >= 4 { parts[3] } else { "" };
 
     // Parse flags
@@ -107,10 +146,10 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
             // Perform the substitution
             let new_text = if global {
                 // Replace all occurrences
-                regex.replace_all(line_text, replacement).to_string()
+                regex.replace_all(line_text, replacement.as_str()).to_string()
             } else {
                 // Replace first occurrence
-                regex.replace(line_text, replacement).to_string()
+                regex.replace(line_text, replacement.as_str()).to_string()
             };
 
             if new_text != line_text {
