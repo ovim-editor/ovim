@@ -1,6 +1,6 @@
 ///! Subcommand implementations for controlling ovim sessions
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::cli::Command;
 use crate::client::OvimClient;
@@ -44,6 +44,14 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
             port,
             session,
         } => cmd_mcp_server(workspace, port, session),
+        Command::GotoDefinition { session } => cmd_goto_definition(session),
+        Command::FindReferences { session } => cmd_find_references(session),
+        Command::Hover { session } => cmd_hover(session),
+        Command::Search { pattern, session } => cmd_search(&pattern, session),
+        Command::NextMatch { session } => cmd_next_match(session),
+        Command::Diagnostics { session } => cmd_diagnostics(session),
+        Command::Symbols { session } => cmd_symbols(session),
+        Command::WaitLsp { session, timeout } => cmd_wait_lsp(session, timeout),
     }
 }
 
@@ -620,4 +628,258 @@ fn cmd_mcp_server(
 
     // Start the MCP stdio server
     crate::mcp_stdio_server::run_mcp_server(workspace_dir)
+}
+
+/// Trigger goto-definition and return new location as JSON
+fn cmd_goto_definition(session_name: Option<String>) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let before = client.get_snapshot().context("Failed to get snapshot before goto-definition")?;
+    client.send_keys("gd").context("Failed to send goto-definition keys")?;
+    thread::sleep(Duration::from_millis(300));
+    let after = client.get_snapshot().context("Failed to get snapshot after goto-definition")?;
+
+    let moved = (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column)
+        || before.buffer.file_path != after.buffer.file_path;
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": moved,
+        "file": after.buffer.file_path,
+        "line": after.cursor.line + 1,
+        "column": after.cursor.column + 1
+    }))?);
+
+    Ok(())
+}
+
+/// Trigger find-references and return list from picker
+fn cmd_find_references(session_name: Option<String>) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    client.send_keys("gr").context("Failed to send find-references keys")?;
+    thread::sleep(Duration::from_millis(500));
+    let snapshot = client.get_snapshot().context("Failed to get snapshot after find-references")?;
+
+    let references = if let Some(picker) = &snapshot.picker {
+        picker.results.iter().map(|r| {
+            json!({
+                "display": r.display,
+                "file": r.location,
+                "line": r.line,
+                "column": r.col
+            })
+        }).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": !references.is_empty(),
+        "references": references
+    }))?);
+
+    Ok(())
+}
+
+/// Trigger hover and return hover_info
+fn cmd_hover(session_name: Option<String>) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    client.send_keys("K").context("Failed to send hover keys")?;
+    thread::sleep(Duration::from_millis(300));
+    let snapshot = client.get_snapshot().context("Failed to get snapshot after hover")?;
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": snapshot.hover_info.is_some(),
+        "hover": snapshot.hover_info
+    }))?);
+
+    Ok(())
+}
+
+/// Search for pattern and jump to first match
+fn cmd_search(pattern: &str, session_name: Option<String>) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let before = client.get_snapshot().context("Failed to get snapshot before search")?;
+
+    // Enter search mode with / and the pattern, then press Enter
+    let search_cmd = format!("/{}<CR>", pattern);
+    client.send_keys(&search_cmd).context("Failed to send search keys")?;
+    thread::sleep(Duration::from_millis(200));
+    let after = client.get_snapshot().context("Failed to get snapshot after search")?;
+
+    let found = (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": found,
+        "file": after.buffer.file_path,
+        "line": after.cursor.line + 1,
+        "column": after.cursor.column + 1
+    }))?);
+
+    Ok(())
+}
+
+/// Jump to next match and return position
+fn cmd_next_match(session_name: Option<String>) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let before = client.get_snapshot().context("Failed to get snapshot before next match")?;
+    client.send_keys("n").context("Failed to send next match keys")?;
+    thread::sleep(Duration::from_millis(100));
+    let after = client.get_snapshot().context("Failed to get snapshot after next match")?;
+
+    let moved = (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": moved,
+        "file": after.buffer.file_path,
+        "line": after.cursor.line + 1,
+        "column": after.cursor.column + 1
+    }))?);
+
+    Ok(())
+}
+
+/// Return LSP diagnostic info
+fn cmd_diagnostics(session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    // Use MCP to call get_diagnostics tool
+    let response = client.send_mcp_request(
+        "tools/call",
+        json!({
+            "name": "get_diagnostics",
+            "arguments": {}
+        }),
+        1,
+    ).context("Failed to get diagnostics via MCP")?;
+
+    // Extract diagnostics from MCP response
+    if let Some(text_field) = response.get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("text"))
+    {
+        if let Some(text_str) = text_field.as_str() {
+            if let Ok(diagnostics_info) = serde_json::from_str::<Value>(text_str) {
+                println!("{}", serde_json::to_string_pretty(&diagnostics_info)?);
+                return Ok(());
+            }
+        }
+    }
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": false,
+        "diagnostics": []
+    }))?);
+
+    Ok(())
+}
+
+/// List document symbols
+fn cmd_symbols(session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    // Use MCP to call get_symbols tool
+    let response = client.send_mcp_request(
+        "tools/call",
+        json!({
+            "name": "get_symbols",
+            "arguments": {}
+        }),
+        1,
+    ).context("Failed to get symbols via MCP")?;
+
+    // Extract symbols from MCP response
+    if let Some(text_field) = response.get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("text"))
+    {
+        if let Some(text_str) = text_field.as_str() {
+            if let Ok(symbols_info) = serde_json::from_str::<Value>(text_str) {
+                println!("{}", serde_json::to_string_pretty(&symbols_info)?);
+                return Ok(());
+            }
+        }
+    }
+
+    println!("{}", serde_json::to_string_pretty(&json!({
+        "success": false,
+        "symbols": []
+    }))?);
+
+    Ok(())
+}
+
+/// Wait for LSP to be ready (blocks until ready or timeout)
+fn cmd_wait_lsp(session_name: Option<String>, timeout_ms: u64) -> Result<()> {
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use serde_json::json;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let start = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+
+    loop {
+        if let Ok(lsp_status) = client.get_lsp_status() {
+            let all_ready = !lsp_status.servers.is_empty()
+                && lsp_status.servers.iter().all(|s| s.has_capabilities);
+
+            if all_ready {
+                println!("{}", serde_json::to_string_pretty(&json!({
+                    "success": true,
+                    "elapsed_ms": start.elapsed().as_millis()
+                }))?);
+                return Ok(());
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            println!("{}", serde_json::to_string_pretty(&json!({
+                "success": false,
+                "error": "Timeout waiting for LSP to be ready",
+                "elapsed_ms": start.elapsed().as_millis()
+            }))?);
+            anyhow::bail!("Timeout waiting for LSP");
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
 }
