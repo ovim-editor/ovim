@@ -969,6 +969,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         line_count: None,
                     })
                 }
+            // Handle :map, :noremap and variants
+            } else if is_map_command(command) {
+                handle_map_command(editor, command)
+            // Handle :unmap and variants
+            } else if is_unmap_command(command) {
+                handle_unmap_command(editor, command)
+            // Handle :mapclear and variants
+            } else if is_mapclear_command(command) {
+                handle_mapclear_command(editor, command)
             // Handle :! shell command execution
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 if shell_cmd.trim().is_empty() {
@@ -985,6 +994,182 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             }
         }
     }
+}
+
+/// Check if this is a map command
+fn is_map_command(cmd: &str) -> bool {
+    let cmd_word = cmd.split_whitespace().next().unwrap_or("");
+    matches!(
+        cmd_word,
+        "map" | "nmap" | "imap" | "vmap" | "xmap" | "cmap"
+            | "noremap" | "nnoremap" | "inoremap" | "vnoremap" | "xnoremap" | "cnoremap"
+    )
+}
+
+/// Check if this is an unmap command
+fn is_unmap_command(cmd: &str) -> bool {
+    let cmd_word = cmd.split_whitespace().next().unwrap_or("");
+    matches!(
+        cmd_word,
+        "unmap" | "nunmap" | "iunmap" | "vunmap" | "xunmap" | "cunmap"
+    )
+}
+
+/// Check if this is a mapclear command
+fn is_mapclear_command(cmd: &str) -> bool {
+    let cmd_word = cmd.split_whitespace().next().unwrap_or("");
+    matches!(
+        cmd_word,
+        "mapclear" | "nmapclear" | "imapclear" | "vmapclear" | "xmapclear" | "cmapclear"
+    )
+}
+
+/// Handle map and noremap commands
+fn handle_map_command(editor: &mut Editor, command: &str) -> ApiResponse {
+    use crate::editor::{KeyMapManager, MapMode};
+
+    let parts: Vec<&str> = command.splitn(3, char::is_whitespace).collect();
+    let cmd_word = parts.first().copied().unwrap_or("");
+
+    // Determine mode and whether it's noremap
+    let (mode, noremap) = match cmd_word {
+        "map" => (MapMode::All, false),
+        "noremap" => (MapMode::All, true),
+        "nmap" => (MapMode::Normal, false),
+        "nnoremap" => (MapMode::Normal, true),
+        "imap" => (MapMode::Insert, false),
+        "inoremap" => (MapMode::Insert, true),
+        "vmap" | "xmap" => (MapMode::Visual, false),
+        "vnoremap" | "xnoremap" => (MapMode::Visual, true),
+        "cmap" => (MapMode::Command, false),
+        "cnoremap" => (MapMode::Command, true),
+        _ => (MapMode::Normal, false),
+    };
+
+    // If no arguments, list mappings for this mode
+    if parts.len() == 1 {
+        let mappings = editor.keymaps().list_mappings(Some(mode));
+        if mappings.is_empty() {
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("No mappings".to_string()),
+                line_count: None,
+            });
+        }
+        let lines: Vec<String> = mappings
+            .into_iter()
+            .map(|(m, mapping)| {
+                let noremap_char = if mapping.noremap { '*' } else { ' ' };
+                format!(
+                    "{}{}  {}  {}",
+                    m.display_char(),
+                    noremap_char,
+                    mapping.lhs,
+                    mapping.rhs
+                )
+            })
+            .collect();
+        return ApiResponse::Success(SuccessResponse {
+            success: true,
+            message: Some(format!("--- Mappings ---\n{}", lines.join("\n"))),
+            line_count: None,
+        });
+    }
+
+    // If only lhs provided, show mapping for that key
+    if parts.len() == 2 {
+        let lhs = KeyMapManager::parse_key_notation(parts[1]);
+        if let Some(mapping) = editor.keymaps().get_mapping(mode, &lhs) {
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some(format!(
+                    "{}  {}  {}",
+                    mode.display_char(),
+                    mapping.lhs,
+                    mapping.rhs
+                )),
+                line_count: None,
+            });
+        } else {
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("No mapping found".to_string()),
+                line_count: None,
+            });
+        }
+    }
+
+    // parts.len() >= 3: lhs and rhs provided
+    let lhs = KeyMapManager::parse_key_notation(parts[1]);
+    let rhs = KeyMapManager::parse_key_notation(parts[2]);
+
+    editor.keymaps_mut().add_mapping(mode, lhs.clone(), rhs, noremap);
+
+    ApiResponse::Success(SuccessResponse {
+        success: true,
+        message: None,
+        line_count: None,
+    })
+}
+
+/// Handle unmap commands
+fn handle_unmap_command(editor: &mut Editor, command: &str) -> ApiResponse {
+    use crate::editor::{KeyMapManager, MapMode};
+
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    let cmd_word = parts.first().copied().unwrap_or("");
+
+    let mode = match cmd_word {
+        "unmap" => MapMode::All,
+        "nunmap" => MapMode::Normal,
+        "iunmap" => MapMode::Insert,
+        "vunmap" | "xunmap" => MapMode::Visual,
+        "cunmap" => MapMode::Command,
+        _ => MapMode::Normal,
+    };
+
+    if parts.len() < 2 {
+        return ApiResponse::Error(ErrorResponse {
+            error: "E474: Invalid argument".to_string(),
+        });
+    }
+
+    let lhs = KeyMapManager::parse_key_notation(parts[1]);
+    if editor.keymaps_mut().remove_mapping(mode, &lhs) {
+        ApiResponse::Success(SuccessResponse {
+            success: true,
+            message: None,
+            line_count: None,
+        })
+    } else {
+        ApiResponse::Error(ErrorResponse {
+            error: "E31: No such mapping".to_string(),
+        })
+    }
+}
+
+/// Handle mapclear commands
+fn handle_mapclear_command(editor: &mut Editor, command: &str) -> ApiResponse {
+    use crate::editor::MapMode;
+
+    let cmd_word = command.split_whitespace().next().unwrap_or("");
+
+    let mode = match cmd_word {
+        "mapclear" => MapMode::All,
+        "nmapclear" => MapMode::Normal,
+        "imapclear" => MapMode::Insert,
+        "vmapclear" | "xmapclear" => MapMode::Visual,
+        "cmapclear" => MapMode::Command,
+        _ => MapMode::Normal,
+    };
+
+    editor.keymaps_mut().clear_mappings(mode);
+
+    ApiResponse::Success(SuccessResponse {
+        success: true,
+        message: None,
+        line_count: None,
+    })
 }
 
 /// Execute a shell command and return the output
