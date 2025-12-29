@@ -641,17 +641,24 @@ impl LspManager {
 
                                     if let Some(id) = request_id {
                                         if let Some(server) = self.servers.get(language_id) {
-                                            let response_msg = JsonRpcMessage::response(
-                                                id,
-                                                serde_json::to_value(response).unwrap(),
-                                            );
-
-                                            if let Err(e) = server.send_response(response_msg).await {
-                                                lsp_error!(
-                                                    "LSP-SERVER-REQUEST",
-                                                    "Failed to send workspace/applyEdit response: {}",
-                                                    e
-                                                );
+                                            match serde_json::to_value(response) {
+                                                Ok(value) => {
+                                                    let response_msg = JsonRpcMessage::response(id, value);
+                                                    if let Err(e) = server.send_response(response_msg).await {
+                                                        lsp_error!(
+                                                            "LSP-SERVER-REQUEST",
+                                                            "Failed to send workspace/applyEdit response: {}",
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    lsp_error!(
+                                                        "LSP-SERVER-REQUEST",
+                                                        "Failed to serialize workspace/applyEdit response: {}",
+                                                        e
+                                                    );
+                                                }
                                             }
                                         }
                                     }
