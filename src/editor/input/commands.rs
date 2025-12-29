@@ -502,6 +502,24 @@ fn execute_command(editor: &mut Editor) -> Result<()> {
 fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     let command = command.trim();
 
+    // Handle command chaining with |
+    // Split on | that's not escaped and handle each command
+    if command.contains('|') && !command.starts_with('s') && !command.starts_with("%s") {
+        // Simple split for non-substitute commands
+        for part in command.split('|') {
+            let part = part.trim();
+            if !part.is_empty() {
+                execute_command_single(editor, part)?;
+            }
+        }
+        return Ok(());
+    }
+
+    execute_command_single(editor, command)
+}
+
+/// Execute a single command (no chaining)
+fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Update the : register with the command
     editor.registers_mut().set_last_command(command.to_string());
 
