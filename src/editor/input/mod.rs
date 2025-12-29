@@ -1,4 +1,3 @@
-use crate::buffer::Buffer;
 use crate::editor::{
     Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, RegisterType,
     Search, TextObjects,
@@ -13,12 +12,8 @@ mod commands;
 /// Number operations (Ctrl-A, Ctrl-X, g Ctrl-A, g Ctrl-X)
 mod numbers;
 
-/// Type of case change operation
-enum CaseChange {
-    Lowercase,
-    Uppercase,
-    Toggle,
-}
+/// Case operations (toggle, upper, lower)
+mod case;
 
 /// Handles input events for the editor
 pub struct InputHandler;
@@ -652,25 +647,25 @@ impl InputHandler {
                 // Case change operations
                 (Operator::Lowercase, KeyCode::Char('u')) => {
                     // gugu - lowercase line
-                    Self::change_case_line(editor, count, CaseChange::Lowercase)?;
+                    case::change_case_line(editor, count, case::CaseChange::Lowercase)?;
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Uppercase, KeyCode::Char('U')) => {
                     // gUgU - uppercase line
-                    Self::change_case_line(editor, count, CaseChange::Uppercase)?;
+                    case::change_case_line(editor, count, case::CaseChange::Uppercase)?;
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::ToggleCase, KeyCode::Char('~')) => {
                     // g~g~ - toggle case line
-                    Self::change_case_line(editor, count, CaseChange::Toggle)?;
+                    case::change_case_line(editor, count, case::CaseChange::Toggle)?;
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Lowercase, KeyCode::Char('w')) => {
                     // guw - lowercase word
-                    Self::change_case_motion(editor, count, CaseChange::Lowercase, |buf, cnt| {
+                    case::change_case_motion(editor, count, case::CaseChange::Lowercase, |buf, cnt| {
                         Motions::word_forward(buf, cnt);
                     })?;
                     editor.clear_count();
@@ -678,7 +673,7 @@ impl InputHandler {
                 }
                 (Operator::Uppercase, KeyCode::Char('w')) => {
                     // gUw - uppercase word
-                    Self::change_case_motion(editor, count, CaseChange::Uppercase, |buf, cnt| {
+                    case::change_case_motion(editor, count, case::CaseChange::Uppercase, |buf, cnt| {
                         Motions::word_forward(buf, cnt);
                     })?;
                     editor.clear_count();
@@ -686,7 +681,7 @@ impl InputHandler {
                 }
                 (Operator::ToggleCase, KeyCode::Char('w')) => {
                     // g~w - toggle case word
-                    Self::change_case_motion(editor, count, CaseChange::Toggle, |buf, cnt| {
+                    case::change_case_motion(editor, count, case::CaseChange::Toggle, |buf, cnt| {
                         Motions::word_forward(buf, cnt);
                     })?;
                     editor.clear_count();
@@ -694,19 +689,19 @@ impl InputHandler {
                 }
                 (Operator::Lowercase, KeyCode::Char('$')) => {
                     // gu$ - lowercase to end of line
-                    Self::change_case_to_end_of_line(editor, CaseChange::Lowercase)?;
+                    case::change_case_to_end_of_line(editor, case::CaseChange::Lowercase)?;
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::Uppercase, KeyCode::Char('$')) => {
                     // gU$ - uppercase to end of line
-                    Self::change_case_to_end_of_line(editor, CaseChange::Uppercase)?;
+                    case::change_case_to_end_of_line(editor, case::CaseChange::Uppercase)?;
                     editor.clear_count();
                     return Ok(());
                 }
                 (Operator::ToggleCase, KeyCode::Char('$')) => {
                     // g~$ - toggle case to end of line
-                    Self::change_case_to_end_of_line(editor, CaseChange::Toggle)?;
+                    case::change_case_to_end_of_line(editor, case::CaseChange::Toggle)?;
                     editor.clear_count();
                     return Ok(());
                 }
@@ -3194,7 +3189,7 @@ impl InputHandler {
                 // ~ - toggle case of character under cursor (with count)
                 let count = editor.effective_count();
                 for _ in 0..count {
-                    Self::toggle_case_at_cursor(editor)?;
+                    case::toggle_case_at_cursor(editor)?;
                 }
                 editor.clear_count();
             }
@@ -5149,193 +5144,6 @@ impl InputHandler {
         Ok(())
     }
 
-    fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
-        let cursor = editor.buffer().cursor();
-        let cursor_before = (cursor.line(), cursor.col());
-        let line_idx = cursor.line();
-        let col = cursor.col();
-
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            let chars: Vec<char> = line_text.chars().collect();
-
-            if col < chars.len() {
-                let ch = chars[col];
-                let toggled = if ch.is_lowercase() {
-                    ch.to_uppercase().to_string()
-                } else {
-                    ch.to_lowercase().to_string()
-                };
-
-                // Delete the character
-                let start_pos = (line_idx, col);
-                let end_pos = (line_idx, col + 1);
-                let deleted = editor
-                    .buffer_mut()
-                    .delete_range(line_idx, col, line_idx, col + 1);
-                let range = Range::new(start_pos, end_pos);
-                let delete_change = Change::delete(range, deleted, cursor_before);
-
-                // Insert the toggled character
-                let insert_change = Change::insert((line_idx, col), toggled.clone(), cursor_before);
-                insert_change.apply(editor.buffer_mut());
-
-                editor.add_change(delete_change);
-                editor.add_change(insert_change);
-
-                // Move cursor right (Vim behavior)
-                let new_col = col + toggled.chars().count();
-                if new_col < chars.len() {
-                    editor.buffer_mut().cursor_mut().set_col(new_col);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Changes case of entire line(s)
-    fn change_case_line(editor: &mut Editor, count: usize, case_change: CaseChange) -> Result<()> {
-        let cursor = editor.buffer().cursor();
-        let cursor_before = (cursor.line(), cursor.col());
-        let start_line = cursor.line();
-        let end_line = (start_line + count).min(editor.buffer().line_count());
-
-        for line_idx in start_line..end_line {
-            if let Some(line) = editor.buffer().line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
-                let transformed = Self::apply_case_change(line_text, &case_change);
-
-                if transformed != line_text {
-                    let line_len = line_text.chars().count();
-                    let deleted = editor
-                        .buffer_mut()
-                        .delete_range(line_idx, 0, line_idx, line_len);
-                    let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
-                    let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-                    let insert_change = Change::insert((line_idx, 0), transformed, cursor_before);
-                    insert_change.apply(editor.buffer_mut());
-
-                    editor.add_change(delete_change);
-                    editor.add_change(insert_change);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Changes case using a motion
-    fn change_case_motion<F>(
-        editor: &mut Editor,
-        count: usize,
-        case_change: CaseChange,
-        motion: F,
-    ) -> Result<()>
-    where
-        F: FnOnce(&mut Buffer, usize),
-    {
-        let start_cursor = editor.buffer().cursor().clone();
-        let cursor_before = (start_cursor.line(), start_cursor.col());
-        let start_line = start_cursor.line();
-        let start_col = start_cursor.col();
-
-        // Apply the motion to find the end position
-        motion(editor.buffer_mut(), count);
-
-        let end_cursor = editor.buffer().cursor();
-        let end_line = end_cursor.line();
-        let end_col = end_cursor.col();
-
-        // Get the text in the range
-        let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
-        let end_char = editor.buffer().rope().line_to_char(end_line) + end_col;
-        let text = editor
-            .buffer()
-            .rope()
-            .slice(start_char..end_char)
-            .to_string();
-
-        // Transform the case
-        let transformed = Self::apply_case_change(&text, &case_change);
-
-        if transformed != text {
-            // Delete the old text
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(start_line, start_col, end_line, end_col);
-            let delete_range = Range::new((start_line, start_col), (end_line, end_col));
-            let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-            // Insert the transformed text
-            let insert_change = Change::insert((start_line, start_col), transformed, cursor_before);
-            insert_change.apply(editor.buffer_mut());
-
-            editor.add_change(delete_change);
-            editor.add_change(insert_change);
-        }
-
-        // Reset cursor to start position
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(start_line, start_col);
-
-        Ok(())
-    }
-
-    /// Changes case from cursor to end of line
-    fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) -> Result<()> {
-        let cursor = editor.buffer().cursor();
-        let cursor_before = (cursor.line(), cursor.col());
-        let line_idx = cursor.line();
-        let col = cursor.col();
-
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            let line_len = line_text.chars().count();
-
-            if col < line_len {
-                let text_to_end: String = line_text.chars().skip(col).collect();
-                let transformed = Self::apply_case_change(&text_to_end, &case_change);
-
-                if transformed != text_to_end {
-                    let deleted = editor
-                        .buffer_mut()
-                        .delete_range(line_idx, col, line_idx, line_len);
-                    let delete_range = Range::new((line_idx, col), (line_idx, line_len));
-                    let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-                    let insert_change = Change::insert((line_idx, col), transformed, cursor_before);
-                    insert_change.apply(editor.buffer_mut());
-
-                    editor.add_change(delete_change);
-                    editor.add_change(insert_change);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Applies case change transformation to a string
-    fn apply_case_change(text: &str, case_change: &CaseChange) -> String {
-        match case_change {
-            CaseChange::Lowercase => text.to_lowercase(),
-            CaseChange::Uppercase => text.to_uppercase(),
-            CaseChange::Toggle => text
-                .chars()
-                .map(|ch| {
-                    if ch.is_lowercase() {
-                        ch.to_uppercase().to_string()
-                    } else {
-                        ch.to_lowercase().to_string()
-                    }
-                })
-                .collect(),
-        }
-    }
 
 
     /// Clamps cursor to valid buffer bounds (line and column)
