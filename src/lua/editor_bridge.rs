@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 /// A thread-safe bridge between Lua and the Editor
@@ -17,6 +18,18 @@ struct EditorBridgeInner {
     buffer_content: Option<String>,
     /// Current mode
     mode: Option<String>,
+    /// Global variables (vim.g namespace)
+    global_vars: HashMap<String, GlobalValue>,
+}
+
+/// Value types that can be stored in vim.g
+#[derive(Clone, Debug)]
+pub enum GlobalValue {
+    String(String),
+    Number(f64),
+    Integer(i64),
+    Boolean(bool),
+    Nil,
 }
 
 impl EditorBridge {
@@ -27,8 +40,27 @@ impl EditorBridge {
                 cursor_pos: None,
                 buffer_content: None,
                 mode: None,
+                global_vars: HashMap::new(),
             })),
         }
+    }
+
+    /// Set a global variable (vim.g.name = value)
+    pub fn set_global(&self, name: String, value: GlobalValue) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.global_vars.insert(name, value);
+    }
+
+    /// Get a global variable (vim.g.name)
+    pub fn get_global(&self, name: &str) -> Option<GlobalValue> {
+        let inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.global_vars.get(name).cloned()
     }
 
     /// Queue a command to be executed on the editor

@@ -1,6 +1,7 @@
+use crate::lua::editor_bridge::GlobalValue;
 use crate::lua::EditorBridge;
 use anyhow::Result;
-use mlua::{Lua, Table};
+use mlua::{Lua, Table, Value};
 
 /// Sets up the vim global table with API namespaces
 pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
@@ -18,8 +19,8 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
     let cmd = create_cmd_function(lua, bridge)?;
     vim.set("cmd", cmd)?;
 
-    // Create vim.g (global variables) namespace
-    let g = lua.create_table()?;
+    // Create vim.g (global variables) namespace with metatable
+    let g = create_g_table(lua, bridge.clone())?;
     vim.set("g", g)?;
 
     // Create vim.opt (options) namespace with metatable
@@ -131,6 +132,49 @@ fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function
         Ok(())
     })?;
     Ok(cmd)
+}
+
+/// Creates the vim.g table with metatable for global variables
+fn create_g_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
+    let g = lua.create_table()?;
+    let metatable = lua.create_table()?;
+
+    // __newindex: called when setting vim.g.name = value
+    let bridge_clone = bridge.clone();
+    let newindex = lua.create_function(move |_lua, (_, key, value): (Value, String, Value)| {
+        let global_value = match value {
+            Value::String(s) => GlobalValue::String(s.to_str().unwrap_or("").to_string()),
+            Value::Integer(n) => GlobalValue::Integer(n),
+            Value::Number(n) => GlobalValue::Number(n),
+            Value::Boolean(b) => GlobalValue::Boolean(b),
+            Value::Nil => GlobalValue::Nil,
+            _ => {
+                return Err(mlua::Error::external(format!(
+                    "vim.g.{}: unsupported value type",
+                    key
+                )));
+            }
+        };
+        bridge_clone.set_global(key, global_value);
+        Ok(())
+    })?;
+    metatable.set("__newindex", newindex)?;
+
+    // __index: called when getting vim.g.name
+    let bridge_clone = bridge.clone();
+    let index = lua.create_function(move |lua, (_, key): (Value, String)| {
+        match bridge_clone.get_global(&key) {
+            Some(GlobalValue::String(s)) => Ok(Value::String(lua.create_string(&s)?)),
+            Some(GlobalValue::Integer(n)) => Ok(Value::Integer(n)),
+            Some(GlobalValue::Number(n)) => Ok(Value::Number(n)),
+            Some(GlobalValue::Boolean(b)) => Ok(Value::Boolean(b)),
+            Some(GlobalValue::Nil) | None => Ok(Value::Nil),
+        }
+    })?;
+    metatable.set("__index", index)?;
+
+    g.set_metatable(Some(metatable));
+    Ok(g)
 }
 
 /// Creates the vim.opt table with metatable for setting options
