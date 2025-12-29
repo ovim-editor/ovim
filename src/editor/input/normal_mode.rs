@@ -161,6 +161,18 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                     editor.clear_count();
                     return Ok(());
                 }
+                KeyCode::Char('m') => {
+                    // [m - jump to previous method start
+                    Motions::method_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char('M') => {
+                    // [M - jump to previous method end
+                    Motions::method_end_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
                 _ => {
                     // Invalid sequence
                     editor.clear_count();
@@ -190,6 +202,18 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                 KeyCode::Char('}') => {
                     // ]} - jump to enclosing closing brace
                     Motions::jump_to_enclosing_close_brace(editor.buffer_mut());
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char('m') => {
+                    // ]m - jump to next method start
+                    Motions::method_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                KeyCode::Char('M') => {
+                    // ]M - jump to next method end
+                    Motions::method_end_forward(editor.buffer_mut(), count);
                     editor.clear_count();
                     return Ok(());
                 }
