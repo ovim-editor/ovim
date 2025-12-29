@@ -1602,10 +1602,6 @@ impl Editor {
                 Mode::VisualBlock => {
                     // Block mode: return corners of rectangle
                     // Normalize so start_line <= end_line and start_col <= end_col
-                    eprintln!(
-                        "[DEBUG visual_selection] start=({},{}), end=({},{})",
-                        start.0, start.1, end.0, end.1
-                    );
                     let (min_line, max_line) = if start.0 <= end.0 {
                         (start.0, end.0)
                     } else {
@@ -1618,10 +1614,6 @@ impl Editor {
                         (end.1, start.1)
                     };
 
-                    eprintln!(
-                        "[DEBUG visual_selection] result: (({},{}), ({},{}))",
-                        min_line, min_col, max_line, max_col
-                    );
                     ((min_line, min_col), (max_line, max_col))
                 }
                 _ => {
