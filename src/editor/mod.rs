@@ -934,6 +934,11 @@ impl Editor {
         &self.buffers[self.current_buffer_index]
     }
 
+    /// Gets a buffer by ID (index)
+    pub fn get_buffer(&self, id: usize) -> Option<&Buffer> {
+        self.buffers.get(id)
+    }
+
     /// Gets a mutable reference to the current buffer
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[self.current_buffer_index]

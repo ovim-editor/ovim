@@ -1,12 +1,12 @@
-use crate::editor::Editor;
+use crate::editor::{Editor, SplitDirection, WindowNode};
 use crate::syntax::Theme;
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    text::Line,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
     Frame, Terminal as RatatuiTerminal,
 };
@@ -18,6 +18,137 @@ use super::widgets::{
     render_command_line, render_completion_menu, render_file_tree, render_hover_window,
     render_picker, render_progress_line, render_search_line, render_status_line, render_tab_bar,
 };
+
+/// Recursively renders windows in a split layout
+/// Returns (viewport_start, buffer_area) for the focused window (for cursor positioning)
+fn render_window_tree(
+    frame: &mut Frame,
+    editor: &Editor,
+    theme: &Theme,
+    node: &WindowNode,
+    area: Rect,
+    focused_index: usize,
+    current_index: &mut usize,
+) -> Option<(usize, Rect)> {
+    match node {
+        WindowNode::Leaf(_window) => {
+            let is_focused = *current_index == focused_index;
+            *current_index += 1;
+
+            // Render this window's buffer
+            let viewport_start = render_buffer(frame, editor, theme, area);
+
+            if is_focused {
+                Some((viewport_start, area))
+            } else {
+                None
+            }
+        }
+        WindowNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            // Calculate split areas (including 1-pixel separator)
+            let (first_area, sep_area, second_area) = match direction {
+                SplitDirection::Horizontal => {
+                    // Windows stacked vertically (horizontal separator line)
+                    let first_height = (area.height as f32 * *ratio) as u16;
+                    let sep_height = 1u16;
+                    let second_height = area.height.saturating_sub(first_height + sep_height);
+
+                    let first_rect = Rect {
+                        x: area.x,
+                        y: area.y,
+                        width: area.width,
+                        height: first_height,
+                    };
+                    let sep_rect = Rect {
+                        x: area.x,
+                        y: area.y + first_height,
+                        width: area.width,
+                        height: sep_height,
+                    };
+                    let second_rect = Rect {
+                        x: area.x,
+                        y: area.y + first_height + sep_height,
+                        width: area.width,
+                        height: second_height,
+                    };
+                    (first_rect, sep_rect, second_rect)
+                }
+                SplitDirection::Vertical => {
+                    // Windows side by side (vertical separator line)
+                    let first_width = (area.width as f32 * *ratio) as u16;
+                    let sep_width = 1u16;
+                    let second_width = area.width.saturating_sub(first_width + sep_width);
+
+                    let first_rect = Rect {
+                        x: area.x,
+                        y: area.y,
+                        width: first_width,
+                        height: area.height,
+                    };
+                    let sep_rect = Rect {
+                        x: area.x + first_width,
+                        y: area.y,
+                        width: sep_width,
+                        height: area.height,
+                    };
+                    let second_rect = Rect {
+                        x: area.x + first_width + sep_width,
+                        y: area.y,
+                        width: second_width,
+                        height: area.height,
+                    };
+                    (first_rect, sep_rect, second_rect)
+                }
+            };
+
+            // Render separator
+            render_separator(frame, sep_area, *direction);
+
+            // Recursively render children
+            let first_result =
+                render_window_tree(frame, editor, theme, first, first_area, focused_index, current_index);
+            let second_result =
+                render_window_tree(frame, editor, theme, second, second_area, focused_index, current_index);
+
+            first_result.or(second_result)
+        }
+    }
+}
+
+/// Renders a separator line between split windows
+fn render_separator(frame: &mut Frame, area: Rect, direction: SplitDirection) {
+    let sep_char = match direction {
+        SplitDirection::Horizontal => '─', // Horizontal line for horizontal split
+        SplitDirection::Vertical => '│',   // Vertical line for vertical split
+    };
+
+    let sep_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+
+    match direction {
+        SplitDirection::Horizontal => {
+            // Draw horizontal line
+            let line_text = sep_char.to_string().repeat(area.width as usize);
+            let line = Line::from(Span::styled(line_text, sep_style));
+            let paragraph = Paragraph::new(vec![line]);
+            frame.render_widget(paragraph, area);
+        }
+        SplitDirection::Vertical => {
+            // Draw vertical line (multiple rows)
+            let lines: Vec<Line> = (0..area.height)
+                .map(|_| Line::from(Span::styled(sep_char.to_string(), sep_style)))
+                .collect();
+            let paragraph = Paragraph::new(lines);
+            frame.render_widget(paragraph, area);
+        }
+    }
+}
 
 /// Handles rendering the editor state to the terminal
 pub struct Renderer {
@@ -118,26 +249,61 @@ impl Renderer {
             render_file_tree(frame, editor, tree_area);
         }
 
-        // Calculate text area, centering if textwidth is set
-        let buffer_area = if let Some(textwidth) = editor.options.textwidth {
-            let max_width = textwidth as u16;
-            if chunks[0].width > max_width {
-                let margin = (chunks[0].width - max_width) / 2;
-                Rect {
-                    x: chunks[0].x + margin,
-                    y: chunks[0].y,
-                    width: max_width,
-                    height: chunks[0].height,
+        // Check if we have split windows
+        let has_splits = editor
+            .window_manager()
+            .map(|wm| wm.root().count_windows() > 1)
+            .unwrap_or(false);
+
+        // Render buffer area(s) - either single buffer or split windows
+        let (viewport_start, buffer_area) = if has_splits {
+            // Render split windows recursively
+            if let Some(wm) = editor.window_manager() {
+                let focused_index = wm.focused_window_index();
+                let mut current_index = 0;
+                if let Some((vs, ba)) = render_window_tree(
+                    frame,
+                    editor,
+                    &theme,
+                    wm.root(),
+                    chunks[0],
+                    focused_index,
+                    &mut current_index,
+                ) {
+                    (vs, ba)
+                } else {
+                    // Fallback: render single buffer
+                    let viewport_start = render_buffer(frame, editor, &theme, chunks[0]);
+                    (viewport_start, chunks[0])
+                }
+            } else {
+                // No window manager - render single buffer
+                let viewport_start = render_buffer(frame, editor, &theme, chunks[0]);
+                (viewport_start, chunks[0])
+            }
+        } else {
+            // Single window - apply textwidth centering if set
+            let buffer_area = if let Some(textwidth) = editor.options.textwidth {
+                let max_width = textwidth as u16;
+                if chunks[0].width > max_width {
+                    let margin = (chunks[0].width - max_width) / 2;
+                    Rect {
+                        x: chunks[0].x + margin,
+                        y: chunks[0].y,
+                        width: max_width,
+                        height: chunks[0].height,
+                    }
+                } else {
+                    chunks[0]
                 }
             } else {
                 chunks[0]
-            }
-        } else {
-            chunks[0]
-        };
+            };
 
-        // Render the main text area
-        let viewport_start = render_buffer(frame, editor, &theme, buffer_area);
+            // Render the main text area
+            let viewport_start = render_buffer(frame, editor, &theme, buffer_area);
+            (viewport_start, buffer_area)
+        };
 
         // Render progress line if present
         if has_progress {
