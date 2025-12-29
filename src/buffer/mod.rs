@@ -10,6 +10,46 @@ use ropey::Rope;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+/// Line ending style for the buffer
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    /// Unix-style line endings (LF, \n)
+    #[default]
+    Lf,
+    /// Windows-style line endings (CRLF, \r\n)
+    Crlf,
+}
+
+impl LineEnding {
+    /// Detects the line ending style from file content bytes
+    pub fn detect(content: &[u8]) -> Self {
+        // Look for \r\n first (Windows)
+        for window in content.windows(2) {
+            if window == b"\r\n" {
+                return LineEnding::Crlf;
+            }
+        }
+        // Default to LF (Unix) - this handles \n only or no line endings
+        LineEnding::Lf
+    }
+
+    /// Returns the string representation of this line ending
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::Crlf => "\r\n",
+        }
+    }
+
+    /// Returns a short display name for the status line
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF",
+            LineEnding::Crlf => "CRLF",
+        }
+    }
+}
+
 /// Large file threshold in lines - files above this disable expensive features
 const LARGE_FILE_LINES: usize = 50_000;
 
@@ -64,6 +104,8 @@ pub struct Buffer {
     modified: bool,
     /// Optional file path for this buffer
     file_path: Option<String>,
+    /// Line ending style for this buffer (LF or CRLF)
+    line_ending: LineEnding,
     /// Optional syntax highlighter
     syntax: Option<SyntaxHighlighter>,
     /// Cached syntax highlights per line (line_idx -> Vec<(range, group)>)
@@ -88,6 +130,7 @@ impl Buffer {
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: None,
+            line_ending: LineEnding::default(),
             syntax: None,
             cached_highlights: None,
             highlight_version: 0,
@@ -170,6 +213,7 @@ impl Buffer {
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: None,
+            line_ending: LineEnding::detect(content.as_bytes()),
             syntax: None,
             cached_highlights: None,
             highlight_version: 0,
@@ -178,6 +222,16 @@ impl Buffer {
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
         }
+    }
+
+    /// Gets the line ending style for this buffer
+    pub fn line_ending(&self) -> LineEnding {
+        self.line_ending
+    }
+
+    /// Sets the line ending style for this buffer
+    pub fn set_line_ending(&mut self, line_ending: LineEnding) {
+        self.line_ending = line_ending;
     }
 
     /// Gets the rope reference
@@ -468,10 +522,13 @@ impl Buffer {
         let absolute_path = normalize_path(path_ref);
         let path_str = absolute_path.to_string_lossy().to_string();
 
-        // Read as bytes first to validate UTF-8
+        // Read as bytes first to detect line endings and validate UTF-8
         let bytes = tokio::fs::read(&absolute_path)
             .await
             .context(format!("Failed to read file: {}", path_str))?;
+
+        // Detect line ending style before conversion
+        let line_ending = LineEnding::detect(&bytes);
 
         // Validate UTF-8 with clear error message
         let content = String::from_utf8(bytes).map_err(|e| {
@@ -485,11 +542,20 @@ impl Buffer {
             )
         })?;
 
+        // Normalize CRLF to LF for internal representation
+        // (rope uses LF internally, we convert back on save if needed)
+        let content = if line_ending == LineEnding::Crlf {
+            content.replace("\r\n", "\n")
+        } else {
+            content
+        };
+
         let buffer = Self {
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, 0),
             modified: false,
             file_path: Some(path_str.clone()),
+            line_ending,
             syntax: None,
             cached_highlights: None,
             highlight_version: 0,
@@ -555,7 +621,15 @@ impl Buffer {
 
         let path_ref = absolute_path.as_path();
         let path_str = path_ref.to_string_lossy().to_string();
+
+        // Get content and convert line endings if needed
         let content = self.rope.to_string();
+        let content = if self.line_ending == LineEnding::Crlf {
+            // Convert LF to CRLF for Windows files
+            content.replace('\n', "\r\n")
+        } else {
+            content
+        };
 
         // Create temp file in same directory (ensures atomic rename on same filesystem)
         let temp_path = if let Some(parent) = path_ref.parent() {
