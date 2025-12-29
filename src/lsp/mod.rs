@@ -1057,6 +1057,56 @@ impl LspManager {
         }))
     }
 
+    /// Requests go-to-declaration for a position in a document
+    pub async fn goto_declaration(
+        &self,
+        uri: &Url,
+        line: u32,
+        character: u32,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::Location>> {
+        use lsp_types::{
+            GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
+
+        let server = self
+            .servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports goto declaration
+        if !server.supports_goto_declaration().await {
+            return Ok(None); // Gracefully return None if not supported
+        }
+
+        let params = lsp_types::GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/declaration", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+
+        // Convert response to single location (take first if multiple)
+        Ok(response.and_then(|resp| match resp {
+            GotoDefinitionResponse::Scalar(location) => Some(location),
+            GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
+            GotoDefinitionResponse::Link(links) => {
+                links.into_iter().next().map(|link| lsp_types::Location {
+                    uri: link.target_uri,
+                    range: link.target_selection_range,
+                })
+            }
+        }))
+    }
+
     /// Requests go-to-implementation for a position in a document
     pub async fn implementation(
         &self,
