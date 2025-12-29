@@ -5611,6 +5611,12 @@ impl Editor {
     /// Closes the current tab
     pub fn close_current_tab(&mut self) {
         self.tab_page_manager.close_current_tab();
+
+        // Restore buffer index from new current tab (after close adjusts tab index)
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
+            self.current_buffer_index = tab.current_buffer_index();
+        }
     }
 
     /// Switches to the next tab
