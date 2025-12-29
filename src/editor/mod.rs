@@ -1170,6 +1170,92 @@ impl Editor {
         None
     }
 
+    /// Finds or loads a buffer by URI, returning its index
+    /// Does NOT switch to the buffer (unlike open_file)
+    /// Returns None if the URI cannot be converted to a path or loading fails
+    fn find_or_load_buffer_index_by_uri(&mut self, uri: &lsp_types::Uri) -> Option<usize> {
+        // Convert URI to file path
+        let file_path = crate::lsp::uri_to_file_path(uri)?;
+        let path_str = file_path.to_str()?;
+
+        // Check if buffer is already open
+        if let Some(index) = self.find_buffer_by_path(path_str) {
+            return Some(index);
+        }
+
+        // Load the file into a new buffer (don't switch to it)
+        let buffer = Buffer::load_file(&file_path).ok()?;
+        self.buffers.push(buffer);
+        // Note: We intentionally don't change current_buffer_index here
+        // to avoid switching away from the user's current file
+
+        Some(self.buffers.len() - 1)
+    }
+
+    /// Applies LSP text edits to a specific buffer by index
+    /// Returns true if successful, false if index is invalid
+    fn apply_lsp_edits_to_buffer_index(
+        &mut self,
+        buffer_index: usize,
+        edits: Vec<lsp_types::TextEdit>,
+    ) -> bool {
+        if buffer_index >= self.buffers.len() {
+            return false;
+        }
+
+        // Sort edits in reverse order (bottom to top) to avoid position invalidation
+        let mut sorted_edits = edits;
+        sorted_edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then(b.range.start.character.cmp(&a.range.start.character))
+        });
+
+        let buffer = &mut self.buffers[buffer_index];
+
+        for edit in sorted_edits {
+            let start_line = edit.range.start.line as usize;
+            // Convert UTF-16 positions to character positions
+            let start_col = Self::utf16_to_col_for_buffer(buffer, start_line, edit.range.start.character);
+            let end_line = edit.range.end.line as usize;
+            let end_col = Self::utf16_to_col_for_buffer(buffer, end_line, edit.range.end.character);
+
+            // Delete the range
+            if start_line != end_line || start_col != end_col {
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+            }
+
+            // Insert new text
+            if !edit.new_text.is_empty() {
+                buffer.insert_text_at(start_line, start_col, &edit.new_text);
+            }
+        }
+
+        true
+    }
+
+    /// Helper to convert UTF-16 offset to column for a specific buffer
+    fn utf16_to_col_for_buffer(buffer: &Buffer, line: usize, utf16_offset: u32) -> usize {
+        if let Some(line_text) = buffer.line(line) {
+            let line_str = line_text.to_string();
+            let mut col = 0;
+            let mut utf16_pos = 0u32;
+
+            for ch in line_str.chars() {
+                if utf16_pos >= utf16_offset {
+                    break;
+                }
+                utf16_pos += ch.len_utf16() as u32;
+                col += 1;
+            }
+            col
+        } else {
+            utf16_offset as usize
+        }
+    }
+
     /// Opens a file, switching to existing buffer if already open
     /// or creating a new buffer if not
     pub fn open_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
@@ -4419,40 +4505,34 @@ impl Editor {
 
     /// Applies a workspace edit from the LSP server
     /// Returns true if all edits were applied successfully
+    /// Now supports multi-file edits by loading files as needed
     pub async fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
         // Track whether all edits were applied successfully
         let mut all_applied = true;
+        // Track files that were modified (for status message)
+        let mut modified_files: Vec<String> = Vec::new();
 
         // Handle changes (map of URI to TextEdit[])
         if let Some(ref changes) = edit.changes {
             for (uri, text_edits) in changes {
-                // Check if this is the current document
-                if let Some(file_path) = self.buffer().file_path() {
-                    let abs_path = if std::path::Path::new(file_path).is_absolute() {
-                        file_path.to_string()
-                    } else {
-                        match std::env::current_dir() {
-                            Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                            Err(_) => {
-                                all_applied = false;
-                                continue;
-                            }
+                // Find or load the buffer for this URI
+                if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(uri) {
+                    // Track modified file
+                    if let Some(path) = crate::lsp::uri_to_file_path(uri) {
+                        let file_name = path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown");
+                        if !modified_files.contains(&file_name.to_string()) {
+                            modified_files.push(file_name.to_string());
                         }
-                    };
+                    }
 
-                    if let Some(current_uri) = crate::lsp::uri_from_file_path(&abs_path) {
-                        if current_uri == *uri {
-                            // Apply edits to current buffer
-                            self.apply_lsp_edits(text_edits.clone());
-                        } else {
-                            // Different file - would need to open and edit it
-                            // For now, mark as not fully applied
-                            all_applied = false;
-                        }
-                    } else {
+                    // Apply edits to the buffer
+                    if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits.clone()) {
                         all_applied = false;
                     }
                 } else {
+                    // Could not load the file
                     all_applied = false;
                 }
             }
@@ -4463,38 +4543,34 @@ impl Editor {
             match document_changes {
                 lsp_types::DocumentChanges::Edits(edits) => {
                     for text_doc_edit in edits {
-                        // Check if this is for the current document
-                        if let Some(file_path) = self.buffer().file_path() {
-                            let abs_path = if std::path::Path::new(file_path).is_absolute() {
-                                file_path.to_string()
-                            } else {
-                                match std::env::current_dir() {
-                                    Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                                    Err(_) => {
-                                        all_applied = false;
-                                        continue;
-                                    }
-                                }
-                            };
+                        let uri = &text_doc_edit.text_document.uri;
 
-                            if let Some(uri) = crate::lsp::uri_from_file_path(&abs_path) {
-                                if text_doc_edit.text_document.uri == uri {
-                                    // Apply edits to current buffer
-                                    let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
-                                        .edits
-                                        .iter()
-                                        .filter_map(|e| match e {
-                                            lsp_types::OneOf::Left(edit) => Some(edit.clone()),
-                                            lsp_types::OneOf::Right(annot_edit) => {
-                                                Some(annot_edit.text_edit.clone())
-                                            }
-                                        })
-                                        .collect();
-                                    self.apply_lsp_edits(text_edits);
-                                } else {
-                                    all_applied = false;
+                        // Find or load the buffer for this URI
+                        if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(uri) {
+                            // Track modified file
+                            if let Some(path) = crate::lsp::uri_to_file_path(uri) {
+                                let file_name = path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("unknown");
+                                if !modified_files.contains(&file_name.to_string()) {
+                                    modified_files.push(file_name.to_string());
                                 }
-                            } else {
+                            }
+
+                            // Extract text edits
+                            let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
+                                .edits
+                                .iter()
+                                .filter_map(|e| match e {
+                                    lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                    lsp_types::OneOf::Right(annot_edit) => {
+                                        Some(annot_edit.text_edit.clone())
+                                    }
+                                })
+                                .collect();
+
+                            // Apply edits to the buffer
+                            if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
                                 all_applied = false;
                             }
                         } else {
@@ -4506,57 +4582,154 @@ impl Editor {
                     for op in ops {
                         match op {
                             lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
-                                // Check if this is for the current document
-                                if let Some(file_path) = self.buffer().file_path() {
-                                    let abs_path = if std::path::Path::new(file_path).is_absolute()
-                                    {
-                                        file_path.to_string()
-                                    } else {
-                                        match std::env::current_dir() {
-                                            Ok(cwd) => {
-                                                cwd.join(file_path).to_string_lossy().to_string()
-                                            }
-                                            Err(_) => {
-                                                all_applied = false;
-                                                continue;
-                                            }
-                                        }
-                                    };
+                                let uri = &text_doc_edit.text_document.uri;
 
-                                    if let Some(uri) = crate::lsp::uri_from_file_path(&abs_path) {
-                                        if text_doc_edit.text_document.uri == uri {
-                                            // Apply edits to current buffer
-                                            let text_edits: Vec<lsp_types::TextEdit> =
-                                                text_doc_edit
-                                                    .edits
-                                                    .iter()
-                                                    .filter_map(|e| match e {
-                                                        lsp_types::OneOf::Left(edit) => {
-                                                            Some(edit.clone())
-                                                        }
-                                                        lsp_types::OneOf::Right(annot_edit) => {
-                                                            Some(annot_edit.text_edit.clone())
-                                                        }
-                                                    })
-                                                    .collect();
-                                            self.apply_lsp_edits(text_edits);
-                                        } else {
-                                            all_applied = false;
+                                // Find or load the buffer for this URI
+                                if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(uri) {
+                                    // Track modified file
+                                    if let Some(path) = crate::lsp::uri_to_file_path(uri) {
+                                        let file_name = path.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("unknown");
+                                        if !modified_files.contains(&file_name.to_string()) {
+                                            modified_files.push(file_name.to_string());
                                         }
-                                    } else {
+                                    }
+
+                                    // Extract text edits
+                                    let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
+                                        .edits
+                                        .iter()
+                                        .filter_map(|e| match e {
+                                            lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                            lsp_types::OneOf::Right(annot_edit) => {
+                                                Some(annot_edit.text_edit.clone())
+                                            }
+                                        })
+                                        .collect();
+
+                                    // Apply edits to the buffer
+                                    if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
                                         all_applied = false;
                                     }
                                 } else {
                                     all_applied = false;
                                 }
                             }
-                            _ => {
-                                // Other operations (create, rename, delete) not supported yet
-                                all_applied = false;
+                            lsp_types::DocumentChangeOperation::Op(resource_op) => {
+                                match resource_op {
+                                    lsp_types::ResourceOp::Create(create_file) => {
+                                        // Create a new file
+                                        let file_path = match crate::lsp::uri_to_file_path(&create_file.uri) {
+                                            Some(p) => p,
+                                            None => {
+                                                all_applied = false;
+                                                continue;
+                                            }
+                                        };
+
+                                        // Create parent directories if needed
+                                        if let Some(parent) = file_path.parent() {
+                                            if !parent.exists() {
+                                                if std::fs::create_dir_all(parent).is_err() {
+                                                    all_applied = false;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
+                                        // Create empty file (or skip if exists and overwrite is false)
+                                        let should_create = create_file.options
+                                            .as_ref()
+                                            .map(|opts| {
+                                                if file_path.exists() {
+                                                    opts.overwrite.unwrap_or(false)
+                                                } else {
+                                                    true
+                                                }
+                                            })
+                                            .unwrap_or(!file_path.exists());
+
+                                        if should_create {
+                                            if std::fs::write(&file_path, "").is_err() {
+                                                all_applied = false;
+                                            }
+                                        }
+                                    }
+                                    lsp_types::ResourceOp::Rename(rename_file) => {
+                                        // Rename/move a file
+                                        let old_path = match crate::lsp::uri_to_file_path(&rename_file.old_uri) {
+                                            Some(p) => p,
+                                            None => {
+                                                all_applied = false;
+                                                continue;
+                                            }
+                                        };
+                                        let new_path = match crate::lsp::uri_to_file_path(&rename_file.new_uri) {
+                                            Some(p) => p,
+                                            None => {
+                                                all_applied = false;
+                                                continue;
+                                            }
+                                        };
+
+                                        // Create parent directories if needed
+                                        if let Some(parent) = new_path.parent() {
+                                            if !parent.exists() {
+                                                if std::fs::create_dir_all(parent).is_err() {
+                                                    all_applied = false;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
+                                        // Perform the rename
+                                        if std::fs::rename(&old_path, &new_path).is_err() {
+                                            all_applied = false;
+                                        }
+                                    }
+                                    lsp_types::ResourceOp::Delete(delete_file) => {
+                                        // Delete a file
+                                        let file_path = match crate::lsp::uri_to_file_path(&delete_file.uri) {
+                                            Some(p) => p,
+                                            None => {
+                                                all_applied = false;
+                                                continue;
+                                            }
+                                        };
+
+                                        // Check options
+                                        let recursive = delete_file.options
+                                            .as_ref()
+                                            .and_then(|opts| opts.recursive)
+                                            .unwrap_or(false);
+
+                                        if file_path.is_dir() && recursive {
+                                            if std::fs::remove_dir_all(&file_path).is_err() {
+                                                all_applied = false;
+                                            }
+                                        } else if file_path.is_file() {
+                                            if std::fs::remove_file(&file_path).is_err() {
+                                                all_applied = false;
+                                            }
+                                        } else {
+                                            all_applied = false;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        // Set status message about modified files
+        if !modified_files.is_empty() {
+            if modified_files.len() == 1 {
+                self.set_lsp_status(format!("Modified: {}", modified_files[0]));
+            } else {
+                self.set_lsp_status(format!("Modified {} files: {}", modified_files.len(), modified_files.join(", ")));
             }
         }
 
