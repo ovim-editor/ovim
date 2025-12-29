@@ -3,6 +3,7 @@ mod completion;
 mod filetree;
 mod fold;
 mod input;
+mod keymap;
 mod lsp_state;
 mod macros;
 mod marks;
@@ -24,6 +25,7 @@ pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
 pub use lsp_state::{LspAction, LspResultType, LspState};
 pub use macros::MacroManager;
+pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
@@ -164,6 +166,8 @@ pub struct Editor {
     current_search: Option<Search>,
     /// Mark manager for buffer marks
     marks: MarkManager,
+    /// Key mapping manager
+    keymaps: KeyMapManager,
     /// Jump list for Ctrl-O and Ctrl-I
     jump_list: JumpList,
     /// Macro manager for recording and playback
@@ -303,6 +307,7 @@ impl Editor {
             search_forward: true,
             current_search: None,
             marks: MarkManager::new(),
+            keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
@@ -372,6 +377,7 @@ impl Editor {
             search_forward: true,
             current_search: None,
             marks: MarkManager::new(),
+            keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
@@ -1329,6 +1335,16 @@ impl Editor {
     /// Gets a reference to the mark manager
     pub fn marks(&self) -> &MarkManager {
         &self.marks
+    }
+
+    /// Gets a reference to the key mapping manager
+    pub fn keymaps(&self) -> &KeyMapManager {
+        &self.keymaps
+    }
+
+    /// Gets a mutable reference to the key mapping manager
+    pub fn keymaps_mut(&mut self) -> &mut KeyMapManager {
+        &mut self.keymaps
     }
 
     /// Yanks text to the appropriate register (pending_register or default)
