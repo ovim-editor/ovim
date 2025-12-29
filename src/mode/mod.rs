@@ -24,6 +24,8 @@ pub enum Mode {
     HoverWindow,
     /// FileTree mode - for navigating the file tree explorer
     FileTree,
+    /// SubstituteConfirm mode - for confirming individual substitutions (:s///c)
+    SubstituteConfirm,
 }
 
 impl Mode {
@@ -41,6 +43,7 @@ impl Mode {
             Mode::Picker => "PICKER",
             Mode::HoverWindow => "HOVER",
             Mode::FileTree => "FILETREE",
+            Mode::SubstituteConfirm => "SUBSTITUTE",
         }
     }
 

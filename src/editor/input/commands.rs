@@ -111,6 +111,7 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
     // Parse flags
     let global = flags.contains('g');
     let ignore_case = flags.contains('i');
+    let confirm = flags.contains('c');
 
     // Determine the range using the new parser (returns inclusive range)
     let (start_line, end_line) = if let Some((start, end)) = parse_range(editor, range_str) {
@@ -133,7 +134,42 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
         }
     };
 
-    // Perform substitution with change tracking
+    // If confirm flag is set, collect matches and enter SubstituteConfirm mode
+    if confirm {
+        let mut matches = Vec::new();
+
+        for line_idx in start_line..=end_line.min(editor.buffer().line_count().saturating_sub(1)) {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+
+                // Find all matches in this line
+                if global {
+                    for mat in regex.find_iter(line_text) {
+                        let replacement_text = regex.replace(mat.as_str(), replacement.as_str()).to_string();
+                        matches.push((line_idx, mat.start(), mat.end(), replacement_text));
+                    }
+                } else {
+                    // Only first match per line
+                    if let Some(mat) = regex.find(line_text) {
+                        let replacement_text = regex.replace(mat.as_str(), replacement.as_str()).to_string();
+                        matches.push((line_idx, mat.start(), mat.end(), replacement_text));
+                    }
+                }
+            }
+        }
+
+        if matches.is_empty() {
+            editor.set_lsp_status("Pattern not found".to_string());
+        } else {
+            let count = matches.len();
+            editor.set_lsp_status(format!("replace with {} ({} matches) (y/n/a/q/l)", replacement, count));
+            editor.start_substitute_confirm(matches, regex);
+        }
+
+        return Ok(());
+    }
+
+    // Perform substitution with change tracking (non-confirm mode)
     let cursor_before = (
         editor.buffer().cursor().line(),
         editor.buffer().cursor().col(),

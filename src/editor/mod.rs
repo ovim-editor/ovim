@@ -213,6 +213,12 @@ pub struct Editor {
     quickfix_window_open: bool,
     /// Whether location list window is open
     location_window_open: bool,
+    /// Substitute confirmation state: matches to confirm (line, start_col, end_col, replacement)
+    substitute_matches: Vec<(usize, usize, usize, String)>,
+    /// Current match index for substitute confirmation
+    substitute_match_index: usize,
+    /// Regex pattern for substitute confirmation (for highlighting)
+    substitute_pattern: Option<regex::Regex>,
     /// Tab page manager
     tab_page_manager: TabPageManager,
     /// Last time picker query changed (for debouncing preview loading)
@@ -322,6 +328,9 @@ impl Editor {
             location_list: LocationList::new(),
             quickfix_window_open: false,
             location_window_open: false,
+            substitute_matches: Vec::new(),
+            substitute_match_index: 0,
+            substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
             last_picker_query_change: None,
             last_picker_selection_change: None,
@@ -388,6 +397,9 @@ impl Editor {
             location_list: LocationList::new(),
             quickfix_window_open: false,
             location_window_open: false,
+            substitute_matches: Vec::new(),
+            substitute_match_index: 0,
+            substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
             last_picker_query_change: None,
             last_picker_selection_change: None,
@@ -5030,6 +5042,99 @@ impl Editor {
                 }
             }
         }
+    }
+
+    // ========== Substitute Confirmation ==========
+
+    /// Starts substitute confirmation mode with the given matches
+    pub fn start_substitute_confirm(
+        &mut self,
+        matches: Vec<(usize, usize, usize, String)>,
+        pattern: regex::Regex,
+    ) {
+        self.substitute_matches = matches;
+        self.substitute_match_index = 0;
+        self.substitute_pattern = Some(pattern);
+        if !self.substitute_matches.is_empty() {
+            self.mode = Mode::SubstituteConfirm;
+            // Move cursor to first match
+            let (line, col, _, _) = self.substitute_matches[0];
+            self.buffer_mut().cursor_mut().set_position(line, col);
+        }
+    }
+
+    /// Gets the current substitute match info (line, start_col, end_col, replacement)
+    pub fn current_substitute_match(&self) -> Option<&(usize, usize, usize, String)> {
+        self.substitute_matches.get(self.substitute_match_index)
+    }
+
+    /// Gets the substitute pattern for highlighting
+    pub fn substitute_pattern(&self) -> Option<&regex::Regex> {
+        self.substitute_pattern.as_ref()
+    }
+
+    /// Confirms the current substitution and moves to the next
+    pub fn confirm_substitute(&mut self) {
+        if let Some((line, start_col, end_col, replacement)) =
+            self.substitute_matches.get(self.substitute_match_index).cloned()
+        {
+            // Perform the substitution
+            let cursor_before = (self.buffer().cursor().line(), self.buffer().cursor().col());
+
+            // Delete the matched text
+            let deleted = self.buffer_mut().delete_range(line, start_col, line, end_col);
+            let delete_range = Range::new((line, start_col), (line, end_col));
+            let delete_change = Change::delete(delete_range, deleted, cursor_before);
+
+            // Insert the replacement
+            let insert_change = Change::insert((line, start_col), replacement.clone(), cursor_before);
+            insert_change.apply(self.buffer_mut());
+
+            self.add_change(delete_change);
+            self.add_change(insert_change);
+
+            self.substitute_match_index += 1;
+            if self.substitute_match_index >= self.substitute_matches.len() {
+                self.end_substitute_confirm();
+            } else {
+                // Move cursor to next match
+                let (next_line, next_col, _, _) = self.substitute_matches[self.substitute_match_index];
+                self.buffer_mut().cursor_mut().set_position(next_line, next_col);
+            }
+        }
+    }
+
+    /// Skips the current match and moves to the next
+    pub fn skip_substitute(&mut self) {
+        self.substitute_match_index += 1;
+        if self.substitute_match_index >= self.substitute_matches.len() {
+            self.end_substitute_confirm();
+        } else {
+            // Move cursor to next match
+            let (line, col, _, _) = self.substitute_matches[self.substitute_match_index];
+            self.buffer_mut().cursor_mut().set_position(line, col);
+        }
+    }
+
+    /// Confirms all remaining substitutions
+    pub fn confirm_all_substitutes(&mut self) {
+        while self.substitute_match_index < self.substitute_matches.len() {
+            self.confirm_substitute();
+        }
+    }
+
+    /// Confirms current and quits
+    pub fn confirm_substitute_and_quit(&mut self) {
+        self.confirm_substitute();
+        self.end_substitute_confirm();
+    }
+
+    /// Ends substitute confirmation mode
+    pub fn end_substitute_confirm(&mut self) {
+        self.substitute_matches.clear();
+        self.substitute_match_index = 0;
+        self.substitute_pattern = None;
+        self.mode = Mode::Normal;
     }
 
     /// Gets the tab page manager
