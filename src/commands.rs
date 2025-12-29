@@ -426,6 +426,20 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "j" | "join" => {
+            // Join current line with the next line
+            use crate::editor::Operators;
+            if let Err(e) = Operators::join_lines(editor.buffer_mut(), 1) {
+                return ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to join lines: {}", e),
+                });
+            }
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: None,
+                line_count: None,
+            })
+        }
         "marks" => {
             // Display all marks
             let mut lines = Vec::new();
