@@ -441,6 +441,15 @@ impl Editor {
                     eprintln!("Warning: Error loading config: {}", e);
                 }
             }
+            // Load plugins from plugin directories
+            if let Err(e) = context.load_plugins() {
+                eprintln!("Warning: Error loading plugins: {}", e);
+            }
+            // Process any commands from plugins
+            let commands = bridge.drain_commands();
+            for cmd in commands {
+                let _ = InputHandler::execute_command_string(self, &cmd);
+            }
             self.lua_context = Some(context);
             self.editor_bridge = Some(bridge);
         }
