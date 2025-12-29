@@ -396,6 +396,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "noh" | "nohlsearch" => {
+            // Clear search highlighting
+            editor.clear_search_highlight();
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("Search highlighting cleared".to_string()),
+                line_count: None,
+            })
+        }
         "tabs" => {
             // List all tabs
             let tabs = editor.tab_page_manager().tabs();
