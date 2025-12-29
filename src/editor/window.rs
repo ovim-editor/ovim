@@ -70,7 +70,8 @@ impl Window {
     }
 
     /// Ensures the cursor is visible in the window, adjusting scroll if needed
-    pub fn ensure_cursor_visible(&mut self, buffer: &Buffer) {
+    /// scrolloff: minimum number of lines to keep above/below cursor
+    pub fn ensure_cursor_visible(&mut self, buffer: &Buffer, scrolloff: usize) {
         let cursor_line = self.cursor.line();
         let visible_lines = self.height as usize;
 
@@ -80,11 +81,14 @@ impl Window {
             self.cursor.set_position(max_line, 0);
         }
 
-        // Adjust scroll to keep cursor visible
-        if cursor_line < self.scroll_offset {
-            self.scroll_offset = cursor_line;
-        } else if cursor_line >= self.scroll_offset + visible_lines {
-            self.scroll_offset = cursor_line.saturating_sub(visible_lines - 1);
+        // Adjust scroll to maintain scrolloff distance from top/bottom
+        // Scroll up if cursor is too close to top
+        if cursor_line < self.scroll_offset + scrolloff {
+            self.scroll_offset = cursor_line.saturating_sub(scrolloff);
+        }
+        // Scroll down if cursor is too close to bottom
+        else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
+            self.scroll_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
         }
     }
 

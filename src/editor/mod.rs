@@ -69,6 +69,8 @@ pub struct EditorOptions {
     pub swapfile: bool,
     /// Create backup files before saving (default: false)
     pub backup: bool,
+    /// Minimum number of lines to keep above and below cursor (default: 10)
+    pub scrolloff: usize,
 }
 
 impl Default for EditorOptions {
@@ -87,6 +89,7 @@ impl Default for EditorOptions {
             showmatch: true,
             swapfile: true,
             backup: false,
+            scrolloff: 10,
         }
     }
 }
@@ -205,6 +208,8 @@ pub struct Editor {
     pub options: EditorOptions,
     /// Viewport height (rows) - updated from UI layer
     viewport_height: usize,
+    /// Scroll offset (top visible line) - maintained with scrolloff
+    scroll_offset: usize,
     /// Current color scheme name
     current_color_scheme: String,
     /// File tree explorer
@@ -328,6 +333,7 @@ impl Editor {
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
             viewport_height: 24,
+            scroll_offset: 0,
             file_tree: FileTree::new(),
             quickfix_list: QuickfixList::new(),
             location_list: LocationList::new(),
@@ -398,6 +404,7 @@ impl Editor {
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
             viewport_height: 24,
+            scroll_offset: 0,
             file_tree: FileTree::new(),
             quickfix_list: QuickfixList::new(),
             location_list: LocationList::new(),
@@ -1315,6 +1322,34 @@ impl Editor {
     /// Gets the viewport height
     pub fn viewport_height(&self) -> usize {
         self.viewport_height
+    }
+
+    /// Gets the scroll offset (top visible line)
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Updates scroll offset to keep cursor visible with scrolloff margin
+    pub fn update_scroll_offset(&mut self) {
+        let cursor_line = self.buffer().cursor().line();
+        let scrolloff = self.options.scrolloff;
+        let visible_lines = self.viewport_height;
+
+        // Scroll up if cursor is too close to top
+        if cursor_line < self.scroll_offset + scrolloff {
+            self.scroll_offset = cursor_line.saturating_sub(scrolloff);
+        }
+        // Scroll down if cursor is too close to bottom
+        else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
+            self.scroll_offset = cursor_line + scrolloff + 1
+                - visible_lines.min(cursor_line + scrolloff + 1);
+        }
+
+        // Ensure scroll_offset doesn't go beyond buffer
+        let max_line = self.buffer().line_count().saturating_sub(1);
+        if cursor_line > max_line {
+            self.scroll_offset = 0;
+        }
     }
 
     /// Calculates half-page scroll amount
