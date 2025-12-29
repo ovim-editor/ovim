@@ -440,6 +440,27 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 line_count: None,
             })
         }
+        "recover" | "rec" => {
+            // Recover buffer content from swap file
+            if !editor.buffer().has_swap_file() {
+                return ApiResponse::Error(ErrorResponse {
+                    error: "No swap file exists for this buffer".to_string(),
+                });
+            }
+            match editor.buffer_mut().recover_from_swap_file() {
+                Ok(true) => ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Buffer recovered from swap file".to_string()),
+                    line_count: None,
+                }),
+                Ok(false) => ApiResponse::Error(ErrorResponse {
+                    error: "Failed to recover: swap file is empty or missing".to_string(),
+                }),
+                Err(e) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to recover: {}", e),
+                }),
+            }
+        }
         "marks" => {
             // Display all marks
             let mut lines = Vec::new();
@@ -1006,6 +1027,8 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             "smartcase" | "scs" => format!("  {}smartcase", if opts.smartcase { "" } else { "no" }),
             "cursorline" | "cul" => format!("  {}cursorline", if opts.cursorline { "" } else { "no" }),
             "showmatch" | "sm" => format!("  {}showmatch", if opts.showmatch { "" } else { "no" }),
+            "swapfile" | "swf" => format!("  {}swapfile", if opts.swapfile { "" } else { "no" }),
+            "backup" | "bk" => format!("  {}backup", if opts.backup { "" } else { "no" }),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -1130,6 +1153,38 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             return ApiResponse::Success(SuccessResponse {
                 success: true,
                 message: Some("  noshowmatch".to_string()),
+                line_count: None,
+            });
+        }
+        "swapfile" | "swf" => {
+            editor.options.swapfile = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  swapfile".to_string()),
+                line_count: None,
+            });
+        }
+        "noswapfile" | "noswf" => {
+            editor.options.swapfile = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  noswapfile".to_string()),
+                line_count: None,
+            });
+        }
+        "backup" | "bk" => {
+            editor.options.backup = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  backup".to_string()),
+                line_count: None,
+            });
+        }
+        "nobackup" | "nobk" => {
+            editor.options.backup = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  nobackup".to_string()),
                 line_count: None,
             });
         }
