@@ -1698,6 +1698,14 @@ impl InputHandler {
                             TextObjects::around_indent(editor.buffer(), tab_width)
                         }
                     }
+                    KeyCode::Char('f') => {
+                        // if or af - function
+                        if text_obj_type == 'i' {
+                            TextObjects::inner_function(editor.buffer())
+                        } else {
+                            TextObjects::around_function(editor.buffer())
+                        }
+                    }
                     _ => {
                         // Unknown text object
                         return Ok(());
