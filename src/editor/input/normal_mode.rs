@@ -2275,6 +2275,57 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                ('g', KeyCode::Char('j')) | ('g', KeyCode::Down) => {
+                    // gj - move down one display line
+                    // In non-wrap mode, equivalent to j
+                    // In wrap mode, moves within wrapped logical line
+                    let count = editor.effective_count();
+                    Motions::down(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('k')) | ('g', KeyCode::Up) => {
+                    // gk - move up one display line
+                    // In non-wrap mode, equivalent to k
+                    // In wrap mode, moves within wrapped logical line
+                    let count = editor.effective_count();
+                    Motions::up(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('0')) | ('g', KeyCode::Home) => {
+                    // g0 - go to first column of display line
+                    // In non-wrap mode, equivalent to 0
+                    editor.buffer_mut().cursor_mut().set_col(0);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('$')) | ('g', KeyCode::End) => {
+                    // g$ - go to last column of display line
+                    // In non-wrap mode, equivalent to $
+                    Motions::line_end(editor.buffer_mut());
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('m')) => {
+                    // gm - go to middle of line (screen position)
+                    // For now, go to middle of logical line
+                    let cursor = editor.buffer().cursor();
+                    if let Some(line) = editor.buffer().line(cursor.line()) {
+                        let line_len = line.trim_end_matches('\n').chars().count();
+                        let mid_col = line_len / 2;
+                        editor.buffer_mut().cursor_mut().set_col(mid_col);
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('g', KeyCode::Char('^')) => {
+                    // g^ - go to first non-blank of display line
+                    // In non-wrap mode, equivalent to ^
+                    Motions::first_non_blank(editor.buffer_mut());
+                    editor.clear_count();
+                    return Ok(());
+                }
                 ('z', KeyCode::Char('o')) => {
                     // zo - open fold at cursor
                     let line = editor.buffer().cursor().line();
