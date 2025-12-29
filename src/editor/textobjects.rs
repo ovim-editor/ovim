@@ -814,7 +814,6 @@ impl TextObjects {
     /// Selects the body of the function (between { and }) without the signature
     pub fn inner_function(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor_line = buffer.cursor().line();
-        let line_count = buffer.line_count();
 
         // Find the opening brace of the function containing the cursor
         let (open_line, open_col) = Self::find_function_open_brace(buffer, cursor_line)?;
@@ -866,7 +865,6 @@ impl TextObjects {
     /// Selects the entire function including signature and braces
     pub fn around_function(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor_line = buffer.cursor().line();
-        let line_count = buffer.line_count();
 
         // Find the opening brace of the function containing the cursor
         let (open_line, open_col) = Self::find_function_open_brace(buffer, cursor_line)?;
