@@ -4159,13 +4159,17 @@ impl InputHandler {
             KeyCode::Char(ch) => {
                 // Add character to search buffer
                 editor.append_to_search_buffer(ch);
+                // Incremental search: update highlighting immediately
+                editor.execute_search();
             }
             KeyCode::Backspace => {
                 // Remove last character from search buffer
                 editor.backspace_search_buffer();
+                // Incremental search: update highlighting after backspace
+                editor.execute_search();
             }
             KeyCode::Enter => {
-                // Execute the search
+                // Execute the search and accept it
                 editor.execute_search();
                 editor.set_mode(Mode::Normal);
             }
