@@ -2099,6 +2099,60 @@ impl Editor {
             .collect()
     }
 
+    /// Jump to next diagnostic (]d)
+    pub fn goto_next_diagnostic(&mut self) {
+        let current_line = self.buffer().cursor().line();
+        let diagnostics = &self.lsp_state.current_file_diagnostics;
+
+        // Find first diagnostic after current position
+        let next = diagnostics
+            .iter()
+            .map(|d| d.range.start.line as usize)
+            .filter(|&line| line > current_line)
+            .min();
+
+        if let Some(line) = next {
+            self.buffer_mut().cursor_mut().set_position(line, 0);
+            self.set_lsp_status(format!("Diagnostic at line {}", line + 1));
+        } else {
+            // Wrap to first diagnostic
+            if let Some(first) = diagnostics.first() {
+                let line = first.range.start.line as usize;
+                self.buffer_mut().cursor_mut().set_position(line, 0);
+                self.set_lsp_status(format!("Wrapped to first diagnostic at line {}", line + 1));
+            } else {
+                self.set_lsp_status("No diagnostics".to_string());
+            }
+        }
+    }
+
+    /// Jump to previous diagnostic ([d)
+    pub fn goto_prev_diagnostic(&mut self) {
+        let current_line = self.buffer().cursor().line();
+        let diagnostics = &self.lsp_state.current_file_diagnostics;
+
+        // Find last diagnostic before current position
+        let prev = diagnostics
+            .iter()
+            .map(|d| d.range.start.line as usize)
+            .filter(|&line| line < current_line)
+            .max();
+
+        if let Some(line) = prev {
+            self.buffer_mut().cursor_mut().set_position(line, 0);
+            self.set_lsp_status(format!("Diagnostic at line {}", line + 1));
+        } else {
+            // Wrap to last diagnostic
+            if let Some(last) = diagnostics.last() {
+                let line = last.range.start.line as usize;
+                self.buffer_mut().cursor_mut().set_position(line, 0);
+                self.set_lsp_status(format!("Wrapped to last diagnostic at line {}", line + 1));
+            } else {
+                self.set_lsp_status("No diagnostics".to_string());
+            }
+        }
+    }
+
     /// Sets the LSP status message
     pub fn set_lsp_status(&mut self, status: String) {
         self.lsp_state.lsp_status = status;
