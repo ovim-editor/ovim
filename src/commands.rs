@@ -880,6 +880,8 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                     .map(|w| w.to_string())
                     .unwrap_or_else(|| "0".to_string())
             ),
+            "ignorecase" | "ic" => format!("  {}ignorecase", if opts.ignorecase { "" } else { "no" }),
+            "smartcase" | "scs" => format!("  {}smartcase", if opts.smartcase { "" } else { "no" }),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -940,6 +942,38 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             return ApiResponse::Success(SuccessResponse {
                 success: true,
                 message: Some("  noexpandtab".to_string()),
+                line_count: None,
+            });
+        }
+        "ignorecase" | "ic" => {
+            editor.options.ignorecase = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  ignorecase".to_string()),
+                line_count: None,
+            });
+        }
+        "noignorecase" | "noic" => {
+            editor.options.ignorecase = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  noignorecase".to_string()),
+                line_count: None,
+            });
+        }
+        "smartcase" | "scs" => {
+            editor.options.smartcase = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  smartcase".to_string()),
+                line_count: None,
+            });
+        }
+        "nosmartcase" | "noscs" => {
+            editor.options.smartcase = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  nosmartcase".to_string()),
                 line_count: None,
             });
         }

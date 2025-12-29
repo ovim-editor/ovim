@@ -54,6 +54,11 @@ pub struct EditorOptions {
     /// Maximum width of text content (default: None = use full terminal width)
     /// When set, content is centered horizontally with margins on both sides
     pub textwidth: Option<usize>,
+    /// Ignore case in search patterns (default: false)
+    pub ignorecase: bool,
+    /// Smart case: case-insensitive if pattern is all lowercase, case-sensitive otherwise (default: false)
+    /// Only applies when ignorecase is also set
+    pub smartcase: bool,
 }
 
 impl Default for EditorOptions {
@@ -66,6 +71,8 @@ impl Default for EditorOptions {
             relative_number: false,
             scroll: None,
             textwidth: None,
+            ignorecase: false,
+            smartcase: false,
         }
     }
 }
@@ -686,7 +693,12 @@ impl Editor {
         // Update the / register with the search pattern
         self.registers.set_last_search(self.search_buffer.clone());
 
-        let mut search = Search::new(self.search_buffer.clone(), self.search_forward);
+        let mut search = Search::new_with_options(
+            self.search_buffer.clone(),
+            self.search_forward,
+            self.options.ignorecase,
+            self.options.smartcase,
+        );
         let cursor = self.buffer().cursor();
 
         // Start search from current cursor position (inclusive)
@@ -731,7 +743,12 @@ impl Editor {
         if let Some(ref search) = self.current_search {
             // Create a reversed search
             let is_forward = search.is_forward();
-            let mut rev_search = Search::new(search.pattern().to_string(), !is_forward);
+            let mut rev_search = Search::new_with_options(
+                search.pattern().to_string(),
+                !is_forward,
+                self.options.ignorecase,
+                self.options.smartcase,
+            );
             let cursor = self.buffer().cursor();
 
             // For reverse direction: if original was forward, now going backward (use col-1)
