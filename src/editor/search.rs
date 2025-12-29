@@ -1,5 +1,5 @@
 use crate::buffer::Buffer;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 /// Represents a search query with its direction
 #[derive(Clone, Debug)]
@@ -18,6 +18,33 @@ impl Search {
     /// Creates a new search with a pattern
     pub fn new(pattern: String, forward: bool) -> Self {
         let regex = Regex::new(&pattern).ok();
+        Self {
+            pattern,
+            regex,
+            forward,
+            last_match: None,
+        }
+    }
+
+    /// Creates a new search with case sensitivity options
+    pub fn new_with_options(pattern: String, forward: bool, ignorecase: bool, smartcase: bool) -> Self {
+        // Determine if we should be case-insensitive
+        let case_insensitive = if ignorecase {
+            // If smartcase is on and pattern has uppercase, be case-sensitive
+            if smartcase && pattern.chars().any(|c| c.is_uppercase()) {
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        let regex = RegexBuilder::new(&pattern)
+            .case_insensitive(case_insensitive)
+            .build()
+            .ok();
+
         Self {
             pattern,
             regex,

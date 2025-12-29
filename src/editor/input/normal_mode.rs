@@ -2589,7 +2589,12 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                 if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
                     // Create search pattern with word boundaries
                     let pattern = format!(r"\b{}\b", regex::escape(&word));
-                    let mut search = Search::new(pattern, true);
+                    let mut search = Search::new_with_options(
+                        pattern,
+                        true,
+                        editor.options.ignorecase,
+                        editor.options.smartcase,
+                    );
                     let cursor = editor.buffer().cursor();
 
                     // Find next occurrence (skip current one)
@@ -2606,7 +2611,12 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                 if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
                     // Create search pattern with word boundaries
                     let pattern = format!(r"\b{}\b", regex::escape(&word));
-                    let mut search = Search::new(pattern, false);
+                    let mut search = Search::new_with_options(
+                        pattern,
+                        false,
+                        editor.options.ignorecase,
+                        editor.options.smartcase,
+                    );
                     let cursor = editor.buffer().cursor();
 
                     // Find previous occurrence
