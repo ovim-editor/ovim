@@ -743,12 +743,88 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         error: format!("Failed to load file: {}", e),
                     }),
                 }
+            // Handle :! shell command execution
+            } else if let Some(shell_cmd) = command.strip_prefix('!') {
+                if shell_cmd.trim().is_empty() {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No shell command specified".to_string(),
+                    })
+                } else {
+                    execute_shell_command(shell_cmd.trim())
+                }
             } else {
                 ApiResponse::Error(ErrorResponse {
                     error: format!("Not an editor command: {}", command),
                 })
             }
         }
+    }
+}
+
+/// Execute a shell command and return the output
+fn execute_shell_command(cmd: &str) -> ApiResponse {
+    use std::process::Command;
+
+    // Determine the shell to use based on platform
+    #[cfg(target_os = "windows")]
+    let (shell, shell_arg) = ("cmd", "/C");
+    #[cfg(not(target_os = "windows"))]
+    let (shell, shell_arg) = ("sh", "-c");
+
+    match Command::new(shell).arg(shell_arg).arg(cmd).output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            let mut result = String::new();
+
+            if !stdout.is_empty() {
+                result.push_str(&stdout);
+            }
+            if !stderr.is_empty() {
+                if !result.is_empty() {
+                    result.push('\n');
+                }
+                result.push_str(&stderr);
+            }
+
+            // Trim trailing newlines for cleaner display
+            let result = result.trim_end().to_string();
+
+            if output.status.success() {
+                if result.is_empty() {
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("Command executed successfully".to_string()),
+                        line_count: None,
+                    })
+                } else {
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(result),
+                        line_count: None,
+                    })
+                }
+            } else {
+                let exit_code = output
+                    .status
+                    .code()
+                    .map(|c| format!(" (exit code {})", c))
+                    .unwrap_or_default();
+                if result.is_empty() {
+                    ApiResponse::Error(ErrorResponse {
+                        error: format!("Command failed{}", exit_code),
+                    })
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: format!("{}\n\nCommand failed{}", result, exit_code),
+                    })
+                }
+            }
+        }
+        Err(e) => ApiResponse::Error(ErrorResponse {
+            error: format!("Failed to execute command: {}", e),
+        }),
     }
 }
 
