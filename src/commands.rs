@@ -916,6 +916,59 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         error: format!("Failed to load file: {}", e),
                     }),
                 }
+            // Handle :registers or :reg (list registers)
+            } else if command == "registers"
+                || command == "reg"
+                || command.starts_with("registers ")
+                || command.starts_with("reg ")
+            {
+                let registers = editor.registers().list_registers();
+                if registers.is_empty() {
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("No registers set".to_string()),
+                        line_count: None,
+                    })
+                } else {
+                    let lines: Vec<String> = registers
+                        .into_iter()
+                        .map(|(name, content)| format!("{:<4} {}", name, content))
+                        .collect();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("--- Registers ---\n{}", lines.join("\n"))),
+                        line_count: None,
+                    })
+                }
+            // Handle :marks (list marks)
+            } else if command == "marks" || command.starts_with("marks ") {
+                let marks = editor.marks().list_marks();
+                if marks.is_empty() {
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("No marks set".to_string()),
+                        line_count: None,
+                    })
+                } else {
+                    let lines: Vec<String> = marks
+                        .into_iter()
+                        .map(|(name, line, col, file)| {
+                            if let Some(path) = file {
+                                format!(" {}  {:>5}  {:>3}  {}", name, line + 1, col, path)
+                            } else {
+                                format!(" {}  {:>5}  {:>3}", name, line + 1, col)
+                            }
+                        })
+                        .collect();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!(
+                            "--- Marks ---\nmark  line  col  file\n{}",
+                            lines.join("\n")
+                        )),
+                        line_count: None,
+                    })
+                }
             // Handle :! shell command execution
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 if shell_cmd.trim().is_empty() {
