@@ -7,7 +7,6 @@ pub mod config;
 pub mod daemon;
 pub mod editor;
 pub mod git;
-pub mod java;
 pub mod lsp;
 #[cfg(feature = "lua")]
 pub mod lua;
