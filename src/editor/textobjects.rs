@@ -809,4 +809,211 @@ impl TextObjects {
 
         Some(range)
     }
+
+    /// Gets the range for "inner function" (if) text object
+    /// Selects the body of the function (between { and }) without the signature
+    pub fn inner_function(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor_line = buffer.cursor().line();
+        let line_count = buffer.line_count();
+
+        // Find the opening brace of the function containing the cursor
+        let (open_line, open_col) = Self::find_function_open_brace(buffer, cursor_line)?;
+
+        // Find the matching closing brace
+        let (close_line, close_col) = Self::find_matching_close_brace(buffer, open_line, open_col)?;
+
+        // For "inner function", we want the content between { and }
+        // If { is at end of line, start from next line col 0
+        // If } is at start of line, end at previous line end
+        let (start_line, start_col) = if open_col + 1
+            < buffer
+                .line(open_line)?
+                .trim_end_matches('\n')
+                .chars()
+                .count()
+        {
+            (open_line, open_col + 1)
+        } else {
+            (open_line + 1, 0)
+        };
+
+        let (end_line, end_col) = if close_col > 0 {
+            (close_line, close_col)
+        } else if close_line > 0 {
+            let prev_line = buffer.line(close_line - 1)?;
+            (
+                close_line - 1,
+                prev_line.trim_end_matches('\n').chars().count(),
+            )
+        } else {
+            (close_line, close_col)
+        };
+
+        // Validate range
+        if start_line > end_line || (start_line == end_line && start_col >= end_col) {
+            return None;
+        }
+
+        Some(TextObjectRange {
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around function" (af) text object
+    /// Selects the entire function including signature and braces
+    pub fn around_function(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor_line = buffer.cursor().line();
+        let line_count = buffer.line_count();
+
+        // Find the opening brace of the function containing the cursor
+        let (open_line, open_col) = Self::find_function_open_brace(buffer, cursor_line)?;
+
+        // Find the function signature start
+        let start_line = Self::find_function_signature_start(buffer, open_line)?;
+
+        // Find the matching closing brace
+        let (close_line, close_col) = Self::find_matching_close_brace(buffer, open_line, open_col)?;
+
+        // End position includes the closing brace
+        let end_line = close_line;
+        let end_col = close_col + 1;
+
+        // Include trailing newline if present
+        let line = buffer.line(end_line)?;
+        let end_col = if end_col >= line.trim_end_matches('\n').chars().count() {
+            line.chars().count()
+        } else {
+            end_col
+        };
+
+        Some(TextObjectRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Finds the opening brace { of a function containing the given line
+    fn find_function_open_brace(buffer: &Buffer, cursor_line: usize) -> Option<(usize, usize)> {
+        // First check if we're inside a function body
+        // Search backward for unmatched {
+        let mut depth = 0;
+        let mut search_line = cursor_line;
+
+        loop {
+            let line = buffer.line(search_line)?;
+            let chars: Vec<char> = line.chars().collect();
+
+            // Search from end of line (or cursor col if on cursor line)
+            let end_pos = if search_line == cursor_line {
+                buffer.cursor().col().min(chars.len())
+            } else {
+                chars.len()
+            };
+
+            for (col, &ch) in chars.iter().enumerate().take(end_pos).rev() {
+                if ch == '}' {
+                    depth += 1;
+                } else if ch == '{' {
+                    if depth == 0 {
+                        // Found unmatched opening brace
+                        return Some((search_line, col));
+                    }
+                    depth -= 1;
+                }
+            }
+
+            if search_line == 0 {
+                break;
+            }
+            search_line -= 1;
+        }
+
+        None
+    }
+
+    /// Finds the start of function signature (first non-blank line before opening brace)
+    fn find_function_signature_start(buffer: &Buffer, open_brace_line: usize) -> Option<usize> {
+        let mut start = open_brace_line;
+
+        // Go backward to find where the function definition starts
+        // Look for common function keywords or the start of attributes/decorators
+        while start > 0 {
+            let prev_line = buffer.line(start - 1)?;
+            let trimmed = prev_line.trim();
+
+            // Stop if we hit a blank line or a closing brace
+            if trimmed.is_empty() || trimmed == "}" || trimmed == "};" {
+                break;
+            }
+
+            // Continue if line is part of signature (fn, pub, async, #[attr], @decorator, def, etc.)
+            if trimmed.starts_with("fn ")
+                || trimmed.starts_with("pub ")
+                || trimmed.starts_with("async ")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with('@')
+                || trimmed.starts_with("def ")
+                || trimmed.starts_with("function ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("impl ")
+                || trimmed.contains('(')
+                || trimmed.ends_with(',')
+                || trimmed.ends_with('>')
+            {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+
+        Some(start)
+    }
+
+    /// Finds the matching closing brace for an opening brace
+    fn find_matching_close_brace(
+        buffer: &Buffer,
+        open_line: usize,
+        open_col: usize,
+    ) -> Option<(usize, usize)> {
+        let line_count = buffer.line_count();
+        let mut depth = 1;
+        let mut search_line = open_line;
+
+        // Start searching after the opening brace
+        let first_line = buffer.line(open_line)?;
+        let chars: Vec<char> = first_line.chars().collect();
+        for (col, &ch) in chars.iter().enumerate().skip(open_col + 1) {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((search_line, col));
+                }
+            }
+        }
+
+        search_line += 1;
+        while search_line < line_count {
+            let line = buffer.line(search_line)?;
+            for (col, ch) in line.chars().enumerate() {
+                if ch == '{' {
+                    depth += 1;
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((search_line, col));
+                    }
+                }
+            }
+            search_line += 1;
+        }
+
+        None
+    }
 }
