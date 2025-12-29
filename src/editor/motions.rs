@@ -1379,6 +1379,126 @@ impl Motions {
         false
     }
 
+    /// Unmatched brace backward: `[{` motion in Vim
+    /// Jumps to the previous unmatched `{` (opening brace that has no matching closer before cursor)
+    pub fn unmatched_brace_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_open_brace(buffer) {
+                break;
+            }
+        }
+    }
+
+    /// Unmatched brace forward: `]}` motion in Vim
+    /// Jumps to the next unmatched `}` (closing brace that has no matching opener after cursor)
+    pub fn unmatched_brace_forward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_close_brace(buffer) {
+                break;
+            }
+        }
+    }
+
+    /// Unmatched parenthesis backward: `[(` motion in Vim
+    /// Jumps to the previous unmatched `(` (opening paren that has no matching closer before cursor)
+    pub fn unmatched_paren_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_char(buffer, '(', ')', true) {
+                break;
+            }
+        }
+    }
+
+    /// Unmatched parenthesis forward: `])` motion in Vim
+    /// Jumps to the next unmatched `)` (closing paren that has no matching opener after cursor)
+    pub fn unmatched_paren_forward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_char(buffer, '(', ')', false) {
+                break;
+            }
+        }
+    }
+
+    /// Generic jump to enclosing character
+    /// If `backward` is true, searches for unmatched opener; otherwise, searches for unmatched closer
+    fn jump_to_enclosing_char(
+        buffer: &mut Buffer,
+        open_char: char,
+        close_char: char,
+        backward: bool,
+    ) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Convert to absolute position
+        let text = rope.to_string();
+        let chars: Vec<char> = text.chars().collect();
+
+        let mut abs_pos = 0;
+        for i in 0..line_idx {
+            if let Some(line) = buffer.line(i) {
+                abs_pos += line.chars().count();
+            }
+        }
+        abs_pos += col;
+
+        if abs_pos >= chars.len() {
+            return false;
+        }
+
+        if backward {
+            // Search backward for unmatched opener
+            let mut depth = 0;
+            let mut search_pos = abs_pos;
+
+            while search_pos > 0 {
+                search_pos -= 1;
+                match chars[search_pos] {
+                    c if c == close_char => depth += 1,
+                    c if c == open_char => {
+                        if depth == 0 {
+                            let (new_line, new_col) = Self::abs_pos_to_line_col(rope, search_pos);
+                            buffer.cursor_mut().set_position(new_line, new_col);
+                            return true;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check position 0
+            if chars[0] == open_char && depth == 0 {
+                buffer.cursor_mut().set_position(0, 0);
+                return true;
+            }
+        } else {
+            // Search forward for unmatched closer
+            let mut depth = 0;
+            let mut search_pos = abs_pos;
+
+            while search_pos < chars.len() {
+                match chars[search_pos] {
+                    c if c == open_char => depth += 1,
+                    c if c == close_char => {
+                        if depth == 0 {
+                            let (new_line, new_col) = Self::abs_pos_to_line_col(rope, search_pos);
+                            buffer.cursor_mut().set_position(new_line, new_col);
+                            return true;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                search_pos += 1;
+            }
+        }
+
+        false
+    }
+
     /// Method navigation: jump to next method/function start
     /// `]m` motion in Vim
     /// Looks for patterns like: fn name(, def name(, function name(, etc.

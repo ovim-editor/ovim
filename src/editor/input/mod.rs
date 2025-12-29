@@ -2259,6 +2259,92 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                // Section/bracket navigation - [ prefix
+                ('[', KeyCode::Char('[')) => {
+                    // [[ - go to previous section (function start)
+                    let count = editor.effective_count();
+                    Motions::section_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('[', KeyCode::Char(']')) => {
+                    // [] - go to previous section end
+                    let count = editor.effective_count();
+                    Motions::section_end_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('[', KeyCode::Char('{')) => {
+                    // [{ - go to unmatched { (backward)
+                    let count = editor.effective_count();
+                    Motions::unmatched_brace_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('[', KeyCode::Char('(')) => {
+                    // [( - go to unmatched ( (backward)
+                    let count = editor.effective_count();
+                    Motions::unmatched_paren_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('[', KeyCode::Char('m')) => {
+                    // [m - go to previous method start
+                    let count = editor.effective_count();
+                    Motions::method_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('[', KeyCode::Char('M')) => {
+                    // [M - go to previous method end
+                    let count = editor.effective_count();
+                    Motions::method_end_backward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                // Section/bracket navigation - ] prefix
+                (']', KeyCode::Char(']')) => {
+                    // ]] - go to next section (function start)
+                    let count = editor.effective_count();
+                    Motions::section_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (']', KeyCode::Char('[')) => {
+                    // ][ - go to next section end
+                    let count = editor.effective_count();
+                    Motions::section_end_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (']', KeyCode::Char('}')) => {
+                    // ]} - go to unmatched } (forward)
+                    let count = editor.effective_count();
+                    Motions::unmatched_brace_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (']', KeyCode::Char(')')) => {
+                    // ]) - go to unmatched ) (forward)
+                    let count = editor.effective_count();
+                    Motions::unmatched_paren_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (']', KeyCode::Char('m')) => {
+                    // ]m - go to next method start
+                    let count = editor.effective_count();
+                    Motions::method_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (']', KeyCode::Char('M')) => {
+                    // ]M - go to next method end
+                    let count = editor.effective_count();
+                    Motions::method_end_forward(editor.buffer_mut(), count);
+                    editor.clear_count();
+                    return Ok(());
+                }
                 ('W', KeyCode::Char('w')) => {
                     // Ctrl-W w - cycle to next window
                     editor.focus_next_window();
@@ -2826,6 +2912,13 @@ impl InputHandler {
                 let count = editor.effective_count();
                 Motions::sentence_backward(editor.buffer_mut(), count);
                 editor.clear_count();
+            }
+            // Section/bracket navigation ([[, ]], [{, ]}, [m, ]m, etc.)
+            KeyCode::Char('[') => {
+                editor.set_pending_command('[');
+            }
+            KeyCode::Char(']') => {
+                editor.set_pending_command(']');
             }
             // Operators
             KeyCode::Char('d') => {
