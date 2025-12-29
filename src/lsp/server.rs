@@ -174,6 +174,8 @@ struct LanguageServerInner {
     // Cached capability flags (lock-free, set once during initialization)
     /// Cached: supports goto definition
     cap_goto_definition: AtomicBool,
+    /// Cached: supports goto declaration
+    cap_goto_declaration: AtomicBool,
     /// Cached: supports goto implementation
     cap_goto_implementation: AtomicBool,
     /// Cached: supports goto type definition
@@ -288,6 +290,7 @@ impl LanguageServer {
             supervisor,
             // Initialize cached capabilities to false (will be set during initialization)
             cap_goto_definition: AtomicBool::new(false),
+            cap_goto_declaration: AtomicBool::new(false),
             cap_goto_implementation: AtomicBool::new(false),
             cap_goto_type_definition: AtomicBool::new(false),
             cap_hover: AtomicBool::new(false),
@@ -1245,6 +1248,11 @@ impl LanguageServer {
             .cap_goto_definition
             .store(caps.definition_provider.is_some(), Ordering::Relaxed);
 
+        // Cache goto declaration support
+        self.inner
+            .cap_goto_declaration
+            .store(caps.declaration_provider.is_some(), Ordering::Relaxed);
+
         // Cache goto implementation support
         self.inner
             .cap_goto_implementation
@@ -1378,6 +1386,11 @@ impl LanguageServer {
     /// Checks if the server supports goto definition (lock-free)
     pub async fn supports_goto_definition(&self) -> bool {
         self.inner.cap_goto_definition.load(Ordering::Relaxed)
+    }
+
+    /// Checks if the server supports goto declaration (lock-free)
+    pub async fn supports_goto_declaration(&self) -> bool {
+        self.inner.cap_goto_declaration.load(Ordering::Relaxed)
     }
 
     /// Checks if the server supports goto implementation (lock-free)
