@@ -98,6 +98,27 @@ impl MarkManager {
     pub fn iter_global(&self) -> impl Iterator<Item = (char, &GlobalMark)> + '_ {
         self.global_marks.iter().map(|(k, v)| (*k, v))
     }
+
+    /// Lists all marks as (name, line, col, file_path) tuples for display
+    pub fn list_marks(&self) -> Vec<(char, usize, usize, Option<String>)> {
+        let mut result = Vec::new();
+
+        // Local marks (a-z) sorted
+        let mut local: Vec<_> = self.marks.iter().collect();
+        local.sort_by_key(|(k, _)| *k);
+        for (name, mark) in local {
+            result.push((*name, mark.line, mark.col, None));
+        }
+
+        // Global marks (A-Z) sorted
+        let mut global: Vec<_> = self.global_marks.iter().collect();
+        global.sort_by_key(|(k, _)| *k);
+        for (name, mark) in global {
+            result.push((*name, mark.line, mark.col, Some(mark.file_path.clone())));
+        }
+
+        result
+    }
 }
 
 /// Manages the jump list for navigating through cursor positions
