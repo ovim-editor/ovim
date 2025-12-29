@@ -238,12 +238,17 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                 }
             });
 
+            // Get diagnostics for this line
+            let line_diagnostics = editor.diagnostics_for_line(line_idx);
+            let has_diagnostics = !line_diagnostics.is_empty();
+
             // Always use character-by-character rendering if we have any highlighting
             let needs_detailed_rendering = has_visual_selection
                 || !search_matches.is_empty()
                 || !syntax_highlights.is_empty()
                 || is_cursor_line
-                || bracket_col.is_some();
+                || bracket_col.is_some()
+                || has_diagnostics;
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -255,6 +260,33 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                     &search_matches,
                     &syntax_highlights,
                 );
+
+                // Add diagnostic virtual text if present
+                if has_diagnostics {
+                    use lsp_types::DiagnosticSeverity;
+                    // Get the first (most severe) diagnostic
+                    let diag = line_diagnostics[0];
+                    let diag_color = match diag.severity {
+                        Some(DiagnosticSeverity::ERROR) => Color::Red,
+                        Some(DiagnosticSeverity::WARNING) => Color::Yellow,
+                        Some(DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                        Some(DiagnosticSeverity::HINT) => Color::Gray,
+                        _ => Color::Gray,
+                    };
+                    // Truncate message to fit on screen
+                    let max_msg_len = (text_area.width as usize).saturating_sub(line_text.chars().count() + 3);
+                    let msg = diag.message.lines().next().unwrap_or("");
+                    let msg = if msg.chars().count() > max_msg_len {
+                        format!("{}...", msg.chars().take(max_msg_len.saturating_sub(3)).collect::<String>())
+                    } else {
+                        msg.to_string()
+                    };
+                    line.spans.push(Span::styled(
+                        format!(" // {}", msg),
+                        Style::default().fg(diag_color).add_modifier(Modifier::ITALIC),
+                    ));
+                }
+
                 // Pad line to clear previous content
                 let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
                 if line_len < text_area.width as usize {

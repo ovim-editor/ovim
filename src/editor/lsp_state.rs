@@ -82,6 +82,8 @@ pub struct LspState {
     pub inlay_hints: Vec<lsp_types::InlayHint>,
     /// Currently active LSP result type (for picker navigation)
     pub active_lsp_result_type: Option<LspResultType>,
+    /// Cached diagnostics for current file (for inline display)
+    pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
 }
 
 impl LspState {
@@ -107,6 +109,7 @@ impl LspState {
             available_type_hierarchy: Vec::new(),
             inlay_hints: Vec::new(),
             active_lsp_result_type: None,
+            current_file_diagnostics: Vec::new(),
         }
     }
 }

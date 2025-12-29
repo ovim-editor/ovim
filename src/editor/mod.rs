@@ -2069,6 +2069,14 @@ impl Editor {
     pub async fn update_diagnostic_cache(&mut self) {
         let start = std::time::Instant::now();
         self.lsp_state.diagnostic_count = self.get_diagnostic_count().await;
+
+        // Also update the full diagnostics list for inline display
+        if let Some(diagnostics) = self.get_current_file_diagnostics().await {
+            self.lsp_state.current_file_diagnostics = diagnostics;
+        } else {
+            self.lsp_state.current_file_diagnostics.clear();
+        }
+
         let duration = start.elapsed().as_micros() as u64;
         self.record_diagnostic_query_duration(duration);
     }
@@ -2076,6 +2084,19 @@ impl Editor {
     /// Gets the cached diagnostic count (sync, suitable for UI rendering)
     pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
         self.lsp_state.diagnostic_count
+    }
+
+    /// Gets cached diagnostics for a specific line (sync, suitable for UI rendering)
+    pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
+        self.lsp_state
+            .current_file_diagnostics
+            .iter()
+            .filter(|d| {
+                let start_line = d.range.start.line as usize;
+                let end_line = d.range.end.line as usize;
+                line >= start_line && line <= end_line
+            })
+            .collect()
     }
 
     /// Sets the LSP status message
