@@ -61,6 +61,8 @@ pub struct EditorOptions {
     pub smartcase: bool,
     /// Highlight the current line (default: false)
     pub cursorline: bool,
+    /// Highlight matching brackets (default: true)
+    pub showmatch: bool,
 }
 
 impl Default for EditorOptions {
@@ -76,6 +78,7 @@ impl Default for EditorOptions {
             ignorecase: false,
             smartcase: false,
             cursorline: false,
+            showmatch: true,
         }
     }
 }

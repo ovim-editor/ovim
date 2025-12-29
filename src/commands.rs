@@ -1005,6 +1005,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             "ignorecase" | "ic" => format!("  {}ignorecase", if opts.ignorecase { "" } else { "no" }),
             "smartcase" | "scs" => format!("  {}smartcase", if opts.smartcase { "" } else { "no" }),
             "cursorline" | "cul" => format!("  {}cursorline", if opts.cursorline { "" } else { "no" }),
+            "showmatch" | "sm" => format!("  {}showmatch", if opts.showmatch { "" } else { "no" }),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -1113,6 +1114,22 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             return ApiResponse::Success(SuccessResponse {
                 success: true,
                 message: Some("  nocursorline".to_string()),
+                line_count: None,
+            });
+        }
+        "showmatch" | "sm" => {
+            editor.options.showmatch = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  showmatch".to_string()),
+                line_count: None,
+            });
+        }
+        "noshowmatch" | "nosm" => {
+            editor.options.showmatch = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  noshowmatch".to_string()),
                 line_count: None,
             });
         }
