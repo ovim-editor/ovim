@@ -191,9 +191,9 @@ impl LanguageRegistry {
             Language::Yaml => tree_sitter_yaml::language(),
             Language::Html => tree_sitter_html::LANGUAGE.into(),
             Language::Css => tree_sitter_css::LANGUAGE.into(),
-            // TOML doesn't have a bundled tree-sitter grammar in this project yet
-            // Return a dummy language (use Rust as fallback to avoid panics)
-            Language::Toml => tree_sitter_rust::LANGUAGE.into(),
+            // TOML: tree-sitter-toml depends on tree-sitter 0.20, incompatible with our 0.23
+            // Use JSON for highlighting fallback (similar key-value structure)
+            Language::Toml => tree_sitter_json::LANGUAGE.into(),
             Language::Markdown => tree_sitter_md::LANGUAGE.into(),
         }
     }
@@ -216,8 +216,8 @@ impl LanguageRegistry {
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Html => include_str!("queries/html.scm"),
             Language::Css => include_str!("queries/css.scm"),
-            // TOML uses fallback (no bundled tree-sitter query yet)
-            Language::Toml => "",
+            // TOML uses JSON highlighting as fallback (similar key-value structure)
+            Language::Toml => include_str!("queries/json.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
         }
     }
