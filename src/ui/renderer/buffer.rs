@@ -76,6 +76,8 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     let mut lines = Vec::new();
     let blank_line = " ".repeat(text_area.width as usize);
     let tab_width = editor.options.tab_width;
+    let cursorline = editor.options.cursorline;
+    let cursor_line_idx = cursor.line();
 
     for line_idx in start_line..end_line {
         if line_idx < rope.len_lines() {
@@ -103,10 +105,14 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                 Vec::new()
             };
 
+            // Check if this is the cursor line and cursorline option is on
+            let is_cursor_line = cursorline && line_idx == cursor_line_idx;
+
             // Always use character-by-character rendering if we have any highlighting
             let needs_detailed_rendering = has_visual_selection
                 || !search_matches.is_empty()
-                || !syntax_highlights.is_empty();
+                || !syntax_highlights.is_empty()
+                || is_cursor_line;
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -123,6 +129,14 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                 if line_len < text_area.width as usize {
                     line.spans
                         .push(Span::raw(" ".repeat(text_area.width as usize - line_len)));
+                }
+                // Apply cursorline background if this is the cursor line
+                if is_cursor_line {
+                    let cursorline_bg = Color::Rgb(40, 40, 50); // Subtle dark blue background
+                    for span in &mut line.spans {
+                        // Preserve foreground color but add background
+                        span.style = span.style.bg(cursorline_bg);
+                    }
                 }
                 lines.push(line);
             } else {
