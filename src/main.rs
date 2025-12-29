@@ -2,7 +2,7 @@ mod event_loop;
 mod lsp_init;
 
 use anyhow::Result;
-use ovim::cli::{Cli, EditorArgs};
+use ovim::cli::Cli;
 use ovim::editor::Editor;
 use ovim::session::{SessionGuard, SessionInfo};
 use ovim::subcommands;

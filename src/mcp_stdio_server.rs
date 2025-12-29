@@ -2,7 +2,7 @@
 ///
 /// Implements a JSON-RPC 2.0 server that communicates via stdin/stdout.
 /// Claude Code spawns this process and sends MCP requests/responses.
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -284,7 +284,7 @@ fn handle_tool_call(
         }
 
         "lsp_hover" => {
-            let snapshot = client
+            let _snapshot = client
                 .get_snapshot()
                 .map_err(|e| JsonRpcError::internal_error(&e.to_string()))?;
 
@@ -522,7 +522,7 @@ fn handle_prompts_list() -> Result<Value, JsonRpcError> {
 
 /// Get or discover session for tool calls
 fn get_or_discover_session(
-    workspace_dir: &PathBuf,
+    _workspace_dir: &PathBuf,
     current_session: &Option<SessionInfo>,
 ) -> Result<SessionInfo, String> {
     // If explicit session preference provided, try to find it

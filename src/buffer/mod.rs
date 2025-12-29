@@ -503,7 +503,7 @@ impl Buffer {
 
     /// Gets a specific line as a RopeSlice (zero-allocation)
     /// Prefer this over line() when you don't need ownership
-    pub fn line_slice(&self, idx: usize) -> Option<ropey::RopeSlice> {
+    pub fn line_slice(&self, idx: usize) -> Option<ropey::RopeSlice<'_>> {
         if idx < self.line_count() {
             Some(self.rope.line(idx))
         } else {
