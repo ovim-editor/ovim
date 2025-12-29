@@ -39,6 +39,7 @@ pub enum LspAction {
     WorkspaceSymbols,
     OrganizeImports,
     Rename(String), // New name for the symbol
+    SemanticTokens, // Request semantic tokens for highlighting
 }
 
 /// Container for all LSP-related state in the editor
