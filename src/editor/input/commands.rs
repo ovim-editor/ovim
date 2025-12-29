@@ -523,6 +523,180 @@ fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
     None
 }
 
+/// Handles shell command execution (:! or :.! or :%!)
+/// - `:!cmd` - runs command and displays output
+/// - `:.!cmd` - replaces current line with command output
+/// - `:%!cmd` - pipes entire buffer through command
+/// - `:range!cmd` - pipes specified range through command
+fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    // Determine the shell to use
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let shell_arg = if cfg!(windows) { "/C" } else { "-c" };
+
+    // Check if we're piping buffer content through the command
+    let is_filter = !range_str.is_empty();
+
+    if is_filter {
+        // Parse the range
+        let (start_line, end_line) = match parse_range(editor, range_str) {
+            Some(range) => range,
+            None => {
+                editor.set_lsp_status("Invalid range".to_string());
+                return Ok(());
+            }
+        };
+
+        // Get the text from the range
+        let mut input_text = String::new();
+        for line_idx in start_line..=end_line {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                input_text.push_str(&line);
+            }
+        }
+
+        // Run command with input piped
+        let output = Command::new(shell)
+            .arg(shell_arg)
+            .arg(shell_cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(ref mut stdin) = child.stdin {
+                    stdin.write_all(input_text.as_bytes())?;
+                }
+                child.wait_with_output()
+            });
+
+        match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let output_text = stdout.trim_end_matches('\n');
+
+                    // Record change for undo
+                    let cursor_before = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
+
+                    // Delete the original range
+                    let start_char = editor.buffer().rope().line_to_char(start_line);
+                    let end_char = if end_line + 1 < editor.buffer().line_count() {
+                        editor.buffer().rope().line_to_char(end_line + 1)
+                    } else {
+                        editor.buffer().rope().len_chars()
+                    };
+
+                    let deleted_text = editor
+                        .buffer()
+                        .rope()
+                        .slice(start_char..end_char)
+                        .to_string();
+
+                    editor.buffer_mut().rope_mut().remove(start_char..end_char);
+
+                    // Insert the command output (with trailing newline if needed)
+                    let insert_text = if output_text.is_empty() {
+                        String::new()
+                    } else if output_text.ends_with('\n') {
+                        output_text.to_string()
+                    } else {
+                        format!("{}\n", output_text)
+                    };
+
+                    if !insert_text.is_empty() {
+                        editor
+                            .buffer_mut()
+                            .rope_mut()
+                            .insert(start_char, &insert_text);
+                    }
+
+                    // Position cursor at start of filtered range
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, 0);
+
+                    // Record change for undo using composite of delete + insert
+                    let range = Range::new((start_line, 0), (end_line + 1, 0));
+                    let delete_change = Change::delete(range.clone(), deleted_text, cursor_before);
+                    let insert_change =
+                        Change::insert((start_line, 0), insert_text.clone(), cursor_before);
+                    let cursor_after = (start_line, 0);
+                    let change = Change::composite(
+                        vec![delete_change, insert_change],
+                        cursor_before,
+                        cursor_after,
+                    );
+                    editor.add_change(change);
+
+                    let line_count = insert_text.lines().count();
+                    editor.set_lsp_status(format!("{} lines filtered", line_count));
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+                }
+            }
+            Err(e) => {
+                editor.set_lsp_status(format!("Failed to run command: {}", e));
+            }
+        }
+    } else {
+        // Simple command execution - just display output
+        let output = Command::new(shell)
+            .arg(shell_arg)
+            .arg(shell_cmd)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                if output.status.success() {
+                    let msg = if stdout.is_empty() {
+                        "Command completed".to_string()
+                    } else {
+                        // Truncate long output for status line
+                        let trimmed = stdout.trim();
+                        if trimmed.len() > 200 || trimmed.lines().count() > 3 {
+                            format!(
+                                "{}... ({} lines)",
+                                trimmed
+                                    .lines()
+                                    .take(3)
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                                    .chars()
+                                    .take(100)
+                                    .collect::<String>(),
+                                trimmed.lines().count()
+                            )
+                        } else {
+                            trimmed.lines().collect::<Vec<_>>().join(" | ")
+                        }
+                    };
+                    editor.set_lsp_status(msg);
+                } else {
+                    editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+                }
+            }
+            Err(e) => {
+                editor.set_lsp_status(format!("Failed to run command: {}", e));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Executes a command string directly (used for API/Lua commands)
 pub fn execute_command_string(editor: &mut Editor, command: &str) -> Result<()> {
     execute_command_impl(editor, command)
@@ -700,6 +874,15 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     if command.starts_with("g/") || command.starts_with("g!/") || command.starts_with("v/") {
         handle_global_command(editor, command)?;
         return Ok(());
+    }
+
+    // Handle shell command (:! or :.! or :%!)
+    if cmd_part.starts_with('!') {
+        let shell_cmd = cmd_part[1..].trim();
+        if !shell_cmd.is_empty() {
+            handle_shell_command(editor, range_str, shell_cmd)?;
+            return Ok(());
+        }
     }
 
     // Only handle custom input-specific commands here.
