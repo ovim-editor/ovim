@@ -2311,6 +2311,13 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                ('[', KeyCode::Char('d')) => {
+                    // [d - go to previous diagnostic
+                    editor.goto_prev_diagnostic();
+                    editor.clear_count();
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
                 // Section/bracket navigation - ] prefix
                 (']', KeyCode::Char(']')) => {
                     // ]] - go to next section (function start)
@@ -2352,6 +2359,13 @@ impl InputHandler {
                     let count = editor.effective_count();
                     Motions::method_end_forward(editor.buffer_mut(), count);
                     editor.clear_count();
+                    return Ok(());
+                }
+                (']', KeyCode::Char('d')) => {
+                    // ]d - go to next diagnostic
+                    editor.goto_next_diagnostic();
+                    editor.clear_count();
+                    editor.clear_pending_command();
                     return Ok(());
                 }
                 ('W', KeyCode::Char('w')) => {
