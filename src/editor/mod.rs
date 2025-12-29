@@ -113,7 +113,7 @@ pub enum LspCommand {
     },
     /// Send didOpen notification
     DidOpen {
-        uri: lsp_types::Url,
+        uri: lsp_types::Uri,
         language_id: String,
         version: i32,
         text: String,
@@ -1259,7 +1259,7 @@ impl Editor {
         };
 
         let file_path_string = file_path.to_string();
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        let Some(uri) = crate::lsp::uri_from_file_path(std::path::Path::new(&file_path_string))
         else {
             return;
         };
@@ -1898,7 +1898,7 @@ impl Editor {
     pub async fn get_current_file_diagnostics(&self) -> Option<Vec<lsp_types::Diagnostic>> {
         let lsp = self.lsp_state.lsp_manager.as_ref()?;
         let file_path = self.buffer().file_path()?;
-        let uri = lsp_types::Url::from_file_path(file_path).ok()?;
+        let uri = crate::lsp::uri_from_file_path(file_path)?;
 
         Some(lsp.get_diagnostics(&uri).await)
     }
@@ -1907,7 +1907,7 @@ impl Editor {
     pub async fn get_diagnostic_count(&self) -> (usize, usize, usize, usize) {
         if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
-                if let Ok(uri) = lsp_types::Url::from_file_path(file_path) {
+                if let Some(uri) = crate::lsp::uri_from_file_path(file_path) {
                     return lsp.count_diagnostics(&uri).await;
                 }
             }
@@ -2203,7 +2203,7 @@ impl Editor {
 
         let file_path_string = file_path.to_string();
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        let Some(uri) = crate::lsp::uri_from_file_path(std::path::Path::new(&file_path_string))
         else {
             return;
         };
@@ -2270,7 +2270,7 @@ impl Editor {
 
         let file_path_string = file_path.to_string();
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        let Some(uri) = crate::lsp::uri_from_file_path(std::path::Path::new(&file_path_string))
         else {
             return;
         };
@@ -2343,8 +2343,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         let state_key = abs_path.clone();
 
@@ -2410,7 +2410,7 @@ impl Editor {
 
         let file_path_string = file_path.clone();
 
-        let Ok(uri) = lsp_types::Url::from_file_path(std::path::Path::new(&file_path_string))
+        let Some(uri) = crate::lsp::uri_from_file_path(std::path::Path::new(&file_path_string))
         else {
             return;
         };
@@ -2579,8 +2579,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -2658,8 +2658,8 @@ impl Editor {
                 return Ok(true);
             } else {
                 // Different file - open it and jump
-                match location.uri.to_file_path() {
-                    Ok(target_path) => {
+                match crate::lsp::uri_to_file_path(&location.uri) {
+                    Some(target_path) => {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
@@ -2683,7 +2683,7 @@ impl Editor {
                             }
                         }
                     }
-                    Err(_) => {
+                    None => {
                         self.set_lsp_status("Definition in invalid file path".to_string());
                         return Ok(false);
                     }
@@ -2726,8 +2726,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -2772,8 +2772,8 @@ impl Editor {
                 return Ok(true);
             } else {
                 // Different file - open it and jump
-                match location.uri.to_file_path() {
-                    Ok(target_path) => {
+                match crate::lsp::uri_to_file_path(&location.uri) {
+                    Some(target_path) => {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
@@ -2797,7 +2797,7 @@ impl Editor {
                             }
                         }
                     }
-                    Err(_) => {
+                    None => {
                         self.set_lsp_status("Implementation in invalid file path".to_string());
                         return Ok(false);
                     }
@@ -2840,8 +2840,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -2886,8 +2886,8 @@ impl Editor {
                 return Ok(true);
             } else {
                 // Different file - open it and jump
-                match location.uri.to_file_path() {
-                    Ok(target_path) => {
+                match crate::lsp::uri_to_file_path(&location.uri) {
+                    Some(target_path) => {
                         // Try to open the target file
                         match self.load_file_async(&target_path).await {
                             Ok(_) => {
@@ -2911,7 +2911,7 @@ impl Editor {
                             }
                         }
                     }
-                    Err(_) => {
+                    None => {
                         self.set_lsp_status("Type definition in invalid file path".to_string());
                         return Ok(false);
                     }
@@ -2954,8 +2954,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -2994,10 +2994,7 @@ impl Editor {
         let items: Vec<String> = locations
             .iter()
             .map(|loc| {
-                let file_path = loc
-                    .uri
-                    .to_file_path()
-                    .ok()
+                let file_path = crate::lsp::uri_to_file_path(&loc.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = loc.range.start.line + 1;
@@ -3047,8 +3044,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -3143,11 +3140,7 @@ impl Editor {
         let items: Vec<String> = symbols
             .iter()
             .map(|sym| {
-                let file_name = sym
-                    .location
-                    .uri
-                    .to_file_path()
-                    .ok()
+                let file_name = crate::lsp::uri_to_file_path(&sym.location.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = sym.location.range.start.line + 1;
@@ -3196,8 +3189,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -3267,11 +3260,7 @@ impl Editor {
             .iter()
             .map(|call| {
                 let name = &call.from.name;
-                let file_path = call
-                    .from
-                    .uri
-                    .to_file_path()
-                    .ok()
+                let file_path = crate::lsp::uri_to_file_path(&call.from.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = call.from.range.start.line + 1;
@@ -3320,8 +3309,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -3391,11 +3380,7 @@ impl Editor {
             .iter()
             .map(|call| {
                 let name = &call.to.name;
-                let file_path = call
-                    .to
-                    .uri
-                    .to_file_path()
-                    .ok()
+                let file_path = crate::lsp::uri_to_file_path(&call.to.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = call.to.range.start.line + 1;
@@ -3444,8 +3429,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -3499,10 +3484,7 @@ impl Editor {
                     uri: super_type.uri.clone(),
                     range: super_type.range,
                 };
-                let file_name = super_type
-                    .uri
-                    .to_file_path()
-                    .ok()
+                let file_name = crate::lsp::uri_to_file_path(&super_type.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = super_type.range.start.line + 1;
@@ -3518,10 +3500,7 @@ impl Editor {
                     uri: sub_type.uri.clone(),
                     range: sub_type.range,
                 };
-                let file_name = sub_type
-                    .uri
-                    .to_file_path()
-                    .ok()
+                let file_name = crate::lsp::uri_to_file_path(&sub_type.uri)
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "unknown".to_string());
                 let line = sub_type.range.start.line + 1;
@@ -3586,8 +3565,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -3644,7 +3623,7 @@ impl Editor {
         crate::lsp_info!("LSP-HOVER", "Waiting {}ms before hover request", delay_ms);
         tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 
-        crate::lsp_info!("LSP-HOVER", "Sending hover request for URI: {}, line: {}, char: {}, lang: {}", uri, line, character, language_id);
+        crate::lsp_info!("LSP-HOVER", "Sending hover request for URI: {}, line: {}, char: {}, lang: {}", uri.as_str(), line, character, language_id);
         let hover_text = lsp.hover(&uri, line, character, language_id).await?;
 
         // Store hover information and enter HoverWindow mode if available
@@ -3660,7 +3639,7 @@ impl Editor {
             // 1. Cursor is not on a valid symbol
             // 2. LSP server hasn't indexed this location yet
             // 3. This language/position doesn't have hover info available
-            crate::lsp_info!("LSP-HOVER", "Hover returned empty for: URI={}, line={}, char={}", uri, line, character);
+            crate::lsp_info!("LSP-HOVER", "Hover returned empty for: URI={}, line={}, char={}", uri.as_str(), line, character);
             self.set_lsp_status("No hover info at this location (may not be a symbol)".to_string());
             Ok(false)
         }
@@ -3696,8 +3675,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -3788,8 +3767,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -3850,8 +3829,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -3972,7 +3951,7 @@ impl Editor {
                                 }
                             };
 
-                            if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                            if let Some(uri) = crate::lsp::uri_from_file_path(&abs_path) {
                                 if let Some(edits) = changes.get(&uri) {
                                     self.apply_lsp_edits(edits.clone());
                                     self.set_lsp_status(format!("Applied: {}", action_title));
@@ -4007,7 +3986,7 @@ impl Editor {
                                                 }
                                             };
 
-                                        if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                        if let Some(uri) = crate::lsp::uri_from_file_path(&abs_path) {
                                             if text_doc_edit.text_document.uri == uri {
                                                 self.apply_lsp_edits(
                                                     text_doc_edit
@@ -4053,8 +4032,8 @@ impl Editor {
                                                     }
                                                 };
 
-                                                if let Ok(uri) =
-                                                    lsp_types::Url::from_file_path(&abs_path)
+                                                if let Some(uri) =
+                                                    crate::lsp::uri_from_file_path(&abs_path)
                                                 {
                                                     if text_doc_edit.text_document.uri == uri {
                                                         self.apply_lsp_edits(
@@ -4206,9 +4185,9 @@ impl Editor {
                 let symbol = &self.lsp_state.available_document_symbols[index];
                 // For document symbols, the location is in the current file
                 let file_path = self.buffer().file_path().unwrap_or("").to_string();
-                let uri = match lsp_types::Url::from_file_path(&file_path) {
-                    Ok(u) => u,
-                    Err(_) => {
+                let uri = match crate::lsp::uri_from_file_path(&file_path) {
+                    Some(u) => u,
+                    None => {
                         self.set_lsp_status("Invalid file path".to_string());
                         return;
                     }
@@ -4243,9 +4222,9 @@ impl Editor {
         };
 
         // Convert LSP location to file path
-        let file_path = match location.uri.to_file_path() {
-            Ok(path) => path.to_string_lossy().to_string(),
-            Err(_) => {
+        let file_path = match crate::lsp::uri_to_file_path(&location.uri) {
+            Some(path) => path.to_string_lossy().to_string(),
+            None => {
                 self.set_lsp_status("Invalid file URI".to_string());
                 return;
             }
@@ -4299,8 +4278,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
@@ -4371,8 +4350,8 @@ impl Editor {
             }
         };
 
-        let uri = lsp_types::Url::from_file_path(&abs_path)
-            .map_err(|_| anyhow::anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
         // Get cursor position (convert to UTF-16 for LSP)
         let cursor = self.buffer().cursor();
@@ -4445,7 +4424,7 @@ impl Editor {
                         }
                     };
 
-                    if let Ok(current_uri) = lsp_types::Url::from_file_path(&abs_path) {
+                    if let Some(current_uri) = crate::lsp::uri_from_file_path(&abs_path) {
                         if current_uri == *uri {
                             // Apply edits to current buffer
                             self.apply_lsp_edits(text_edits.clone());
@@ -4482,7 +4461,7 @@ impl Editor {
                                 }
                             };
 
-                            if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                            if let Some(uri) = crate::lsp::uri_from_file_path(&abs_path) {
                                 if text_doc_edit.text_document.uri == uri {
                                     // Apply edits to current buffer
                                     let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
@@ -4528,7 +4507,7 @@ impl Editor {
                                         }
                                     };
 
-                                    if let Ok(uri) = lsp_types::Url::from_file_path(&abs_path) {
+                                    if let Some(uri) = crate::lsp::uri_from_file_path(&abs_path) {
                                         if text_doc_edit.text_document.uri == uri {
                                             // Apply edits to current buffer
                                             let text_edits: Vec<lsp_types::TextEdit> =

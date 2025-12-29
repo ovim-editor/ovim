@@ -2,7 +2,23 @@
 //!
 //! Provides conversions between ovim's internal types and LSP types.
 
-use lsp_types::{Position, Range};
+use lsp_types::{Position, Range, Uri};
+use std::path::Path;
+
+/// Converts a file path to an LSP Uri
+/// Uses url crate for proper encoding, then parses as lsp_types::Uri
+pub fn uri_from_file_path<P: AsRef<Path>>(path: P) -> Option<Uri> {
+    let url = url::Url::from_file_path(path).ok()?;
+    url.as_str().parse().ok()
+}
+
+/// Converts an LSP Uri to a file path
+/// Returns None if the Uri is not a file:// URI or cannot be converted
+pub fn uri_to_file_path(uri: &Uri) -> Option<std::path::PathBuf> {
+    let uri_str = uri.as_str();
+    let url = url::Url::parse(uri_str).ok()?;
+    url.to_file_path().ok()
+}
 
 /// LSP Position wrapper for easier construction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

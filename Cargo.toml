@@ -32,7 +32,7 @@ tree-sitter-ruby = "0.23"
 tree-sitter-bash = "0.23"
 tree-sitter-highlight = "0.23"
 tree-sitter-md = "0.5"
-lsp-types = "0.95"
+lsp-types = "0.97"
 url = "2.5"
 mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional = true }
 ignore = "0.4"

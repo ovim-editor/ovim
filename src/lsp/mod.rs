@@ -27,14 +27,14 @@ pub use logger::init_lsp_logging;
 pub use protocol::{JsonRpcMessage, RequestId};
 pub use server::{LanguageServer, LanguageServerHealth};
 pub use supervisor::{RestartPolicy, TaskSupervisor};
-pub use types::{LspPosition, LspRange};
+pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
 
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use lsp_types::{
     Diagnostic, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
-    TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier,
+    TextDocumentIdentifier, TextDocumentItem, Uri, VersionedTextDocumentIdentifier,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -80,7 +80,7 @@ pub struct LspServerInfo {
 /// Coalesces rapid changes to reduce LSP traffic
 struct ChangeDebouncer {
     /// URI of the document being edited
-    uri: Url,
+    uri: Uri,
 
     /// Language ID (e.g., "rust", "python")
     language_id: String,
@@ -96,7 +96,7 @@ struct ChangeDebouncer {
 }
 
 impl ChangeDebouncer {
-    fn new(uri: Url, language_id: String, text: String, old_text: Option<String>) -> Self {
+    fn new(uri: Uri, language_id: String, text: String, old_text: Option<String>) -> Self {
         Self {
             uri,
             language_id,
@@ -127,10 +127,10 @@ pub struct LspManager {
     servers: DashMap<String, LanguageServer>,
 
     /// Diagnostics per file URI
-    diagnostics: Mutex<HashMap<Url, Vec<Diagnostic>>>,
+    diagnostics: Mutex<HashMap<Uri, Vec<Diagnostic>>>,
 
     /// Document versions for change tracking
-    document_versions: Mutex<HashMap<Url, i32>>,
+    document_versions: Mutex<HashMap<Uri, i32>>,
 
     /// Channel for receiving notifications from language servers (bounded to prevent memory issues)
     notification_tx: mpsc::Sender<LspNotification>,
@@ -138,11 +138,11 @@ pub struct LspManager {
 
     /// Pending changes being debounced per document
     /// Coalesces rapid changes to reduce LSP traffic by ~1000x
-    change_debouncers: DashMap<Url, Arc<Mutex<ChangeDebouncer>>>,
+    change_debouncers: DashMap<Uri, Arc<Mutex<ChangeDebouncer>>>,
 
     /// Channel for debounce flush requests (URI to flush)
-    flush_tx: mpsc::Sender<Url>,
-    flush_rx: Mutex<Option<mpsc::Receiver<Url>>>,
+    flush_tx: mpsc::Sender<Uri>,
+    flush_rx: Mutex<Option<mpsc::Receiver<Uri>>>,
 
     /// Flag indicating diagnostics have changed and cache needs update
     diagnostics_changed: AtomicBool,
@@ -223,8 +223,8 @@ impl LspManager {
         lsp_debug!("LspManager", "Server spawned successfully");
 
         let root_uri =
-            Url::from_file_path(root_path).map_err(|_| anyhow::anyhow!("Invalid root path"))?;
-        lsp_debug!("LspManager", "Root URI: {}", root_uri);
+            uri_from_file_path(root_path).ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
+        lsp_debug!("LspManager", "Root URI: {}", root_uri.as_str());
 
         lsp_debug!("LspManager", "Calling initialize...");
         server.initialize(root_uri).await?;
@@ -257,13 +257,13 @@ impl LspManager {
     }
 
     /// Gets diagnostics for a file
-    pub async fn get_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
+    pub async fn get_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
         let diagnostics = self.diagnostics.lock().await;
         diagnostics.get(uri).cloned().unwrap_or_default()
     }
 
     /// Gets diagnostics for a specific line in a file
-    pub async fn get_diagnostics_for_line(&self, uri: &Url, line: u32) -> Vec<Diagnostic> {
+    pub async fn get_diagnostics_for_line(&self, uri: &Uri, line: u32) -> Vec<Diagnostic> {
         let diagnostics = self.diagnostics.lock().await;
         diagnostics
             .get(uri)
@@ -278,7 +278,7 @@ impl LspManager {
     }
 
     /// Counts diagnostics by severity
-    pub async fn count_diagnostics(&self, uri: &Url) -> (usize, usize, usize, usize) {
+    pub async fn count_diagnostics(&self, uri: &Uri) -> (usize, usize, usize, usize) {
         let diagnostics = self.diagnostics.lock().await;
         if let Some(diags) = diagnostics.get(uri) {
             let mut errors = 0;
@@ -304,7 +304,7 @@ impl LspManager {
     }
 
     /// Sets diagnostics for a file (called when receiving publishDiagnostics)
-    pub async fn set_diagnostics(&self, uri: Url, diagnostics: Vec<Diagnostic>) {
+    pub async fn set_diagnostics(&self, uri: Uri, diagnostics: Vec<Diagnostic>) {
         let mut diags = self.diagnostics.lock().await;
         diags.insert(uri, diagnostics);
         self.diagnostics_changed.store(true, Ordering::SeqCst);
@@ -326,13 +326,13 @@ impl LspManager {
     }
 
     /// Gets the current version of a document
-    pub async fn get_document_version(&self, uri: &Url) -> i32 {
+    pub async fn get_document_version(&self, uri: &Uri) -> i32 {
         let versions = self.document_versions.lock().await;
         versions.get(uri).copied().unwrap_or(0)
     }
 
     /// Increments the version of a document
-    pub async fn increment_document_version(&self, uri: &Url) -> i32 {
+    pub async fn increment_document_version(&self, uri: &Uri) -> i32 {
         let mut versions = self.document_versions.lock().await;
         let version = versions.entry(uri.clone()).or_insert(0);
         *version += 1;
@@ -349,7 +349,7 @@ impl LspManager {
     /// Sends textDocument/didOpen notification
     pub async fn did_open(
         &self,
-        uri: Url,
+        uri: Uri,
         language_id: &str,
         version: i32,
         text: String,
@@ -357,7 +357,7 @@ impl LspManager {
         lsp_debug!(
             "LSP-NOTIFY",
             "textDocument/didOpen | URI: {} | Language: {} | Version: {} | Size: {} bytes",
-            uri,
+            uri.as_str(),
             language_id,
             version,
             text.len()
@@ -367,7 +367,7 @@ impl LspManager {
         if text.len() > MAX_DOCUMENT_SIZE {
             return Err(anyhow!(
                 "Document '{}' too large: {} bytes (max {} bytes / {:.1} MB)",
-                uri,
+                uri.as_str(),
                 text.len(),
                 MAX_DOCUMENT_SIZE,
                 MAX_DOCUMENT_SIZE as f64 / (1024.0 * 1024.0)
@@ -405,7 +405,7 @@ impl LspManager {
     /// Supports both full and incremental sync
     async fn send_did_change_immediate(
         &self,
-        uri: Url,
+        uri: Uri,
         language_id: &str,
         text: String,
         old_text: Option<String>,
@@ -471,7 +471,7 @@ impl LspManager {
     }
 
     /// Flushes pending changes for a document (sends immediately)
-    pub async fn flush_pending_changes(&self, uri: &Url) -> Result<()> {
+    pub async fn flush_pending_changes(&self, uri: &Uri) -> Result<()> {
         // Remove debouncer and get pending change
         if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
             let mut debouncer = debouncer_arc.lock().await;
@@ -494,7 +494,7 @@ impl LspManager {
     /// Coalesces rapid changes to reduce LSP traffic by ~1000x
     pub async fn did_change(
         &self,
-        uri: Url,
+        uri: Uri,
         language_id: &str,
         text: String,
         old_text: Option<String>,
@@ -546,7 +546,7 @@ impl LspManager {
     }
 
     /// Sends textDocument/didSave notification
-    pub async fn did_save(&self, uri: Url, language_id: &str, text: Option<String>) -> Result<()> {
+    pub async fn did_save(&self, uri: Uri, language_id: &str, text: Option<String>) -> Result<()> {
         // Flush any pending changes before saving
         self.flush_pending_changes(&uri).await?;
 
@@ -568,7 +568,7 @@ impl LspManager {
     }
 
     /// Sends textDocument/didClose notification
-    pub async fn did_close(&self, uri: Url, language_id: &str) -> Result<()> {
+    pub async fn did_close(&self, uri: Uri, language_id: &str) -> Result<()> {
         // Flush any pending changes before closing
         self.flush_pending_changes(&uri).await?;
 
@@ -961,7 +961,7 @@ impl LspManager {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
                 if let Err(e) = self.flush_pending_changes(&uri).await {
-                    lsp_error!("Debounce", "Error flushing changes for {}: {}", uri, e);
+                    lsp_error!("Debounce", "Error flushing changes for {}: {}", uri.as_str(), e);
                 }
             }
         }
@@ -1016,7 +1016,7 @@ impl LspManager {
     /// Requests go-to-definition for a position in a document
     pub async fn goto_definition(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1067,7 +1067,7 @@ impl LspManager {
     /// Requests go-to-declaration for a position in a document
     pub async fn goto_declaration(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1117,7 +1117,7 @@ impl LspManager {
     /// Requests go-to-implementation for a position in a document
     pub async fn implementation(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1169,7 +1169,7 @@ impl LspManager {
     /// Requests go-to-type-definition for a position in a document
     pub async fn type_definition(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1221,7 +1221,7 @@ impl LspManager {
     /// Requests hover information for a position in a document
     pub async fn hover(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1233,7 +1233,7 @@ impl LspManager {
         lsp_info!(
             "LSP-HOVER",
             "hover() called | URI: {} | line: {}, char: {} | language: {}",
-            uri,
+            uri.as_str(),
             line,
             character,
             language_id
@@ -1306,7 +1306,7 @@ impl LspManager {
     /// Requests code completion for a position in a document
     pub async fn completion(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1353,7 +1353,7 @@ impl LspManager {
     /// Requests document formatting
     pub async fn format_document(
         &self,
-        uri: &Url,
+        uri: &Uri,
         language_id: &str,
         tab_size: u32,
         insert_spaces: bool,
@@ -1392,7 +1392,7 @@ impl LspManager {
     /// Requests range formatting (format only a selection)
     pub async fn format_range(
         &self,
-        uri: &Url,
+        uri: &Uri,
         language_id: &str,
         start_line: u32,
         start_character: u32,
@@ -1451,7 +1451,7 @@ impl LspManager {
     /// Requests code actions for a position in a document
     pub async fn code_actions(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1502,7 +1502,7 @@ impl LspManager {
     /// Requests find references for a symbol at a position
     pub async fn references(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1548,7 +1548,7 @@ impl LspManager {
     /// Returns the range of the symbol to rename and optionally a placeholder
     pub async fn prepare_rename(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1583,7 +1583,7 @@ impl LspManager {
     /// Requests rename for a symbol at a position
     pub async fn rename(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1624,7 +1624,7 @@ impl LspManager {
     /// Requests signature help for a position in a document
     pub async fn signature_help(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1664,7 +1664,7 @@ impl LspManager {
     /// Requests selection ranges for smart selection expansion
     pub async fn selection_range(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1701,7 +1701,7 @@ impl LspManager {
     /// Requests document symbols (outline)
     pub async fn document_symbols(
         &self,
-        uri: &Url,
+        uri: &Uri,
         language_id: &str,
     ) -> Result<Vec<lsp_types::DocumentSymbol>> {
         use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
@@ -1764,7 +1764,7 @@ impl LspManager {
     /// Returns ranges that should be highlighted (read, write, or text occurrences)
     pub async fn document_highlight(
         &self,
-        uri: &Url,
+        uri: &Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -1880,7 +1880,7 @@ impl LspManager {
     /// Returns ranges that can be folded (functions, blocks, comments, etc.)
     pub async fn folding_range(
         &self,
-        uri: &Url,
+        uri: &Uri,
         language_id: &str,
     ) -> Result<Vec<lsp_types::FoldingRange>> {
         use lsp_types::{FoldingRangeParams, TextDocumentIdentifier};
@@ -1914,7 +1914,7 @@ impl LspManager {
     /// Returns call hierarchy items at the cursor position (typically one item)
     pub async fn prepare_call_hierarchy(
         &self,
-        uri: Url,
+        uri: Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -2029,7 +2029,7 @@ impl LspManager {
     /// Returns type hierarchy items at the cursor position (typically one item - the class/interface at cursor)
     pub async fn prepare_type_hierarchy(
         &self,
-        uri: Url,
+        uri: Uri,
         line: u32,
         character: u32,
         language_id: &str,
@@ -2178,7 +2178,7 @@ impl LspManager {
     /// Requests inlay hints for a document range
     pub async fn inlay_hints(
         &self,
-        uri: &Url,
+        uri: &Uri,
         range: lsp_types::Range,
         language_id: &str,
     ) -> Result<Vec<lsp_types::InlayHint>> {
@@ -2406,7 +2406,7 @@ mod tests {
     #[tokio::test]
     async fn test_diagnostics_storage() {
         let manager = LspManager::new();
-        let uri = Url::parse("file:///test.rs").unwrap();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
 
         // Initially no diagnostics
         assert!(manager.get_diagnostics(&uri).await.is_empty());
@@ -2422,7 +2422,7 @@ mod tests {
     #[tokio::test]
     async fn test_document_versioning() {
         let manager = LspManager::new();
-        let uri = Url::parse("file:///test.rs").unwrap();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
 
         // Initial version is 0
         assert_eq!(manager.get_document_version(&uri).await, 0);

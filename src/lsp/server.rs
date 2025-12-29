@@ -11,7 +11,7 @@ use super::supervisor::{RestartPolicy, TaskHealth, TaskSupervisor};
 use anyhow::{anyhow, Context, Result};
 use lsp_types::{
     InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
-    TextDocumentContentChangeEvent, Url, WorkspaceFolder,
+    TextDocumentContentChangeEvent, Uri, WorkspaceFolder,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -80,18 +80,18 @@ pub enum ServerState {
 #[allow(dead_code)]
 pub enum PendingOperation {
     DidOpen {
-        uri: Url,
+        uri: Uri,
         language_id: String,
         version: i32,
         text: String,
     },
     DidChange {
-        uri: Url,
+        uri: Uri,
         language_id: String,
         changes: Vec<TextDocumentContentChangeEvent>,
     },
     DidSave {
-        uri: Url,
+        uri: Uri,
         language_id: String,
         text: Option<String>,
     },
@@ -550,7 +550,7 @@ impl LanguageServer {
     }
 
     /// Initializes the language server
-    pub async fn initialize(&mut self, root_uri: Url) -> Result<()> {
+    pub async fn initialize(&mut self, root_uri: Uri) -> Result<()> {
         // Use language-specific timeout (Java needs much longer due to indexing)
         // Java/jdtls: 5 minutes (300s) for large projects with many dependencies
         // Other languages: 2 minutes (120s) should be plenty
@@ -569,7 +569,7 @@ impl LanguageServer {
     }
 
     /// Internal initialization implementation (wrapped by timeout)
-    async fn initialize_internal(&mut self, root_uri: Url) -> Result<()> {
+    async fn initialize_internal(&mut self, root_uri: Uri) -> Result<()> {
         // Transition to Initializing state
         self.transition_to(ServerState::Initializing {
             started_at: Instant::now(),
@@ -739,7 +739,7 @@ impl LanguageServer {
             &self.log_prefix(),
             "LSP Initialize | Language: {} | Root: {} | InitOptions: {}",
             self.inner.language,
-            root_uri,
+            root_uri.as_str(),
             initialization_options.as_ref().map(|opts| opts.to_string()).unwrap_or_else(|| "None".to_string())
         );
 
