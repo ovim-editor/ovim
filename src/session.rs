@@ -47,7 +47,7 @@ impl SessionInfo {
     pub fn new(port: u16, file: Option<String>, session_name: String) -> Self {
         let started_at = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::ZERO)
             .as_secs();
 
         let pid = process::id();
