@@ -43,6 +43,8 @@ chrono = "0.4"
 git2 = "0.19"
 dirs = "5.0"
 arboard = "3.4"
+encoding_rs = "0.8"
+chardetng = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
