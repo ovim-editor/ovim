@@ -461,6 +461,36 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 }),
             }
         }
+        "checktime" => {
+            // Check if file has been modified externally and reload if so
+            match editor.buffer().check_external_modification() {
+                Ok(true) => {
+                    match editor.buffer_mut().reload_if_changed_sync() {
+                        Ok(true) => ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some("File reloaded from disk (external changes detected)".to_string()),
+                            line_count: None,
+                        }),
+                        Ok(false) => ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some("No external changes detected".to_string()),
+                            line_count: None,
+                        }),
+                        Err(e) => ApiResponse::Error(ErrorResponse {
+                            error: format!("Failed to reload: {}", e),
+                        }),
+                    }
+                }
+                Ok(false) => ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("No external changes detected".to_string()),
+                    line_count: None,
+                }),
+                Err(e) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to check file: {}", e),
+                }),
+            }
+        }
         "marks" => {
             // Display all marks
             let mut lines = Vec::new();

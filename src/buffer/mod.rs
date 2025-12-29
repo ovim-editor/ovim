@@ -120,6 +120,8 @@ pub struct Buffer {
     git_status: GitStatus,
     /// Change manager for undo/redo (per-buffer)
     change_manager: ChangeManager,
+    /// Last known file modification time (for external change detection)
+    file_mtime: Option<std::time::SystemTime>,
 }
 
 impl Buffer {
@@ -138,6 +140,7 @@ impl Buffer {
             fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
+            file_mtime: None,
         }
     }
 
@@ -221,6 +224,7 @@ impl Buffer {
             fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
+            file_mtime: None,
         }
     }
 
@@ -522,6 +526,12 @@ impl Buffer {
         let absolute_path = normalize_path(path_ref);
         let path_str = absolute_path.to_string_lossy().to_string();
 
+        // Get file modification time for external change detection
+        let file_mtime = tokio::fs::metadata(&absolute_path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok());
+
         // Read as bytes first to detect line endings and validate UTF-8
         let bytes = tokio::fs::read(&absolute_path)
             .await
@@ -563,6 +573,7 @@ impl Buffer {
             fold_manager: crate::editor::FoldManager::new(),
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
+            file_mtime,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
@@ -673,6 +684,13 @@ impl Buffer {
             self.file_path = Some(path_str);
         }
         self.modified = false;
+
+        // Update mtime after successful save
+        self.file_mtime = tokio::fs::metadata(path_ref)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok());
+
         Ok(())
     }
 
@@ -1245,6 +1263,92 @@ impl Buffer {
         } else {
             Ok(false)
         }
+    }
+
+    // ========== External File Change Detection ==========
+
+    /// Returns the last known file modification time
+    pub fn file_mtime(&self) -> Option<std::time::SystemTime> {
+        self.file_mtime
+    }
+
+    /// Updates the stored file modification time
+    pub fn set_file_mtime(&mut self, mtime: Option<std::time::SystemTime>) {
+        self.file_mtime = mtime;
+    }
+
+    /// Checks if the file has been modified externally since we loaded/saved it
+    /// Returns Ok(true) if file changed, Ok(false) if unchanged, Err if can't determine
+    pub fn check_external_modification(&self) -> Result<bool> {
+        let file_path = self.file_path.as_ref()
+            .context("No file path set")?;
+
+        let path = Path::new(file_path);
+        if !path.exists() {
+            // File was deleted externally
+            return Ok(true);
+        }
+
+        let current_mtime = std::fs::metadata(path)
+            .context("Failed to get file metadata")?
+            .modified()
+            .context("Failed to get file modification time")?;
+
+        match self.file_mtime {
+            Some(stored_mtime) => Ok(current_mtime != stored_mtime),
+            None => Ok(false), // No stored mtime means this is a new buffer
+        }
+    }
+
+    /// Reloads the buffer from disk if it was modified externally
+    /// Returns true if reload happened, false if no change
+    pub async fn reload_if_changed(&mut self) -> Result<bool> {
+        if !self.check_external_modification()? {
+            return Ok(false);
+        }
+
+        let file_path = self.file_path.clone()
+            .context("No file path set")?;
+
+        // Read file content
+        let bytes = tokio::fs::read(&file_path)
+            .await
+            .context(format!("Failed to read file: {}", file_path))?;
+
+        // Update mtime
+        self.file_mtime = tokio::fs::metadata(&file_path)
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        // Detect line ending
+        self.line_ending = LineEnding::detect(&bytes);
+
+        // Validate UTF-8
+        let content = String::from_utf8(bytes).map_err(|e| {
+            anyhow::anyhow!("File contains invalid UTF-8 at byte {}", e.utf8_error().valid_up_to())
+        })?;
+
+        // Normalize CRLF
+        let content = if self.line_ending == LineEnding::Crlf {
+            content.replace("\r\n", "\n")
+        } else {
+            content
+        };
+
+        // Update rope
+        self.rope = Rope::from_str(&content);
+        self.modified = false;
+        self.pending_rehighlight = true;
+
+        Ok(true)
+    }
+
+    /// Blocking version of reload_if_changed
+    pub fn reload_if_changed_sync(&mut self) -> Result<bool> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.reload_if_changed())
+        })
     }
 }
 
