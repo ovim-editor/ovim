@@ -52,6 +52,9 @@ impl InputHandler {
         // This ensures UI is redrawn on next render cycle
         editor.mark_dirty();
 
+        // Update scroll offset to keep cursor visible with scrolloff margin
+        editor.update_scroll_offset();
+
         result
     }
 

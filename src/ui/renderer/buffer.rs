@@ -125,9 +125,9 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     let rope = buffer.rope();
     let cursor = buffer.cursor();
 
-    // Calculate visible range
+    // Calculate visible range using scroll offset (not centering)
     let visible_lines = area.height as usize;
-    let start_line = cursor.line().saturating_sub(visible_lines / 2);
+    let start_line = editor.scroll_offset();
     let end_line = (start_line + visible_lines).min(rope.len_lines());
 
     // Calculate gutter width
