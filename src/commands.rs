@@ -692,6 +692,45 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         error: "Lua support not enabled".to_string(),
                     })
                 }
+            // Handle :source - load and execute a Lua file
+            } else if let Some(file) = command.strip_prefix("source ").or_else(|| command.strip_prefix("so ")) {
+                let file = file.trim();
+                #[cfg(feature = "lua")]
+                {
+                    if let Some(ref mut context) = editor.lua_context {
+                        let path = std::path::PathBuf::from(file);
+                        match context.execute_file(&path) {
+                            Ok(_) => {
+                                // Process any commands from the sourced file
+                                if let Some(ref bridge) = editor.editor_bridge {
+                                    let commands = bridge.drain_commands();
+                                    for cmd in commands {
+                                        let _ = crate::editor::input::InputHandler::execute_command_string(editor, &cmd);
+                                    }
+                                }
+                                ApiResponse::Success(SuccessResponse {
+                                    success: true,
+                                    message: Some(format!("Sourced: {}", file)),
+                                    line_count: None,
+                                })
+                            }
+                            Err(e) => ApiResponse::Error(ErrorResponse {
+                                error: format!("Failed to source {}: {}", file, e),
+                            }),
+                        }
+                    } else {
+                        ApiResponse::Error(ErrorResponse {
+                            error: "Lua not enabled".to_string(),
+                        })
+                    }
+                }
+                #[cfg(not(feature = "lua"))]
+                {
+                    let _ = file;
+                    ApiResponse::Error(ErrorResponse {
+                        error: "Lua support not enabled".to_string(),
+                    })
+                }
             // Handle :bn (next buffer)
             } else if command == "bn" || command == "bnext" {
                 editor.next_buffer();
