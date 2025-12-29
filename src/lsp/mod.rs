@@ -2241,6 +2241,137 @@ impl LspManager {
             .map(|entry| entry.key().clone())
             .collect()
     }
+
+    /// Requests semantic tokens for the entire document
+    pub async fn semantic_tokens_full(
+        &self,
+        uri: &Uri,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::SemanticTokens>> {
+        use lsp_types::{SemanticTokensParams, TextDocumentIdentifier};
+
+        lsp_info!(
+            "LSP-SEMANTIC-TOKENS",
+            "semantic_tokens_full() | URI: {} | language: {}",
+            uri.as_str(),
+            language_id
+        );
+
+        let server = self
+            .servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports semantic tokens
+        if !server.supports_semantic_tokens().await {
+            lsp_info!(
+                "LSP-SEMANTIC-TOKENS",
+                "Server does not support semantic tokens - returning None"
+            );
+            return Ok(None);
+        }
+
+        let params = SemanticTokensParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request(
+                "textDocument/semanticTokens/full",
+                serde_json::to_value(params)?,
+            )
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let tokens: lsp_types::SemanticTokens = serde_json::from_value(result)?;
+        Ok(Some(tokens))
+    }
+
+    /// Requests semantic tokens for a range within the document
+    pub async fn semantic_tokens_range(
+        &self,
+        uri: &Uri,
+        range: lsp_types::Range,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::SemanticTokens>> {
+        use lsp_types::{SemanticTokensRangeParams, TextDocumentIdentifier};
+
+        lsp_info!(
+            "LSP-SEMANTIC-TOKENS",
+            "semantic_tokens_range() | URI: {} | range: {:?} | language: {}",
+            uri.as_str(),
+            range,
+            language_id
+        );
+
+        let server = self
+            .servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        // Check if server supports semantic tokens
+        if !server.supports_semantic_tokens().await {
+            lsp_info!(
+                "LSP-SEMANTIC-TOKENS",
+                "Server does not support semantic tokens - returning None"
+            );
+            return Ok(None);
+        }
+
+        let params = SemanticTokensRangeParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request(
+                "textDocument/semanticTokens/range",
+                serde_json::to_value(params)?,
+            )
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let tokens: lsp_types::SemanticTokens = serde_json::from_value(result)?;
+        Ok(Some(tokens))
+    }
+
+    /// Gets the semantic tokens legend from a server's capabilities
+    /// The legend maps token type and modifier indices to their names
+    pub async fn get_semantic_tokens_legend(
+        &self,
+        language_id: &str,
+    ) -> Result<Option<lsp_types::SemanticTokensLegend>> {
+        let server = self
+            .servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+
+        let caps = server.capabilities().await;
+        if let Some(caps) = caps {
+            if let Some(provider) = &caps.semantic_tokens_provider {
+                let legend = match provider {
+                    lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(opts) => {
+                        opts.legend.clone()
+                    }
+                    lsp_types::SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(opts) => {
+                        opts.semantic_tokens_options.legend.clone()
+                    }
+                };
+                return Ok(Some(legend));
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Computes a simple diff between old and new content for incremental sync

@@ -307,6 +307,9 @@ pub struct Buffer {
     file_mtime: Option<std::time::SystemTime>,
     /// Whether the file is read-only (no write permission)
     read_only: bool,
+    /// Cached semantic token highlights from LSP (line_idx -> Vec<(range, group)>)
+    /// These take precedence over tree-sitter highlights when available
+    semantic_highlights: Option<Vec<Vec<(Range<usize>, HighlightGroup)>>>,
 }
 
 impl Buffer {
@@ -328,6 +331,7 @@ impl Buffer {
             change_manager: ChangeManager::new(),
             file_mtime: None,
             read_only: false,
+            semantic_highlights: None,
         }
     }
 
@@ -414,6 +418,7 @@ impl Buffer {
             change_manager: ChangeManager::new(),
             file_mtime: None,
             read_only: false,
+            semantic_highlights: None,
         }
     }
 
@@ -795,6 +800,7 @@ impl Buffer {
             change_manager: ChangeManager::new(),
             file_mtime,
             read_only,
+            semantic_highlights: None,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
@@ -1229,14 +1235,105 @@ impl Buffer {
 
     /// Gets syntax highlights for a specific line
     /// Returns a list of (column_range, highlight_group) tuples
+    /// Prefers semantic highlights (from LSP) over tree-sitter highlights
     pub fn highlights_for_line(&self, line_idx: usize) -> Vec<(Range<usize>, HighlightGroup)> {
-        // Use cached highlights if available
+        // Prefer semantic highlights from LSP if available
+        if let Some(ref semantic) = self.semantic_highlights {
+            if line_idx < semantic.len() && !semantic[line_idx].is_empty() {
+                return semantic[line_idx].clone();
+            }
+        }
+        // Fall back to tree-sitter cached highlights
         if let Some(ref cache) = self.cached_highlights {
             if line_idx < cache.len() {
                 return cache[line_idx].clone();
             }
         }
         Vec::new()
+    }
+
+    /// Sets semantic highlights decoded from LSP semantic tokens
+    pub fn set_semantic_highlights(
+        &mut self,
+        highlights: Vec<Vec<(Range<usize>, HighlightGroup)>>,
+    ) {
+        self.semantic_highlights = Some(highlights);
+    }
+
+    /// Clears semantic highlights (e.g., when LSP disconnects)
+    pub fn clear_semantic_highlights(&mut self) {
+        self.semantic_highlights = None;
+    }
+
+    /// Checks if semantic highlights are available
+    pub fn has_semantic_highlights(&self) -> bool {
+        self.semantic_highlights.is_some()
+    }
+
+    /// Decodes LSP semantic tokens into highlight spans
+    /// The legend provides the mapping from token type indices to names
+    pub fn decode_semantic_tokens(
+        &mut self,
+        tokens: &lsp_types::SemanticTokens,
+        legend: &lsp_types::SemanticTokensLegend,
+    ) {
+        let line_count = self.line_count();
+        let mut highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> = vec![Vec::new(); line_count];
+
+        // Semantic tokens use relative positions (delta encoding)
+        let mut current_line: u32 = 0;
+        let mut current_char: u32 = 0;
+
+        for token in &tokens.data {
+            // Update position based on deltas
+            if token.delta_line > 0 {
+                current_line += token.delta_line;
+                current_char = token.delta_start;
+            } else {
+                current_char += token.delta_start;
+            }
+
+            let line = current_line as usize;
+            if line >= line_count {
+                break;
+            }
+
+            let start_col = current_char as usize;
+            let end_col = start_col + token.length as usize;
+            let token_type = token.token_type as usize;
+
+            // Map token type to HighlightGroup
+            let highlight_group = if token_type < legend.token_types.len() {
+                Self::lsp_token_type_to_highlight_group(legend.token_types[token_type].as_str())
+            } else {
+                HighlightGroup::Other
+            };
+
+            highlights[line].push((start_col..end_col, highlight_group));
+        }
+
+        self.semantic_highlights = Some(highlights);
+    }
+
+    /// Maps LSP semantic token type names to HighlightGroup
+    fn lsp_token_type_to_highlight_group(token_type: &str) -> HighlightGroup {
+        match token_type {
+            "namespace" | "module" => HighlightGroup::Type,
+            "type" | "class" | "enum" | "interface" | "struct" | "typeParameter" => {
+                HighlightGroup::Type
+            }
+            "parameter" => HighlightGroup::Parameter,
+            "variable" | "property" | "enumMember" => HighlightGroup::Variable,
+            "function" | "method" | "member" => HighlightGroup::Function,
+            "macro" | "decorator" => HighlightGroup::Macro,
+            "keyword" | "modifier" => HighlightGroup::Keyword,
+            "comment" => HighlightGroup::Comment,
+            "string" | "regexp" => HighlightGroup::String,
+            "number" => HighlightGroup::Number,
+            "operator" => HighlightGroup::Operator,
+            "label" | "event" => HighlightGroup::Label,
+            _ => HighlightGroup::Other,
+        }
     }
 
     /// Checks if syntax highlighting is enabled
