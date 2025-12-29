@@ -4346,7 +4346,7 @@ impl InputHandler {
 
                             // Load the file
                             if let Err(e) = editor.load_file(&location) {
-                                eprintln!("Failed to load file {}: {}", location, e);
+                                editor.set_lsp_status(format!("Failed to load file {}: {}", location, e));
                                 return Ok(());
                             }
 

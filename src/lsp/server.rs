@@ -486,7 +486,7 @@ impl LanguageServer {
                                         // Errors will be shown in status line by the editor
                                         let error_msg =
                                             format!("{} (code {})", error.message, error.code);
-                                        eprintln!("[LSP-ERROR] Request failed: {:?} | Method: {} | Error: {}", id, req.method, error_msg);
+                                        // Removed eprintln - leaks into TUI display
                                         let _ = req
                                             .sender
                                             .send(Err(anyhow!("LSP error: {}", error_msg)));
