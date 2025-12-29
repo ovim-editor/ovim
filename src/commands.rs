@@ -108,6 +108,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             })
         }
         "w" | "write" => {
+            // Check if buffer is read-only
+            if editor.buffer().is_read_only() {
+                return ApiResponse::Error(ErrorResponse {
+                    error: "E45: 'readonly' option is set (add ! to override)".to_string(),
+                });
+            }
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
@@ -134,12 +140,73 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "w!" | "write!" => {
+            // Force write even if read-only
+            if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                match editor.buffer_mut().save_as(&path) {
+                    Ok(_) => {
+                        // Clear read-only flag after successful forced write
+                        editor.buffer_mut().set_read_only(false);
+                        editor.mark_saved();
+                        editor.mark_buffer_saved();
+                        let line_count = editor.buffer().rope().len_lines();
+                        let char_count = editor.buffer().rope().len_chars();
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!(
+                                "\"{}\" {}L, {}C written",
+                                path, line_count, char_count
+                            )),
+                            line_count: None,
+                        })
+                    }
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to save: {}", e),
+                    }),
+                }
+            } else {
+                ApiResponse::Error(ErrorResponse {
+                    error: "No file name".to_string(),
+                })
+            }
+        }
         "wq" => {
+            // Check if buffer is read-only
+            if editor.buffer().is_read_only() {
+                return ApiResponse::Error(ErrorResponse {
+                    error: "E45: 'readonly' option is set (add ! to override)".to_string(),
+                });
+            }
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
                         editor.mark_saved();
                         editor.mark_buffer_saved(); // Mark for LSP didSave notification
+                        editor.quit();
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some("Saved and quitting".to_string()),
+                            line_count: None,
+                        })
+                    }
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to save: {}", e),
+                    }),
+                }
+            } else {
+                ApiResponse::Error(ErrorResponse {
+                    error: "No file name".to_string(),
+                })
+            }
+        }
+        "wq!" => {
+            // Force write even if read-only
+            if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                match editor.buffer_mut().save_as(&path) {
+                    Ok(_) => {
+                        editor.buffer_mut().set_read_only(false);
+                        editor.mark_saved();
+                        editor.mark_buffer_saved();
                         editor.quit();
                         ApiResponse::Success(SuccessResponse {
                             success: true,

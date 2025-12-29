@@ -305,6 +305,8 @@ pub struct Buffer {
     change_manager: ChangeManager,
     /// Last known file modification time (for external change detection)
     file_mtime: Option<std::time::SystemTime>,
+    /// Whether the file is read-only (no write permission)
+    read_only: bool,
 }
 
 impl Buffer {
@@ -325,6 +327,7 @@ impl Buffer {
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
             file_mtime: None,
+            read_only: false,
         }
     }
 
@@ -410,6 +413,7 @@ impl Buffer {
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
             file_mtime: None,
+            read_only: false,
         }
     }
 
@@ -452,6 +456,16 @@ impl Buffer {
     /// Returns whether the buffer has been modified
     pub fn is_modified(&self) -> bool {
         self.modified
+    }
+
+    /// Returns whether the buffer is read-only
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Sets the read-only status of the buffer
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
     }
 
     /// Gets the file path if set
@@ -716,11 +730,15 @@ impl Buffer {
         let absolute_path = normalize_path(path_ref);
         let path_str = absolute_path.to_string_lossy().to_string();
 
-        // Get file modification time for external change detection
-        let file_mtime = tokio::fs::metadata(&absolute_path)
-            .await
-            .ok()
-            .and_then(|m| m.modified().ok());
+        // Get file metadata for mtime and read-only detection
+        let metadata = tokio::fs::metadata(&absolute_path).await.ok();
+        let file_mtime = metadata.as_ref().and_then(|m| m.modified().ok());
+
+        // Check if file is read-only (no write permission)
+        let read_only = metadata
+            .as_ref()
+            .map(|m| m.permissions().readonly())
+            .unwrap_or(false);
 
         // Read as bytes first to detect encoding and line endings
         let bytes = tokio::fs::read(&absolute_path)
@@ -776,6 +794,7 @@ impl Buffer {
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
             file_mtime,
+            read_only,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
