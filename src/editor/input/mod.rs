@@ -1942,8 +1942,8 @@ impl InputHandler {
                                 .fold_manager_mut()
                                 .create_fold(start_line, end_line);
                         }
-                        // Indent/dedent don't make sense with text objects, just ignore
-                        Operator::Indent | Operator::Dedent => {}
+                        // Indent/dedent/auto-indent don't make sense with text objects, just ignore
+                        Operator::Indent | Operator::Dedent | Operator::AutoIndent => {}
                     }
                 }
 

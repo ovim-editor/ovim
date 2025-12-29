@@ -823,6 +823,100 @@ pub(super) enum CaseChange {
         Ok(())
     }
 
+    /// Auto-indent lines based on bracket context (= operator)
+    pub(super) fn auto_indent_lines_with_tracking(
+        editor: &mut Editor,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+        cursor_before: (usize, usize),
+    ) -> Result<()> {
+        let end_line = end_line.min(editor.buffer().line_count());
+        if start_line >= end_line {
+            return Ok(());
+        }
+
+        // Helper to count leading spaces
+        fn count_leading_spaces(line: &str, tab_width: usize) -> usize {
+            let mut count = 0;
+            for ch in line.chars() {
+                match ch {
+                    ' ' => count += 1,
+                    '\t' => count += tab_width,
+                    _ => break,
+                }
+            }
+            count
+        }
+
+        // Determine base indent from the line before start_line
+        let mut current_indent = if start_line > 0 {
+            if let Some(prev_line) = editor.buffer().line(start_line - 1) {
+                let prev_text = prev_line.trim_end_matches('\n');
+                count_leading_spaces(prev_text, tab_width)
+                    + if prev_text.trim_end().ends_with('{')
+                        || prev_text.trim_end().ends_with('(')
+                        || prev_text.trim_end().ends_with('[')
+                    {
+                        tab_width
+                    } else {
+                        0
+                    }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        for line_idx in start_line..end_line {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n').to_string();
+                let trimmed = line_text.trim_start();
+
+                // Decrease indent if line starts with closing bracket
+                if trimmed.starts_with('}')
+                    || trimmed.starts_with(')')
+                    || trimmed.starts_with(']')
+                {
+                    current_indent = current_indent.saturating_sub(tab_width);
+                }
+
+                // Calculate current leading spaces
+                let current_spaces = count_leading_spaces(&line_text, tab_width);
+
+                // Apply new indentation if different
+                if current_spaces != current_indent && !trimmed.is_empty() {
+                    // Remove existing indent
+                    let leading_len = line_text.len() - trimmed.len();
+                    if leading_len > 0 {
+                        let deleted =
+                            editor
+                                .buffer_mut()
+                                .delete_range(line_idx, 0, line_idx, leading_len);
+                        let range = Range::new((line_idx, 0), (line_idx, leading_len));
+                        let change = Change::delete(range, deleted, cursor_before);
+                        editor.add_change(change);
+                    }
+                    // Add new indent
+                    if current_indent > 0 {
+                        let indent_str = " ".repeat(current_indent);
+                        let change = Change::insert((line_idx, 0), indent_str, cursor_before);
+                        change.apply(editor.buffer_mut());
+                        editor.add_change(change);
+                    }
+                }
+
+                // Increase indent if line ends with opening bracket
+                if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+                    current_indent += tab_width;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub(super) fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
         let cursor = editor.buffer().cursor();
         let cursor_before = (cursor.line(), cursor.col());

@@ -264,6 +264,29 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                     editor.clear_count();
                     return Ok(());
                 }
+                (Operator::AutoIndent, KeyCode::Char('G')) => {
+                    // =G - auto-indent from current line to end of file
+                    editor.clear_pending_operator();
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = if let Some(cnt) = editor.count() {
+                        cnt.saturating_sub(1)
+                    } else {
+                        editor.buffer().line_count().saturating_sub(1)
+                    };
+                    let tab_width = editor.options.tab_width;
+
+                    Self::auto_indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                        cursor_before,
+                    )?;
+                    editor.clear_count();
+                    return Ok(());
+                }
                 (Operator::Delete, KeyCode::Char('G')) => {
                     // dG - delete from current line to end of file
                     editor.clear_pending_operator();
@@ -320,6 +343,11 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                     editor.set_pending_command('g');
                     return Ok(());
                 }
+                (Operator::AutoIndent, KeyCode::Char('g')) => {
+                    // =gg - auto-indent from current line to first line
+                    editor.set_pending_command('g');
+                    return Ok(());
+                }
                 (Operator::Fold, KeyCode::Char('g')) => {
                     // zfgg - fold from current line to first line
                     editor.set_pending_command('g');
@@ -368,6 +396,30 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                         let tab_width = editor.options.tab_width;
 
                         Self::dedent_lines_with_tracking(
+                            editor,
+                            start_line,
+                            end_line + 1,
+                            tab_width,
+                            cursor_before,
+                        )?;
+                        editor.clear_count();
+                        return Ok(());
+                    }
+                    (Operator::AutoIndent, KeyCode::Char('g')) => {
+                        // =gg - auto-indent from first line to current line
+                        editor.clear_pending_operator();
+                        editor.clear_pending_command();
+                        let cursor = editor.buffer().cursor();
+                        let cursor_before = (cursor.line(), cursor.col());
+                        let end_line = cursor.line();
+                        let start_line = if let Some(cnt) = editor.count() {
+                            cnt.saturating_sub(1)
+                        } else {
+                            0
+                        };
+                        let tab_width = editor.options.tab_width;
+
+                        Self::auto_indent_lines_with_tracking(
                             editor,
                             start_line,
                             end_line + 1,
@@ -1620,6 +1672,62 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                     editor.clear_count();
                     return Ok(());
                 }
+                // Auto-indent operations
+                (Operator::AutoIndent, KeyCode::Char('=')) => {
+                    // == - auto-indent line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = start_line + count;
+                    let tab_width = editor.options.tab_width;
+
+                    Self::auto_indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::AutoIndent, KeyCode::Char('j')) | (Operator::AutoIndent, KeyCode::Down) => {
+                    // =j - auto-indent current and next line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = start_line + count + 1;
+                    let tab_width = editor.options.tab_width;
+
+                    Self::auto_indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::AutoIndent, KeyCode::Char('k')) | (Operator::AutoIndent, KeyCode::Up) => {
+                    // =k - auto-indent current and previous line
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let current_line = cursor.line();
+                    let start_line = current_line.saturating_sub(count);
+                    let end_line = current_line + 1;
+                    let tab_width = editor.options.tab_width;
+
+                    Self::auto_indent_lines_with_tracking(
+                        editor,
+                        start_line,
+                        end_line,
+                        tab_width,
+                        cursor_before,
+                    )?;
+                    editor.clear_count();
+                    return Ok(());
+                }
                 _ => {
                     // Unknown operator+motion combo
                     editor.clear_count();
@@ -1963,8 +2071,8 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                                 .fold_manager_mut()
                                 .create_fold(start_line, end_line);
                         }
-                        // Indent/dedent don't make sense with text objects, just ignore
-                        Operator::Indent | Operator::Dedent => {}
+                        // Indent/dedent/auto-indent don't make sense with text objects, just ignore
+                        Operator::Indent | Operator::Dedent | Operator::AutoIndent => {}
                     }
                 }
 
@@ -2869,6 +2977,9 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
             }
             KeyCode::Char('<') => {
                 editor.set_pending_operator(Operator::Dedent);
+            }
+            KeyCode::Char('=') => {
+                editor.set_pending_operator(Operator::AutoIndent);
             }
             // Simple delete commands
             KeyCode::Char('x') => {

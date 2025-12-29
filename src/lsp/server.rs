@@ -1360,7 +1360,7 @@ impl LanguageServer {
             .store(caps.call_hierarchy_provider.is_some(), Ordering::Relaxed);
 
         // Cache type hierarchy support
-        // Note: type_hierarchy_provider doesn't exist in lsp-types 0.95.1
+        // Note: type_hierarchy_provider doesn't exist in lsp-types 0.95
         // Will be available when upgrading to lsp-types 0.96+
         self.inner
             .cap_type_hierarchy
