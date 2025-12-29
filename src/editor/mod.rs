@@ -2233,6 +2233,12 @@ impl Editor {
         self.lsp_state.pending_lsp_action = Some(LspAction::Rename(new_name));
     }
 
+    /// Requests semantic tokens for syntax highlighting
+    /// This should be called after file open when LSP is ready
+    pub fn request_semantic_tokens(&mut self) {
+        self.lsp_state.pending_lsp_action = Some(LspAction::SemanticTokens);
+    }
+
     /// Gets the current hover information (if any)
     pub fn hover_info(&self) -> Option<&str> {
         self.lsp_state.hover_info.as_deref()
@@ -2556,6 +2562,7 @@ impl Editor {
                 LspAction::WorkspaceSymbols => self.workspace_symbols_impl().await,
                 LspAction::OrganizeImports => self.organize_imports_impl().await,
                 LspAction::Rename(new_name) => self.rename_impl(new_name.clone()).await,
+                LspAction::SemanticTokens => self.semantic_tokens_impl().await,
             };
 
             // Handle errors: update status and optionally retry
@@ -2590,6 +2597,7 @@ impl Editor {
                             LspAction::WorkspaceSymbols => "Workspace symbols",
                             LspAction::OrganizeImports => "Organize imports",
                             LspAction::Rename(_) => "Rename",
+                            LspAction::SemanticTokens => "Semantic tokens",
                         };
                         self.set_lsp_status(format!("{} failed: {}", action_name, error_msg));
                     }
@@ -4501,6 +4509,61 @@ impl Editor {
                 Ok(false)
             }
         }
+    }
+
+    /// Requests and applies semantic tokens from the LSP server for syntax highlighting
+    async fn semantic_tokens_impl(&mut self) -> Result<bool> {
+        // Check if LSP is enabled
+        let lsp = match &self.lsp_state.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                return Ok(false); // Silently skip - LSP not available
+            }
+        };
+
+        // Get current file path
+        let Some(file_path) = self.buffer().file_path() else {
+            return Ok(false); // No file, skip
+        };
+
+        // Convert to absolute path
+        let abs_path = if std::path::Path::new(file_path).is_absolute() {
+            file_path.to_string()
+        } else {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Err(_) => return Ok(false),
+            }
+        };
+
+        let uri = match crate::lsp::uri_from_file_path(&abs_path) {
+            Some(u) => u,
+            None => return Ok(false),
+        };
+
+        // Detect language
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+
+        // Get the legend first (needed for decoding tokens)
+        let legend = match lsp.get_semantic_tokens_legend(language_id).await {
+            Ok(Some(l)) => l,
+            Ok(None) => return Ok(false), // Server doesn't support semantic tokens
+            Err(_) => return Ok(false),
+        };
+
+        // Request semantic tokens
+        let tokens = match lsp.semantic_tokens_full(&uri, language_id).await {
+            Ok(Some(t)) => t,
+            Ok(None) => return Ok(false), // No tokens available
+            Err(_) => return Ok(false),
+        };
+
+        // Decode and apply to current buffer
+        self.buffer_mut().decode_semantic_tokens(&tokens, &legend);
+        Ok(true)
     }
 
     /// Applies a workspace edit from the LSP server
