@@ -841,6 +841,228 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         }
     }
 
+    // Handle :sort command (sorts lines in range)
+    if cmd_part == "sort" || cmd_part.starts_with("sort ") {
+        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+            let reverse = cmd_part.contains('!') || cmd_part.contains(" r");
+            let numeric = cmd_part.contains(" n");
+            let unique = cmd_part.contains(" u");
+            let ignore_case = cmd_part.contains(" i");
+
+            // Collect lines
+            let mut lines: Vec<String> = (start_line..=end_line)
+                .filter_map(|idx| editor.buffer().line(idx).map(|l| l.to_string()))
+                .collect();
+
+            // Sort
+            if numeric {
+                // Sort by leading number
+                lines.sort_by(|a, b| {
+                    let num_a: i64 = a.trim().split_whitespace().next()
+                        .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let num_b: i64 = b.trim().split_whitespace().next()
+                        .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    num_a.cmp(&num_b)
+                });
+            } else if ignore_case {
+                lines.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+            } else {
+                lines.sort();
+            }
+
+            if reverse {
+                lines.reverse();
+            }
+
+            if unique {
+                lines.dedup();
+            }
+
+            // Replace the range with sorted lines
+            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+            // Get the char positions for the range
+            let start_char = editor.buffer().rope().line_to_char(start_line);
+            let end_char = if end_line + 1 < editor.buffer().line_count() {
+                editor.buffer().rope().line_to_char(end_line + 1)
+            } else {
+                editor.buffer().rope().len_chars()
+            };
+
+            // Store original text for undo
+            let original_text = editor.buffer().rope().slice(start_char..end_char).to_string();
+
+            // Remove old lines
+            editor.buffer_mut().rope_mut().remove(start_char..end_char);
+
+            // Insert sorted lines
+            let new_text = lines.join("");
+            editor.buffer_mut().rope_mut().insert(start_char, &new_text);
+
+            // Record change for undo
+            let range = Range::new((start_line, 0), (end_line + 1, 0));
+            let change = Change::composite(
+                vec![
+                    Change::delete(range.clone(), original_text, cursor_before),
+                    Change::insert((start_line, 0), new_text.clone(), cursor_before),
+                ],
+                cursor_before,
+                cursor_before,
+            );
+            editor.add_change(change);
+
+            let sorted_count = lines.len();
+            editor.set_lsp_status(format!("{} lines sorted", sorted_count));
+            return Ok(());
+        }
+    }
+
+    // Handle :copy or :t command (copy lines to destination)
+    // Format: :[range]copy {address} or :[range]t {address}
+    if cmd_part.starts_with("copy ") || cmd_part.starts_with("t ") || cmd_part == "copy" || cmd_part == "t" {
+        let dest_str = cmd_part.strip_prefix("copy ").or_else(|| cmd_part.strip_prefix("t ")).unwrap_or("");
+        let dest_str = dest_str.trim();
+
+        if dest_str.is_empty() {
+            editor.set_lsp_status("E488: Trailing characters".to_string());
+            return Ok(());
+        }
+
+        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+            // Parse destination address
+            if let Some(dest_line) = parse_range_endpoint(editor, dest_str) {
+                // Collect lines to copy
+                let mut lines_to_copy: Vec<String> = Vec::new();
+                for idx in start_line..=end_line {
+                    if let Some(line) = editor.buffer().line(idx) {
+                        lines_to_copy.push(line.to_string());
+                    }
+                }
+                let text_to_insert = lines_to_copy.join("");
+
+                // Insert after destination line
+                let insert_line = dest_line + 1;
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+                let insert_char = if insert_line < editor.buffer().line_count() {
+                    editor.buffer().rope().line_to_char(insert_line)
+                } else {
+                    editor.buffer().rope().len_chars()
+                };
+
+                // Add newline if we're at end of file
+                let text = if insert_line >= editor.buffer().line_count() && !text_to_insert.is_empty() {
+                    format!("\n{}", text_to_insert.trim_end_matches('\n'))
+                } else {
+                    text_to_insert.clone()
+                };
+
+                editor.buffer_mut().rope_mut().insert(insert_char, &text);
+
+                // Record change
+                let change = Change::insert((insert_line, 0), text.clone(), cursor_before);
+                editor.add_change(change);
+
+                // Move cursor to first copied line
+                editor.buffer_mut().cursor_mut().set_position(insert_line, 0);
+
+                let count = lines_to_copy.len();
+                editor.set_lsp_status(format!("{} line{} copied", count, if count == 1 { "" } else { "s" }));
+                return Ok(());
+            } else {
+                editor.set_lsp_status("E14: Invalid address".to_string());
+                return Ok(());
+            }
+        }
+    }
+
+    // Handle :move or :m command (move lines to destination)
+    // Format: :[range]move {address} or :[range]m {address}
+    if cmd_part.starts_with("move ") || cmd_part.starts_with("m ") || cmd_part == "move" || cmd_part == "m" {
+        let dest_str = cmd_part.strip_prefix("move ").or_else(|| cmd_part.strip_prefix("m ")).unwrap_or("");
+        let dest_str = dest_str.trim();
+
+        if dest_str.is_empty() {
+            editor.set_lsp_status("E488: Trailing characters".to_string());
+            return Ok(());
+        }
+
+        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+            // Parse destination address
+            if let Some(mut dest_line) = parse_range_endpoint(editor, dest_str) {
+                // Check for invalid moves (moving to within the range)
+                if dest_line >= start_line && dest_line < end_line {
+                    editor.set_lsp_status("E134: Move lines into themselves".to_string());
+                    return Ok(());
+                }
+
+                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+
+                // Collect lines to move
+                let mut lines_to_move: Vec<String> = Vec::new();
+                for idx in start_line..=end_line {
+                    if let Some(line) = editor.buffer().line(idx) {
+                        lines_to_move.push(line.to_string());
+                    }
+                }
+                let text_to_move = lines_to_move.join("");
+                let line_count = lines_to_move.len();
+
+                // Delete the source lines
+                let start_char = editor.buffer().rope().line_to_char(start_line);
+                let end_char = if end_line + 1 < editor.buffer().line_count() {
+                    editor.buffer().rope().line_to_char(end_line + 1)
+                } else {
+                    editor.buffer().rope().len_chars()
+                };
+                editor.buffer_mut().rope_mut().remove(start_char..end_char);
+
+                // Adjust destination if it was after the deleted lines
+                if dest_line > end_line {
+                    dest_line = dest_line.saturating_sub(line_count);
+                }
+
+                // Insert after destination line
+                let insert_line = dest_line + 1;
+                let insert_char = if insert_line < editor.buffer().line_count() {
+                    editor.buffer().rope().line_to_char(insert_line)
+                } else {
+                    editor.buffer().rope().len_chars()
+                };
+
+                // Add newline if we're at end of file
+                let text = if insert_line >= editor.buffer().line_count() && !text_to_move.is_empty() {
+                    format!("\n{}", text_to_move.trim_end_matches('\n'))
+                } else {
+                    text_to_move.clone()
+                };
+
+                editor.buffer_mut().rope_mut().insert(insert_char, &text);
+
+                // Record change for undo
+                let range = Range::new((start_line, 0), (end_line + 1, 0));
+                let change = Change::composite(
+                    vec![
+                        Change::delete(range, text_to_move, cursor_before),
+                        Change::insert((insert_line, 0), text.clone(), cursor_before),
+                    ],
+                    cursor_before,
+                    (insert_line, 0),
+                );
+                editor.add_change(change);
+
+                // Move cursor to first moved line
+                editor.buffer_mut().cursor_mut().set_position(insert_line, 0);
+
+                editor.set_lsp_status(format!("{} line{} moved", line_count, if line_count == 1 { "" } else { "s" }));
+                return Ok(());
+            } else {
+                editor.set_lsp_status("E14: Invalid address".to_string());
+                return Ok(());
+            }
+        }
+    }
+
     // Handle commands with arguments
     if command.starts_with("e ") || command.starts_with("edit ") {
         // :e <filename> or :edit <filename>
