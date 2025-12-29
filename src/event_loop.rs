@@ -33,6 +33,23 @@ async fn process_editor_tick(
     if let Some(lsp_manager) = editor.lsp_manager() {
         lsp_manager.process_notifications().await;
         lsp_manager.process_flush_requests().await;
+
+        // Poll for server-initiated workspace edits (e.g., from refactoring operations)
+        let pending_edits = lsp_manager.poll_pending_workspace_edits().await;
+        for workspace_edit in pending_edits {
+            match editor.apply_workspace_edit(workspace_edit).await {
+                Ok(applied) => {
+                    if applied {
+                        editor.set_lsp_status("Applied workspace edit".to_string());
+                    } else {
+                        editor.set_lsp_status("Partially applied workspace edit".to_string());
+                    }
+                }
+                Err(e) => {
+                    editor.set_lsp_status(format!("Failed to apply edit: {}", e));
+                }
+            }
+        }
     }
 
     if let Some(file_path) = editor.needs_lsp_init() {
