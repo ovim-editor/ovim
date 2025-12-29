@@ -9,6 +9,7 @@ pub enum Operator {
     Yank,
     Indent,
     Dedent,
+    AutoIndent,
     Lowercase,
     Uppercase,
     ToggleCase,
@@ -305,6 +306,95 @@ impl Operators {
         }
 
         Ok(lines_dedented)
+    }
+
+    /// Auto-indents lines based on bracket context (= operator)
+    /// Returns the number of lines auto-indented
+    pub fn auto_indent_lines(
+        buffer: &mut Buffer,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+    ) -> Result<usize> {
+        let end_line = end_line.min(buffer.line_count());
+        if start_line >= end_line {
+            return Ok(0);
+        }
+
+        // Determine base indent from the line before start_line (or 0 if first line)
+        let mut current_indent = if start_line > 0 {
+            if let Some(prev_line) = buffer.line(start_line - 1) {
+                let prev_text = prev_line.trim_end_matches('\n');
+                Self::count_leading_spaces(prev_text, tab_width)
+                    + if prev_text.trim_end().ends_with('{')
+                        || prev_text.trim_end().ends_with('(')
+                        || prev_text.trim_end().ends_with('[')
+                    {
+                        tab_width
+                    } else {
+                        0
+                    }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let mut lines_indented = 0;
+
+        for line_idx in start_line..end_line {
+            if let Some(line) = buffer.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let trimmed = line_text.trim_start();
+
+                // Decrease indent if line starts with closing bracket
+                if trimmed.starts_with('}')
+                    || trimmed.starts_with(')')
+                    || trimmed.starts_with(']')
+                {
+                    current_indent = current_indent.saturating_sub(tab_width);
+                }
+
+                // Calculate current leading spaces
+                let current_spaces = Self::count_leading_spaces(line_text, tab_width);
+
+                // Apply new indentation if different
+                if current_spaces != current_indent && !trimmed.is_empty() {
+                    // Remove existing indent
+                    let leading_len = line_text.len() - trimmed.len();
+                    if leading_len > 0 {
+                        buffer.delete_range(line_idx, 0, line_idx, leading_len);
+                    }
+                    // Add new indent
+                    if current_indent > 0 {
+                        let indent_str = " ".repeat(current_indent);
+                        buffer.insert_text_at(line_idx, 0, &indent_str);
+                    }
+                    lines_indented += 1;
+                }
+
+                // Increase indent if line ends with opening bracket
+                if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+                    current_indent += tab_width;
+                }
+            }
+        }
+
+        Ok(lines_indented)
+    }
+
+    /// Count leading spaces (tabs count as tab_width spaces)
+    fn count_leading_spaces(line: &str, tab_width: usize) -> usize {
+        let mut count = 0;
+        for ch in line.chars() {
+            match ch {
+                ' ' => count += 1,
+                '\t' => count += tab_width,
+                _ => break,
+            }
+        }
+        count
     }
 
     /// Joins the current line with the next line (J command)
