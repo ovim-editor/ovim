@@ -66,10 +66,34 @@ impl EditorTest {
     }
 
     /// Execute a sequence of vim keys (simple parser for common operations)
-    /// Examples: "gg", "dd", "yy", "3j", "dw", "ciw"
+    /// Examples: "gg", "dd", "yy", "3j", "dw", "ciw", "<C-a>", "<C-x>"
     pub fn keys(&mut self, keys: &str) -> &mut Self {
-        for c in keys.chars() {
-            self.press(c);
+        let mut chars = keys.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '<' {
+                // Parse special key notation like <C-a>, <Esc>, <Enter>
+                let mut special_key = String::new();
+                while let Some(&next_c) = chars.peek() {
+                    if next_c == '>' {
+                        chars.next(); // consume '>'
+                        break;
+                    }
+                    special_key.push(chars.next().unwrap());
+                }
+
+                // Handle the special key
+                match special_key.as_str() {
+                    "Esc" => self.press_esc(),
+                    "Enter" => self.press_enter(),
+                    "C-a" => self.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                    "C-x" => self.press_with(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                    "C-e" => self.press_with(KeyCode::Char('e'), KeyModifiers::CONTROL),
+                    "C-y" => self.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL),
+                    _ => panic!("Unknown special key: <{}>", special_key),
+                };
+            } else {
+                self.press(c);
+            }
         }
         self
     }

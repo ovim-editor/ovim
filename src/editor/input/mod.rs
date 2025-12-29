@@ -2565,6 +2565,15 @@ impl InputHandler {
                     editor.buffer_mut().cursor_mut().set_col(line_len);
                 }
             }
+            // Enter Replace mode
+            KeyCode::Char('R') => {
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
+                editor.start_change_building(cursor_before);
+                editor.set_mode(Mode::Replace);
+            }
             KeyCode::Char('o') => {
                 let cursor_before = (
                     editor.buffer().cursor().line(),
@@ -4171,8 +4180,97 @@ impl InputHandler {
     }
 
     /// Handles input in Replace mode
-    fn handle_replace_mode(_editor: &mut Editor, _key_event: KeyEvent) -> Result<()> {
-        // Placeholder for replace mode
+    fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            KeyCode::Esc => {
+                // Save last insert position
+                let cursor_line = editor.buffer().cursor().line();
+                let cursor_col = editor.buffer().cursor().col();
+                editor.last_insert_position = Some((cursor_line, cursor_col));
+
+                editor.finalize_change_building();
+                editor.update_last_inserted_register();
+                editor.mark_buffer_modified();
+
+                // Move cursor left one position (unless at column 0)
+                if cursor_col > 0 {
+                    editor.buffer_mut().cursor_mut().move_left(1);
+                }
+
+                editor.set_mode(Mode::Normal);
+            }
+            KeyCode::Char(c) => {
+                // Replace character under cursor with the typed character
+                let line_idx = editor.buffer().cursor().line();
+                let col = editor.buffer().cursor().col();
+
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    let line_text = line.trim_end_matches('\n');
+                    let chars: Vec<char> = line_text.chars().collect();
+
+                    if col < chars.len() {
+                        // Delete character under cursor
+                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
+
+                        // Insert new character
+                        let new_char = c.to_string();
+                        editor.buffer_mut().insert_text_at(line_idx, col, &new_char);
+
+                        // Track the change
+                        let cursor_before = (line_idx, col);
+                        let delete_change = Change::delete(
+                            Range::new((line_idx, col), (line_idx, col + 1)),
+                            deleted,
+                            cursor_before,
+                        );
+                        let insert_change = Change::insert(
+                            (line_idx, col),
+                            new_char.clone(),
+                            cursor_before,
+                        );
+                        let change = Change::composite(
+                            vec![delete_change, insert_change],
+                            cursor_before,
+                            (line_idx, col + 1),
+                        );
+                        editor.add_change(change);
+
+                        // Move cursor forward
+                        editor.buffer_mut().cursor_mut().move_right(1);
+                    } else {
+                        // At end of line, just insert (like append)
+                        helpers::insert_char(editor, c)?;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // In replace mode, Enter inserts a newline (breaking the line)
+                helpers::insert_newline(editor)?;
+            }
+            KeyCode::Backspace => {
+                // Backspace in replace mode moves cursor left without deleting
+                let cursor = editor.buffer_mut().cursor_mut();
+                if cursor.col() > 0 {
+                    cursor.move_left(1);
+                }
+            }
+            KeyCode::Left => {
+                let cursor = editor.buffer_mut().cursor_mut();
+                if cursor.col() > 0 {
+                    cursor.move_left(1);
+                }
+            }
+            KeyCode::Right => {
+                helpers::move_right(editor);
+            }
+            KeyCode::Up => {
+                helpers::move_up(editor);
+            }
+            KeyCode::Down => {
+                helpers::move_down(editor);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
