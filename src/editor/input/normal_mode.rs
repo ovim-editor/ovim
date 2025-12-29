@@ -1709,6 +1709,15 @@ pub(super) fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Re
                         // it or at - HTML/XML tag
                         TextObjects::tag(editor.buffer(), text_obj_type == 'a')
                     }
+                    KeyCode::Char('i') => {
+                        // ii or ai - indentation block
+                        let tab_width = editor.options.tab_width;
+                        if text_obj_type == 'i' {
+                            TextObjects::inner_indent(editor.buffer(), tab_width)
+                        } else {
+                            TextObjects::around_indent(editor.buffer(), tab_width)
+                        }
+                    }
                     _ => {
                         // Unknown text object
                         return Ok(());

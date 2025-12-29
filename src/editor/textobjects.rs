@@ -703,4 +703,110 @@ impl TextObjects {
             end_col,
         })
     }
+
+    /// Gets the indentation level (number of leading spaces/tabs) of a line
+    fn get_indent_level(line: &str, tab_width: usize) -> usize {
+        let mut indent = 0;
+        for c in line.chars() {
+            match c {
+                ' ' => indent += 1,
+                '\t' => indent += tab_width,
+                _ => break,
+            }
+        }
+        indent
+    }
+
+    /// Gets the range for "inner indent" (ii) - lines with same or greater indentation
+    pub fn inner_indent(buffer: &Buffer, tab_width: usize) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let line_count = buffer.line_count();
+
+        if line_idx >= line_count {
+            return None;
+        }
+
+        let current_line = buffer.line(line_idx)?;
+        let current_line_trimmed = current_line.trim_end_matches('\n');
+
+        // Skip blank lines for indent calculation
+        if current_line_trimmed.trim().is_empty() {
+            return None;
+        }
+
+        let base_indent = Self::get_indent_level(current_line_trimmed, tab_width);
+
+        // Find start of indent block (going up)
+        let mut start_line = line_idx;
+        while start_line > 0 {
+            let prev_line = buffer.line(start_line - 1)?;
+            let prev_trimmed = prev_line.trim_end_matches('\n');
+
+            // Stop at blank lines or lines with less indentation
+            if prev_trimmed.trim().is_empty()
+                || Self::get_indent_level(prev_trimmed, tab_width) < base_indent
+            {
+                break;
+            }
+            start_line -= 1;
+        }
+
+        // Find end of indent block (going down)
+        let mut end_line = line_idx;
+        while end_line < line_count - 1 {
+            let next_line = buffer.line(end_line + 1)?;
+            let next_trimmed = next_line.trim_end_matches('\n');
+
+            // Stop at blank lines or lines with less indentation
+            if next_trimmed.trim().is_empty()
+                || Self::get_indent_level(next_trimmed, tab_width) < base_indent
+            {
+                break;
+            }
+            end_line += 1;
+        }
+
+        // Get the length of the last line for end_col
+        let last_line = buffer.line(end_line)?;
+        let end_col = last_line.trim_end_matches('\n').chars().count();
+
+        Some(TextObjectRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around indent" (ai) - includes surrounding blank lines
+    pub fn around_indent(buffer: &Buffer, tab_width: usize) -> Option<TextObjectRange> {
+        let mut range = Self::inner_indent(buffer, tab_width)?;
+        let line_count = buffer.line_count();
+
+        // Extend upward to include blank lines
+        while range.start_line > 0 {
+            let prev_line = buffer.line(range.start_line - 1)?;
+            if prev_line.trim().is_empty() {
+                range.start_line -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Extend downward to include blank lines
+        while range.end_line < line_count - 1 {
+            let next_line = buffer.line(range.end_line + 1)?;
+            if next_line.trim().is_empty() {
+                range.end_line += 1;
+                // Update end_col for the new last line
+                let last_line = buffer.line(range.end_line)?;
+                range.end_col = last_line.trim_end_matches('\n').chars().count();
+            } else {
+                break;
+            }
+        }
+
+        Some(range)
+    }
 }
