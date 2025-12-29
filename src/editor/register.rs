@@ -319,6 +319,69 @@ impl RegisterManager {
     pub fn get_clipboard(&self) -> String {
         self.clipboard.read()
     }
+
+    /// Lists all non-empty registers as (name, content) pairs
+    /// Truncates content for display
+    pub fn list_registers(&self) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+
+        // Helper to truncate content for display
+        fn truncate(s: &str, max_len: usize) -> String {
+            let s = s.replace('\n', "^J");
+            if s.len() > max_len {
+                format!("{}...", &s[..max_len])
+            } else {
+                s
+            }
+        }
+
+        // Unnamed register
+        if !self.unnamed.text.is_empty() {
+            result.push(("\"\"".to_string(), truncate(&self.unnamed.text, 50)));
+        }
+
+        // Yank register (0)
+        if !self.yank.text.is_empty() {
+            result.push(("\"0".to_string(), truncate(&self.yank.text, 50)));
+        }
+
+        // Delete registers (1-9)
+        for (i, text) in self.delete_history.iter().enumerate() {
+            if !text.is_empty() {
+                result.push((format!("\"{}", i + 1), truncate(text, 50)));
+            }
+        }
+
+        // Named registers (a-z)
+        let mut names: Vec<_> = self.registers.keys().copied().collect();
+        names.sort();
+        for name in names {
+            if let Some(content) = self.registers.get(&name) {
+                if !content.text.is_empty() {
+                    result.push((format!("\"{}", name), truncate(&content.text, 50)));
+                }
+            }
+        }
+
+        // Special registers
+        if !self.current_file.is_empty() {
+            result.push(("\"%".to_string(), truncate(&self.current_file, 50)));
+        }
+        if !self.last_search.is_empty() {
+            result.push(("\"/".to_string(), truncate(&self.last_search, 50)));
+        }
+        if !self.last_command.is_empty() {
+            result.push(("\":".to_string(), truncate(&self.last_command, 50)));
+        }
+
+        // Clipboard
+        let clipboard = self.clipboard.read();
+        if !clipboard.is_empty() {
+            result.push(("\"+".to_string(), truncate(&clipboard, 50)));
+        }
+
+        result
+    }
 }
 
 impl Default for RegisterManager {

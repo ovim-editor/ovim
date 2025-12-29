@@ -405,6 +405,66 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 line_count: None,
             })
         }
+        "reg" | "registers" => {
+            // Display all registers
+            let registers = editor.registers().list_registers();
+            if registers.is_empty() {
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("No registers in use".to_string()),
+                    line_count: None,
+                })
+            } else {
+                let display: Vec<String> = registers
+                    .iter()
+                    .map(|(name, content)| format!("{}: {}", name, content))
+                    .collect();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(display.join("\n")),
+                    line_count: None,
+                })
+            }
+        }
+        "marks" => {
+            // Display all marks
+            let mut lines = Vec::new();
+
+            // Local marks (a-z)
+            let mut local_marks: Vec<_> = editor.marks().iter().collect();
+            local_marks.sort_by_key(|(c, _)| *c);
+            for (name, mark) in local_marks {
+                lines.push(format!(" '{}  {:>5}  {:>3}", name, mark.line + 1, mark.col));
+            }
+
+            // Global marks (A-Z)
+            let mut global_marks: Vec<_> = editor.marks().iter_global().collect();
+            global_marks.sort_by_key(|(c, _)| *c);
+            for (name, mark) in global_marks {
+                lines.push(format!(
+                    " '{}  {:>5}  {:>3}  {}",
+                    name,
+                    mark.line + 1,
+                    mark.col,
+                    mark.file_path
+                ));
+            }
+
+            if lines.is_empty() {
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some("No marks set".to_string()),
+                    line_count: None,
+                })
+            } else {
+                lines.insert(0, "mark  line   col  file".to_string());
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(lines.join("\n")),
+                    line_count: None,
+                })
+            }
+        }
         "tabs" => {
             // List all tabs
             let tabs = editor.tab_page_manager().tabs();
