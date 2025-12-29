@@ -26,7 +26,6 @@ pub fn move_right(editor: &mut Editor) {
     if let Some(line) = editor.buffer().line(line_idx) {
         let line_len = line.trim_end_matches('\n').chars().count();
         let cursor = editor.buffer_mut().cursor_mut();
-        let old_col = cursor.col();
 
         // In VisualBlock mode, allow cursor beyond line end for rectangular selection
         let new_col = if mode == Mode::VisualBlock {
@@ -35,10 +34,6 @@ pub fn move_right(editor: &mut Editor) {
             (cursor.col() + count).min(line_len.saturating_sub(1).max(0))
         };
 
-        eprintln!(
-            "[DEBUG move_right] line={}, line_len={}, old_col={}, new_col={}, mode={:?}",
-            line_idx, line_len, old_col, new_col, mode
-        );
         cursor.set_col(new_col);
     }
     editor.clear_count();
