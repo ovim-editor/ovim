@@ -1145,6 +1145,107 @@ impl Buffer {
             false
         }
     }
+
+    // ========== Swap/Backup File Support ==========
+
+    /// Returns the path to the swap file for this buffer
+    /// Swap files are named .{filename}.swp in the same directory
+    pub fn swap_file_path(&self) -> Option<PathBuf> {
+        let file_path = self.file_path.as_ref()?;
+        let path = Path::new(file_path);
+        let parent = path.parent().unwrap_or(Path::new("."));
+        let file_name = path.file_name()?.to_str()?;
+        Some(parent.join(format!(".{}.swp", file_name)))
+    }
+
+    /// Returns the path to the backup file for this buffer
+    /// Backup files are named {filename}~ in the same directory
+    pub fn backup_file_path(&self) -> Option<PathBuf> {
+        let file_path = self.file_path.as_ref()?;
+        Some(PathBuf::from(format!("{}~", file_path)))
+    }
+
+    /// Checks if a swap file exists for this buffer
+    pub fn has_swap_file(&self) -> bool {
+        self.swap_file_path()
+            .map(|p| p.exists())
+            .unwrap_or(false)
+    }
+
+    /// Writes the current buffer content to the swap file
+    pub fn write_swap_file(&self) -> Result<()> {
+        let swap_path = self.swap_file_path()
+            .context("Cannot write swap file: no file path set")?;
+
+        let content = self.rope.to_string();
+        std::fs::write(&swap_path, &content)
+            .context(format!("Failed to write swap file: {}", swap_path.display()))?;
+
+        Ok(())
+    }
+
+    /// Deletes the swap file if it exists
+    pub fn delete_swap_file(&self) -> Result<()> {
+        if let Some(swap_path) = self.swap_file_path() {
+            if swap_path.exists() {
+                std::fs::remove_file(&swap_path)
+                    .context(format!("Failed to delete swap file: {}", swap_path.display()))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Creates a backup of the original file before saving
+    pub fn create_backup_file(&self) -> Result<()> {
+        let file_path = self.file_path.as_ref()
+            .context("Cannot create backup: no file path set")?;
+        let backup_path = self.backup_file_path()
+            .context("Cannot create backup path")?;
+
+        let source = Path::new(file_path);
+        if source.exists() {
+            std::fs::copy(source, &backup_path)
+                .context(format!("Failed to create backup: {}", backup_path.display()))?;
+        }
+
+        Ok(())
+    }
+
+    /// Reads content from the swap file if it exists
+    pub fn read_swap_file(&self) -> Result<Option<String>> {
+        let swap_path = match self.swap_file_path() {
+            Some(p) if p.exists() => p,
+            _ => return Ok(None),
+        };
+
+        let content = std::fs::read_to_string(&swap_path)
+            .context(format!("Failed to read swap file: {}", swap_path.display()))?;
+
+        Ok(Some(content))
+    }
+
+    /// Recovers buffer content from the swap file
+    pub fn recover_from_swap_file(&mut self) -> Result<bool> {
+        if let Some(content) = self.read_swap_file()? {
+            // Ensure content ends with newline
+            let content = if content.ends_with('\n') {
+                content
+            } else {
+                format!("{}\n", content)
+            };
+
+            self.rope = Rope::from_str(&content);
+            self.modified = true; // Mark as modified so user knows to save
+            self.pending_rehighlight = true; // Trigger rehighlighting
+
+            // Delete the swap file after successful recovery
+            self.delete_swap_file()?;
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 impl Default for Buffer {

@@ -63,6 +63,10 @@ pub struct EditorOptions {
     pub cursorline: bool,
     /// Highlight matching brackets (default: true)
     pub showmatch: bool,
+    /// Create swap files for crash recovery (default: true)
+    pub swapfile: bool,
+    /// Create backup files before saving (default: false)
+    pub backup: bool,
 }
 
 impl Default for EditorOptions {
@@ -79,6 +83,8 @@ impl Default for EditorOptions {
             smartcase: false,
             cursorline: false,
             showmatch: true,
+            swapfile: true,
+            backup: false,
         }
     }
 }
