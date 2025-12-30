@@ -10,6 +10,43 @@ pub struct DocumentSyncState {
     pub last_synced_content: Option<String>,
     /// Track whether we've sent didOpen for this document
     pub did_open_sent: bool,
+    /// Last time we sent didChange (for debouncing)
+    pub last_change_sent: Option<std::time::Instant>,
+}
+
+impl DocumentSyncState {
+    pub fn mark_modified(&mut self) {
+        self.buffer_modified = true;
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.buffer_saved = true;
+    }
+
+    pub fn is_modified(&self) -> bool {
+        self.buffer_modified
+    }
+
+    pub fn should_send_change(&self) -> bool {
+        // Debounce: only send if 150ms have passed since last send
+        match self.last_change_sent {
+            None => true,
+            Some(last) => last.elapsed().as_millis() >= 150,
+        }
+    }
+
+    pub fn should_send_save(&self) -> bool {
+        self.buffer_saved
+    }
+
+    pub fn mark_change_sent(&mut self) {
+        self.buffer_modified = false;
+        self.last_change_sent = Some(std::time::Instant::now());
+    }
+
+    pub fn mark_save_sent(&mut self) {
+        self.buffer_saved = false;
+    }
 }
 
 /// LSP-related state for the editor
