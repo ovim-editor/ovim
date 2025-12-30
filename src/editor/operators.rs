@@ -13,7 +13,6 @@ pub enum Operator {
     Lowercase,
     Uppercase,
     ToggleCase,
-    ReplaceWithRegister,
     Fold,
 }
 
