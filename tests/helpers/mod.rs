@@ -71,26 +71,45 @@ impl EditorTest {
         let mut chars = keys.chars().peekable();
         while let Some(c) = chars.next() {
             if c == '<' {
-                // Parse special key notation like <C-a>, <Esc>, <Enter>
-                let mut special_key = String::new();
+                // Look ahead to see if this is a special key notation
+                // Peek through the characters to find either '>' or determine it's not a special key
+                let mut lookahead = vec![];
+                let mut found_close = false;
+
+                // Collect characters until we find '>' or run out
                 while let Some(&next_c) = chars.peek() {
+                    lookahead.push(next_c);
+                    chars.next(); // consume it
                     if next_c == '>' {
-                        chars.next(); // consume '>'
+                        found_close = true;
                         break;
                     }
-                    special_key.push(chars.next().unwrap());
                 }
 
-                // Handle the special key
-                match special_key.as_str() {
-                    "Esc" => self.press_esc(),
-                    "Enter" => self.press_enter(),
-                    "C-a" => self.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL),
-                    "C-x" => self.press_with(KeyCode::Char('x'), KeyModifiers::CONTROL),
-                    "C-e" => self.press_with(KeyCode::Char('e'), KeyModifiers::CONTROL),
-                    "C-y" => self.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL),
-                    _ => panic!("Unknown special key: <{}>", special_key),
-                };
+                // If we found a closing '>' and have content, it's a special key
+                if found_close && lookahead.len() > 1 {
+                    let special_key: String = lookahead.iter().take(lookahead.len() - 1).collect();
+                    // Handle the special key
+                    match special_key.as_str() {
+                        "Esc" => self.press_esc(),
+                        "Enter" => self.press_enter(),
+                        "C-a" => self.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL),
+                        "C-x" => self.press_with(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                        "C-e" => self.press_with(KeyCode::Char('e'), KeyModifiers::CONTROL),
+                        "C-y" => self.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL),
+                        "C-r" => self.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                        "C-v" => self.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                        _ => panic!("Unknown special key: <{}>", special_key),
+                    };
+                } else {
+                    // Not a special key - press '<' and put back what we consumed
+                    self.press('<');
+                    for ch in lookahead {
+                        if ch != '>' {  // Don't put back the '>' if we found one for empty special key
+                            self.press(ch);
+                        }
+                    }
+                }
             } else {
                 self.press(c);
             }

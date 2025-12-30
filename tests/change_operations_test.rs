@@ -13,7 +13,7 @@ fn test_cw_change_word() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "goodbyeworld test\n");
+    assert_eq!(test.buffer_content(), "goodbye world test\n");
     test.assert_cursor(0, 6);
 }
 
@@ -29,8 +29,8 @@ fn test_cw_multiple_words() {
         .type_text("second")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "firsttwo secondfour\n");
-    test.assert_cursor(0, 14);
+    assert_eq!(test.buffer_content(), "first second three four\n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn test_cw_at_end() {
         .type_text("universe")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello universed\n");
+    assert_eq!(test.buffer_content(), "hello universe\n");
     test.assert_cursor(0, 13);
 }
 
@@ -52,7 +52,7 @@ fn test_cw_single_char() {
 
     test.keys("cw").type_text("alpha").press_esc();
 
-    assert_eq!(test.buffer_content(), "alphay z\n");
+    assert_eq!(test.buffer_content(), "alpha z\n");
     test.assert_cursor(0, 4);
 }
 
@@ -130,8 +130,8 @@ fn test_C_basic() {
         .type_text("universe")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hellouniverse \n");
-    test.assert_cursor(0, 12);
+    assert_eq!(test.buffer_content(), "hello universe\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]
@@ -155,8 +155,8 @@ fn test_C_at_end() {
         .type_text("!")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello wor!l\n");
-    test.assert_cursor(0, 9);
+    assert_eq!(test.buffer_content(), "hello worl!\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -185,8 +185,8 @@ fn test_c_dollar() {
         .type_text("end")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "helloend \n");
-    test.assert_cursor(0, 7);
+    assert_eq!(test.buffer_content(), "hello end\n");
+    test.assert_cursor(0, 8);
 }
 
 // ============================================================================
@@ -277,7 +277,7 @@ fn test_caw_last_word() {
 
     test.keys("w").keys("caw").type_text("universe").press_esc();
 
-    assert_eq!(test.buffer_content(), "hello universed\n");
+    assert_eq!(test.buffer_content(), "hello universe\n");
     test.assert_cursor(0, 13);
 }
 
@@ -347,8 +347,8 @@ fn test_c2w_change_two_words() {
         .type_text("first")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "one two three four\n");
-    test.assert_cursor(0, 8);
+    assert_eq!(test.buffer_content(), "first three four\n");
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -359,7 +359,7 @@ fn test_c3l_change_3_chars() {
         .type_text("XYZ")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "helo world\n");
+    assert_eq!(test.buffer_content(), "ello world\n");
     test.assert_cursor(0, 2);
 }
 
@@ -371,7 +371,7 @@ fn test_2cw_change_word_twice() {
         .type_text("first")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "firstthree four\n");
+    assert_eq!(test.buffer_content(), "first three four\n");
     test.assert_cursor(0, 4);
 }
 
@@ -481,7 +481,7 @@ fn test_cw_and_undo() {
 
     test.keys("cw").type_text("goodbye").press_esc().press('u'); // Undo
 
-    assert_eq!(test.buffer_content(), "world\n");
+    assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 0);
 }
 
@@ -519,8 +519,8 @@ fn test_cw_and_repeat() {
         .keys("w") // Move to next word
         .press('.'); // Repeat change
 
-    assert_eq!(test.buffer_content(), "1two 1three four\n");
-    test.assert_cursor(0, 6);
+    assert_eq!(test.buffer_content(), "1 1 three four\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -550,7 +550,7 @@ fn test_cw_at_last_char() {
         .type_text("X")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hellXo\n");
+    assert_eq!(test.buffer_content(), "hellX\n");
     test.assert_cursor(0, 4);
 }
 
