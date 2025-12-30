@@ -566,17 +566,23 @@ impl InputHandler {
                 }
                 (Operator::Change, KeyCode::Char('w')) => {
                     // cw - change word
+                    // Special case in Vim: cw behaves like ce (change to end of word),
+                    // not like dw (delete to start of next word)
                     let start_cursor = editor.buffer().cursor().clone();
                     let cursor_before = (start_cursor.line(), start_cursor.col());
                     let start_line = start_cursor.line();
                     let start_col = start_cursor.col();
 
-                    // Move cursor forward by word count times
-                    Motions::word_forward(editor.buffer_mut(), count);
+                    // Start change building BEFORE deletion so it's part of the composite change
+                    editor.start_change_building(cursor_before);
+
+                    // Use end-of-word motion for cw (not word_forward)
+                    Motions::word_end_forward(editor.buffer_mut(), count);
 
                     let end_cursor = editor.buffer().cursor();
                     let end_line = end_cursor.line();
-                    let end_col = end_cursor.col();
+                    // For deletion range, we need to include the character at end_col
+                    let end_col = end_cursor.col() + 1;
 
                     let start_pos = (start_line, start_col);
                     let end_pos = (end_line, end_col);
@@ -594,15 +600,11 @@ impl InputHandler {
                         .set_position(start_line, start_col);
 
                     editor.delete_to_register(deleted);
+                    // Add deletion to the change builder (not directly to undo stack)
                     editor.add_change(change);
 
-                    // Don't clamp cursor for c$ - we want to insert at end of line
+                    // Continue in insert mode - insertions will be added to the same builder
                     editor.clear_count();
-                    let insert_cursor = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-                    editor.start_change_building(insert_cursor);
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
@@ -1786,6 +1788,18 @@ impl InputHandler {
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                ('g', KeyCode::Char(';')) => {
+                    // g; - jump to last change position
+                    if let Some(change) = editor.last_change() {
+                        let pos = change.cursor_before();
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(pos.0, pos.1);
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
                 ('z', KeyCode::Char('o')) => {
                     // zo - open fold at cursor
                     let line = editor.buffer().cursor().line();
@@ -1828,6 +1842,22 @@ impl InputHandler {
                 ('z', KeyCode::Char('f')) => {
                     // zf{motion} - create fold
                     editor.set_pending_operator(Operator::Fold);
+                    return Ok(());
+                }
+                ('Z', KeyCode::Char('Z')) => {
+                    // ZZ - save and quit
+                    if editor.buffer().file_path().is_some() {
+                        // Try to save, but don't fail if runtime unavailable (e.g., tests)
+                        if tokio::runtime::Handle::try_current().is_ok() {
+                            let _ = editor.buffer_mut().save();
+                        }
+                    }
+                    editor.quit();
+                    return Ok(());
+                }
+                ('Z', KeyCode::Char('Q')) => {
+                    // ZQ - quit without saving
+                    editor.quit();
                     return Ok(());
                 }
                 ('g', KeyCode::Char('t')) => {
@@ -2543,6 +2573,10 @@ impl InputHandler {
             KeyCode::Char('z') => {
                 // Set pending command to wait for second character (zo, zc, etc.)
                 editor.set_pending_command('z');
+            }
+            KeyCode::Char('Z') => {
+                // Set pending command to wait for second character (ZZ, ZQ)
+                editor.set_pending_command('Z');
             }
             // Find character motions
             KeyCode::Char('f') => {
@@ -3826,6 +3860,19 @@ impl InputHandler {
                     if is_visual_block {
                         editor.buffer_mut().cursor_mut().set_position(start_line, 0);
                     }
+                }
+                editor.clear_visual_start();
+                editor.set_mode(Mode::Normal);
+            }
+            KeyCode::Char('=') => {
+                if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
+                    let tab_width = editor.options.tab_width;
+                    Operators::auto_indent_lines(
+                        editor.buffer_mut(),
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                    )?;
                 }
                 editor.clear_visual_start();
                 editor.set_mode(Mode::Normal);

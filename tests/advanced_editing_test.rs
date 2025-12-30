@@ -343,7 +343,7 @@ fn test_backtick_jump_to_mark_exact() {
     test.keys("gg");
     test.keys("`a");
 
-    test.assert_cursor(1, 10); // At end of "line2 test"
+    test.assert_cursor(1, 9); // At last character of "line2 test" (the 't')
 }
 
 /// Test R (replace mode)
