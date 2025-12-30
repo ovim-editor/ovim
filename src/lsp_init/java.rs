@@ -19,24 +19,30 @@ pub fn init_java_status_sender(sender: mpsc::UnboundedSender<String>) {
 }
 
 /// Find the root of a JVM project (Maven or Gradle)
-/// Searches parent directories for pom.xml, build.gradle, build.gradle.kts, or settings.gradle
+/// Searches parent directories for project markers.
+/// For Gradle multi-module projects, prefers settings.gradle (root) over build.gradle (subprojects)
 pub fn find_jvm_project_root(file_path: &Path) -> &Path {
+    // First pass: look for Gradle root markers (settings.gradle only exists at root)
     let mut current = file_path.parent();
     while let Some(dir) = current {
-        // Check for Maven project (pom.xml)
-        if dir.join("pom.xml").exists() {
+        if dir.join("settings.gradle").exists() || dir.join("settings.gradle.kts").exists() {
             return dir;
         }
-        // Check for Gradle project (build.gradle, build.gradle.kts, or settings.gradle)
-        if dir.join("build.gradle").exists()
+        current = dir.parent();
+    }
+
+    // Second pass: look for Maven or single-module Gradle
+    current = file_path.parent();
+    while let Some(dir) = current {
+        if dir.join("pom.xml").exists()
+            || dir.join("build.gradle").exists()
             || dir.join("build.gradle.kts").exists()
-            || dir.join("settings.gradle").exists()
-            || dir.join("settings.gradle.kts").exists()
         {
             return dir;
         }
         current = dir.parent();
     }
+
     // Fall back to file's parent directory if no project root found
     file_path.parent().unwrap_or_else(|| Path::new("/"))
 }
