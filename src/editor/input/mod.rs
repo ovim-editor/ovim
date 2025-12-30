@@ -711,314 +711,7 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
-                // Replace with register operations
-                (Operator::ReplaceWithRegister, KeyCode::Char('i')) => {
-                    // gri - replace character under cursor with register, then insert mode
-                    let cursor = editor.buffer().cursor();
-                    let cursor_before = (cursor.line(), cursor.col());
-                    let line_idx = cursor.line();
-                    let col = cursor.col();
-
-                    let register_content = editor.get_from_register();
-
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        if col < line_text.chars().count() {
-                            // Delete one character
-                            let deleted =
-                                editor
-                                    .buffer_mut()
-                                    .delete_range(line_idx, col, line_idx, col + 1);
-                            let delete_range = Range::new((line_idx, col), (line_idx, col + 1));
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            // Insert register content
-                            let insert_change =
-                                Change::insert((line_idx, col), register_content, cursor_before);
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-
-                            // Enter insert mode at the position
-                            editor.buffer_mut().cursor_mut().set_position(line_idx, col);
-                        }
-                    }
-                    let cursor_after = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-                    editor.start_change_building(cursor_after);
-                    editor.set_mode(Mode::Insert);
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                (Operator::ReplaceWithRegister, KeyCode::Char('a')) => {
-                    // gra - replace character under cursor with register, then append
-                    let cursor = editor.buffer().cursor();
-                    let cursor_before = (cursor.line(), cursor.col());
-                    let line_idx = cursor.line();
-                    let col = cursor.col();
-
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        if col < line_text.chars().count() {
-                            let register_content = editor.get_from_register();
-
-                            // Delete one character
-                            let deleted =
-                                editor
-                                    .buffer_mut()
-                                    .delete_range(line_idx, col, line_idx, col + 1);
-                            let delete_range = Range::new((line_idx, col), (line_idx, col + 1));
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            // Insert register content
-                            let insert_change = Change::insert(
-                                (line_idx, col),
-                                register_content.clone(),
-                                cursor_before,
-                            );
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-
-                            // Enter insert mode after the replaced content
-                            let new_col = col + register_content.chars().count();
-                            editor
-                                .buffer_mut()
-                                .cursor_mut()
-                                .set_position(line_idx, new_col);
-                        }
-                    }
-                    let cursor_after = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-                    editor.start_change_building(cursor_after);
-                    editor.set_mode(Mode::Insert);
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                (Operator::ReplaceWithRegister, KeyCode::Char('I')) => {
-                    // grI - replace at column 0, then insert mode
-                    let cursor = editor.buffer().cursor();
-                    let cursor_before = (cursor.line(), cursor.col());
-                    let line_idx = cursor.line();
-
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        if !line_text.is_empty() {
-                            let register_content = editor.get_from_register();
-
-                            // Delete first character
-                            let deleted =
-                                editor.buffer_mut().delete_range(line_idx, 0, line_idx, 1);
-                            let delete_range = Range::new((line_idx, 0), (line_idx, 1));
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            // Insert register content at column 0
-                            let insert_change =
-                                Change::insert((line_idx, 0), register_content, cursor_before);
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-
-                            // Enter insert mode at column 0
-                            editor.buffer_mut().cursor_mut().set_position(line_idx, 0);
-                        }
-                    }
-                    let cursor_after = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-                    editor.start_change_building(cursor_after);
-                    editor.set_mode(Mode::Insert);
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                (Operator::ReplaceWithRegister, KeyCode::Char('A')) => {
-                    // grA - replace at end of line, then insert mode
-                    let cursor = editor.buffer().cursor();
-                    let cursor_before = (cursor.line(), cursor.col());
-                    let line_idx = cursor.line();
-
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        let line_len = line_text.chars().count();
-                        if line_len > 0 {
-                            let register_content = editor.get_from_register();
-                            let last_col = line_len - 1;
-
-                            // Delete last character
-                            let deleted = editor
-                                .buffer_mut()
-                                .delete_range(line_idx, last_col, line_idx, line_len);
-                            let delete_range =
-                                Range::new((line_idx, last_col), (line_idx, line_len));
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            // Insert register content
-                            let insert_change = Change::insert(
-                                (line_idx, last_col),
-                                register_content.clone(),
-                                cursor_before,
-                            );
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-
-                            // Enter insert mode after the replaced content
-                            let new_col = last_col + register_content.chars().count();
-                            editor
-                                .buffer_mut()
-                                .cursor_mut()
-                                .set_position(line_idx, new_col);
-                        }
-                    }
-                    let cursor_after = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-                    editor.start_change_building(cursor_after);
-                    editor.set_mode(Mode::Insert);
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                (Operator::ReplaceWithRegister, KeyCode::Char('r')) => {
-                    // grr - replace line with register
-                    let cursor = editor.buffer().cursor();
-                    let cursor_before = (cursor.line(), cursor.col());
-                    let line_idx = cursor.line();
-
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        let line_len = line_text.chars().count();
-                        let register_content = editor.get_from_register();
-
-                        if line_len > 0 {
-                            let start_pos = (line_idx, 0);
-                            let end_pos = (line_idx, line_len);
-
-                            let deleted = editor
-                                .buffer_mut()
-                                .delete_range(line_idx, 0, line_idx, line_len);
-                            let delete_range = Range::new(start_pos, end_pos);
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            let insert_change =
-                                Change::insert((line_idx, 0), register_content, cursor_before);
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-
-                            // Position cursor at start of line
-                            editor.buffer_mut().cursor_mut().set_position(line_idx, 0);
-                        }
-                    }
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                (Operator::ReplaceWithRegister, KeyCode::Char('w')) => {
-                    // grw - replace word with register
-                    let start_cursor = editor.buffer().cursor().clone();
-                    let cursor_before = (start_cursor.line(), start_cursor.col());
-                    let start_line = start_cursor.line();
-                    let start_col = start_cursor.col();
-
-                    // Move cursor forward by word
-                    Motions::word_forward(editor.buffer_mut(), count);
-
-                    let end_cursor = editor.buffer().cursor();
-                    let mut end_line = end_cursor.line();
-                    let mut end_col = end_cursor.col();
-
-                    // If we crossed a newline, stop at the end of the current line
-                    if end_line > start_line {
-                        if let Some(line) = editor.buffer().line(start_line) {
-                            let line_text = line.trim_end_matches('\n');
-                            end_line = start_line;
-                            end_col = line_text.chars().count();
-                        }
-                    }
-
-                    let register_content = editor.get_from_register();
-                    let start_pos = (start_line, start_col);
-                    let end_pos = (end_line, end_col);
-
-                    let deleted = editor
-                        .buffer_mut()
-                        .delete_range(start_line, start_col, end_line, end_col);
-                    let delete_range = Range::new(start_pos, end_pos);
-                    let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-                    let insert_change =
-                        Change::insert((start_line, start_col), register_content, cursor_before);
-                    insert_change.apply(editor.buffer_mut());
-
-                    editor.add_change(delete_change);
-                    editor.add_change(insert_change);
-
-                    // Position cursor at start of replacement
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(start_line, start_col);
-
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                (Operator::ReplaceWithRegister, KeyCode::Char('$')) => {
-                    // gr$ - replace to end of line with register
-                    let cursor = editor.buffer().cursor();
-                    let cursor_before = (cursor.line(), cursor.col());
-                    let line_idx = cursor.line();
-                    let col = cursor.col();
-
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        let line_len = line_text.chars().count();
-
-                        if col < line_len {
-                            let register_content = editor.get_from_register();
-                            let start_pos = (line_idx, col);
-                            let end_pos = (line_idx, line_len);
-
-                            let deleted = editor
-                                .buffer_mut()
-                                .delete_range(line_idx, col, line_idx, line_len);
-                            let delete_range = Range::new(start_pos, end_pos);
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            let insert_change =
-                                Change::insert((line_idx, col), register_content, cursor_before);
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-                        }
-                    }
-                    editor.clear_count();
-                    editor.clear_pending_operator();
-                    return Ok(());
-                }
-                // Count digits after operator (e.g., gr2w, d2w)
+                // Count digits after operator (e.g., d2w)
                 (_, KeyCode::Char(c)) if c.is_ascii_digit() && c != '0' => {
                     let digit = c.to_digit(10).unwrap() as usize;
                     editor.append_count(digit);
@@ -1903,49 +1596,6 @@ impl InputHandler {
                                 editor.add_change(insert_change);
                             }
                         }
-                        Operator::ReplaceWithRegister => {
-                            let cursor_before = (
-                                editor.buffer().cursor().line(),
-                                editor.buffer().cursor().col(),
-                            );
-
-                            // Get the register content
-                            let register_content = editor.get_from_register();
-
-                            // Get the text in the range (to delete)
-                            let deleted = TextObjects::yank_range(editor.buffer(), range)?;
-
-                            // Delete the old text (range.end_col is already exclusive)
-                            editor.buffer_mut().delete_range(
-                                range.start_line,
-                                range.start_col,
-                                range.end_line,
-                                range.end_col,
-                            );
-                            let delete_range = Range::new(
-                                (range.start_line, range.start_col),
-                                (range.end_line, range.end_col),
-                            );
-                            let delete_change =
-                                Change::delete(delete_range, deleted, cursor_before);
-
-                            // Insert the register content
-                            let insert_change = Change::insert(
-                                (range.start_line, range.start_col),
-                                register_content,
-                                cursor_before,
-                            );
-                            insert_change.apply(editor.buffer_mut());
-
-                            editor.add_change(delete_change);
-                            editor.add_change(insert_change);
-
-                            // Position cursor at start of replaced text
-                            editor
-                                .buffer_mut()
-                                .cursor_mut()
-                                .set_position(range.start_line, range.start_col);
-                        }
                         Operator::Fold => {
                             // Create a fold from start_line to end_line (inclusive)
                             let start_line = range.start_line.min(range.end_line);
@@ -2106,8 +1756,9 @@ impl InputHandler {
                     return Ok(());
                 }
                 ('g', KeyCode::Char('r')) => {
-                    // gr{motion} - replace with register content
-                    editor.set_pending_operator(Operator::ReplaceWithRegister);
+                    // gr prefix for LSP commands (grr, grn, gra, gri, grt)
+                    // Use 'R' as pending to avoid conflict with regular 'r' command
+                    editor.set_pending_command('R');
                     return Ok(());
                 }
                 ('g', KeyCode::Char('i')) => {
@@ -2268,6 +1919,42 @@ impl InputHandler {
                     if Motions::till_char_backward(editor.buffer_mut(), ch, count) {
                         editor.set_last_find(ch, FindType::Till, FindDirection::Backward);
                     }
+                    editor.clear_count();
+                    return Ok(());
+                }
+                // LSP commands - gr prefix (pending='R')
+                ('R', KeyCode::Char('r')) => {
+                    // grr - LSP references
+                    editor.request_find_references();
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('R', KeyCode::Char('n')) => {
+                    // grn - LSP rename
+                    // Enter command mode with LspRename prompt
+                    editor.clear_command_line();
+                    editor.set_mode(Mode::Command);
+                    // Pre-fill command line with "LspRename "
+                    for ch in "LspRename ".chars() {
+                        editor.append_to_command_line(ch);
+                    }
+                    return Ok(());
+                }
+                ('R', KeyCode::Char('a')) => {
+                    // gra - LSP code action
+                    editor.request_code_actions();
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('R', KeyCode::Char('i')) => {
+                    // gri - LSP implementation
+                    editor.request_goto_implementation();
+                    editor.clear_count();
+                    return Ok(());
+                }
+                ('R', KeyCode::Char('t')) => {
+                    // grt - LSP type definition
+                    editor.request_goto_type();
                     editor.clear_count();
                     return Ok(());
                 }
