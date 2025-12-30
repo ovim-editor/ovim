@@ -8,12 +8,7 @@ use crate::lsp::{LspManager, uri_from_file_path, uri_to_file_path};
 use super::picker::PickerResult;
 
 use anyhow::{anyhow, Result};
-use lsp_types::{
-    CallHierarchyItem, CallHierarchyIncomingCall, CallHierarchyOutgoingCall,
-    CodeAction, CompletionItem, Diagnostic, DocumentSymbol, Location,
-    Position, Range, SymbolInformation, TextEdit, TypeHierarchyItem, Uri,
-    WorkspaceEdit,
-};
+use lsp_types::Location;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -114,6 +109,38 @@ impl Editor {
         self.lsp_state.diagnostic_count
     }
 
+    /// Updates the cached diagnostic count (should be called when diagnostics change)
+    pub async fn update_diagnostic_cache(&mut self) {
+        let start = std::time::Instant::now();
+
+        // Query diagnostic count from LSP manager
+        let count = if let Some(lsp) = &self.lsp_state.lsp_manager {
+            if let Some(file_path) = self.buffer().file_path() {
+                if let Some(uri) = crate::lsp::uri_from_file_path(file_path) {
+                    lsp.count_diagnostics(&uri).await
+                } else {
+                    (0, 0, 0, 0)
+                }
+            } else {
+                (0, 0, 0, 0)
+            }
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        self.lsp_state.diagnostic_count = count;
+
+        // Also update the full diagnostics list for inline display
+        if let Some(diagnostics) = self.get_current_file_diagnostics().await {
+            self.lsp_state.current_file_diagnostics = diagnostics;
+        } else {
+            self.lsp_state.current_file_diagnostics.clear();
+        }
+
+        let duration = start.elapsed().as_micros() as u64;
+        self.record_diagnostic_query_duration(duration);
+    }
+
     /// Get diagnostics for a specific line from cached diagnostics
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
         self.lsp_state
@@ -167,7 +194,7 @@ impl Editor {
     }
 
     /// Clear all LSP state (hover, code actions, completions, pending action)
-    fn clear_lsp_state(&mut self) {
+    pub(crate) fn clear_lsp_state(&mut self) {
         self.lsp_state.hover_info = None;
         self.lsp_state.hover_scroll = 0;
         self.lsp_state.available_code_actions.clear();
@@ -183,7 +210,7 @@ impl Editor {
     /// Get LSP progress message (e.g., "indexing...")
     pub fn lsp_progress_message(&self) -> Option<String> {
         if let Some(lsp_manager) = &self.lsp_state.lsp_manager {
-            lsp_manager.progress_message()
+            lsp_manager.get_progress_message()
         } else {
             None
         }
@@ -714,15 +741,11 @@ impl Editor {
             .await;
 
         match result {
-            Ok(locations) if !locations.is_empty() => {
+            Ok(Some(location)) => {
                 crate::lsp_debug!(
                     "LSP-RESPONSE",
-                    "goto_definition: found {} location(s)",
-                    locations.len()
+                    "goto_definition: found location"
                 );
-
-                // Take first location
-                let location = &locations[0];
 
                 // Navigate to the location
                 if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
@@ -730,7 +753,7 @@ impl Editor {
                     let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
                     // Save current position to jump list
-                    self.save_jump_position();
+                    self.add_jump();
 
                     // Open file if different from current
                     if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
@@ -743,7 +766,7 @@ impl Editor {
                     }
 
                     // Move cursor to location
-                    self.buffer_mut().move_cursor_to(target_line, target_col);
+                    self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                     self.set_lsp_status(format!(
                         "Definition: {}:{}:{}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -757,7 +780,7 @@ impl Editor {
                     Ok(false)
                 }
             }
-            Ok(_) => {
+            Ok(None) => {
                 self.set_lsp_status("No definition found".to_string());
                 Ok(false)
             }
@@ -813,20 +836,17 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
         let result = lsp
-            .goto_implementation(uri.clone(), position, language_id)
+            .implementation(&uri, line, character, &language_id)
             .await;
 
         match result {
-            Ok(locations) if !locations.is_empty() => {
-                let location = &locations[0];
-
+            Ok(Some(location)) => {
                 if let Some(path) = uri_to_file_path(&location.uri) {
                     let target_line = location.range.start.line as usize;
                     let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
-                    self.save_jump_position();
+                    self.add_jump();
 
                     if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
                         if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
@@ -835,7 +855,7 @@ impl Editor {
                         }
                     }
 
-                    self.buffer_mut().move_cursor_to(target_line, target_col);
+                    self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                     self.set_lsp_status(format!(
                         "Implementation: {}:{}:{}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -849,7 +869,7 @@ impl Editor {
                     Ok(false)
                 }
             }
-            Ok(_) => {
+            Ok(None) => {
                 self.set_lsp_status("No implementation found".to_string());
                 Ok(false)
             }
@@ -905,20 +925,18 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
         let result = lsp
-            .goto_type_definition(uri.clone(), position, language_id)
+            .type_definition(&uri, line, character, &language_id)
             .await;
 
         match result {
-            Ok(locations) if !locations.is_empty() => {
-                let location = &locations[0];
+            Ok(Some(location)) => {
 
                 if let Some(path) = uri_to_file_path(&location.uri) {
                     let target_line = location.range.start.line as usize;
                     let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
-                    self.save_jump_position();
+                    self.add_jump();
 
                     if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
                         if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
@@ -927,7 +945,7 @@ impl Editor {
                         }
                     }
 
-                    self.buffer_mut().move_cursor_to(target_line, target_col);
+                    self.buffer_mut().cursor_mut().set_position(target_line, target_col);
                     self.set_lsp_status(format!(
                         "Type: {}:{}:{}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -941,7 +959,7 @@ impl Editor {
                     Ok(false)
                 }
             }
-            Ok(_) => {
+            Ok(None) => {
                 self.set_lsp_status("No type definition found".to_string());
                 Ok(false)
             }
@@ -997,8 +1015,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
-        let result = lsp.find_references(uri, position, language_id).await;
+        let result = lsp.references(&uri, line, character, &language_id, true).await;
 
         match result {
             Ok(locations) if !locations.is_empty() => {
@@ -1048,16 +1065,16 @@ impl Editor {
             }
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
             self.set_lsp_status("Save file first to use document-symbols".to_string());
             return Ok(false);
         };
 
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
+        let abs_path = if std::path::Path::new(&file_path).is_absolute() {
+            file_path.clone()
         } else {
             match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
                     self.set_lsp_status("Failed to resolve file path".to_string());
                     return Ok(false);
@@ -1067,7 +1084,7 @@ impl Editor {
 
         let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -1080,7 +1097,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let result = lsp.document_symbols(uri.clone(), language_id).await;
+        let result = lsp.document_symbols(&uri, &language_id).await;
 
         match result {
             Ok(symbols) if !symbols.is_empty() => {
@@ -1148,7 +1165,7 @@ impl Editor {
 
         // TODO: Support query parameter for filtering
         let query = String::new();
-        let result = lsp.workspace_symbols(query, language_id).await;
+        let result = lsp.workspace_symbols(&language_id, query).await;
 
         match result {
             Ok(symbols) if !symbols.is_empty() => {
@@ -1233,26 +1250,36 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
-        let result = lsp
-            .call_hierarchy_incoming(uri, position, language_id)
+        // First prepare call hierarchy to get items at cursor position
+        let items = lsp
+            .prepare_call_hierarchy(uri, line, character, &language_id)
             .await;
 
-        match result {
-            Ok(calls) if !calls.is_empty() => {
-                // Convert incoming calls to locations
-                let locations: Vec<Location> = calls
-                    .iter()
-                    .map(|call| Location {
-                        uri: call.from.uri.clone(),
-                        range: call.from.selection_range,
-                    })
-                    .collect();
+        match items {
+            Ok(Some(items)) if !items.is_empty() => {
+                // Get incoming calls for the first item
+                let incoming = lsp.incoming_calls(items[0].clone(), &language_id).await;
+
+                match incoming {
+                    Ok(Some(calls)) if !calls.is_empty() => {
+                        // Convert incoming calls to locations
+                        let locations: Vec<Location> = calls
+                            .iter()
+                            .map(|call| Location {
+                                uri: call.from.uri.clone(),
+                                range: call.from.selection_range,
+                            })
+                            .collect();
 
                 // Store for navigation
-                self.lsp_state.available_call_hierarchy = calls
-                    .into_iter()
-                    .map(|c| CallHierarchyData::Incoming(c))
+                self.lsp_state.available_call_hierarchy = locations
+                    .iter()
+                    .map(|loc| {
+                        let path = uri_to_file_path(&loc.uri)
+                            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        (path, loc.clone())
+                    })
                     .collect();
                 self.lsp_state.active_lsp_result_type = Some(LspResultType::CallHierarchy);
 
@@ -1272,17 +1299,27 @@ impl Editor {
                     })
                     .collect();
 
-                self.open_location_picker(items, "Incoming Calls");
-                self.set_lsp_status(format!("Found {} incoming calls", locations.len()));
+                        self.open_location_picker(items, "Incoming Calls");
+                        self.set_lsp_status(format!("Found {} incoming calls", locations.len()));
 
-                Ok(true)
+                        Ok(true)
+                    }
+                    Ok(_) => {
+                        self.set_lsp_status("No incoming calls found".to_string());
+                        Ok(false)
+                    }
+                    Err(e) => {
+                        self.set_lsp_status(format!("Incoming calls request failed: {}", e));
+                        Err(e)
+                    }
+                }
             }
             Ok(_) => {
-                self.set_lsp_status("No incoming calls found".to_string());
+                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
                 Ok(false)
             }
             Err(e) => {
-                self.set_lsp_status(format!("Call hierarchy request failed: {}", e));
+                self.set_lsp_status(format!("Call hierarchy prepare failed: {}", e));
                 Err(e)
             }
         }
@@ -1333,26 +1370,36 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
-        let result = lsp
-            .call_hierarchy_outgoing(uri, position, language_id)
+        // First prepare call hierarchy to get items at cursor position
+        let items = lsp
+            .prepare_call_hierarchy(uri, line, character, &language_id)
             .await;
 
-        match result {
-            Ok(calls) if !calls.is_empty() => {
-                // Convert outgoing calls to locations
-                let locations: Vec<Location> = calls
-                    .iter()
-                    .map(|call| Location {
-                        uri: call.to.uri.clone(),
-                        range: call.to.selection_range,
-                    })
-                    .collect();
+        match items {
+            Ok(Some(items)) if !items.is_empty() => {
+                // Get outgoing calls for the first item
+                let outgoing = lsp.outgoing_calls(items[0].clone(), &language_id).await;
+
+                match outgoing {
+                    Ok(Some(calls)) if !calls.is_empty() => {
+                        // Convert outgoing calls to locations
+                        let locations: Vec<Location> = calls
+                            .iter()
+                            .map(|call| Location {
+                                uri: call.to.uri.clone(),
+                                range: call.to.selection_range,
+                            })
+                            .collect();
 
                 // Store for navigation
-                self.lsp_state.available_call_hierarchy = calls
-                    .into_iter()
-                    .map(|c| CallHierarchyData::Outgoing(c))
+                self.lsp_state.available_call_hierarchy = locations
+                    .iter()
+                    .map(|loc| {
+                        let path = uri_to_file_path(&loc.uri)
+                            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        (path, loc.clone())
+                    })
                     .collect();
                 self.lsp_state.active_lsp_result_type = Some(LspResultType::CallHierarchy);
 
@@ -1372,17 +1419,27 @@ impl Editor {
                     })
                     .collect();
 
-                self.open_location_picker(items, "Outgoing Calls");
-                self.set_lsp_status(format!("Found {} outgoing calls", locations.len()));
+                        self.open_location_picker(items, "Outgoing Calls");
+                        self.set_lsp_status(format!("Found {} outgoing calls", locations.len()));
 
-                Ok(true)
+                        Ok(true)
+                    }
+                    Ok(_) => {
+                        self.set_lsp_status("No outgoing calls found".to_string());
+                        Ok(false)
+                    }
+                    Err(e) => {
+                        self.set_lsp_status(format!("Outgoing calls request failed: {}", e));
+                        Err(e)
+                    }
+                }
             }
             Ok(_) => {
-                self.set_lsp_status("No outgoing calls found".to_string());
+                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
                 Ok(false)
             }
             Err(e) => {
-                self.set_lsp_status(format!("Call hierarchy request failed: {}", e));
+                self.set_lsp_status(format!("Call hierarchy prepare failed: {}", e));
                 Err(e)
             }
         }
@@ -1433,38 +1490,50 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
+        // First prepare the type hierarchy to get the item at the cursor
+        let prepare_result = lsp
+            .prepare_type_hierarchy(uri.clone(), line, character, &language_id)
+            .await;
 
-        // Fetch both supertypes and subtypes
-        let supertypes_result = lsp
-            .type_hierarchy_supertypes(uri.clone(), position, language_id.clone())
-            .await;
-        let subtypes_result = lsp
-            .type_hierarchy_subtypes(uri.clone(), position, language_id)
-            .await;
+        let items = match prepare_result {
+            Ok(Some(items)) => items,
+            Ok(None) => {
+                self.set_lsp_status("No type hierarchy available at cursor".to_string());
+                return Ok(false);
+            }
+            Err(e) => {
+                self.set_lsp_status(format!("Type hierarchy request failed: {}", e));
+                return Err(e);
+            }
+        };
+
+        // Use the first item to fetch supertypes and subtypes
+        let item = &items[0];
 
         let mut all_types = Vec::new();
         let mut all_types_data = Vec::new();
 
-        // Process supertypes
-        if let Ok(supertypes) = supertypes_result {
+        // Fetch supertypes
+        if let Ok(Some(supertypes)) = lsp.supertypes(item.clone(), &language_id).await {
             for supertype in supertypes {
-                all_types.push(Location {
+                let location = Location {
                     uri: supertype.uri.clone(),
                     range: supertype.selection_range,
-                });
-                all_types_data.push(TypeHierarchyData::SuperType(supertype));
+                };
+                all_types.push(location.clone());
+                all_types_data.push((format!("↑ {}", supertype.name), location));
             }
         }
 
-        // Process subtypes
-        if let Ok(subtypes) = subtypes_result {
+        // Fetch subtypes
+        if let Ok(Some(subtypes)) = lsp.subtypes(item.clone(), &language_id).await {
             for subtype in subtypes {
-                all_types.push(Location {
+                let location = Location {
                     uri: subtype.uri.clone(),
                     range: subtype.selection_range,
-                });
-                all_types_data.push(TypeHierarchyData::SubType(subtype));
+                };
+                all_types.push(location.clone());
+                all_types_data.push((format!("↓ {}", subtype.name), location));
             }
         }
 
@@ -1546,7 +1615,7 @@ impl Editor {
 
         crate::lsp_debug!(
             "LSP-HOVER",
-            "Requesting hover: file={}, line={}, col={}, char={}, uri={}",
+            "Requesting hover: file={}, line={}, col={}, char={}, uri={:?}",
             file_path,
             line,
             cursor.col(),
@@ -1560,8 +1629,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
-        let result = lsp.hover(uri, position, language_id).await;
+        let result = lsp.hover(&uri, line, character, language_id).await;
 
         match result {
             Ok(Some(hover_text)) => {
@@ -1632,8 +1700,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let position = Position { line, character };
-        let result = lsp.completion(uri, position, language_id).await;
+        let result = lsp.completion(&uri, line, character, language_id).await;
 
         match result {
             Ok(items) if !items.is_empty() => {
@@ -1694,10 +1761,14 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let result = lsp.format_document(uri, language_id).await;
+        // Get tab settings from buffer
+        let tab_size = 4; // TODO: get from config
+        let insert_spaces = true; // TODO: get from config
+
+        let result = lsp.format_document(&uri, &language_id, tab_size, insert_spaces).await;
 
         match result {
-            Ok(Some(edits)) if !edits.is_empty() => {
+            Ok(edits) if !edits.is_empty() => {
                 self.apply_lsp_edits(edits);
                 self.set_lsp_status("Document formatted".to_string());
                 Ok(true)
@@ -1758,12 +1829,9 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let range = Range {
-            start: Position { line, character },
-            end: Position { line, character },
-        };
-
-        let result = lsp.code_actions(uri, range, language_id).await;
+        // Get diagnostics for the current line to provide context for code actions
+        let diagnostics = lsp.get_diagnostics_for_line(&uri, line).await;
+        let result = lsp.code_actions(&uri, line, character, language_id, diagnostics).await;
 
         match result {
             Ok(actions) if !actions.is_empty() => {
@@ -1803,8 +1871,9 @@ impl Editor {
             let end_line_for_col = end_line;
             let end_col = self.utf16_to_col(end_line_for_col, edit.range.end.character);
 
-            self.buffer_mut()
-                .replace_range(start_line, start_col, end_line, end_col, &edit.new_text);
+            // Delete the range first, then insert the new text
+            self.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
+            self.buffer_mut().insert_text_at(start_line, start_col, &edit.new_text);
         }
     }
 
@@ -1821,7 +1890,15 @@ impl Editor {
         // 1. Direct edits (workspace edit)
         // 2. Commands to execute on the server
         match action {
-            CodeAction::Edit(workspace_edit) => {
+            lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
+                let workspace_edit = match code_action.edit {
+                    Some(edit) => edit,
+                    None => {
+                        self.set_lsp_status("Code action has no edit".to_string());
+                        return;
+                    }
+                };
+
                 // Apply workspace edits directly
                 if let Some(changes) = &workspace_edit.changes {
                     // changes: HashMap<Uri, Vec<TextEdit>>
@@ -1913,7 +1990,7 @@ impl Editor {
 
                 self.set_lsp_status("Code action applied".to_string());
             }
-            CodeAction::Command(command) => {
+            lsp_types::CodeActionOrCommand::Command(command) => {
                 // Commands need to be executed on the LSP server
                 // Requires sending workspace/executeCommand request
                 let lsp = match &self.lsp_state.lsp_manager {
@@ -1942,9 +2019,10 @@ impl Editor {
                 };
 
                 // Spawn async task to execute command
-                let command_clone = command.clone();
+                let command_str = command.command.clone();
+                let command_args = command.arguments.clone();
                 tokio::spawn(async move {
-                    let result = lsp.execute_command(command_clone, language_id).await;
+                    let result = lsp.execute_command(command_str, command_args, language_id).await;
                     match result {
                         Ok(_) => eprintln!("Command executed successfully"),
                         Err(e) => eprintln!("Command execution failed: {:?}", e),
@@ -1983,9 +2061,11 @@ impl Editor {
         };
 
         // Insert at cursor position
-        let cursor = self.buffer().cursor();
-        self.buffer_mut()
-            .insert_text(cursor.line(), cursor.col(), &insert_text);
+        let (line, col) = {
+            let cursor = self.buffer().cursor();
+            (cursor.line(), cursor.col())
+        };
+        self.buffer_mut().insert_text_at(line, col, &insert_text);
 
         // Clear completions after applying
         self.lsp_state.available_completions.clear();
@@ -2018,13 +2098,10 @@ impl Editor {
                     return;
                 }
                 let symbol = &self.lsp_state.available_document_symbols[index];
+                let file_path = self.buffer().file_path().expect("Document symbols require a file");
+                let uri = uri_from_file_path(file_path).expect("Invalid file path");
                 Location {
-                    uri: Uri::from_file_path(
-                        self.buffer()
-                            .file_path()
-                            .expect("Document symbols require a file"),
-                    )
-                    .expect("Invalid file path"),
+                    uri,
                     range: symbol.selection_range,
                 }
             }
@@ -2049,23 +2126,8 @@ impl Editor {
                     return;
                 }
 
-                // Extract Location from hierarchy data
-                match &hierarchy_items[index] {
-                    CallHierarchyData::Incoming(call) => Location {
-                        uri: call.from.uri.clone(),
-                        range: call.from.selection_range,
-                    },
-                    CallHierarchyData::Outgoing(call) => Location {
-                        uri: call.to.uri.clone(),
-                        range: call.to.selection_range,
-                    },
-                    TypeHierarchyData::SuperType(item) | TypeHierarchyData::SubType(item) => {
-                        Location {
-                            uri: item.uri.clone(),
-                            range: item.selection_range,
-                        }
-                    }
-                }
+                // Extract Location from hierarchy data (stored as tuples)
+                hierarchy_items[index].1.clone()
             }
         };
 
@@ -2075,7 +2137,7 @@ impl Editor {
             let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
             // Save current position to jump list
-            self.save_jump_position();
+            self.add_jump();
 
             // Open file if different from current
             if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
@@ -2086,7 +2148,7 @@ impl Editor {
             }
 
             // Move cursor to location
-            self.buffer_mut().move_cursor_to(target_line, target_col);
+            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
             self.set_lsp_status(format!(
                 "Navigated to {}:{}:{}",
                 path.file_name().unwrap_or_default().to_string_lossy(),
@@ -2139,29 +2201,21 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        // Request code actions with "source.organizeImports" kind
-        let range = Range {
-            start: Position {
-                line: 0,
-                character: 0,
-            },
-            end: Position {
-                line: u32::MAX,
-                character: 0,
-            },
-        };
-
-        let result = lsp.code_actions(uri, range, language_id).await;
+        // Request code actions for organize imports (at file start, no diagnostics needed)
+        let diagnostics = Vec::new();
+        let result = lsp.code_actions(&uri, 0, 0, language_id, diagnostics).await;
 
         match result {
             Ok(actions) => {
                 // Find organize imports action
                 let organize_action = actions.into_iter().find(|action| match action {
-                    CodeAction::Edit(edit) => {
+                    lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
                         // Check if this looks like an organize imports edit
-                        edit.changes.is_some() || edit.document_changes.is_some()
+                        code_action.edit.as_ref().map_or(false, |edit| {
+                            edit.changes.is_some() || edit.document_changes.is_some()
+                        })
                     }
-                    CodeAction::Command(cmd) => cmd.command.contains("organizeImports"),
+                    lsp_types::CodeActionOrCommand::Command(cmd) => cmd.command.contains("organizeImports"),
                 });
 
                 if let Some(action) = organize_action {
@@ -2229,7 +2283,7 @@ impl Editor {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Call the rename method with individual parameters (using UTF-16 character position)
-        let result = lsp.rename(uri, line, character, new_name, language_id).await;
+        let result = lsp.rename(&uri, line, character, language_id, new_name.to_string()).await;
 
         match result {
             Ok(Some(workspace_edit)) => {
@@ -2292,7 +2346,7 @@ impl Editor {
 
         self.set_lsp_status("Fetching semantic tokens...".to_string());
 
-        let result = lsp.semantic_tokens(uri, language_id).await;
+        let result = lsp.semantic_tokens_full(&uri, language_id).await;
 
         match result {
             Ok(Some(_tokens)) => {
@@ -2521,5 +2575,18 @@ impl Editor {
         }
 
         Ok(all_applied)
+    }
+
+    /// Helper method to open a location picker with LSP results
+    fn open_location_picker(&mut self, items: Vec<PickerResult>, title: &str) {
+        use std::path::PathBuf;
+
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let display_items: Vec<String> = items.iter().map(|r| r.display.clone()).collect();
+
+        let picker = Picker::new_lsp_locations(base_dir, display_items);
+        self.set_picker(picker);
+        self.set_mode(Mode::Picker);
+        self.mark_picker_selection_changed();
     }
 }
