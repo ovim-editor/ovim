@@ -1,4 +1,5 @@
 mod change;
+mod command_history;
 mod completion;
 mod filetree;
 mod fold;
@@ -6,16 +7,21 @@ mod input;
 mod keymap;
 mod lsp_state;
 mod macros;
+mod mark_jump;
 mod marks;
 mod motions;
 mod operators;
+mod performance;
 mod picker;
 mod quickfix;
 mod register;
 mod search;
+mod search_manager;
 mod tabpage;
 mod textobjects;
+mod theme;
 mod undo;
+mod visual_mode;
 mod window;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range};
@@ -29,6 +35,7 @@ pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
+pub use performance::MAX_LATENCY_SAMPLES;
 pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::{RegisterManager, RegisterType};
@@ -99,7 +106,7 @@ use crate::lsp::LspManager;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
-use crate::syntax::{ColorScheme, ColorSchemeRegistry};
+use crate::syntax::ColorSchemeRegistry;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -257,9 +264,6 @@ pub struct Editor {
     /// Last diagnostic query duration in microseconds
     last_diagnostic_query_micros: Option<u64>,
 }
-
-/// Maximum number of input latency samples to keep for percentile calculation
-const MAX_LATENCY_SAMPLES: usize = 1000;
 
 /// Cached preview data for the picker
 #[derive(Clone)]
@@ -586,379 +590,6 @@ impl Editor {
             Ok(())
         } else {
             anyhow::bail!("Lua support not enabled")
-        }
-    }
-
-    /// Gets the command line buffer
-    pub fn command_line(&self) -> &str {
-        &self.command_line
-    }
-
-    /// Clears the command line buffer
-    pub fn clear_command_line(&mut self) {
-        self.command_line.clear();
-    }
-
-    /// Appends a character to the command line
-    pub fn append_to_command_line(&mut self, ch: char) {
-        self.command_line.push(ch);
-    }
-
-    /// Removes the last character from the command line
-    pub fn backspace_command_line(&mut self) {
-        self.command_line.pop();
-    }
-
-    /// Adds current command to history
-    pub fn add_command_to_history(&mut self) {
-        let cmd = self.command_line.trim().to_string();
-        if !cmd.is_empty() {
-            // Don't add duplicate if it's the same as the last command
-            if self.command_history.last() != Some(&cmd) {
-                self.command_history.push(cmd);
-                // Limit history size to 100 commands
-                if self.command_history.len() > 100 {
-                    self.command_history.drain(0..1);
-                }
-            }
-        }
-        self.command_history_index = None;
-    }
-
-    /// Navigate to previous command in history (up arrow)
-    pub fn history_prev(&mut self) {
-        if self.command_history.is_empty() {
-            return;
-        }
-
-        let new_index = match self.command_history_index {
-            None => {
-                // First time pressing up - go to last command
-                Some(self.command_history.len() - 1)
-            }
-            Some(idx) if idx > 0 => {
-                // Go to previous command
-                Some(idx - 1)
-            }
-            Some(_) => {
-                // Already at oldest command
-                return;
-            }
-        };
-
-        if let Some(idx) = new_index {
-            if let Some(cmd) = self.command_history.get(idx) {
-                self.command_line = cmd.clone();
-                self.command_history_index = Some(idx);
-            }
-        }
-    }
-
-    /// Navigate to next command in history (down arrow)
-    pub fn history_next(&mut self) {
-        if self.command_history.is_empty() {
-            return;
-        }
-
-        let new_index = match self.command_history_index {
-            None => {
-                // Not navigating history, do nothing
-                return;
-            }
-            Some(idx) if idx < self.command_history.len() - 1 => {
-                // Go to next command
-                Some(idx + 1)
-            }
-            Some(_) => {
-                // At newest command, clear to empty line
-                self.command_line.clear();
-                self.command_history_index = None;
-                return;
-            }
-        };
-
-        if let Some(idx) = new_index {
-            if let Some(cmd) = self.command_history.get(idx) {
-                self.command_line = cmd.clone();
-                self.command_history_index = Some(idx);
-            }
-        }
-    }
-
-    /// Gets the search buffer
-    pub fn search_buffer(&self) -> &str {
-        &self.search_buffer
-    }
-
-    /// Clears the search buffer
-    pub fn clear_search_buffer(&mut self) {
-        self.search_buffer.clear();
-    }
-
-    /// Appends a character to the search buffer
-    pub fn append_to_search_buffer(&mut self, ch: char) {
-        self.search_buffer.push(ch);
-    }
-
-    /// Removes the last character from the search buffer
-    pub fn backspace_search_buffer(&mut self) {
-        self.search_buffer.pop();
-    }
-
-    /// Sets the search direction
-    pub fn set_search_forward(&mut self, forward: bool) {
-        self.search_forward = forward;
-    }
-
-    /// Gets the search direction
-    pub fn search_forward(&self) -> bool {
-        self.search_forward
-    }
-
-    /// Gets the current search
-    pub fn current_search(&self) -> Option<&Search> {
-        self.current_search.as_ref()
-    }
-
-    /// Sets the current search
-    pub fn set_current_search(&mut self, search: Search) {
-        self.current_search = Some(search);
-    }
-
-    /// Clears the current search (stops highlighting)
-    pub fn clear_search_highlight(&mut self) {
-        self.current_search = None;
-    }
-
-    /// Executes the current search and moves cursor to first match
-    pub fn execute_search(&mut self) {
-        if self.search_buffer.is_empty() {
-            return;
-        }
-
-        // Update the / register with the search pattern
-        self.registers.set_last_search(self.search_buffer.clone());
-
-        let mut search = Search::new_with_options(
-            self.search_buffer.clone(),
-            self.search_forward,
-            self.options.ignorecase,
-            self.options.smartcase,
-        );
-        let cursor = self.buffer().cursor();
-
-        // Start search from current cursor position (inclusive)
-        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
-            self.buffer_mut().cursor_mut().set_position(line, col);
-            self.current_search = Some(search);
-        }
-    }
-
-    /// Finds the next search match (n command)
-    pub fn search_next(&mut self) {
-        // Get cursor position before borrowing
-        let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
-
-        // Clone search to avoid borrow conflicts
-        if let Some(ref search) = self.current_search {
-            let is_forward = search.is_forward();
-            let mut search_clone = search.clone();
-
-            // For forward search, start from col+1; for backward, start from col-1 or col
-            let search_col = if is_forward {
-                cursor_col + 1
-            } else {
-                if cursor_col > 0 {
-                    cursor_col - 1
-                } else {
-                    0
-                }
-            };
-
-            if let Some((line, col, _)) =
-                search_clone.find_next(self.buffer(), cursor_line, search_col)
-            {
-                self.buffer_mut().cursor_mut().set_position(line, col);
-            }
-        }
-    }
-
-    /// Finds the previous search match (N command)
-    pub fn search_prev(&mut self) {
-        if let Some(ref search) = self.current_search {
-            // Create a reversed search
-            let is_forward = search.is_forward();
-            let mut rev_search = Search::new_with_options(
-                search.pattern().to_string(),
-                !is_forward,
-                self.options.ignorecase,
-                self.options.smartcase,
-            );
-            let cursor = self.buffer().cursor();
-
-            // For reverse direction: if original was forward, now going backward (use col-1)
-            // if original was backward, now going forward (use col+1)
-            let search_col = if is_forward {
-                // Original was forward, now backward
-                if cursor.col() > 0 {
-                    cursor.col() - 1
-                } else {
-                    0
-                }
-            } else {
-                // Original was backward, now forward
-                cursor.col() + 1
-            };
-
-            if let Some((line, col, _)) =
-                rev_search.find_next(self.buffer(), cursor.line(), search_col)
-            {
-                self.buffer_mut().cursor_mut().set_position(line, col);
-            }
-        }
-    }
-
-    /// Sets a mark at the current cursor position
-    pub fn set_mark(&mut self, name: char) -> bool {
-        let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
-        let file_path = self.buffer().file_path().map(|s| s.to_string());
-        self.marks
-            .set_mark(name, cursor_line, cursor_col, file_path.as_deref())
-    }
-
-    /// Jumps to a mark (exact position with backtick)
-    pub fn jump_to_mark(&mut self, name: char) -> bool {
-        // Try local mark first (a-z)
-        if name.is_ascii_lowercase() {
-            if let Some(mark) = self.marks.get_mark(name) {
-                self.buffer_mut()
-                    .cursor_mut()
-                    .set_position(mark.line, mark.col);
-                return true;
-            }
-        }
-
-        // Try global mark (A-Z)
-        if name.is_ascii_uppercase() {
-            if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
-                // Load the file if it's different from current file
-                let current_file = self.buffer().file_path().map(|s| s.to_string());
-                if current_file.as_deref() != Some(&global_mark.file_path) {
-                    // Load the file (synchronously for now)
-                    if let Ok(_) = self.load_file(&global_mark.file_path) {
-                        // File loaded successfully
-                    } else {
-                        return false; // Failed to load file
-                    }
-                }
-
-                // Validate and clamp mark position to buffer bounds
-                let max_line = self.buffer().line_count().saturating_sub(1);
-                let clamped_line = global_mark.line.min(max_line);
-
-                let line_len = if let Some(line) = self.buffer().line(clamped_line) {
-                    line.trim_end_matches('\n').chars().count()
-                } else {
-                    0
-                };
-                let clamped_col = global_mark.col.min(line_len);
-
-                // Jump to the validated position
-                self.buffer_mut()
-                    .cursor_mut()
-                    .set_position(clamped_line, clamped_col);
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Jumps to mark line (apostrophe - goes to first non-blank on line)
-    pub fn jump_to_mark_line(&mut self, name: char) -> bool {
-        // Try local mark first (a-z)
-        if name.is_ascii_lowercase() {
-            if let Some(mark) = self.marks.get_mark(name) {
-                // Find first non-blank character on the line
-                let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
-                    line_text
-                        .chars()
-                        .position(|c| !c.is_whitespace())
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-
-                self.buffer_mut()
-                    .cursor_mut()
-                    .set_position(mark.line, first_non_blank);
-                return true;
-            }
-        }
-
-        // Try global mark (A-Z)
-        if name.is_ascii_uppercase() {
-            if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
-                // Load the file if it's different from current file
-                let current_file = self.buffer().file_path().map(|s| s.to_string());
-                if current_file.as_deref() != Some(&global_mark.file_path) {
-                    // Load the file (synchronously for now)
-                    if let Ok(_) = self.load_file(&global_mark.file_path) {
-                        // File loaded successfully
-                    } else {
-                        return false; // Failed to load file
-                    }
-                }
-
-                // Validate and clamp mark line to buffer bounds
-                let max_line = self.buffer().line_count().saturating_sub(1);
-                let clamped_line = global_mark.line.min(max_line);
-
-                // Find first non-blank character on the line
-                let first_non_blank = if let Some(line_text) = self.buffer().line(clamped_line) {
-                    line_text
-                        .chars()
-                        .position(|c| !c.is_whitespace())
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
-
-                self.buffer_mut()
-                    .cursor_mut()
-                    .set_position(clamped_line, first_non_blank);
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Adds current position to jump list
-    pub fn add_jump(&mut self) {
-        let cursor = self.buffer().cursor();
-        self.jump_list.add_jump(cursor.line(), cursor.col());
-    }
-
-    /// Jumps back in the jump list (Ctrl-O)
-    pub fn jump_back(&mut self) -> bool {
-        if let Some((line, col)) = self.jump_list.jump_back() {
-            self.buffer_mut().cursor_mut().set_position(line, col);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Jumps forward in the jump list (Ctrl-I)
-    pub fn jump_forward(&mut self) -> bool {
-        if let Some((line, col)) = self.jump_list.jump_forward() {
-            self.buffer_mut().cursor_mut().set_position(line, col);
-            true
-        } else {
-            false
         }
     }
 
@@ -1453,11 +1084,6 @@ impl Editor {
         &mut self.registers
     }
 
-    /// Gets a reference to the mark manager
-    pub fn marks(&self) -> &MarkManager {
-        &self.marks
-    }
-
     /// Gets a reference to the key mapping manager
     pub fn keymaps(&self) -> &KeyMapManager {
         &self.keymaps
@@ -1534,99 +1160,6 @@ impl Editor {
     /// Clears the pending register
     pub fn clear_pending_register(&mut self) {
         self.pending_register = None;
-    }
-
-    /// Gets the visual selection start position
-    pub fn visual_start(&self) -> Option<(usize, usize)> {
-        self.visual_start
-    }
-
-    /// Sets the visual selection start position
-    pub fn set_visual_start(&mut self, line: usize, col: usize) {
-        self.visual_start = Some((line, col));
-    }
-
-    /// Clears the visual selection
-    pub fn clear_visual_start(&mut self) {
-        self.visual_start = None;
-    }
-
-    /// Sets visual block insert/append state for replay on insert mode exit
-    pub fn set_visual_block_insert_state(
-        &mut self,
-        state: Option<(usize, usize, usize, bool, bool)>,
-    ) {
-        self.visual_block_insert_state = state;
-    }
-
-    /// Gets visual block insert/append state
-    pub fn visual_block_insert_state(&self) -> Option<(usize, usize, usize, bool, bool)> {
-        self.visual_block_insert_state
-    }
-
-    /// Gets the visual selection range (start and end positions)
-    /// Returns ((start_line, start_col), (end_line, end_col))
-    /// Note: For VisualBlock, this returns the corners of the rectangle
-    pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        self.visual_start.map(|start| {
-            let cursor = self.buffer().cursor();
-            let mut end = (cursor.line(), cursor.col());
-
-            match self.mode {
-                Mode::VisualLine => {
-                    // Get the length of the end line (excluding newline)
-                    if let Some(line_text) = self.buffer().line(end.0) {
-                        let line_len = line_text.trim_end_matches('\n').chars().count();
-                        end.1 = if line_len > 0 { line_len - 1 } else { 0 };
-                    }
-
-                    // Also ensure start is at beginning of its line
-                    let mut start = start;
-                    start.1 = 0;
-
-                    // Normalize so start is always before end
-                    if start.0 <= end.0 {
-                        (start, end)
-                    } else {
-                        // If cursor moved above start line, swap and adjust
-                        let mut new_start = end;
-                        new_start.1 = 0;
-                        let mut new_end = start;
-                        if let Some(line_text) = self.buffer().line(new_end.0) {
-                            let line_len = line_text.trim_end_matches('\n').chars().count();
-                            new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
-                        }
-                        (new_start, new_end)
-                    }
-                }
-                Mode::VisualBlock => {
-                    // Block mode: return corners of rectangle
-                    // Normalize so start_line <= end_line and start_col <= end_col
-                    let (min_line, max_line) = if start.0 <= end.0 {
-                        (start.0, end.0)
-                    } else {
-                        (end.0, start.0)
-                    };
-
-                    let (min_col, max_col) = if start.1 <= end.1 {
-                        (start.1, end.1)
-                    } else {
-                        (end.1, start.1)
-                    };
-
-                    ((min_line, min_col), (max_line, max_col))
-                }
-                _ => {
-                    // Normal visual mode behavior
-                    // Normalize so start is always before end
-                    if start.0 < end.0 || (start.0 == end.0 && start.1 <= end.1) {
-                        (start, end)
-                    } else {
-                        (end, start)
-                    }
-                }
-            }
-        })
     }
 
     /// Loads a file into the editor (async version)
@@ -1831,16 +1364,6 @@ impl Editor {
         Ok(())
     }
 
-    /// Sets the last find motion for ; and , repeat
-    pub fn set_last_find(&mut self, ch: char, find_type: FindType, direction: FindDirection) {
-        self.last_find = Some((ch, find_type, direction));
-    }
-
-    /// Gets the last find motion
-    pub fn get_last_find(&self) -> Option<(char, FindType, FindDirection)> {
-        self.last_find
-    }
-
     /// Sets the picker
     pub fn set_picker(&mut self, picker: Picker) {
         self.picker = Some(picker);
@@ -2014,31 +1537,6 @@ impl Editor {
         }
 
         None
-    }
-
-    /// Gets the current color scheme
-    pub fn get_color_scheme(&self) -> Option<&ColorScheme> {
-        self.color_scheme_registry.get(&self.current_color_scheme)
-    }
-
-    /// Sets the color scheme by name
-    pub fn set_color_scheme(&mut self, name: &str) -> Result<()> {
-        if self.color_scheme_registry.get(name).is_some() {
-            self.current_color_scheme = name.to_string();
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Color scheme '{}' not found", name))
-        }
-    }
-
-    /// Lists all available color scheme names
-    pub fn list_color_schemes(&self) -> Vec<&str> {
-        self.color_scheme_registry.list_names()
-    }
-
-    /// Gets the current color scheme name
-    pub fn current_color_scheme_name(&self) -> &str {
-        &self.current_color_scheme
     }
 
     /// Limits preview cache size to prevent memory bloat
@@ -5714,131 +5212,6 @@ impl Editor {
     /// Close all tabs except the current one
     pub fn close_other_tabs(&mut self) {
         self.tab_page_manager.close_other_tabs();
-    }
-
-    /// Performance metrics: increment render count
-    pub fn increment_render_count(&mut self) {
-        self.render_count = self.render_count.saturating_add(1);
-    }
-
-    /// Performance metrics: record render duration
-    pub fn record_render_duration(&mut self, duration_micros: u64) {
-        self.last_render_duration_micros = Some(duration_micros);
-    }
-
-    /// Performance metrics: record syntax highlighting duration
-    pub fn record_syntax_duration(&mut self, duration_micros: u64) {
-        self.last_syntax_duration_micros = Some(duration_micros);
-    }
-
-    /// Performance metrics: get render count
-    pub fn render_count(&self) -> u64 {
-        self.render_count
-    }
-
-    /// Performance metrics: get last render duration
-    pub fn last_render_duration_micros(&self) -> Option<u64> {
-        self.last_render_duration_micros
-    }
-
-    /// Performance metrics: get last syntax duration
-    pub fn last_syntax_duration_micros(&self) -> Option<u64> {
-        self.last_syntax_duration_micros
-    }
-
-    /// Performance metrics: record input latency sample
-    pub fn record_input_latency(&mut self, latency_micros: u64) {
-        self.input_latency_samples.push(latency_micros);
-        // Keep only the most recent MAX_LATENCY_SAMPLES samples (circular buffer)
-        if self.input_latency_samples.len() > MAX_LATENCY_SAMPLES {
-            self.input_latency_samples.remove(0);
-        }
-    }
-
-    /// Performance metrics: compute latency percentile
-    fn compute_percentile(samples: &[u64], percentile: f64) -> Option<u64> {
-        if samples.is_empty() {
-            return None;
-        }
-        let mut sorted = samples.to_vec();
-        sorted.sort_unstable();
-        let index = ((percentile / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
-        Some(sorted[index])
-    }
-
-    /// Performance metrics: get input latency p50
-    pub fn input_latency_p50_micros(&self) -> Option<u64> {
-        Self::compute_percentile(&self.input_latency_samples, 50.0)
-    }
-
-    /// Performance metrics: get input latency p95
-    pub fn input_latency_p95_micros(&self) -> Option<u64> {
-        Self::compute_percentile(&self.input_latency_samples, 95.0)
-    }
-
-    /// Performance metrics: get input latency p99
-    pub fn input_latency_p99_micros(&self) -> Option<u64> {
-        Self::compute_percentile(&self.input_latency_samples, 99.0)
-    }
-
-    /// Performance metrics: get number of input latency samples
-    pub fn input_latency_sample_count(&self) -> usize {
-        self.input_latency_samples.len()
-    }
-
-    /// Performance metrics: record LSP serialize duration
-    pub fn record_lsp_serialize_duration(&mut self, duration_micros: u64) {
-        self.last_lsp_serialize_micros = Some(duration_micros);
-    }
-
-    /// Performance metrics: get last LSP serialize duration
-    pub fn last_lsp_serialize_micros(&self) -> Option<u64> {
-        self.last_lsp_serialize_micros
-    }
-
-    /// Performance metrics: record git status duration
-    pub fn record_git_status_duration(&mut self, duration_micros: u64) {
-        self.last_git_status_micros = Some(duration_micros);
-    }
-
-    /// Performance metrics: get last git status duration
-    pub fn last_git_status_micros(&self) -> Option<u64> {
-        self.last_git_status_micros
-    }
-
-    /// Performance metrics: record fold calculation duration
-    pub fn record_fold_calc_duration(&mut self, duration_micros: u64) {
-        self.last_fold_calc_micros = Some(duration_micros);
-    }
-
-    /// Performance metrics: get last fold calculation duration
-    pub fn last_fold_calc_micros(&self) -> Option<u64> {
-        self.last_fold_calc_micros
-    }
-
-    /// Performance metrics: record diagnostic query duration
-    pub fn record_diagnostic_query_duration(&mut self, duration_micros: u64) {
-        self.last_diagnostic_query_micros = Some(duration_micros);
-    }
-
-    /// Performance metrics: get last diagnostic query duration
-    pub fn last_diagnostic_query_micros(&self) -> Option<u64> {
-        self.last_diagnostic_query_micros
-    }
-
-    /// Marks the editor as needing a redraw
-    pub fn mark_dirty(&mut self) {
-        self.render_dirty = true;
-    }
-
-    /// Checks if the editor needs a redraw
-    pub fn is_dirty(&self) -> bool {
-        self.render_dirty
-    }
-
-    /// Marks the editor as clean (just rendered)
-    pub fn mark_clean(&mut self) {
-        self.render_dirty = false;
     }
 }
 
