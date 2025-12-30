@@ -1,6 +1,6 @@
 //! Picker management and preview cache
 
-use super::{Editor, Picker, PickerMode, PreviewCache};
+use super::{Editor, Picker, PreviewCache};
 use std::collections::HashMap;
 
 impl Editor {

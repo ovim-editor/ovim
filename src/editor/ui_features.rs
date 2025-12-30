@@ -1,7 +1,6 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
 use super::{Change, CompletionMenu, Editor, FileTree, LocationList, Mode, QuickfixEntry, QuickfixList, Range};
-use std::path::PathBuf;
 
 impl Editor {
     /// Gets a reference to the completion menu

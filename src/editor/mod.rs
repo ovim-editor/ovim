@@ -110,14 +110,12 @@ impl Default for EditorOptions {
 }
 
 use crate::buffer::Buffer;
-use crate::lsp::LspManager;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
 use crate::syntax::ColorSchemeRegistry;
 use anyhow::Result;
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Commands sent from background tasks to the LSP manager via channel
@@ -461,6 +459,488 @@ impl Editor {
         // Convert buffer to ANSI string
         let buffer = terminal.backend().buffer();
         Ok(buffer_to_ansi(buffer))
+    }
+
+    // ==================== Core Editor Methods ====================
+
+    pub fn start_macro_recording(&mut self, register: char) -> bool {
+        self.macro_manager.start_recording(register)
+    }
+
+    /// Stops macro recording
+    pub fn stop_macro_recording(&mut self) {
+        self.macro_manager.stop_recording();
+    }
+
+    /// Records a key event in the current macro
+    pub fn record_macro_event(&mut self, event: crossterm::event::KeyEvent) {
+        self.macro_manager.record_event(event);
+    }
+
+    /// Returns whether currently recording a macro
+    pub fn is_recording_macro(&self) -> bool {
+        self.macro_manager.is_recording()
+    }
+
+    /// Gets the register being recorded
+    pub fn recording_register(&self) -> Option<char> {
+        self.macro_manager.recording_register()
+    }
+
+    /// Gets a macro by register for playback
+    pub fn get_macro(&self, register: char) -> Option<&Vec<crossterm::event::KeyEvent>> {
+        self.macro_manager.get_macro(register)
+    }
+
+    /// Gets the current mode
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Sets the mode
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        // Clear count and pending operator when changing modes
+        self.count = None;
+        self.pending_operator = None;
+        self.pending_command = None;
+        self.pending_register = None;
+
+        // Clear visual selection when leaving visual modes
+        if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
+            self.visual_start = None;
+        }
+    }
+
+    /// Gets the pending command
+    pub fn pending_command(&self) -> Option<char> {
+        self.pending_command
+    }
+
+    /// Sets the pending command
+    pub fn set_pending_command(&mut self, cmd: char) {
+        self.pending_command = Some(cmd);
+    }
+
+    /// Sets the viewport height (called from UI layer)
+    pub fn set_viewport_height(&mut self, height: usize) {
+        self.viewport_height = height;
+    }
+
+    /// Gets the viewport height
+    pub fn viewport_height(&self) -> usize {
+        self.viewport_height
+    }
+
+    /// Gets the scroll offset (top visible line)
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Updates scroll offset to keep cursor visible with scrolloff margin
+    pub fn update_scroll_offset(&mut self) {
+        let cursor_line = self.buffer().cursor().line();
+        let scrolloff = self.options.scrolloff;
+        let visible_lines = self.viewport_height;
+
+        // Scroll up if cursor is too close to top
+        if cursor_line < self.scroll_offset + scrolloff {
+            self.scroll_offset = cursor_line.saturating_sub(scrolloff);
+        }
+        // Scroll down if cursor is too close to bottom
+        else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
+            self.scroll_offset = cursor_line + scrolloff + 1
+                - visible_lines.min(cursor_line + scrolloff + 1);
+        }
+
+        // Ensure scroll_offset doesn't go beyond buffer
+        let max_line = self.buffer().line_count().saturating_sub(1);
+        if cursor_line > max_line {
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Calculates half-page scroll amount
+    /// Uses options.scroll if set, otherwise viewport_height / 2
+    pub fn half_page_scroll(&self) -> usize {
+        self.options
+            .scroll
+            .unwrap_or_else(|| self.viewport_height / 2)
+    }
+
+    /// Clears the pending command
+    pub fn clear_pending_command(&mut self) {
+        self.pending_command = None;
+    }
+
+    /// Returns whether the editor should quit
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    /// Sets the quit flag
+    pub fn quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    /// Gets the current count
+    pub fn count(&self) -> Option<usize> {
+        self.count
+    }
+
+    /// Sets the count
+    pub fn set_count(&mut self, count: usize) {
+        self.count = Some(count);
+    }
+
+    /// Appends a digit to the count
+    pub fn append_count(&mut self, digit: usize) {
+        let current = self.count.unwrap_or(0);
+        self.count = Some(current * 10 + digit);
+    }
+
+    /// Clears the count
+    pub fn clear_count(&mut self) {
+        self.count = None;
+    }
+
+    /// Gets the effective count (count or 1)
+    pub fn effective_count(&self) -> usize {
+        self.count.unwrap_or(1)
+    }
+
+    /// Gets the pending operator
+    pub fn pending_operator(&self) -> Option<Operator> {
+        self.pending_operator
+    }
+
+    /// Sets the pending operator
+    pub fn set_pending_operator(&mut self, op: Operator) {
+        self.pending_operator = Some(op);
+    }
+
+    /// Clears the pending operator
+    pub fn clear_pending_operator(&mut self) {
+        self.pending_operator = None;
+    }
+
+    /// Gets a reference to the registers
+    pub fn registers(&self) -> &RegisterManager {
+        &self.registers
+    }
+
+    /// Gets a mutable reference to the registers
+    pub fn registers_mut(&mut self) -> &mut RegisterManager {
+        &mut self.registers
+    }
+
+    /// Gets a reference to the keymaps
+    pub fn keymaps(&self) -> &KeyMapManager {
+        &self.keymaps
+    }
+
+    /// Gets a mutable reference to the keymaps
+    pub fn keymaps_mut(&mut self) -> &mut KeyMapManager {
+        &mut self.keymaps
+    }
+
+    /// Gets the pending register for next operation
+    pub fn pending_register(&self) -> Option<char> {
+        self.pending_register
+    }
+
+    /// Sets the pending register for next operation
+    pub fn set_pending_register(&mut self, reg: char) {
+        self.pending_register = Some(reg);
+    }
+
+    /// Clears the pending register
+    pub fn clear_pending_register(&mut self) {
+        self.pending_register = None;
+    }
+
+    /// Loads a file into the editor (async version)
+    /// If the file is already open in a buffer, switches to that buffer
+    /// Otherwise, adds it as a new buffer
+    pub async fn load_file_async<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        let path_str = path.as_ref().to_string_lossy().to_string();
+
+        // Check if file is already open in a buffer
+        for (i, buf) in self.buffers.iter().enumerate() {
+            if buf.file_path() == Some(&path_str) {
+                // File already open - just switch to it
+                // Save current file to alternate file register
+                if let Some(current_path) = self.buffer().file_path() {
+                    self.registers.set_alternate_file(current_path.to_string());
+                }
+                self.current_buffer_index = i;
+                // Update current file register
+                self.registers.set_current_file(path_str);
+                // Sync tab's buffer index to match the existing buffer
+                self.sync_current_tab_buffer_index();
+                // Still need to initialize LSP for this file if it hasn't been yet
+                self.lsp_state.needs_lsp_init = true;
+                return Ok(());
+            }
+        }
+
+        // Store old file path before loading new file
+        let old_file_path = self.buffer().file_path().map(|s| s.to_string());
+
+        // Save current file to alternate file register
+        if let Some(current_path) = old_file_path.as_ref() {
+            self.registers.set_alternate_file(current_path.to_string());
+        }
+
+        // Load new buffer
+        let new_buffer = Buffer::load_file_async(path).await?;
+
+        // Parse and apply modeline options from the loaded file
+        let content = new_buffer.rope().to_string();
+        if let Some(modeline) = crate::modeline::Modeline::parse(&content) {
+            self.apply_modeline(&modeline);
+        }
+
+        self.add_buffer(new_buffer);
+
+        // Update current file register
+        self.registers.set_current_file(path_str);
+
+        // Update tab title to match the loaded file
+        self.update_current_tab_title();
+
+        // Sync tab's buffer index to match the newly loaded buffer
+        self.sync_current_tab_buffer_index();
+
+        // Mark that we need to send didClose for the old file
+        if old_file_path.is_some() {
+            self.lsp_state.pending_did_close_file = old_file_path;
+        }
+
+        Ok(())
+    }
+
+    /// Loads a file into the editor (blocking wrapper around load_file_async)
+    pub fn load_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.load_file_async(path))
+        })
+    }
+
+    /// Process pending syntax re-highlighting (CPU-intensive, runs in background)
+    pub async fn process_pending_rehighlight(&mut self) {
+        // Check if buffer needs re-highlighting
+        let Some((content, version, language)) = self.buffer().get_rehighlight_data() else {
+            return;
+        };
+
+        // Spawn blocking task for CPU-intensive parsing
+        let highlights = tokio::task::spawn_blocking(move || {
+            // Create a new highlighter for this language
+            let mut highlighter = match crate::syntax::SyntaxHighlighter::new(language) {
+                Ok(h) => h,
+                Err(_) => return None,
+            };
+
+            // Parse the content
+            highlighter.parse(&content);
+
+            // Build highlights for all lines using efficient single-pass method
+            let all_highlights = highlighter.highlights_for_all_lines(&content);
+
+            Some(all_highlights)
+        })
+        .await;
+
+        // Apply highlights if successful and version still matches
+        if let Ok(Some(highlights)) = highlights {
+            self.buffer_mut().apply_highlights(highlights, version);
+        }
+    }
+
+    /// Apply modeline options to editor settings
+    fn apply_modeline(&mut self, modeline: &crate::modeline::Modeline) {
+        // Indentation options
+        if let Some(ts) = modeline.get_int("tabstop", "ts") {
+            self.options.tab_width = ts;
+        }
+        if let Some(sw) = modeline.get_int("shiftwidth", "sw") {
+            self.options.shift_width = sw;
+        }
+        if let Some(et) = modeline.get_bool("expandtab", "et") {
+            self.options.expand_tab = et;
+        }
+
+        // Display options
+        if let Some(tw) = modeline.get_int("textwidth", "tw") {
+            self.options.textwidth = Some(tw);
+        }
+        if let Some(nu) = modeline.get_bool("number", "nu") {
+            self.options.number = nu;
+        }
+        if let Some(rnu) = modeline.get_bool("relativenumber", "rnu") {
+            self.options.relative_number = rnu;
+        }
+        if let Some(cul) = modeline.get_bool("cursorline", "cul") {
+            self.options.cursorline = cul;
+        }
+
+        // Search options
+        if let Some(ic) = modeline.get_bool("ignorecase", "ic") {
+            self.options.ignorecase = ic;
+        }
+        if let Some(scs) = modeline.get_bool("smartcase", "scs") {
+            self.options.smartcase = scs;
+        }
+
+        // Other options
+        if let Some(sm) = modeline.get_bool("showmatch", "sm") {
+            self.options.showmatch = sm;
+        }
+    }
+
+    /// Yanks text to the appropriate register (pending_register or default)
+    pub fn yank_to_register(&mut self, text: String) {
+        self.yank_to_register_with_type(text, RegisterType::Character);
+    }
+
+    /// Yanks text to the appropriate register with explicit type
+    pub fn yank_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
+        if let Some(reg) = self.pending_register {
+            self.registers.set_with_type(Some(reg), text, reg_type);
+            self.pending_register = None;
+        } else {
+            self.registers.yank_with_type(text, reg_type);
+        }
+    }
+
+    /// Deletes text and stores in the appropriate register (pending_register or default)
+    pub fn delete_to_register(&mut self, text: String) {
+        self.delete_to_register_with_type(text, RegisterType::Character);
+    }
+
+    /// Deletes text and stores in the appropriate register with explicit type
+    pub fn delete_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
+        if let Some(reg) = self.pending_register {
+            self.registers.set_with_type(Some(reg), text, reg_type);
+            self.pending_register = None;
+        } else {
+            self.registers.delete_with_type(text, reg_type);
+        }
+    }
+
+    /// Gets text from the appropriate register (pending_register or default)
+    pub fn get_from_register(&mut self) -> String {
+        let text = if let Some(reg) = self.pending_register {
+            self.registers.get(Some(reg))
+        } else {
+            self.registers.get_default().to_string()
+        };
+        self.pending_register = None;
+        text
+    }
+
+    /// Gets text and type from the appropriate register (pending_register or default)
+    pub fn get_from_register_with_type(&mut self) -> (String, RegisterType) {
+        let (text, reg_type) = if let Some(reg) = self.pending_register {
+            self.registers.get_with_type(Some(reg))
+        } else {
+            let (t, rt) = self.registers.get_default_with_type();
+            (t.to_string(), rt)
+        };
+        self.pending_register = None;
+        (text, reg_type)
+    }
+
+    /// Starts building a composite change (e.g., when entering insert mode)
+    pub fn start_change_building(&mut self, cursor_before: Position) {
+        self.buffer_mut()
+            .change_manager_mut()
+            .start_building(cursor_before);
+    }
+
+    /// Adds a change to the change manager
+    pub fn add_change(&mut self, change: Change) {
+        self.buffer_mut().change_manager_mut().add_change(change);
+    }
+
+    /// Finalizes the current composite change
+    pub fn finalize_change_building(&mut self) {
+        let cursor_pos = (self.buffer().cursor().line(), self.buffer().cursor().col());
+        self.buffer_mut()
+            .change_manager_mut()
+            .finalize_building_at(cursor_pos);
+    }
+
+    /// Gets the leader key
+    pub fn leader_key(&self) -> char {
+        self.leader_key
+    }
+
+    /// Sets pending leader state
+    pub fn set_pending_leader(&mut self, pending: bool) {
+        self.pending_leader = pending;
+    }
+
+    /// Gets pending leader state
+    pub fn pending_leader(&self) -> bool {
+        self.pending_leader
+    }
+
+    /// Gets cached diagnostic count (sync, suitable for UI rendering)
+    pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
+        self.lsp_state.diagnostic_count
+    }
+
+    /// Gets a reference to the last change
+    pub fn last_change(&self) -> Option<&Change> {
+        self.buffer().change_manager().last_change()
+    }
+
+    /// Jump to next diagnostic (]d)
+    pub fn goto_next_diagnostic(&mut self) {
+        let current_line = self.buffer().cursor().line();
+        let diagnostics = &self.lsp_state.current_file_diagnostics;
+
+        // Find first diagnostic after current position
+        let next = diagnostics
+            .iter()
+            .map(|d| d.range.start.line as usize)
+            .filter(|&line| line > current_line)
+            .min();
+
+        if let Some(line) = next {
+            self.buffer_mut().cursor_mut().set_position(line, 0);
+        } else {
+            // Wrap to first diagnostic
+            if let Some(first) = diagnostics.first() {
+                let line = first.range.start.line as usize;
+                self.buffer_mut().cursor_mut().set_position(line, 0);
+            }
+        }
+    }
+
+    /// Jump to previous diagnostic ([d)
+    pub fn goto_prev_diagnostic(&mut self) {
+        let current_line = self.buffer().cursor().line();
+        let diagnostics = &self.lsp_state.current_file_diagnostics;
+
+        // Find last diagnostic before current position
+        let prev = diagnostics
+            .iter()
+            .map(|d| d.range.start.line as usize)
+            .filter(|&line| line < current_line)
+            .max();
+
+        if let Some(line) = prev {
+            self.buffer_mut().cursor_mut().set_position(line, 0);
+        } else {
+            // Wrap to last diagnostic
+            if let Some(last) = diagnostics.last() {
+                let line = last.range.start.line as usize;
+                self.buffer_mut().cursor_mut().set_position(line, 0);
+            }
+        }
     }
 
 }
