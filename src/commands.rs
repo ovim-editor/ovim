@@ -262,6 +262,22 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 line_count: None,
             })
         }
+        cmd if cmd.starts_with("LspRename ") => {
+            // LSP rename symbol: :LspRename new_name
+            let new_name = cmd["LspRename ".len()..].trim();
+            if new_name.is_empty() {
+                ApiResponse::Error(ErrorResponse {
+                    error: "Usage: LspRename <new_name>".to_string(),
+                })
+            } else {
+                editor.request_rename(new_name.to_string());
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Renaming to '{}'...", new_name)),
+                    line_count: None,
+                })
+            }
+        }
         "copen" => {
             // Open/show quickfix list
             let qf_list = editor.quickfix_list();
