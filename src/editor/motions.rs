@@ -1,5 +1,9 @@
 use crate::buffer::Buffer;
 
+// TODO: Grapheme cluster support needed throughout this file
+// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
+// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
+
 /// Utilities for cursor motions
 pub struct Motions;
 
@@ -45,10 +49,32 @@ impl Motions {
         let chars: Vec<char> = line.chars().collect();
 
         if col >= chars.len() {
+            // Fix Bug 4: Handle consecutive empty lines properly
             // At end of line, move to next line
             if line_idx + 1 < rope.len_lines() {
-                buffer.cursor_mut().set_position(line_idx + 1, 0);
-                // Skip leading whitespace
+                let mut next_line_idx = line_idx + 1;
+
+                // Skip over consecutive empty lines
+                loop {
+                    let next_line = rope.line(next_line_idx).to_string();
+                    let next_line_trimmed = next_line.trim_end_matches('\n');
+
+                    if next_line_trimmed.is_empty() {
+                        // Empty line - try next one
+                        if next_line_idx + 1 < rope.len_lines() {
+                            next_line_idx += 1;
+                        } else {
+                            // Reached end of file on empty line
+                            break;
+                        }
+                    } else {
+                        // Found non-empty line
+                        break;
+                    }
+                }
+
+                buffer.cursor_mut().set_position(next_line_idx, 0);
+                // Skip leading whitespace on the line we landed on
                 Self::skip_whitespace_forward(buffer);
             } else {
                 // At end of last line - clamp cursor to valid position
@@ -95,8 +121,29 @@ impl Motions {
         }
 
         if new_col >= chars.len() && line_idx + 1 < rope.len_lines() {
-            // Reached end of line, move to next line
-            buffer.cursor_mut().set_position(line_idx + 1, 0);
+            // Fix Bug 4: Skip consecutive empty lines when moving to next line
+            let mut next_line_idx = line_idx + 1;
+
+            // Skip over consecutive empty lines
+            loop {
+                let next_line = rope.line(next_line_idx).to_string();
+                let next_line_trimmed = next_line.trim_end_matches('\n');
+
+                if next_line_trimmed.is_empty() {
+                    // Empty line - try next one
+                    if next_line_idx + 1 < rope.len_lines() {
+                        next_line_idx += 1;
+                    } else {
+                        // Reached end of file on empty line
+                        break;
+                    }
+                } else {
+                    // Found non-empty line
+                    break;
+                }
+            }
+
+            buffer.cursor_mut().set_position(next_line_idx, 0);
             Self::skip_whitespace_forward(buffer);
         } else {
             buffer
@@ -268,9 +315,10 @@ impl Motions {
             }
         }
 
+        // Fix Bug 1: Use saturating_sub to prevent underflow when new_col is 0
         buffer
             .cursor_mut()
-            .set_col((new_col - 1).min(chars.len().saturating_sub(1)));
+            .set_col(new_col.saturating_sub(1).min(chars.len().saturating_sub(1)));
     }
 
     /// Moves cursor backward to the end of the previous word
@@ -765,7 +813,7 @@ impl Motions {
 
         line_idx = line_idx.saturating_sub(1);
 
-        // Skip blank lines backward
+        // Fix: Skip blank lines backward - check line 0 explicitly
         while line_idx > 0 {
             if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
@@ -775,8 +823,21 @@ impl Motions {
             }
             line_idx = line_idx.saturating_sub(1);
         }
+        // Check line 0 after loop (loop condition skips it)
+        if line_idx == 0 {
+            if let Some(line) = buffer.line(0) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    // Line 0 is non-blank, continue to next phase
+                } else {
+                    // Line 0 is blank, stop here
+                    buffer.cursor_mut().set_position(0, 0);
+                    return;
+                }
+            }
+        }
 
-        // Skip non-blank lines backward until we find a blank line
+        // Fix: Skip non-blank lines backward until we find a blank line
         while line_idx > 0 {
             if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
@@ -785,6 +846,17 @@ impl Motions {
                 }
             }
             line_idx = line_idx.saturating_sub(1);
+        }
+        // Check line 0 after loop - if we're here, check if it's blank
+        if line_idx == 0 {
+            if let Some(line) = buffer.line(0) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    // Line 0 is non-blank, we've gone as far back as we can
+                    // The paragraph starts at line 0
+                }
+                // If line 0 is blank, line_idx is already 0
+            }
         }
 
         buffer.cursor_mut().set_position(line_idx, 0);
@@ -798,6 +870,11 @@ impl Motions {
     }
 
     fn sentence_forward_once(buffer: &mut Buffer) {
+        // TODO (Bug 4): Sentence motion doesn't handle abbreviations like "Dr.", "e.g.", "i.e."
+        // Vim's sentence motion has some heuristics for this (e.g., two spaces after period)
+        // but implementing full abbreviation support would require a dictionary or more
+        // sophisticated pattern matching. Low priority since basic sentence navigation works.
+
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();

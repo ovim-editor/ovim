@@ -32,6 +32,22 @@ impl Editor {
         self.search_forward
     }
 
+    /// Saves the current cursor position when entering search mode
+    /// This allows restoring the position if search is canceled with ESC
+    pub fn save_search_start_position(&mut self) {
+        let cursor = self.buffer().cursor();
+        self.search_start_pos = Some((cursor.line(), cursor.col()));
+    }
+
+    /// Restores the cursor to the position saved when search mode was entered
+    /// Used when canceling search with ESC
+    pub fn restore_search_start_position(&mut self) {
+        if let Some((line, col)) = self.search_start_pos {
+            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.search_start_pos = None;
+        }
+    }
+
     /// Gets the current search
     pub fn current_search(&self) -> Option<&Search> {
         self.current_search.as_ref()
@@ -50,6 +66,9 @@ impl Editor {
     /// Executes the current search and moves cursor to first match
     pub fn execute_search(&mut self) {
         if self.search_buffer.is_empty() {
+            // Clear search highlight and restore cursor position on empty search
+            self.clear_search_highlight();
+            self.restore_search_start_position();
             return;
         }
 
@@ -84,7 +103,17 @@ impl Editor {
 
             // For forward search, start from col+1; for backward, start from col-1 or col
             let search_col = if is_forward {
-                cursor_col + 1
+                // Clamp to avoid exceeding line length (wrap to next line starts at col 0)
+                if let Some(line) = self.buffer().line(cursor_line) {
+                    let line_len = line.trim_end_matches('\n').chars().count();
+                    if cursor_col + 1 >= line_len {
+                        0 // Wrap to next line
+                    } else {
+                        cursor_col + 1
+                    }
+                } else {
+                    cursor_col + 1
+                }
             } else {
                 if cursor_col > 0 {
                     cursor_col - 1
@@ -112,24 +141,34 @@ impl Editor {
                 self.options.ignorecase,
                 self.options.smartcase,
             );
-            let cursor = self.buffer().cursor();
+            let cursor_line = self.buffer().cursor().line();
+            let cursor_col = self.buffer().cursor().col();
 
             // For reverse direction: if original was forward, now going backward (use col-1)
             // if original was backward, now going forward (use col+1)
             let search_col = if is_forward {
                 // Original was forward, now backward
-                if cursor.col() > 0 {
-                    cursor.col() - 1
+                if cursor_col > 0 {
+                    cursor_col - 1
                 } else {
                     0
                 }
             } else {
-                // Original was backward, now forward
-                cursor.col() + 1
+                // Original was backward, now forward - clamp to avoid exceeding line length
+                if let Some(line) = self.buffer().line(cursor_line) {
+                    let line_len = line.trim_end_matches('\n').chars().count();
+                    if cursor_col + 1 >= line_len {
+                        0 // Wrap to next line
+                    } else {
+                        cursor_col + 1
+                    }
+                } else {
+                    cursor_col + 1
+                }
             };
 
             if let Some((line, col, _)) =
-                rev_search.find_next(self.buffer(), cursor.line(), search_col)
+                rev_search.find_next(self.buffer(), cursor_line, search_col)
             {
                 self.buffer_mut().cursor_mut().set_position(line, col);
             }

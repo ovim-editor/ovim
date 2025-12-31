@@ -458,6 +458,31 @@ impl Buffer {
         &mut self.cursor
     }
 
+    /// Validates and corrects cursor position to ensure it's within buffer bounds
+    /// This should be called after operations that may leave cursor in invalid state
+    pub fn validate_cursor_position(&mut self) {
+        let line = self.cursor.line();
+        let col = self.cursor.col();
+
+        // Clamp line to valid range
+        let max_line = self.line_count().saturating_sub(1);
+        if line > max_line {
+            self.cursor.set_line(max_line);
+        }
+
+        // Clamp column to valid range for current line
+        let current_line = self.cursor.line();
+        if let Some(line_content) = self.line(current_line) {
+            // TODO: Use grapheme cluster library for proper multi-codepoint emoji handling
+            // Currently chars().count() splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦) incorrectly
+            let line_len = line_content.trim_end_matches('\n').chars().count();
+            if col >= line_len {
+                let new_col = if line_len > 0 { line_len - 1 } else { 0 };
+                self.cursor.set_col(new_col);
+            }
+        }
+    }
+
     /// Returns whether the buffer has been modified
     pub fn is_modified(&self) -> bool {
         self.modified
@@ -1087,6 +1112,8 @@ impl Buffer {
 
         if newline_count == 0 {
             // Single-line insertion: shift highlights on the same line
+            // TODO: Use grapheme cluster library for proper multi-codepoint emoji handling
+            // Currently chars().count() splits multi-codepoint emojis incorrectly
             let char_count = text.chars().count();
 
             for (range, _) in &mut cache[line] {
@@ -1102,6 +1129,8 @@ impl Buffer {
         } else {
             // Multi-line insertion: handle line splits and shifts
             let lines: Vec<&str> = text.split('\n').collect();
+            // TODO: Use grapheme cluster library for proper multi-codepoint emoji handling
+            // Currently chars().count() splits multi-codepoint emojis incorrectly
             let last_line_len = lines.last().map(|s| s.chars().count()).unwrap_or(0);
 
             // Split the current line's highlights at the insertion point

@@ -341,47 +341,76 @@ impl LanguageServer {
 
         // Spawn supervised stale request cleanup task
         let inner_cleanup = inner.clone();
+        let state_clone_cleanup = inner.state.clone();
         inner
             .supervisor
             .spawn_supervised("lsp_cleanup".to_string(), move || {
                 let inner = inner_cleanup.clone();
+                let state_ref = state_clone_cleanup.clone();
                 async move {
                     loop {
                         tokio::time::sleep(CLEANUP_INTERVAL).await;
+
+                        // BUG FIX #3: Check server state first - fail all requests if server is dead
+                        let state = state_ref.lock().await;
+                        let is_failed = matches!(*state, ServerState::Failed { .. });
+                        drop(state);
 
                         let mut pending = inner.pending_requests.lock().await;
                         let now = Instant::now();
                         let count_before = pending.len();
 
-                        // Collect stale request IDs first
-                        let stale_ids: Vec<RequestId> = pending
-                            .iter()
-                            .filter_map(|(id, req)| {
-                                let age = now.duration_since(req.sent_at);
-                                if age > REQUEST_STALE_TIMEOUT {
-                                    Some(id.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        // Remove and notify each stale request
-                        for id in stale_ids {
-                            if let Some(req) = pending.remove(&id) {
-                                let age = now.duration_since(req.sent_at);
+                        if is_failed && count_before > 0 {
+                            // Server failed - immediately fail ALL pending requests
+                            crate::lsp_warn!(
+                                "Cleanup",
+                                "Server failed - clearing all {} pending requests",
+                                count_before
+                            );
+                            for (id, req) in pending.drain() {
                                 crate::lsp_warn!(
                                     "Cleanup",
-                                    "Removing stale request {:?} for method '{}' (age: {:?})",
+                                    "Failing request {:?} for method '{}' due to server failure",
                                     id,
-                                    req.method,
-                                    age
+                                    req.method
                                 );
                                 let _ = req.sender.send(Err(anyhow!(
-                                    "Request '{}' timed out and was cleaned up after {:?}",
-                                    req.method,
-                                    age
+                                    "Request '{}' failed because LSP server is in Failed state",
+                                    req.method
                                 )));
+                            }
+                        } else {
+                            // Normal cleanup: remove stale requests
+                            // Collect stale request IDs first
+                            let stale_ids: Vec<RequestId> = pending
+                                .iter()
+                                .filter_map(|(id, req)| {
+                                    let age = now.duration_since(req.sent_at);
+                                    if age > REQUEST_STALE_TIMEOUT {
+                                        Some(id.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+
+                            // Remove and notify each stale request
+                            for id in stale_ids {
+                                if let Some(req) = pending.remove(&id) {
+                                    let age = now.duration_since(req.sent_at);
+                                    crate::lsp_warn!(
+                                        "Cleanup",
+                                        "Removing stale request {:?} for method '{}' (age: {:?})",
+                                        id,
+                                        req.method,
+                                        age
+                                    );
+                                    let _ = req.sender.send(Err(anyhow!(
+                                        "Request '{}' timed out and was cleaned up after {:?}",
+                                        req.method,
+                                        age
+                                    )));
+                                }
                             }
                         }
 
@@ -549,6 +578,34 @@ impl LanguageServer {
             crate::lsp_debug!("stderr", "LSP stderr task exiting");
         });
 
+        // BUG FIX: Verify the process is actually running before returning
+        // Give it a small delay to fail fast if the command doesn't exist or crashes immediately
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Check if process is still alive
+        let process_guard = server.inner.process.lock().await;
+        if let Some(ref child) = *process_guard {
+            // try_wait returns Ok(Some(status)) if exited, Ok(None) if still running, Err on error
+            match child.id() {
+                Some(_pid) => {
+                    // Process has a valid PID, likely running
+                    drop(process_guard);
+                }
+                None => {
+                    drop(process_guard);
+                    // Process has no PID - it failed to start or already exited
+                    return Err(anyhow!(
+                        "Language server process failed to start or exited immediately: {} {:?}",
+                        command,
+                        args
+                    ));
+                }
+            }
+        } else {
+            drop(process_guard);
+            return Err(anyhow!("Language server process handle is missing"));
+        }
+
         Ok(server)
     }
 
@@ -572,6 +629,7 @@ impl LanguageServer {
     }
 
     /// Internal initialization implementation (wrapped by timeout)
+    /// BUG FIX: Improved error handling - sets Failed state on errors
     async fn initialize_internal(&mut self, root_uri: Uri) -> Result<()> {
         // Transition to Initializing state
         self.transition_to(ServerState::Initializing {
@@ -580,6 +638,24 @@ impl LanguageServer {
         })
         .await;
 
+        // BUG FIX: Wrap initialization logic to catch errors and set Failed state
+        let init_result = self.do_initialize(root_uri).await;
+
+        if let Err(ref e) = init_result {
+            // Initialization failed - set server to Failed state
+            crate::lsp_error!(&self.log_prefix(), "Initialization failed: {}", e);
+            self.transition_to(ServerState::Failed {
+                error: format!("Initialization failed: {}", e),
+                at: Instant::now(),
+            })
+            .await;
+        }
+
+        init_result
+    }
+
+    /// Performs the actual initialization protocol exchange
+    async fn do_initialize(&mut self, root_uri: Uri) -> Result<()> {
         // Build comprehensive client capabilities to advertise supported features
         // This tells the LSP server what features the client can handle
         let client_capabilities = lsp_types::ClientCapabilities {
@@ -778,33 +854,40 @@ impl LanguageServer {
     }
 
     /// Transitions to a new state, handling state-specific logic
+    /// BUG FIX: Extract pending operations before dropping lock to prevent race condition
     async fn transition_to(&self, new_state: ServerState) {
-        let mut state = self.inner.state.lock().await;
         let prefix = self.log_prefix();
 
-        // Removed verbose logging: State: {:?} → {:?}
+        // BUG FIX: Extract pending operations while holding lock, then replay after releasing lock
+        // This prevents race condition where state could change during replay
+        let pending_ops_to_replay: Option<Vec<PendingOperation>> = {
+            let mut state = self.inner.state.lock().await;
 
-        // Handle transition-specific logic
-        match (&*state, &new_state) {
-            // Transitioning from Initializing to Ready: replay pending operations
-            (
-                ServerState::Initializing {
-                    pending_operations, ..
-                },
-                ServerState::Ready { .. },
-            ) => {
-                // Removed verbose logging: Replaying {} pending operations
+            // Extract pending operations if transitioning from Initializing to Ready
+            let ops = match (&*state, &new_state) {
+                (
+                    ServerState::Initializing {
+                        pending_operations, ..
+                    },
+                    ServerState::Ready { .. },
+                ) => Some(pending_operations.clone()),
+                _ => None,
+            };
 
-                for op in pending_operations {
-                    if let Err(e) = self.replay_operation(op).await {
-                        crate::lsp_error!(&prefix, "Failed to replay operation: {}", e);
-                    }
+            // Atomically update state while holding lock
+            *state = new_state;
+
+            ops
+        }; // Lock released here
+
+        // Replay operations outside the lock (if any)
+        if let Some(pending_ops) = pending_ops_to_replay {
+            for op in &pending_ops {
+                if let Err(e) = self.replay_operation(op).await {
+                    crate::lsp_error!(&prefix, "Failed to replay operation: {}", e);
                 }
             }
-            _ => {}
         }
-
-        *state = new_state;
     }
 
     /// Replays a pending operation after server becomes ready

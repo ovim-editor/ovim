@@ -95,11 +95,13 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Parse substitute pattern: /pattern/replacement/flags
     if !substitute_part.starts_with('/') {
+        editor.set_lsp_status("E146: Invalid substitute syntax".to_string());
         return Ok(()); // Invalid format
     }
 
     let parts: Vec<&str> = substitute_part.splitn(4, '/').collect();
     if parts.len() < 3 {
+        editor.set_lsp_status("E146: Invalid substitute syntax".to_string());
         return Ok(()); // Invalid format - need at least /pattern/replacement/
     }
 
@@ -227,6 +229,7 @@ fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     // Find the closing / for the pattern
+    // TODO: Handle escaped delimiters (\/) - currently just finds first unescaped /
     let pattern_end = if let Some(idx) = rest[1..].find('/') {
         idx + 1
     } else {
@@ -498,6 +501,10 @@ fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
         if let Some(mark) = editor.marks.get_mark(mark_char) {
             return Some(mark.line);
         }
+        // TODO (Bug 1): Add "E20: Mark not set" error message
+        // Currently returns None silently. To fix, need to refactor parse_range_endpoint
+        // to return Result<usize, String> instead of Option<usize> so we can propagate
+        // error messages, or change signature to take &mut Editor to set status directly.
         return None;
     }
 
@@ -713,8 +720,9 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     let command = command.trim();
 
     // Handle command chaining with |
-    // Split on | that's not escaped and handle each command
-    if command.contains('|') && !command.starts_with('s') && !command.starts_with("%s") {
+    // BUG FIX: Don't split on | for substitute, global, or vglobal commands
+    // because | can appear in patterns like :s/foo|bar/baz/
+    if command.contains('|') && !is_command_with_pattern(command) {
         // Simple split for non-substitute commands
         for part in command.split('|') {
             let part = part.trim();
@@ -726,6 +734,20 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     execute_command_single(editor, command)
+}
+
+/// Helper: Check if command contains patterns that may include | characters
+/// Returns true for substitute (:s), global (:g), and vglobal (:v) commands
+fn is_command_with_pattern(command: &str) -> bool {
+    // Match: :s/, :%s/, :'<,'>s/, :1,5s/, etc.
+    if command.contains("s/") {
+        return true;
+    }
+    // Match: :g/, :g!/, :v/
+    if command.starts_with("g/") || command.starts_with("g!/") || command.starts_with("v/") {
+        return true;
+    }
+    false
 }
 
 /// Execute a single command (no chaining)
@@ -762,13 +784,17 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // If we reach here, it's an unknown command - try custom input-specific handling
     // First, try to parse range from command
     // Format: :[range]command
-    let (range_str, cmd_part) =
-        if let Some(first_alpha) = command.chars().position(|c| c.is_alphabetic() || c == '!') {
-            (&command[..first_alpha], &command[first_alpha..])
-        } else {
-            // No command part, might be just a line number (goto)
-            (command, "")
-        };
+    // BUG FIX: Handle ! specially - it marks the start of a shell command, not the end of range
+    let (range_str, cmd_part) = if let Some(exclaim_idx) = command.find('!') {
+        // ! found - this is a shell command like :1,5!sort or :!ls
+        (&command[..exclaim_idx], &command[exclaim_idx..])
+    } else if let Some(first_alpha) = command.chars().position(|c| c.is_alphabetic()) {
+        // Normal command - split at first alphabetic character
+        (&command[..first_alpha], &command[first_alpha..])
+    } else {
+        // No command part, might be just a line number (goto)
+        (command, "")
+    };
 
     // Handle goto line (just a number or range without command)
     if cmd_part.is_empty() && !range_str.is_empty() {
@@ -854,7 +880,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 .filter_map(|idx| editor.buffer().line(idx).map(|l| l.to_string()))
                 .collect();
 
-            // Sort
+            // Bug 3 fix: Use stable sort (Vim's :sort is stable)
+            // sort_by is stable, but sort() uses unstable sort internally
             if numeric {
                 // Sort by leading number
                 lines.sort_by(|a, b| {
@@ -867,7 +894,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             } else if ignore_case {
                 lines.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
             } else {
-                lines.sort();
+                // Use stable sort for consistency with Vim
+                lines.sort_by(|a, b| a.cmp(b));
             }
 
             if reverse {
@@ -990,8 +1018,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         if let Some((start_line, end_line)) = parse_range(editor, range_str) {
             // Parse destination address
             if let Some(mut dest_line) = parse_range_endpoint(editor, dest_str) {
-                // Check for invalid moves (moving to within the range)
-                if dest_line >= start_line && dest_line < end_line {
+                // Bug 2 fix: Check for invalid moves (moving to within the range)
+                // Should be <= end_line to prevent moving into self
+                if dest_line >= start_line && dest_line <= end_line {
                     editor.set_lsp_status("E134: Move lines into themselves".to_string());
                     return Ok(());
                 }

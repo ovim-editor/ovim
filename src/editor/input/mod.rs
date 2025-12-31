@@ -514,6 +514,11 @@ impl InputHandler {
                     // Clamp cursor to buffer bounds (handles end of file)
                     helpers::clamp_cursor_to_buffer(editor);
 
+                    // Fix: After dd, cursor should always be at column 0 of the current line
+                    // This prevents edge cases where cursor ends up at end of line
+                    let current_line = editor.buffer().cursor().line();
+                    editor.buffer_mut().cursor_mut().set_position(current_line, 0);
+
                     editor.clear_count();
                     return Ok(());
                 }
@@ -531,7 +536,9 @@ impl InputHandler {
                     let mut end_line = end_cursor.line();
                     let mut end_col = end_cursor.col();
 
-                    // If we crossed a newline, stop at the end of the current line (before newline)
+                    // Fix: If we crossed a newline, stop at the end of the current line (before newline)
+                    // dw should delete to end of line but NOT include the newline character
+                    // end_col is exclusive, so line_text.chars().count() correctly points after last char
                     if end_line > start_line {
                         if let Some(line) = editor.buffer().line(start_line) {
                             let line_text = line.trim_end_matches('\n');
@@ -661,8 +668,14 @@ impl InputHandler {
 
                     let end_cursor = editor.buffer().cursor();
                     let end_line = end_cursor.line();
+                    // Fix Bug 3: Clamp end_col to line length to prevent out-of-bounds
                     // For deletion range, we need to include the character at end_col
-                    let end_col = end_cursor.col() + 1;
+                    let line_len = if let Some(line) = editor.buffer().line(end_line) {
+                        line.trim_end_matches('\n').chars().count()
+                    } else {
+                        0
+                    };
+                    let end_col = (end_cursor.col() + 1).min(line_len);
 
                     let start_pos = (start_line, start_col);
                     let end_pos = (end_line, end_col);
@@ -1955,6 +1968,12 @@ impl InputHandler {
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                ('g', KeyCode::Char('v')) => {
+                    // gv - reselect last visual selection
+                    editor.restore_last_visual_selection();
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
                 ('g', KeyCode::Char('I')) => {
                     // gI - insert at column 0 (before any indentation)
                     editor.buffer_mut().cursor_mut().set_col(0);
@@ -2573,12 +2592,18 @@ impl InputHandler {
             KeyCode::Char('/') => {
                 editor.clear_search_buffer();
                 editor.set_search_forward(true);
+                // BUG FIX: Save cursor position before entering search mode
+                // so we can restore it on ESC
+                editor.save_search_start_position();
                 editor.set_mode(Mode::Search);
             }
             // Enter Search mode (backward)
             KeyCode::Char('?') => {
                 editor.clear_search_buffer();
                 editor.set_search_forward(false);
+                // BUG FIX: Save cursor position before entering search mode
+                // so we can restore it on ESC
+                editor.save_search_start_position();
                 editor.set_mode(Mode::Search);
             }
             // Search next
@@ -3369,8 +3394,7 @@ impl InputHandler {
                 {
                     // g Ctrl-A: Sequential increment in visual selection
                     numbers::sequential_modify_numbers(editor, 1)?;
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
+                    helpers::exit_visual_mode_to_normal(editor);
                     return Ok(());
                 }
                 ('g', KeyCode::Char('x'))
@@ -3378,8 +3402,7 @@ impl InputHandler {
                 {
                     // g Ctrl-X: Sequential decrement in visual selection
                     numbers::sequential_modify_numbers(editor, -1)?;
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
+                    helpers::exit_visual_mode_to_normal(editor);
                     return Ok(());
                 }
                 ('r', KeyCode::Char(ch)) => {
@@ -3443,6 +3466,110 @@ impl InputHandler {
                         return Ok(());
                     }
                 }
+                ('i', KeyCode::Char('w')) => {
+                    // viw - visual inner word
+                    if let Some(range) = TextObjects::inner_word(editor.buffer()) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('a', KeyCode::Char('w')) => {
+                    // vaw - visual around word
+                    if let Some(range) = TextObjects::around_word(editor.buffer()) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('i', KeyCode::Char('p')) => {
+                    // vip - visual inner paragraph
+                    if let Some(range) = TextObjects::inner_paragraph(editor.buffer()) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('a', KeyCode::Char('p')) => {
+                    // vap - visual around paragraph
+                    if let Some(range) = TextObjects::around_paragraph(editor.buffer()) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('i', KeyCode::Char('"')) | ('i', KeyCode::Char('\'')) | ('i', KeyCode::Char('`')) => {
+                    // vi" vi' vi` - visual inner quoted string
+                    let quote = match key_event.code {
+                        KeyCode::Char(c) => c,
+                        _ => return Ok(()),
+                    };
+                    if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, false) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('a', KeyCode::Char('"')) | ('a', KeyCode::Char('\'')) | ('a', KeyCode::Char('`')) => {
+                    // va" va' va` - visual around quoted string
+                    let quote = match key_event.code {
+                        KeyCode::Char(c) => c,
+                        _ => return Ok(()),
+                    };
+                    if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, true) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('i', KeyCode::Char('(')) | ('i', KeyCode::Char(')')) | ('i', KeyCode::Char('b')) => {
+                    // vi( vi) vib - visual inner parentheses
+                    if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', false) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('a', KeyCode::Char('(')) | ('a', KeyCode::Char(')')) | ('a', KeyCode::Char('b')) => {
+                    // va( va) vab - visual around parentheses
+                    if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', true) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('i', KeyCode::Char('[')) | ('i', KeyCode::Char(']')) => {
+                    // vi[ vi] - visual inner brackets
+                    if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', false) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('a', KeyCode::Char('[')) | ('a', KeyCode::Char(']')) => {
+                    // va[ va] - visual around brackets
+                    if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', true) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('i', KeyCode::Char('{')) | ('i', KeyCode::Char('}')) | ('i', KeyCode::Char('B')) => {
+                    // vi{ vi} viB - visual inner braces
+                    if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', false) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
+                ('a', KeyCode::Char('{')) | ('a', KeyCode::Char('}')) | ('a', KeyCode::Char('B')) => {
+                    // va{ va} vaB - visual around braces
+                    if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', true) {
+                        editor.set_visual_start(range.start_line, range.start_col);
+                        editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    }
+                    return Ok(());
+                }
                 _ => {
                     // Unknown pending command, ignore
                 }
@@ -3451,8 +3578,15 @@ impl InputHandler {
 
         match key_event.code {
             KeyCode::Esc => {
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
+            }
+            // Text object prefixes in visual mode
+            KeyCode::Char('i') | KeyCode::Char('a') => {
+                // Set pending command to handle text objects (iw, aw, ip, ap, i{, a{, etc.)
+                editor.set_pending_command(match key_event.code {
+                    KeyCode::Char(c) => c,
+                    _ => unreachable!(),
+                });
             }
             // Motion keys work in visual mode too
             KeyCode::Char('h') | KeyCode::Left => {
@@ -3551,17 +3685,37 @@ impl InputHandler {
                     editor.set_pending_command('g');
                 }
             }
+            // Search forward in visual mode
+            KeyCode::Char('/') => {
+                editor.clear_search_buffer();
+                editor.set_search_forward(true);
+                editor.save_search_start_position();
+                editor.set_mode(Mode::Search);
+            }
+            // Search backward in visual mode
+            KeyCode::Char('?') => {
+                editor.clear_search_buffer();
+                editor.set_search_forward(false);
+                editor.save_search_start_position();
+                editor.set_mode(Mode::Search);
+            }
+            // Search next in visual mode
+            KeyCode::Char('n') => {
+                editor.search_next();
+            }
+            // Search previous in visual mode
+            KeyCode::Char('N') => {
+                editor.search_prev();
+            }
             // Delete selection
             KeyCode::Char('d') | KeyCode::Char('x') => {
                 helpers::delete_visual_selection(editor)?;
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Yank selection
             KeyCode::Char('y') => {
                 helpers::yank_visual_selection(editor)?;
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Change selection
             KeyCode::Char('c') => {
@@ -3588,7 +3742,7 @@ impl InputHandler {
                     editor.start_change_building(cursor_before);
                 }
 
-                editor.clear_visual_start();
+                helpers::save_and_clear_visual(editor);
                 editor.set_mode(Mode::Insert);
             }
             // Join lines
@@ -3619,8 +3773,7 @@ impl InputHandler {
                         .cursor_mut()
                         .set_position(start_line, cursor_col);
                 }
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Move to other end of selection
             KeyCode::Char('o') => {
@@ -3671,14 +3824,29 @@ impl InputHandler {
             }
             // Switch to other visual modes
             KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Switching to VisualBlock - preserve both line and column of anchor
                 editor.set_mode(Mode::VisualBlock);
             }
             KeyCode::Char('v') => {
+                // Switching to Visual mode
+                if editor.mode() == Mode::VisualLine {
+                    // When switching from VisualLine to Visual, preserve anchor line
+                    // The column is already 0 from VisualLine, which is fine
+                    // (we don't track the original column before entering VisualLine)
+                }
+                // For VisualBlock to Visual, preserve anchor as-is
                 editor.set_mode(Mode::Visual);
             }
             KeyCode::Char('V') => {
-                let cursor = editor.buffer().cursor();
-                editor.set_visual_start(cursor.line(), 0);
+                // Switching to VisualLine mode
+                if let Some((anchor_line, _)) = editor.visual_start() {
+                    // Preserve anchor line, but set column to 0 for line-wise selection
+                    editor.set_visual_start(anchor_line, 0);
+                } else {
+                    // Fallback: use cursor position (shouldn't happen in visual mode)
+                    let cursor = editor.buffer().cursor();
+                    editor.set_visual_start(cursor.line(), 0);
+                }
                 editor.set_mode(Mode::VisualLine);
             }
             // Visual block insert/append
@@ -3828,8 +3996,7 @@ impl InputHandler {
                             }
                         }
                     }
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
+                    helpers::exit_visual_mode_to_normal(editor);
                 } else {
                     // Regular visual mode - toggle case of selection
                     if let Some(((start_line, start_col), (end_line, end_col))) =
@@ -3881,117 +4048,101 @@ impl InputHandler {
                                     editor.add_change(change);
                                 }
                             }
+                        } else {
+                            // Handle multi-line case: toggle case across multiple lines
+                            for line_idx in start_line..=end_line {
+                                if let Some(line) = editor.buffer().line(line_idx) {
+                                    let line_text = line.trim_end_matches('\n');
+                                    let chars: Vec<char> = line_text.chars().collect();
+
+                                    // Determine the range for this line
+                                    let line_start = if line_idx == start_line { start_col } else { 0 };
+                                    let line_end = if line_idx == end_line {
+                                        (end_col + 1).min(chars.len())
+                                    } else {
+                                        chars.len()
+                                    };
+
+                                    if line_start < line_end {
+                                        // Delete the range
+                                        let deleted = editor
+                                            .buffer_mut()
+                                            .delete_range(line_idx, line_start, line_idx, line_end);
+
+                                        // Toggle case
+                                        let toggled: String = deleted
+                                            .chars()
+                                            .map(|ch| {
+                                                if ch.is_uppercase() {
+                                                    ch.to_lowercase().to_string()
+                                                } else {
+                                                    ch.to_uppercase().to_string()
+                                                }
+                                            })
+                                            .collect();
+
+                                        // Insert the toggled text
+                                        editor
+                                            .buffer_mut()
+                                            .insert_text_at(line_idx, line_start, &toggled);
+
+                                        // Track change
+                                        let delete_change = Change::delete(
+                                            Range::new((line_idx, line_start), (line_idx, line_end)),
+                                            deleted,
+                                            cursor_before,
+                                        );
+                                        let insert_change = Change::insert(
+                                            (line_idx, line_start),
+                                            toggled,
+                                            cursor_before,
+                                        );
+                                        let change = Change::composite(
+                                            vec![delete_change, insert_change],
+                                            cursor_before,
+                                            cursor_before,
+                                        );
+                                        editor.add_change(change);
+                                    }
+                                }
+                            }
                         }
                     }
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
+                    helpers::exit_visual_mode_to_normal(editor);
                 }
+            }
+            // Paste in visual mode (replace selection)
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                // Get the text to paste BEFORE deleting (since delete will overwrite register)
+                let (paste_text, paste_type) = editor.get_from_register_with_type();
+
+                // Delete the visual selection (saves to numbered register "1)
+                helpers::delete_visual_selection(editor)?;
+
+                // Restore the paste text to unnamed register
+                editor.registers.set_with_type(None, paste_text, paste_type);
+
+                // Move cursor back one position so paste_after puts text at the right place
+                // After delete_visual_selection, cursor is at the start of the deleted text
+                // We want to paste_after the character before that position
+                let cursor_col = editor.buffer().cursor().col();
+                if cursor_col > 0 {
+                    editor.buffer_mut().cursor_mut().set_col(cursor_col - 1);
+                }
+
+                // Paste from the unnamed register
+                helpers::paste_after(editor)?;
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Uppercase in visual mode
             KeyCode::Char('U') => {
-                if editor.mode() == Mode::VisualBlock {
-                    // Convert to uppercase for visual block selection
-                    if let Some(((start_line, start_col), (end_line, end_col))) =
-                        editor.visual_selection()
-                    {
-                        let cursor = editor.buffer().cursor();
-                        let cursor_before = (cursor.line(), cursor.col());
-
-                        for line_idx in start_line..=end_line {
-                            if let Some(line) = editor.buffer().line(line_idx) {
-                                let line_text = line.trim_end_matches('\n');
-                                let chars: Vec<char> = line_text.chars().collect();
-
-                                let line_start = start_col.min(chars.len());
-                                let line_end = (end_col + 1).min(chars.len());
-
-                                if line_start < line_end {
-                                    let deleted = editor
-                                        .buffer_mut()
-                                        .delete_range(line_idx, line_start, line_idx, line_end);
-                                    let uppercased = deleted.to_uppercase();
-                                    editor.buffer_mut().insert_text_at(
-                                        line_idx,
-                                        line_start,
-                                        &uppercased,
-                                    );
-
-                                    let delete_change = Change::delete(
-                                        Range::new((line_idx, line_start), (line_idx, line_end)),
-                                        deleted,
-                                        cursor_before,
-                                    );
-                                    let insert_change = Change::insert(
-                                        (line_idx, line_start),
-                                        uppercased,
-                                        cursor_before,
-                                    );
-                                    let change = Change::composite(
-                                        vec![delete_change, insert_change],
-                                        cursor_before,
-                                        cursor_before,
-                                    );
-                                    editor.add_change(change);
-                                }
-                            }
-                        }
-                    }
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
-                }
+                helpers::uppercase_visual_selection(editor)?;
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Lowercase in visual mode
             KeyCode::Char('u') => {
-                if editor.mode() == Mode::VisualBlock {
-                    // Convert to lowercase for visual block selection
-                    if let Some(((start_line, start_col), (end_line, end_col))) =
-                        editor.visual_selection()
-                    {
-                        let cursor = editor.buffer().cursor();
-                        let cursor_before = (cursor.line(), cursor.col());
-
-                        for line_idx in start_line..=end_line {
-                            if let Some(line) = editor.buffer().line(line_idx) {
-                                let line_text = line.trim_end_matches('\n');
-                                let chars: Vec<char> = line_text.chars().collect();
-
-                                let line_start = start_col.min(chars.len());
-                                let line_end = (end_col + 1).min(chars.len());
-
-                                if line_start < line_end {
-                                    let deleted = editor
-                                        .buffer_mut()
-                                        .delete_range(line_idx, line_start, line_idx, line_end);
-                                    let lowercased = deleted.to_lowercase();
-                                    editor.buffer_mut().insert_text_at(
-                                        line_idx,
-                                        line_start,
-                                        &lowercased,
-                                    );
-
-                                    let delete_change = Change::delete(
-                                        Range::new((line_idx, line_start), (line_idx, line_end)),
-                                        deleted,
-                                        cursor_before,
-                                    );
-                                    let insert_change = Change::insert(
-                                        (line_idx, line_start),
-                                        lowercased,
-                                        cursor_before,
-                                    );
-                                    let change = Change::composite(
-                                        vec![delete_change, insert_change],
-                                        cursor_before,
-                                        cursor_before,
-                                    );
-                                    editor.add_change(change);
-                                }
-                            }
-                        }
-                    }
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
-                }
+                helpers::lowercase_visual_selection(editor)?;
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Indent/dedent in visual mode
             KeyCode::Char('>') => {
@@ -4016,8 +4167,7 @@ impl InputHandler {
                         cursor.set_position(end_line, original_col + tab_width);
                     }
                 }
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
             }
             KeyCode::Char('<') => {
                 if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
@@ -4039,8 +4189,7 @@ impl InputHandler {
                         editor.buffer_mut().cursor_mut().set_position(start_line, 0);
                     }
                 }
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
             }
             KeyCode::Char('=') => {
                 if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
@@ -4052,8 +4201,7 @@ impl InputHandler {
                         tab_width,
                     )?;
                 }
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Normal);
+                helpers::exit_visual_mode_to_normal(editor);
             }
             // Count prefix (for motions like 5j, 10w)
             KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -4086,12 +4234,24 @@ impl InputHandler {
             KeyCode::Enter => {
                 // Execute the search and accept it
                 editor.execute_search();
-                editor.set_mode(Mode::Normal);
+                // Return to visual mode if visual_start is set, otherwise normal mode
+                if editor.visual_start().is_some() {
+                    editor.set_mode(Mode::Visual);
+                } else {
+                    editor.set_mode(Mode::Normal);
+                }
             }
             KeyCode::Esc => {
                 // Cancel search mode
+                // BUG FIX: Restore cursor to position before search started
+                editor.restore_search_start_position();
                 editor.clear_search_buffer();
-                editor.set_mode(Mode::Normal);
+                // Return to visual mode if visual_start is set, otherwise normal mode
+                if editor.visual_start().is_some() {
+                    editor.set_mode(Mode::Visual);
+                } else {
+                    editor.set_mode(Mode::Normal);
+                }
             }
             _ => {}
         }

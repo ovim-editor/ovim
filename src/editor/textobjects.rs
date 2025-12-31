@@ -132,23 +132,23 @@ impl TextObjects {
         let has_trailing_space = end_col > word_end;
         let has_content_after = end_col < chars.len() && !chars[end_col].is_whitespace();
 
-        eprintln!("[DEBUG around_word] line_idx={}, col={}, chars_len={}", line_idx, col, chars.len());
-        eprintln!("[DEBUG around_word] word_end={}, end_col after ws={}", word_end, end_col);
-        eprintln!("[DEBUG around_word] has_trailing_space={}, has_content_after={}", has_trailing_space, has_content_after);
-
-        // If no trailing whitespace with content after, or if we're at the last word,
-        // include leading whitespace instead
+        // If we have trailing whitespace followed by more content, use it
+        // Otherwise, check if this is the last word (no content after)
         if !has_trailing_space || !has_content_after {
             // Reset end_col to just after the word
             end_col = word_end;
-            // Include leading whitespace
-            while start_col > 0 && chars[start_col - 1].is_whitespace() {
-                start_col -= 1;
-            }
-        }
 
-        eprintln!("[DEBUG around_word] Final: start_col={}, end_col={}", start_col, end_col);
-        eprintln!("[DEBUG around_word] selected: {:?}", &chars[start_col..end_col].iter().collect::<String>());
+            // Only include leading whitespace if this is NOT the last word
+            // (i.e., if there's content after, just no trailing whitespace)
+            if has_content_after {
+                // There's content after but no trailing whitespace,
+                // so include leading whitespace
+                while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                    start_col -= 1;
+                }
+            }
+            // If !has_content_after, this is the last word - don't include any whitespace
+        }
 
         Some(TextObjectRange {
             start_line: line_idx,
@@ -182,10 +182,27 @@ impl TextObjects {
             return None;
         }
 
+        // Fix Bug 2: Handle escaped quotes by tracking preceding backslashes
+        // Helper to check if a character at position is escaped
+        let is_escaped = |pos: usize| -> bool {
+            if pos == 0 {
+                return false;
+            }
+            // Count consecutive backslashes before this position
+            let mut backslash_count = 0;
+            let mut check_pos = pos;
+            while check_pos > 0 && chars[check_pos - 1] == '\\' {
+                backslash_count += 1;
+                check_pos -= 1;
+            }
+            // Character is escaped if odd number of backslashes precede it
+            backslash_count % 2 == 1
+        };
+
         // Find the opening quote before or at cursor
         let mut start_col = None;
         for i in (0..=col.min(chars.len().saturating_sub(1))).rev() {
-            if chars[i] == quote_char {
+            if chars[i] == quote_char && !is_escaped(i) {
                 start_col = Some(i);
                 break;
             }
@@ -193,10 +210,10 @@ impl TextObjects {
 
         let start_col = start_col?;
 
-        // Find the closing quote after the opening quote
+        // Find the closing quote after the opening quote (skip escaped quotes)
         let mut end_col = None;
         for i in (start_col + 1)..chars.len() {
-            if chars[i] == quote_char {
+            if chars[i] == quote_char && !is_escaped(i) {
                 end_col = Some(i);
                 break;
             }

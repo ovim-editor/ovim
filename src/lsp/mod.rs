@@ -38,7 +38,7 @@ use lsp_types::{
 };
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
@@ -154,6 +154,10 @@ pub struct LspManager {
     /// These come from server-initiated workspace/applyEdit requests
     workspace_edit_tx: mpsc::Sender<lsp_types::WorkspaceEdit>,
     workspace_edit_rx: Mutex<mpsc::Receiver<lsp_types::WorkspaceEdit>>,
+
+    /// BUG FIX: Counter for dropped notifications when channel is full
+    /// Prevents blocking when notification receiver is slow
+    dropped_notifications: Arc<AtomicU64>,
 }
 
 impl LspManager {
@@ -176,12 +180,19 @@ impl LspManager {
             current_progress: Mutex::new(HashMap::new()),
             workspace_edit_tx,
             workspace_edit_rx: Mutex::new(workspace_edit_rx),
+            dropped_notifications: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Checks if diagnostics have changed and resets the flag
     pub fn diagnostics_changed(&self) -> bool {
         self.diagnostics_changed.swap(false, Ordering::SeqCst)
+    }
+
+    /// Gets the number of dropped notifications (when channel was full)
+    /// BUG FIX: Added to track notification backpressure
+    pub fn get_dropped_notification_count(&self) -> u64 {
+        self.dropped_notifications.load(Ordering::Relaxed)
     }
 
     /// Gets current progress message (non-blocking)
@@ -416,11 +427,6 @@ impl LspManager {
             .get(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
-        // Increment version INSIDE critical section to prevent race condition.
-        // This ensures version numbers are assigned in the same order they're sent to the server.
-        // Without this, concurrent changes could get versions 1,2 but send them as 2,1.
-        let version = self.increment_document_version(&uri).await;
-
         // Check if server supports incremental sync and we have old content
         let supports_incremental = server.supports_incremental_sync().await;
 
@@ -455,22 +461,37 @@ impl LspManager {
             }]
         };
 
-        let params = DidChangeTextDocumentParams {
-            text_document: VersionedTextDocumentIdentifier {
-                uri: uri.clone(),
-                version,
-            },
-            content_changes,
-        };
+        // BUG FIX #1: Hold version lock until AFTER sending to prevent race condition.
+        // Critical section: increment version and send notification atomically.
+        // This prevents concurrent changes from getting versions (1,2) but sending as (2,1).
+        // We must hold the lock across both version increment AND the send operation.
+        {
+            let mut versions = self.document_versions.lock().await;
+            let version = versions.entry(uri.clone()).or_insert(0);
+            *version += 1;
+            let current_version = *version;
 
-        server
-            .notify("textDocument/didChange", serde_json::to_value(params)?)
-            .await?;
+            // Build params while holding lock
+            let params = DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: current_version,
+                },
+                content_changes,
+            };
+
+            // Send notification while still holding version lock
+            // This ensures version ordering matches send ordering
+            server
+                .notify("textDocument/didChange", serde_json::to_value(params)?)
+                .await?;
+        } // Lock released here, after send is queued
 
         Ok(())
     }
 
     /// Flushes pending changes for a document (sends immediately)
+    /// BUG FIX: Added timeout to prevent indefinite blocking if LSP server hangs
     pub async fn flush_pending_changes(&self, uri: &Uri) -> Result<()> {
         // Remove debouncer and get pending change
         if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
@@ -484,8 +505,27 @@ impl LspManager {
             let uri = debouncer.uri.clone();
             drop(debouncer); // Release lock before async call
 
-            self.send_did_change_immediate(uri, &language_id, text, old_text)
-                .await?;
+            // BUG FIX: Wrap send_did_change_immediate with timeout (5 seconds)
+            // If LSP server hangs, we don't want to block indefinitely
+            // This is critical for operations like hover/goto_definition that flush before requesting
+            match tokio::time::timeout(
+                Duration::from_secs(5),
+                self.send_did_change_immediate(uri.clone(), &language_id, text, old_text)
+            ).await {
+                Ok(Ok(())) => {
+                    // Success: change sent to LSP server
+                }
+                Ok(Err(e)) => {
+                    // LSP send failed (server might be down)
+                    lsp_error!("Manager", "Failed to flush changes for {}: {}", uri.as_str(), e);
+                    // Don't propagate error - allow operation to continue with stale data
+                }
+                Err(_) => {
+                    // Timeout: LSP server is hanging
+                    lsp_error!("Manager", "Timeout flushing changes for {} (5s)", uri.as_str());
+                    // Don't propagate error - allow operation to continue with stale data
+                }
+            }
         }
         Ok(())
     }
@@ -992,6 +1032,7 @@ impl LspManager {
         if let Some(server) = server {
             let tx = self.notification_tx.clone();
             let lang_id = language_id.clone();
+            let dropped_counter = self.dropped_notifications.clone();
 
             tokio::spawn(async move {
                 while let Some(msg) = server.receive().await {
@@ -1003,9 +1044,30 @@ impl LspManager {
                             message: msg,
                         };
 
-                        if let Err(e) = tx.send(notification).await {
-                            lsp_error!("Listener", "Failed to send notification/request: {}", e);
-                            break; // Manager dropped or channel full, stop listening
+                        // BUG FIX: Use try_send instead of send to avoid blocking
+                        // If channel is full, drop the notification and increment counter
+                        // This prevents deadlocks when the receiver is slow
+                        match tx.try_send(notification) {
+                            Ok(()) => {
+                                // Successfully sent
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                // Channel full - drop notification and track it
+                                let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
+                                if count % 100 == 0 {
+                                    // Log every 100 dropped notifications to avoid spam
+                                    lsp_error!(
+                                        "Listener",
+                                        "Notification channel full, dropped {} notifications so far",
+                                        count + 1
+                                    );
+                                }
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                // Manager dropped, stop listening
+                                lsp_error!("Listener", "Notification channel closed, stopping listener");
+                                break;
+                            }
                         }
                     }
                 }
