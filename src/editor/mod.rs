@@ -168,6 +168,8 @@ pub struct Editor {
     /// Visual block insert/append state: (start_line, end_line, col, is_append, move_to_end)
     /// move_to_end: true for I/A (cursor at end_line), false for c (cursor at start_line)
     visual_block_insert_state: Option<(usize, usize, usize, bool, bool)>,
+    /// Last visual selection (start, end, mode) for gv command
+    last_visual_selection: Option<((usize, usize), (usize, usize), Mode)>,
     /// Command line buffer (for : commands)
     command_line: String,
     /// Command history for command line mode
@@ -180,6 +182,8 @@ pub struct Editor {
     search_forward: bool,
     /// Current search state
     current_search: Option<Search>,
+    /// Search start position (line, col) - saved when entering search mode, restored on ESC
+    search_start_pos: Option<(usize, usize)>,
     /// Mark manager for buffer marks
     marks: MarkManager,
     /// Key mapping manager
@@ -315,12 +319,14 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             visual_block_insert_state: None,
+            last_visual_selection: None,
             command_line: String::new(),
             command_history: Vec::new(),
             command_history_index: None,
             search_buffer: String::new(),
             search_forward: true,
             current_search: None,
+            search_start_pos: None,
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
@@ -386,12 +392,14 @@ impl Editor {
             registers: RegisterManager::new(),
             visual_start: None,
             visual_block_insert_state: None,
+            last_visual_selection: None,
             command_line: String::new(),
             command_history: Vec::new(),
             command_history_index: None,
             search_buffer: String::new(),
             search_forward: true,
             current_search: None,
+            search_start_pos: None,
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),

@@ -1,6 +1,15 @@
 use crate::buffer::Buffer;
 use anyhow::Result;
 
+// TODO: Grapheme cluster support needed throughout this file
+// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
+// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
+
+// TODO (Bug 5): Count of 0 handling inconsistency
+// Different operators handle count=0 differently. Some treat it as count=1 (e.g., dd with 0dd),
+// others ignore it. Vim's behavior varies by operator - standardizing this would require
+// careful testing against Vim to match expected behavior. Low priority - users rarely use count=0.
+
 /// Represents the different operators in Vim
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
@@ -160,8 +169,13 @@ impl Operators {
         // Adjust cursor if at end of line
         let new_line = buffer.line(line_idx).unwrap_or_default();
         let new_line_len = new_line.trim_end_matches('\n').chars().count();
-        if col >= new_line_len && new_line_len > 0 {
-            buffer.cursor_mut().set_col(new_line_len - 1);
+        if col >= new_line_len {
+            if new_line_len > 0 {
+                buffer.cursor_mut().set_col(new_line_len - 1);
+            } else {
+                // Line is now empty - cursor must be at column 0
+                buffer.cursor_mut().set_col(0);
+            }
         }
 
         Ok(deleted)
@@ -410,7 +424,6 @@ impl Operators {
     /// Internal implementation for joining lines
     fn join_lines_impl(buffer: &mut Buffer, count: usize, add_space: bool) -> Result<()> {
         let start_line = buffer.cursor().line();
-        let cursor_col = buffer.cursor().col();
 
         // Join 'count' times (count = 1 means join current with next)
         let lines_to_join = count.max(1);
@@ -461,9 +474,10 @@ impl Operators {
             // Insert the joined line with newline
             buffer.insert_text_at(start_line, 0, &format!("{}\n", joined));
 
-            // Keep cursor at the original line, but clamp column
-            let new_col = cursor_col.min(joined.len().saturating_sub(1).max(0));
-            buffer.cursor_mut().set_position(start_line, new_col);
+            // Fix: Position cursor at the junction point (end of original first line)
+            // This is where the separator (space) was inserted
+            let junction_col = current_line_text.len();
+            buffer.cursor_mut().set_position(start_line, junction_col);
         }
 
         Ok(())

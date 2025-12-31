@@ -102,8 +102,15 @@ impl Search {
             if let Some(line_text) = buffer.line(line_idx) {
                 let search_from = if line_idx == from_line { from_col } else { 0 };
 
-                // Search in this line starting from search_from
-                if let Some(mat) = regex.find_at(&line_text, search_from) {
+                // Convert character index to byte offset for regex.find_at()
+                let search_from_bytes = line_text
+                    .char_indices()
+                    .nth(search_from)
+                    .map(|(byte_idx, _)| byte_idx)
+                    .unwrap_or(line_text.len());
+
+                // Search in this line starting from search_from_bytes
+                if let Some(mat) = regex.find_at(&line_text, search_from_bytes) {
                     let col = line_text[..mat.start()].chars().count();
                     let match_text = mat.as_str().to_string();
                     return Some((line_idx, col, match_text));
@@ -136,8 +143,9 @@ impl Search {
         // Search backward from current position
         // First, search the current line up to from_col
         if let Some(line_text) = buffer.line(from_line) {
-            let search_text = &line_text[..from_col.min(line_text.len())];
-            if let Some(mat) = regex.find_iter(search_text).last() {
+            // Use character-based slicing to avoid UTF-8 boundary panics
+            let search_text: String = line_text.chars().take(from_col).collect();
+            if let Some(mat) = regex.find_iter(&search_text).last() {
                 let col = search_text[..mat.start()].chars().count();
                 let match_text = mat.as_str().to_string();
                 return Some((from_line, col, match_text));

@@ -2,6 +2,10 @@
 //!
 //! These functions are used by various input handlers.
 
+// TODO: Grapheme cluster support needed throughout this file
+// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
+// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
+
 use crate::editor::{Change, Editor, Operators, Range, RegisterType};
 use crate::mode::Mode;
 use anyhow::Result;
@@ -847,5 +851,234 @@ pub fn clamp_cursor_to_buffer(editor: &mut Editor) {
             editor.buffer_mut().cursor_mut().set_col(line_len - 1);
         }
     }
+}
+
+/// Exit visual mode and save the selection for gv command
+/// This should be called whenever exiting visual mode to ensure the selection is saved
+pub fn exit_visual_mode_to_normal(editor: &mut Editor) {
+    editor.save_last_visual_selection();
+    editor.clear_visual_start();
+    editor.set_mode(Mode::Normal);
+}
+
+/// Save visual selection and clear visual state (without changing mode)
+/// Use this when transitioning to insert mode or other modes after visual operations
+pub fn save_and_clear_visual(editor: &mut Editor) {
+    editor.save_last_visual_selection();
+    editor.clear_visual_start();
+}
+
+/// Convert visual selection to uppercase
+pub fn uppercase_visual_selection(editor: &mut Editor) -> Result<()> {
+    let mode = editor.mode();
+    let cursor_before = (
+        editor.buffer().cursor().line(),
+        editor.buffer().cursor().col(),
+    );
+
+    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+        match mode {
+            Mode::VisualLine => {
+                // Uppercase entire lines
+                for line_idx in start_line..=end_line {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let uppercased = line_text.to_uppercase();
+
+                        // Delete and replace
+                        editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_text.chars().count());
+                        editor.buffer_mut().insert_text_at(line_idx, 0, &uppercased);
+
+                        let delete_change = Change::delete(
+                            Range::new((line_idx, 0), (line_idx, line_text.chars().count())),
+                            line_text.to_string(),
+                            cursor_before,
+                        );
+                        let insert_change = Change::insert((line_idx, 0), uppercased, cursor_before);
+                        let change = Change::composite(
+                            vec![delete_change, insert_change],
+                            cursor_before,
+                            cursor_before,
+                        );
+                        editor.add_change(change);
+                    }
+                }
+            }
+            Mode::VisualBlock => {
+                // Convert to uppercase for visual block selection
+                for line_idx in start_line..=end_line {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let chars: Vec<char> = line_text.chars().collect();
+
+                        let line_start = start_col.min(chars.len());
+                        let line_end = (end_col + 1).min(chars.len());
+
+                        if line_start < line_end {
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, line_start, line_idx, line_end);
+                            let uppercased = deleted.to_uppercase();
+                            editor.buffer_mut().insert_text_at(
+                                line_idx,
+                                line_start,
+                                &uppercased,
+                            );
+
+                            let delete_change = Change::delete(
+                                Range::new((line_idx, line_start), (line_idx, line_end)),
+                                deleted,
+                                cursor_before,
+                            );
+                            let insert_change = Change::insert(
+                                (line_idx, line_start),
+                                uppercased,
+                                cursor_before,
+                            );
+                            let change = Change::composite(
+                                vec![delete_change, insert_change],
+                                cursor_before,
+                                cursor_before,
+                            );
+                            editor.add_change(change);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Character-wise visual mode
+                let deleted = editor.buffer_mut().delete_range(
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col + 1,
+                );
+                let uppercased = deleted.to_uppercase();
+                editor.buffer_mut().insert_text_at(start_line, start_col, &uppercased);
+
+                let delete_change = Change::delete(
+                    Range::new((start_line, start_col), (end_line, end_col + 1)),
+                    deleted,
+                    cursor_before,
+                );
+                let insert_change = Change::insert((start_line, start_col), uppercased, cursor_before);
+                let change = Change::composite(
+                    vec![delete_change, insert_change],
+                    cursor_before,
+                    cursor_before,
+                );
+                editor.add_change(change);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert visual selection to lowercase
+pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
+    let mode = editor.mode();
+    let cursor_before = (
+        editor.buffer().cursor().line(),
+        editor.buffer().cursor().col(),
+    );
+
+    if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+        match mode {
+            Mode::VisualLine => {
+                // Lowercase entire lines
+                for line_idx in start_line..=end_line {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let lowercased = line_text.to_lowercase();
+
+                        // Delete and replace
+                        editor.buffer_mut().delete_range(line_idx, 0, line_idx, line_text.chars().count());
+                        editor.buffer_mut().insert_text_at(line_idx, 0, &lowercased);
+
+                        let delete_change = Change::delete(
+                            Range::new((line_idx, 0), (line_idx, line_text.chars().count())),
+                            line_text.to_string(),
+                            cursor_before,
+                        );
+                        let insert_change = Change::insert((line_idx, 0), lowercased, cursor_before);
+                        let change = Change::composite(
+                            vec![delete_change, insert_change],
+                            cursor_before,
+                            cursor_before,
+                        );
+                        editor.add_change(change);
+                    }
+                }
+            }
+            Mode::VisualBlock => {
+                // Convert to lowercase for visual block selection
+                for line_idx in start_line..=end_line {
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let chars: Vec<char> = line_text.chars().collect();
+
+                        let line_start = start_col.min(chars.len());
+                        let line_end = (end_col + 1).min(chars.len());
+
+                        if line_start < line_end {
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, line_start, line_idx, line_end);
+                            let lowercased = deleted.to_lowercase();
+                            editor.buffer_mut().insert_text_at(
+                                line_idx,
+                                line_start,
+                                &lowercased,
+                            );
+
+                            let delete_change = Change::delete(
+                                Range::new((line_idx, line_start), (line_idx, line_end)),
+                                deleted,
+                                cursor_before,
+                            );
+                            let insert_change = Change::insert(
+                                (line_idx, line_start),
+                                lowercased,
+                                cursor_before,
+                            );
+                            let change = Change::composite(
+                                vec![delete_change, insert_change],
+                                cursor_before,
+                                cursor_before,
+                            );
+                            editor.add_change(change);
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Character-wise visual mode
+                let deleted = editor.buffer_mut().delete_range(
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col + 1,
+                );
+                let lowercased = deleted.to_lowercase();
+                editor.buffer_mut().insert_text_at(start_line, start_col, &lowercased);
+
+                let delete_change = Change::delete(
+                    Range::new((start_line, start_col), (end_line, end_col + 1)),
+                    deleted,
+                    cursor_before,
+                );
+                let insert_change = Change::insert((start_line, start_col), lowercased, cursor_before);
+                let change = Change::composite(
+                    vec![delete_change, insert_change],
+                    cursor_before,
+                    cursor_before,
+                );
+                editor.add_change(change);
+            }
+        }
+    }
+
+    Ok(())
 }
 

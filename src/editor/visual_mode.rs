@@ -17,6 +17,51 @@ impl Editor {
         self.visual_start = None;
     }
 
+    /// Saves the current visual selection for gv command
+    pub fn save_last_visual_selection(&mut self) {
+        if let Some(selection) = self.visual_selection() {
+            self.last_visual_selection = Some((selection.0, selection.1, self.mode));
+        }
+    }
+
+    /// Restores the last visual selection (gv command)
+    pub fn restore_last_visual_selection(&mut self) {
+        if let Some((start, end, mode)) = self.last_visual_selection {
+            // Set the mode first
+            self.mode = mode;
+
+            // Clamp start position to buffer bounds
+            let line_count = self.buffer().line_count();
+            let clamped_start_line = start.0.min(line_count.saturating_sub(1));
+            let start_line_len = self.buffer().line(clamped_start_line)
+                .map(|l| l.trim_end_matches('\n').chars().count())
+                .unwrap_or(0);
+            let clamped_start_col = if mode == crate::mode::Mode::VisualLine {
+                // For VisualLine, always use column 0
+                0
+            } else {
+                start.1.min(start_line_len.saturating_sub(1).max(0))
+            };
+
+            // Clamp end position to buffer bounds
+            let clamped_end_line = end.0.min(line_count.saturating_sub(1));
+            let end_line_len = self.buffer().line(clamped_end_line)
+                .map(|l| l.trim_end_matches('\n').chars().count())
+                .unwrap_or(0);
+            let clamped_end_col = if mode == crate::mode::Mode::VisualLine {
+                // For VisualLine, always use column 0
+                0
+            } else {
+                end.1.min(end_line_len.saturating_sub(1).max(0))
+            };
+
+            // Set visual start
+            self.visual_start = Some((clamped_start_line, clamped_start_col));
+            // Move cursor to end position
+            self.buffer_mut().cursor_mut().set_position(clamped_end_line, clamped_end_col);
+        }
+    }
+
     /// Sets visual block insert/append state for replay on insert mode exit
     pub fn set_visual_block_insert_state(
         &mut self,
@@ -68,6 +113,14 @@ impl Editor {
                 Mode::VisualBlock => {
                     // Block mode: return corners of rectangle
                     // Normalize so start_line <= end_line and start_col <= end_col
+
+                    // NOTE (Bug 6): Visual block on ragged lines
+                    // Current behavior: If a line is shorter than the block column, we extend
+                    // the block to include whatever characters exist on that line. This matches
+                    // Vim's behavior - visual block selections on ragged lines are clamped to
+                    // the actual line length. Operations like delete/yank handle short lines
+                    // correctly by operating only on the characters that exist.
+
                     let (min_line, max_line) = if start.0 <= end.0 {
                         (start.0, end.0)
                     } else {

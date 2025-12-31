@@ -91,8 +91,11 @@ impl Editor {
     /// Switches to the next buffer
     pub fn next_buffer(&mut self) {
         if self.buffers.len() > 1 {
+            // BUG FIX #4: Save old file path for didClose before switching
+            let old_file_path = self.buffer().file_path().map(|s| s.to_string());
+
             // Save current file to alternate file register
-            if let Some(current_path) = self.buffer().file_path() {
+            if let Some(current_path) = old_file_path.as_ref() {
                 self.registers.set_alternate_file(current_path.to_string());
             }
 
@@ -109,14 +112,22 @@ impl Editor {
             if let Some(new_path) = self.buffer().file_path() {
                 self.registers.set_current_file(new_path.to_string());
             }
+
+            // Mark that we need to send didClose for the old file
+            if old_file_path.is_some() {
+                self.lsp_state.pending_did_close_file = old_file_path;
+            }
         }
     }
 
     /// Switches to the previous buffer
     pub fn prev_buffer(&mut self) {
         if self.buffers.len() > 1 {
+            // BUG FIX #4: Save old file path for didClose before switching
+            let old_file_path = self.buffer().file_path().map(|s| s.to_string());
+
             // Save current file to alternate file register
-            if let Some(current_path) = self.buffer().file_path() {
+            if let Some(current_path) = old_file_path.as_ref() {
                 self.registers.set_alternate_file(current_path.to_string());
             }
 
@@ -136,6 +147,11 @@ impl Editor {
             // Update current file register
             if let Some(new_path) = self.buffer().file_path() {
                 self.registers.set_current_file(new_path.to_string());
+            }
+
+            // Mark that we need to send didClose for the old file
+            if old_file_path.is_some() {
+                self.lsp_state.pending_did_close_file = old_file_path;
             }
         }
     }

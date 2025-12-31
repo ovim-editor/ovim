@@ -203,6 +203,8 @@ impl Change {
                 buffer
                     .cursor_mut()
                     .set_position(cursor_before.0, cursor_before.1);
+                // Validate cursor position in case line no longer exists
+                buffer.validate_cursor_position();
             }
             Self::DeleteText {
                 range,
@@ -216,6 +218,8 @@ impl Change {
                 buffer
                     .cursor_mut()
                     .set_position(cursor_before.0, cursor_before.1);
+                // Validate cursor position in case line no longer exists
+                buffer.validate_cursor_position();
             }
             Self::Composite {
                 changes,
@@ -230,6 +234,9 @@ impl Change {
                 buffer
                     .cursor_mut()
                     .set_position(cursor_before.0, cursor_before.1);
+                // Validate cursor position after composite undo - intermediate undos
+                // may have deleted lines that the final cursor position refers to
+                buffer.validate_cursor_position();
             }
             Self::NumberOperation {
                 cursor_before,
