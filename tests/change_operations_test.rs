@@ -244,8 +244,9 @@ fn test_ciw_from_middle() {
         .type_text("goodbye")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "helgoodbyeworld\n");
-    test.assert_cursor(0, 9);
+    // ciw deletes the entire word regardless of cursor position (correct Vim behavior)
+    assert_eq!(test.buffer_content(), "goodbyeworld\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -318,7 +319,7 @@ fn test_cj_change_line_and_below() {
         .type_text("merged")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+    assert_eq!(test.buffer_content(), "merged\nline 3\n");
     test.assert_cursor(0, 5);
 }
 
@@ -326,13 +327,13 @@ fn test_cj_change_line_and_below() {
 fn test_ck_change_line_and_above() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('j') // Move to line 2
+    test.press('j') // Move to line 2 (line 1, 0-indexed)
         .keys("ck")
         .type_text("merged")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
-    test.assert_cursor(0, 0);
+    assert_eq!(test.buffer_content(), "merged\nline 3\n");
+    test.assert_cursor(0, 5);
 }
 
 // ============================================================================
@@ -359,7 +360,7 @@ fn test_c3l_change_3_chars() {
         .type_text("XYZ")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "ello world\n");
+    assert_eq!(test.buffer_content(), "XYZlo world\n");
     test.assert_cursor(0, 2);
 }
 
@@ -388,8 +389,8 @@ fn test_ci_double_quote() {
         .type_text("universe")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello verse\"world\" test\n");
-    test.assert_cursor(0, 10);
+    assert_eq!(test.buffer_content(), "hello \"universe\" test\n");
+    test.assert_cursor(0, 14);
 }
 
 #[test]
@@ -401,8 +402,8 @@ fn test_ca_double_quote() {
         .type_text("'universe'")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello verse'\"world\" test\n");
-    test.assert_cursor(0, 11);
+    assert_eq!(test.buffer_content(), "hello 'universe' test\n");
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -414,8 +415,8 @@ fn test_ci_paren() {
         .type_text("x")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "unc(arg1, arg2)\n");
-    test.assert_cursor(0, 0);
+    assert_eq!(test.buffer_content(), "func(x)\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -424,8 +425,8 @@ fn test_ci_bracket() {
 
     test.keys("f[").keys("ci[").type_text("0").press_esc();
 
-    assert_eq!(test.buffer_content(), "array[index]\n");
-    test.assert_cursor(0, 0);
+    assert_eq!(test.buffer_content(), "array[0]\n");
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -434,8 +435,8 @@ fn test_ci_curly_brace() {
 
     test.keys("f{").keys("ci{").type_text(" empty ").press_esc();
 
-    assert_eq!(test.buffer_content(), "{ ke empty y: value }\n");
-    test.assert_cursor(0, 10);
+    assert_eq!(test.buffer_content(), "obj { empty }\n");
+    test.assert_cursor(0, 11);
 }
 
 // ============================================================================
@@ -446,16 +447,16 @@ fn test_ci_curly_brace() {
 fn test_cG_change_to_end_of_file() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.press('j') // Move to line 2
+    test.press('j') // Move to line 2 (line 1, 0-indexed)
         .keys("cG") // Change to end
         .type_text("rest of file")
         .press_esc();
 
     assert_eq!(
         test.buffer_content(),
-        "line 1\nline 2\nline 3\nlint of file 4\n"
+        "line 1\nrest of file\n"
     );
-    test.assert_cursor(3, 11);
+    test.assert_cursor(1, 11);
 }
 
 #[test]
@@ -467,8 +468,8 @@ fn test_cgg_change_to_beginning_of_file() {
         .type_text("entire file")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "line le1\nline 2\nline 3\nline 4\n");
-    test.assert_cursor(0, 6);
+    assert_eq!(test.buffer_content(), "entire file\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================

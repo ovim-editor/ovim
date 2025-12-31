@@ -121,17 +121,34 @@ impl TextObjects {
             end_col += 1;
         }
 
-        // Include trailing whitespace
-        while end_col < chars.len() && chars[end_col].is_whitespace() {
+        // Include trailing whitespace, but only if there's non-whitespace after it
+        // (i.e., don't include trailing space if it's the last word on the line)
+        let word_end = end_col;
+        while end_col < chars.len() && chars[end_col].is_whitespace() && chars[end_col] != '\n' {
             end_col += 1;
         }
 
-        // If no trailing whitespace, include leading whitespace
-        if end_col == col + 1 || (end_col < chars.len() && is_word_char(chars[end_col - 1])) {
+        // Check if we found trailing whitespace followed by more content
+        let has_trailing_space = end_col > word_end;
+        let has_content_after = end_col < chars.len() && !chars[end_col].is_whitespace();
+
+        eprintln!("[DEBUG around_word] line_idx={}, col={}, chars_len={}", line_idx, col, chars.len());
+        eprintln!("[DEBUG around_word] word_end={}, end_col after ws={}", word_end, end_col);
+        eprintln!("[DEBUG around_word] has_trailing_space={}, has_content_after={}", has_trailing_space, has_content_after);
+
+        // If no trailing whitespace with content after, or if we're at the last word,
+        // include leading whitespace instead
+        if !has_trailing_space || !has_content_after {
+            // Reset end_col to just after the word
+            end_col = word_end;
+            // Include leading whitespace
             while start_col > 0 && chars[start_col - 1].is_whitespace() {
                 start_col -= 1;
             }
         }
+
+        eprintln!("[DEBUG around_word] Final: start_col={}, end_col={}", start_col, end_col);
+        eprintln!("[DEBUG around_word] selected: {:?}", &chars[start_col..end_col].iter().collect::<String>());
 
         Some(TextObjectRange {
             start_line: line_idx,
