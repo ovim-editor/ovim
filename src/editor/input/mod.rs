@@ -187,8 +187,9 @@ impl InputHandler {
 
         // Handle pending operator + motion (like 'dw', 'dd', 'yy')
         // Skip this block if we have a pending text object prefix ('i' or 'a')
-        // to allow text objects like di{ to be handled later
-        let has_text_obj_prefix = matches!(editor.pending_command(), Some('i') | Some('a'));
+        // or a motion prefix ('g' for gg)
+        // to allow text objects like di{ and motions like cgg to be handled later
+        let has_text_obj_prefix = matches!(editor.pending_command(), Some('i') | Some('a') | Some('g'));
 
         if !has_text_obj_prefix && editor.pending_operator().is_some() {
             let operator = editor.pending_operator().unwrap();
@@ -294,6 +295,44 @@ impl InputHandler {
                     editor.clear_count();
                     return Ok(());
                 }
+                (Operator::Change, KeyCode::Char('G')) => {
+                    // cG - change from current line to end of file
+                    editor.clear_pending_operator();
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = if let Some(cnt) = editor.count() {
+                        cnt.saturating_sub(1)
+                    } else {
+                        editor.buffer().line_count().saturating_sub(1)
+                    };
+
+                    // Delete from current line to end line (inclusive)
+                    let start_pos = (start_line, 0);
+                    let end_pos = (end_line + 1, 0);
+
+                    let deleted = editor
+                        .buffer_mut()
+                        .delete_range(start_line, 0, end_line + 1, 0);
+
+                    let range = Range::new(start_pos, end_pos);
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+                    editor.add_change(change);
+                    editor.delete_to_register(deleted);
+
+                    // Position cursor and insert new line below
+                    helpers::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+
+                    let insert_cursor = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
+                    editor.start_change_building(insert_cursor);
+                    editor.set_mode(Mode::Insert);
+                    helpers::insert_line_below(editor)?;
+                    return Ok(());
+                }
                 (Operator::Indent, KeyCode::Char('g')) => {
                     // >gg - indent from current line to first line
                     editor.set_pending_command('g');
@@ -306,6 +345,11 @@ impl InputHandler {
                 }
                 (Operator::Fold, KeyCode::Char('g')) => {
                     // zfgg - fold from current line to first line
+                    editor.set_pending_command('g');
+                    return Ok(());
+                }
+                (Operator::Change, KeyCode::Char('g')) => {
+                    // cgg - change from current line to first line
                     editor.set_pending_command('g');
                     return Ok(());
                 }
@@ -378,13 +422,49 @@ impl InputHandler {
                         editor.clear_count();
                         return Ok(());
                     }
+                    (Operator::Change, KeyCode::Char('g')) => {
+                        // cgg - change from current line to first line (or specified line)
+                        editor.clear_pending_operator();
+                        editor.clear_pending_command();
+                        let end_line = editor.buffer().cursor().line();
+                        let cursor_before = (end_line, editor.buffer().cursor().col());
+                        let start_line = if let Some(cnt) = editor.count() {
+                            cnt.saturating_sub(1)
+                        } else {
+                            0
+                        };
+
+                        // Delete from start line to current line (inclusive)
+                        let deleted = editor
+                            .buffer_mut()
+                            .delete_range(start_line, 0, end_line + 1, 0);
+                        let range = Range::new((start_line, 0), (end_line + 1, 0));
+                        let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                        editor.delete_to_register(deleted);
+                        editor.add_change(change);
+
+                        // Position cursor at start, then start change building and enter insert mode
+                        editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                        helpers::clamp_cursor_to_buffer(editor);
+                        editor.clear_count();
+
+                        let insert_cursor = (
+                            editor.buffer().cursor().line(),
+                            editor.buffer().cursor().col(),
+                        );
+                        editor.start_change_building(insert_cursor);
+                        editor.set_mode(Mode::Insert);
+                        return Ok(());
+                    }
                     _ => {}
                 }
             }
 
             // Don't clear pending operator if we have a text object prefix ('i' or 'a')
-            // This allows text objects like 'dip', 'caw', etc. to work
-            if !matches!(editor.pending_command(), Some('i') | Some('a')) {
+            // or a motion prefix ('g' for gg)
+            // This allows text objects like 'dip', 'caw', etc. and motions like 'cgg', 'dgg' to work
+            if !matches!(editor.pending_command(), Some('i') | Some('a') | Some('g')) {
                 editor.clear_pending_operator();
             }
 
@@ -652,6 +732,48 @@ impl InputHandler {
                     editor.set_mode(Mode::Insert);
                     return Ok(());
                 }
+                (Operator::Change, KeyCode::Char('l')) | (Operator::Change, KeyCode::Right) => {
+                    // cl - change character(s) to the right
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let line_idx = cursor.line();
+                    let start_col = cursor.col();
+
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let line_len = line_text.chars().count();
+                        let end_col = (start_col + count).min(line_len);
+
+                        if start_col < end_col {
+                            let start_pos = (line_idx, start_col);
+                            let end_pos = (line_idx, end_col);
+
+                            // Start change building BEFORE deletion
+                            editor.start_change_building(cursor_before);
+
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, start_col, line_idx, end_col);
+                            let range = Range::new(start_pos, end_pos);
+                            let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                            editor.delete_to_register(deleted);
+                            editor.add_change(change);
+
+                            // Position cursor at deletion start
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(line_idx, start_col);
+
+                            editor.clear_count();
+                            editor.set_mode(Mode::Insert);
+                            return Ok(());
+                        }
+                    }
+                    editor.clear_count();
+                    return Ok(());
+                }
                 // Case change operations
                 (Operator::Lowercase, KeyCode::Char('u')) => {
                     // gugu - lowercase line
@@ -820,6 +942,62 @@ impl InputHandler {
                         .fold_manager_mut()
                         .create_fold(start_line, end_line);
                     editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Change, KeyCode::Char('j')) => {
+                    // cj - change current line and line below
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let start_line = cursor.line();
+                    let end_line = (start_line + count + 1).min(editor.buffer().line_count());
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+                    let range = Range::new((start_line, 0), (end_line, 0));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.delete_to_register(deleted);
+                    editor.add_change(change);
+
+                    // Position cursor at start, insert blank line, and enter insert mode
+                    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                    helpers::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+
+                    let insert_cursor = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
+                    editor.start_change_building(insert_cursor);
+                    editor.set_mode(Mode::Insert);
+                    helpers::insert_line_above(editor)?;
+                    return Ok(());
+                }
+                (Operator::Change, KeyCode::Char('k')) => {
+                    // ck - change current line and line above
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let end_line = cursor.line() + 1;
+                    let start_line = cursor.line().saturating_sub(count);
+
+                    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+                    let range = Range::new((start_line, 0), (end_line, 0));
+                    let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                    editor.delete_to_register(deleted);
+                    editor.add_change(change);
+
+                    // Position cursor at start, insert blank line, and enter insert mode
+                    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                    helpers::clamp_cursor_to_buffer(editor);
+                    editor.clear_count();
+
+                    let insert_cursor = (
+                        editor.buffer().cursor().line(),
+                        editor.buffer().cursor().col(),
+                    );
+                    editor.start_change_building(insert_cursor);
+                    editor.set_mode(Mode::Insert);
+                    helpers::insert_line_above(editor)?;
                     return Ok(());
                 }
                 // Paragraph motions with operators
@@ -1462,8 +1640,8 @@ impl InputHandler {
                             editor.delete_to_register(deleted);
                             editor.add_change(change);
 
-                            // Clamp cursor to buffer bounds
-                            helpers::clamp_cursor_to_buffer(editor);
+                            // Don't clamp cursor - we're entering insert mode where cursor can be past end of line
+                            // The cursor is already correctly positioned by delete_range at the start of deletion
 
                             // Start building composite change for insert mode
                             let new_cursor = editor.buffer().cursor();

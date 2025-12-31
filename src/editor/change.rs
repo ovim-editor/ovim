@@ -294,6 +294,12 @@ impl Change {
                 for change in changes {
                     change.repeat(buffer);
                 }
+                // After repeating composite change, move cursor back by 1
+                // to match the behavior of exiting insert mode with Esc
+                let cursor = buffer.cursor_mut();
+                if cursor.col() > 0 {
+                    cursor.move_left(1);
+                }
             }
             Self::NumberOperation { delta, .. } => {
                 // For dot-repeat, find number at current cursor and apply the same delta
