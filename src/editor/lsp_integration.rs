@@ -601,7 +601,9 @@ impl Editor {
                 Err(e) => {
                     // LSP request failed - retry ONCE by re-queueing the action
                     // This handles race conditions where LSP server isn't ready yet
-                    eprintln!("LSP action failed: {:?}, retrying once...", e);
+                    // Note: Removed eprintln to avoid interrupting user output
+                    // Original: eprintln!("LSP action failed: {:?}, retrying once...", e);
+                    let _ = e; // Suppress unused variable warning
                     if self.lsp_state.pending_lsp_action.is_none() {
                         self.lsp_state.pending_lsp_action = Some(action);
                     }
@@ -1913,7 +1915,7 @@ impl Editor {
                             } else {
                                 // TODO: Handle edits for other files
                                 // Need to load buffer, apply edits, save
-                                eprintln!("Code action edits other files - not yet supported");
+                                // Note: Silently skip edits for other files (not yet supported)
                             }
                         }
                     }
@@ -1943,7 +1945,7 @@ impl Editor {
 
                                         self.apply_lsp_edits(text_edits);
                                     } else {
-                                        eprintln!("Code action edits other files - not yet supported");
+                                        // Note: Silently skip edits for other files (not yet supported)
                                     }
                                 }
                             }
@@ -1980,7 +1982,7 @@ impl Editor {
                                         }
                                     }
                                     lsp_types::DocumentChangeOperation::Op(_resource_op) => {
-                                        eprintln!("Resource operations not yet supported");
+                                        // Note: Silently skip resource operations (not yet supported)
                                     }
                                 }
                             }
@@ -2023,10 +2025,8 @@ impl Editor {
                 let command_args = command.arguments.clone();
                 tokio::spawn(async move {
                     let result = lsp.execute_command(command_str, command_args, language_id).await;
-                    match result {
-                        Ok(_) => eprintln!("Command executed successfully"),
-                        Err(e) => eprintln!("Command execution failed: {:?}", e),
-                    }
+                    // Note: Silently handle result (avoid interrupting user output)
+                    let _ = result;
                 });
 
                 self.set_lsp_status("Executing code action command...".to_string());
