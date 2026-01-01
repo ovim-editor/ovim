@@ -111,8 +111,8 @@ impl FileEncoding {
                 let encoding = self.to_encoding_rs();
                 let (cow, _, had_errors) = encoding.decode(bytes);
                 if had_errors {
-                    // Log warning but don't fail - replacement char is used
-                    eprintln!("Warning: Some characters could not be decoded from {:?}", self);
+                    // Note: Decoding errors handled with replacement chars - don't print to stderr
+                    // This avoids interrupting user output
                 }
                 Ok(cow.into_owned())
             }
@@ -792,14 +792,9 @@ impl Buffer {
             )
         })?;
 
-        // Log non-UTF-8 encodings for awareness
-        if encoding != FileEncoding::Utf8 {
-            eprintln!(
-                "Note: File '{}' detected as {} encoding",
-                path_str,
-                encoding.display_name()
-            );
-        }
+        // Note: File encoding is handled transparently - don't print to stderr
+        // This avoids interrupting user output
+        let _ = encoding; // Suppress unused variable warning if not used below
 
         // Normalize CRLF to LF for internal representation
         // (rope uses LF internally, we convert back on save if needed)
@@ -1030,11 +1025,8 @@ impl Buffer {
     pub fn enable_syntax_highlighting(&mut self) {
         // Don't enable syntax for large files
         if self.is_large_file() {
-            eprintln!(
-                "Syntax highlighting disabled for large file ({} lines, {:.2} MB)",
-                self.line_count(),
-                self.rope.len_bytes() as f64 / (1024.0 * 1024.0)
-            );
+            // Note: Syntax highlighting disabled for large files - don't print to stderr
+            // This avoids interrupting user output
             return;
         }
 
