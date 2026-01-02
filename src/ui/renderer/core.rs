@@ -180,6 +180,11 @@ impl Renderer {
     pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor) {
         // Fill entire frame with blank lines to prevent artifacts from previous renders
         let area = frame.area();
+
+        // Initialize window manager with terminal dimensions if not already initialized
+        // This is needed for viewport commands (zz, zt, zb, etc.) to work
+        editor.init_window_manager(area.width, area.height);
+
         let blank_line = " ".repeat(area.width as usize);
         let blank_lines: Vec<Line> = (0..area.height)
             .map(|_| Line::from(blank_line.clone()))
