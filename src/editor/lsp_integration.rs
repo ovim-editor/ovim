@@ -2628,7 +2628,7 @@ impl Editor {
     }
 
     /// Helper method to open a location picker with LSP results
-    fn open_location_picker(&mut self, items: Vec<PickerResult>, title: &str) {
+    fn open_location_picker(&mut self, items: Vec<PickerResult>, _title: &str) {
         use std::path::PathBuf;
 
         let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

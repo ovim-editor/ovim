@@ -795,10 +795,11 @@ impl LanguageServer {
             }
         };
 
+        #[allow(deprecated)] // root_uri/root_path deprecated but needed for LSP backwards compat
         let params = InitializeParams {
             process_id: Some(std::process::id()),
             root_uri: Some(root_uri.clone()),
-            root_path: None, // Deprecated, use root_uri or workspace_folders
+            root_path: None,
             initialization_options: initialization_options.clone(),
             capabilities: client_capabilities,
             trace: None,
