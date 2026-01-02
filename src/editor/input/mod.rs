@@ -24,6 +24,9 @@ mod char_motion;
 /// Leader sequence handler (<Space>...) - new state machine
 mod leader;
 
+/// Search mode handler (/, ?)
+mod search_mode;
+
 /// Handles input events for the editor
 pub struct InputHandler;
 
@@ -46,7 +49,7 @@ impl InputHandler {
                 Self::handle_visual_mode(editor, key_event)
             }
             Mode::Command => commands::handle_command_mode(editor, key_event),
-            Mode::Search => Self::handle_search_mode(editor, key_event),
+            Mode::Search => search_mode::handle_search_mode(editor, key_event),
             Mode::Replace => Self::handle_replace_mode(editor, key_event),
             Mode::Picker => Self::handle_picker_mode(editor, key_event),
             Mode::HoverPreview => Self::handle_hover_preview_mode(editor, key_event),
@@ -4608,48 +4611,6 @@ impl InputHandler {
                 // 0 is handled separately above as a motion
                 if digit != 0 || editor.count().is_some() {
                     editor.append_count(digit);
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// Handles input in Search mode
-    fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        match key_event.code {
-            KeyCode::Char(ch) => {
-                // Add character to search buffer
-                editor.append_to_search_buffer(ch);
-                // Incremental search: update highlighting immediately
-                editor.execute_search();
-            }
-            KeyCode::Backspace => {
-                // Remove last character from search buffer
-                editor.backspace_search_buffer();
-                // Incremental search: update highlighting after backspace
-                editor.execute_search();
-            }
-            KeyCode::Enter => {
-                // Execute the search and accept it
-                editor.execute_search();
-                // Return to visual mode if visual_start is set, otherwise normal mode
-                if editor.visual_start().is_some() {
-                    editor.set_mode(Mode::Visual);
-                } else {
-                    editor.set_mode(Mode::Normal);
-                }
-            }
-            KeyCode::Esc => {
-                // Cancel search mode
-                // BUG FIX: Restore cursor to position before search started
-                editor.restore_search_start_position();
-                editor.clear_search_buffer();
-                // Return to visual mode if visual_start is set, otherwise normal mode
-                if editor.visual_start().is_some() {
-                    editor.set_mode(Mode::Visual);
-                } else {
-                    editor.set_mode(Mode::Normal);
                 }
             }
             _ => {}
