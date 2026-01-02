@@ -356,3 +356,20 @@ cargo clippy
 | Other files | <1,000 each |
 
 No single file over 1,200 lines. Total input module stays maintainable.
+
+## Phase 3: Complete ✅
+
+Successfully decomposed `handle_normal_mode()` into `normal/` subdirectory.
+
+**Modules created:**
+- normal/mod.rs (180 lines)
+- normal/operators.rs (1,270 lines)
+- normal/text_objects.rs (323 lines)
+- normal/pending_commands.rs (473 lines)
+- normal/motions_input.rs (429 lines)
+- normal/mode_transitions.rs (149 lines)
+- normal/editing_commands.rs (326 lines)
+
+**Result:** input/mod.rs reduced from 3,454 → 297 lines
+
+**Commit:** b790d79
