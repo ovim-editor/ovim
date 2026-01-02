@@ -180,24 +180,51 @@ impl SyntaxHighlighter {
     }
 
     /// Converts a tree-sitter capture name to a highlight group
+    /// Supports hierarchical names with fallback (e.g., "comment.documentation" -> "comment" -> "Other")
     fn capture_to_highlight_group(name: &str) -> HighlightGroup {
+        // Try exact match first
         match name {
-            "keyword" => HighlightGroup::Keyword,
-            "function" => HighlightGroup::Function,
-            "type" => HighlightGroup::Type,
-            "string" => HighlightGroup::String,
-            "number" => HighlightGroup::Number,
-            "comment" => HighlightGroup::Comment,
-            "operator" => HighlightGroup::Operator,
-            "variable" => HighlightGroup::Variable,
-            "macro" => HighlightGroup::Macro,
-            "constant" => HighlightGroup::Constant,
-            "property" => HighlightGroup::Property,
-            "parameter" => HighlightGroup::Parameter,
-            "label" => HighlightGroup::Label,
-            "punctuation" => HighlightGroup::Punctuation,
-            _ => HighlightGroup::Other,
+            "keyword" => return HighlightGroup::Keyword,
+            "function" => return HighlightGroup::Function,
+            "type" => return HighlightGroup::Type,
+            "string" => return HighlightGroup::String,
+            "number" => return HighlightGroup::Number,
+            "comment" => return HighlightGroup::Comment,
+            "operator" => return HighlightGroup::Operator,
+            "variable" => return HighlightGroup::Variable,
+            "macro" => return HighlightGroup::Macro,
+            "constant" => return HighlightGroup::Constant,
+            "property" => return HighlightGroup::Property,
+            "parameter" => return HighlightGroup::Parameter,
+            "label" => return HighlightGroup::Label,
+            "punctuation" => return HighlightGroup::Punctuation,
+            _ => {}
         }
+
+        // If no exact match, try hierarchical fallback
+        // For "comment.documentation", try "comment"
+        // For "type.builtin", try "type"
+        if let Some(base) = name.split('.').next() {
+            match base {
+                "keyword" => return HighlightGroup::Keyword,
+                "function" => return HighlightGroup::Function,
+                "type" => return HighlightGroup::Type,
+                "string" => return HighlightGroup::String,
+                "number" => return HighlightGroup::Number,
+                "comment" => return HighlightGroup::Comment,
+                "operator" => return HighlightGroup::Operator,
+                "variable" => return HighlightGroup::Variable,
+                "macro" => return HighlightGroup::Macro,
+                "constant" => return HighlightGroup::Constant,
+                "property" => return HighlightGroup::Property,
+                "parameter" => return HighlightGroup::Parameter,
+                "label" => return HighlightGroup::Label,
+                "punctuation" => return HighlightGroup::Punctuation,
+                _ => {}
+            }
+        }
+
+        HighlightGroup::Other
     }
 
     /// Gets the language

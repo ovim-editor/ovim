@@ -199,25 +199,29 @@ impl LanguageRegistry {
     }
 
     /// Gets the highlight query for a language
+    /// Uses official tree-sitter queries when available, falls back to custom queries
     pub fn get_highlight_query(lang: Language) -> &'static str {
         match lang {
-            Language::Rust => include_str!("queries/rust.scm"),
-            Language::JavaScript => include_str!("queries/javascript.scm"),
-            Language::TypeScript => include_str!("queries/typescript.scm"),
-            Language::Python => include_str!("queries/python.scm"),
-            Language::Java => include_str!("queries/java.scm"),
-            Language::Go => include_str!("queries/go.scm"),
-            Language::C => include_str!("queries/c.scm"),
-            Language::Cpp => include_str!("queries/cpp.scm"),
-            Language::Ruby => include_str!("queries/ruby.scm"),
-            Language::Bash => include_str!("queries/bash.scm"),
-            Language::Dockerfile => include_str!("queries/bash.scm"), // Use Bash syntax for now
-            Language::Json => include_str!("queries/json.scm"),
-            Language::Yaml => include_str!("queries/yaml.scm"),
-            Language::Html => include_str!("queries/html.scm"),
-            Language::Css => include_str!("queries/css.scm"),
+            // Use official tree-sitter highlight queries
+            // Note: Some crates use HIGHLIGHTS_QUERY (plural), others use HIGHLIGHT_QUERY (singular)
+            Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
+            Language::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY,
+            Language::TypeScript => tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
+            Language::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
+            Language::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
+            Language::C => tree_sitter_c::HIGHLIGHT_QUERY,
+            Language::Cpp => tree_sitter_cpp::HIGHLIGHT_QUERY,
+            Language::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY,
+            Language::Bash => tree_sitter_bash::HIGHLIGHT_QUERY,
+            Language::Dockerfile => tree_sitter_bash::HIGHLIGHT_QUERY, // Use Bash syntax for now
+            Language::Json => tree_sitter_json::HIGHLIGHTS_QUERY,
+            Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY,
+            Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
             // TOML uses JSON highlighting as fallback (similar key-value structure)
-            Language::Toml => include_str!("queries/json.scm"),
+            Language::Toml => tree_sitter_json::HIGHLIGHTS_QUERY,
+            // For languages without official queries, use custom fallback
+            Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
         }
     }
