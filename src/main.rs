@@ -89,12 +89,6 @@ async fn main() -> Result<()> {
     // Initialize the Java status sender in the lsp_init module
     lsp_init::init_java_status_sender(java_status_tx);
 
-    // Initialize LSP for the opened file if applicable
-    if let Some(file_path) = &args.file {
-        lsp_init::initialize_lsp_for_file(&mut editor, file_path).await;
-        editor.clear_lsp_init_flag(); // Clear flag to prevent duplicate initialization in event loop
-    }
-
     // Set up API server (always start in both headless and UI modes)
     let (tx, rx) = mpsc::unbounded_channel();
     let (port_tx, port_rx) = tokio::sync::oneshot::channel();
