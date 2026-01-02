@@ -1,4 +1,4 @@
-///! HTTP client for communicating with ovim sessions
+//! HTTP client for communicating with ovim sessions
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
@@ -32,7 +32,7 @@ impl OvimClient {
     pub fn send_keys(&self, keys: &str) -> Result<()> {
         let response = self
             .client
-            .post(&format!("{}/keys", self.base_url))
+            .post(format!("{}/keys", self.base_url))
             .json(&json!({ "keys": keys }))
             .send()
             .context("Failed to send request")?;
@@ -49,7 +49,7 @@ impl OvimClient {
     pub fn execute_command(&self, command: &str) -> Result<String> {
         let response = self
             .client
-            .post(&format!("{}/command", self.base_url))
+            .post(format!("{}/command", self.base_url))
             .json(&json!({ "command": command }))
             .send()
             .context("Failed to send request")?;
@@ -71,7 +71,7 @@ impl OvimClient {
     pub fn set_mode(&self, mode: &str) -> Result<()> {
         let response = self
             .client
-            .post(&format!("{}/mode", self.base_url))
+            .post(format!("{}/mode", self.base_url))
             .json(&json!({ "mode": mode }))
             .send()
             .context("Failed to send request")?;
@@ -88,7 +88,7 @@ impl OvimClient {
     pub fn get_snapshot(&self) -> Result<EditorSnapshot> {
         let response = self
             .client
-            .get(&format!("{}/snapshot", self.base_url))
+            .get(format!("{}/snapshot", self.base_url))
             .send()
             .context("Failed to send request")?;
 
@@ -104,7 +104,7 @@ impl OvimClient {
     pub fn get_buffer(&self) -> Result<BufferInfo> {
         let response = self
             .client
-            .get(&format!("{}/buffer", self.base_url))
+            .get(format!("{}/buffer", self.base_url))
             .send()
             .context("Failed to send request")?;
 
@@ -120,7 +120,7 @@ impl OvimClient {
     pub fn set_buffer(&self, content: &str) -> Result<()> {
         let response = self
             .client
-            .put(&format!("{}/buffer", self.base_url))
+            .put(format!("{}/buffer", self.base_url))
             .json(&json!({ "content": content }))
             .send()
             .context("Failed to send request")?;
@@ -137,7 +137,7 @@ impl OvimClient {
     pub fn get_cursor(&self) -> Result<CursorPosition> {
         let response = self
             .client
-            .get(&format!("{}/cursor", self.base_url))
+            .get(format!("{}/cursor", self.base_url))
             .send()
             .context("Failed to send request")?;
 
@@ -153,7 +153,7 @@ impl OvimClient {
     pub fn get_health(&self) -> Result<HealthInfo> {
         let response = self
             .client
-            .get(&format!("{}/health", self.base_url))
+            .get(format!("{}/health", self.base_url))
             .send()
             .context("Failed to send request")?;
 
@@ -169,7 +169,7 @@ impl OvimClient {
     pub fn get_lsp_status(&self) -> Result<LspStatusInfo> {
         let response = self
             .client
-            .get(&format!("{}/lsp/status", self.base_url))
+            .get(format!("{}/lsp/status", self.base_url))
             .send()
             .context("Failed to send request")?;
 
@@ -185,7 +185,7 @@ impl OvimClient {
     pub fn get_context_window(&self) -> Result<ContextWindowInfo> {
         let response = self
             .client
-            .post(&format!("{}/mcp", self.base_url))
+            .post(format!("{}/mcp", self.base_url))
             .json(&json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -233,7 +233,7 @@ impl OvimClient {
 
         let response = self
             .client
-            .post(&format!("{}/mcp", self.base_url))
+            .post(format!("{}/mcp", self.base_url))
             .json(&request)
             .send()
             .context("Failed to send MCP request")?;
@@ -266,7 +266,7 @@ impl OvimClient {
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         // If still running, send SIGKILL
-        if let Ok(_) = kill(Pid::from_raw(session.pid as i32), Signal::SIGKILL) {
+        if kill(Pid::from_raw(session.pid as i32), Signal::SIGKILL).is_ok() {
             eprintln!("Process did not exit gracefully, sent SIGKILL");
         }
 

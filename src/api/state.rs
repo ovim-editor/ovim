@@ -332,7 +332,7 @@ pub fn format_context_window(
     let total_lines = lines.len();
 
     // Calculate visible range: 10 lines above, current, 10 below
-    let start_line = if cursor_line > 10 { cursor_line - 10 } else { 0 };
+    let start_line = cursor_line.saturating_sub(10);
     let end_line = (cursor_line + 11).min(total_lines);
 
     // Determine max line number width for padding
@@ -341,7 +341,7 @@ pub fn format_context_window(
 
     // Build header
     let file_display = file_path
-        .and_then(|p| p.split('/').last())
+        .and_then(|p| p.split('/').next_back())
         .unwrap_or("unnamed");
     let header = format!(
         "[ovim: {} | {} | L{}:C{}]",

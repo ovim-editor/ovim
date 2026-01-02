@@ -374,13 +374,11 @@ pub fn render_hover_window(
     };
 
     let window_width = (content_width as u16 + 4)
-        .max(MIN_WIDTH)
-        .min(MAX_WIDTH)
+        .clamp(MIN_WIDTH, MAX_WIDTH)
         .min(buffer_area.width.saturating_sub(4));
 
     let window_height = (total_lines as u16 + 2)
-        .max(MIN_HEIGHT)
-        .min(MAX_HEIGHT)
+        .clamp(MIN_HEIGHT, MAX_HEIGHT)
         .min(buffer_area.height.saturating_sub(2));
 
     // Calculate cursor screen position
@@ -1129,6 +1127,7 @@ fn render_picker_preview(
 }
 
 /// Renders preview with syntax highlighting
+#[allow(clippy::too_many_arguments)]
 fn render_preview_with_syntax(
     _frame: &mut Frame,
     highlighter: &mut crate::syntax::SyntaxHighlighter,

@@ -512,12 +512,12 @@ fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
     }
 
     // +N or -N (relative to current line)
-    if endpoint.starts_with('+') {
-        let offset: usize = endpoint[1..].parse().ok()?;
+    if let Some(rest) = endpoint.strip_prefix('+') {
+        let offset: usize = rest.parse().ok()?;
         return Some((cursor_line + offset).min(last_line));
     }
-    if endpoint.starts_with('-') {
-        let offset: usize = endpoint[1..].parse().ok()?;
+    if let Some(rest) = endpoint.strip_prefix('-') {
+        let offset: usize = rest.parse().ok()?;
         return Some(cursor_line.saturating_sub(offset));
     }
 
@@ -893,17 +893,17 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             if numeric {
                 // Sort by leading number
                 lines.sort_by(|a, b| {
-                    let num_a: i64 = a.trim().split_whitespace().next()
+                    let num_a: i64 = a.split_whitespace().next()
                         .and_then(|s| s.parse().ok()).unwrap_or(0);
-                    let num_b: i64 = b.trim().split_whitespace().next()
+                    let num_b: i64 = b.split_whitespace().next()
                         .and_then(|s| s.parse().ok()).unwrap_or(0);
                     num_a.cmp(&num_b)
                 });
             } else if ignore_case {
-                lines.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+                lines.sort_by_key(|a| a.to_lowercase());
             } else {
                 // Use stable sort for consistency with Vim
-                lines.sort_by(|a, b| a.cmp(b));
+                lines.sort();
             }
 
             if reverse {
@@ -1125,7 +1125,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle substitute command (:s, :%s, :'<,'>s)
     // Check if it's a substitute command (contains 's/' pattern)
     if command.ends_with("s/") || command.contains("s/") {
-        handle_substitute_command(editor, &command)?;
+        handle_substitute_command(editor, command)?;
         return Ok(());
     }
 
@@ -1136,8 +1136,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     // Handle shell command (:! or :.! or :%!)
-    if cmd_part.starts_with('!') {
-        let shell_cmd = cmd_part[1..].trim();
+    if let Some(shell_cmd) = cmd_part.strip_prefix('!') {
+        let shell_cmd = shell_cmd.trim();
         if !shell_cmd.is_empty() {
             handle_shell_command(editor, range_str, shell_cmd)?;
             return Ok(());
@@ -1146,70 +1146,68 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Only handle custom input-specific commands here.
     // Standard commands are now delegated to the top-level commands module.
-    match command {
-        _ => {
-            // Check if it's a :r or :read command
-            if let Some(filename) = command
-                .strip_prefix("r ")
-                .or_else(|| command.strip_prefix("read "))
-            {
-                let filename = filename.trim();
-                if !filename.is_empty() {
-                    // Read file contents
-                    match std::fs::read_to_string(filename) {
-                        Ok(contents) => {
-                            // Insert contents at current cursor position
-                            let cursor = editor.buffer().cursor();
-                            let line = cursor.line() + 1; // Insert after current line
-                            let col = 0;
-                            editor.buffer_mut().insert_text_at(line, col, &contents);
-                            editor.set_lsp_status(format!(
-                                "Read {} lines from {}",
-                                contents.lines().count(),
-                                filename
-                            ));
-                        }
-                        Err(e) => {
-                            editor.set_lsp_status(format!("Error reading file: {}", e));
-                        }
-                    }
-                }
-                return Ok(());
-            }
-
-            // Check if it's a :b <n> or :buffer <n> command
-            if let Some(buffer_num_str) = command
-                .strip_prefix("b ")
-                .or_else(|| command.strip_prefix("buffer "))
-            {
-                if let Ok(buffer_num) = buffer_num_str.trim().parse::<usize>() {
-                    if buffer_num > 0 {
-                        // Convert from 1-indexed to 0-indexed
-                        editor.switch_to_buffer(buffer_num - 1);
-                    }
-                }
-                return Ok(());
-            }
-
-            // Check if it's a :colorscheme <name> or :colo <name> command
-            if let Some(scheme_name) = command
-                .strip_prefix("colorscheme ")
-                .or_else(|| command.strip_prefix("colo "))
-            {
-                match editor.set_color_scheme(scheme_name.trim()) {
-                    Ok(_) => {
-                        let message = format!("Color scheme set to '{}'", scheme_name.trim());
-                        editor.set_lsp_status(message);
+    {
+        // Check if it's a :r or :read command
+        if let Some(filename) = command
+            .strip_prefix("r ")
+            .or_else(|| command.strip_prefix("read "))
+        {
+            let filename = filename.trim();
+            if !filename.is_empty() {
+                // Read file contents
+                match std::fs::read_to_string(filename) {
+                    Ok(contents) => {
+                        // Insert contents at current cursor position
+                        let cursor = editor.buffer().cursor();
+                        let line = cursor.line() + 1; // Insert after current line
+                        let col = 0;
+                        editor.buffer_mut().insert_text_at(line, col, &contents);
+                        editor.set_lsp_status(format!(
+                            "Read {} lines from {}",
+                            contents.lines().count(),
+                            filename
+                        ));
                     }
                     Err(e) => {
-                        let available = editor.list_color_schemes().join(", ");
-                        let message = format!("{}. Available schemes: {}", e, available);
-                        editor.set_lsp_status(message);
+                        editor.set_lsp_status(format!("Error reading file: {}", e));
                     }
                 }
-            } else {
-                // Unknown command - for now just ignore
             }
+            return Ok(());
+        }
+
+        // Check if it's a :b <n> or :buffer <n> command
+        if let Some(buffer_num_str) = command
+            .strip_prefix("b ")
+            .or_else(|| command.strip_prefix("buffer "))
+        {
+            if let Ok(buffer_num) = buffer_num_str.trim().parse::<usize>() {
+                if buffer_num > 0 {
+                    // Convert from 1-indexed to 0-indexed
+                    editor.switch_to_buffer(buffer_num - 1);
+                }
+            }
+            return Ok(());
+        }
+
+        // Check if it's a :colorscheme <name> or :colo <name> command
+        if let Some(scheme_name) = command
+            .strip_prefix("colorscheme ")
+            .or_else(|| command.strip_prefix("colo "))
+        {
+            match editor.set_color_scheme(scheme_name.trim()) {
+                Ok(_) => {
+                    let message = format!("Color scheme set to '{}'", scheme_name.trim());
+                    editor.set_lsp_status(message);
+                }
+                Err(e) => {
+                    let available = editor.list_color_schemes().join(", ");
+                    let message = format!("{}. Available schemes: {}", e, available);
+                    editor.set_lsp_status(message);
+                }
+            }
+        } else {
+            // Unknown command - for now just ignore
         }
     }
 

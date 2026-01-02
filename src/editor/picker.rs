@@ -169,7 +169,7 @@ impl Picker {
 
         // Try ripgrep first, fall back to grep
         let output = Command::new("rg")
-            .args(&[
+            .args([
                 "--line-number",
                 "--column",
                 "--no-heading",

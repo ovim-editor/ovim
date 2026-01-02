@@ -351,11 +351,7 @@ fn is_process_alive_with_start_time(pid: u32, expected_start_time: Option<u64>) 
         if let Some(actual) = get_process_start_time(pid) {
             // Allow small variance (1-2 seconds) due to timing differences
             // between when we captured the start time and when the process actually started
-            let diff = if actual > expected {
-                actual - expected
-            } else {
-                expected - actual
-            };
+            let diff = actual.abs_diff(expected);
 
             // If difference is more than 2 seconds, it's likely a different process
             if diff > 2 {

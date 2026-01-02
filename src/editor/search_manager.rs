@@ -114,12 +114,10 @@ impl Editor {
                 } else {
                     cursor_col + 1
                 }
+            } else if cursor_col > 0 {
+                cursor_col - 1
             } else {
-                if cursor_col > 0 {
-                    cursor_col - 1
-                } else {
-                    0
-                }
+                0
             };
 
             if let Some((line, col, _)) =

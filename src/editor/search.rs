@@ -31,11 +31,7 @@ impl Search {
         // Determine if we should be case-insensitive
         let case_insensitive = if ignorecase {
             // If smartcase is on and pattern has uppercase, be case-sensitive
-            if smartcase && pattern.chars().any(|c| c.is_uppercase()) {
-                false
-            } else {
-                true
-            }
+            !(smartcase && pattern.chars().any(|c| c.is_uppercase()))
         } else {
             false
         };

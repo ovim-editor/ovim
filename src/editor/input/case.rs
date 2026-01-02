@@ -101,7 +101,7 @@ pub fn change_case_motion<F>(
 where
     F: FnOnce(&mut Buffer, usize),
 {
-    let start_cursor = editor.buffer().cursor().clone();
+    let start_cursor = *editor.buffer().cursor();
     let cursor_before = (start_cursor.line(), start_cursor.col());
     let start_line = start_cursor.line();
     let start_col = start_cursor.col();

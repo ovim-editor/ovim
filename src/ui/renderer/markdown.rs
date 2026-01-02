@@ -49,12 +49,12 @@ pub enum MarkdownElement {
 /// Parse markdown text into elements
 pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
     let mut elements = Vec::new();
-    let mut lines = text.lines().peekable();
+    let lines = text.lines().peekable();
     let mut in_code_block = false;
     let mut code_block_lang: Option<String> = None;
     let mut code_block_content = String::new();
 
-    while let Some(line) = lines.next() {
+    for line in lines {
         // Handle code blocks
         if line.starts_with("```") {
             if in_code_block {
@@ -155,7 +155,7 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
                     current_text.clear();
                 }
                 let mut code_text = String::new();
-                while let Some(cc) = chars.next() {
+                for cc in chars.by_ref() {
                     if cc == '`' {
                         break;
                     }

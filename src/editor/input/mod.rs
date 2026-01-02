@@ -626,7 +626,7 @@ impl InputHandler {
                 }
                 (Operator::Delete, KeyCode::Char('w')) => {
                     // dw - delete word (stops at newlines)
-                    let start_cursor = editor.buffer().cursor().clone();
+                    let start_cursor = *editor.buffer().cursor();
                     let cursor_before = (start_cursor.line(), start_cursor.col());
                     let start_line = start_cursor.line();
                     let start_col = start_cursor.col();
@@ -755,7 +755,7 @@ impl InputHandler {
                     // cw - change word
                     // Special case in Vim: cw behaves like ce (change to end of word),
                     // not like dw (delete to start of next word)
-                    let start_cursor = editor.buffer().cursor().clone();
+                    let start_cursor = *editor.buffer().cursor();
                     let cursor_before = (start_cursor.line(), start_cursor.col());
                     let start_line = start_cursor.line();
                     let start_col = start_cursor.col();
@@ -1244,8 +1244,8 @@ impl InputHandler {
 
                         // Convert absolute positions to (line, col)
                         let (start_line, start_col) =
-                            Motions::abs_pos_to_line_col(&rope, delete_start);
-                        let (end_line, end_col) = Motions::abs_pos_to_line_col(&rope, delete_end);
+                            Motions::abs_pos_to_line_col(rope, delete_start);
+                        let (end_line, end_col) = Motions::abs_pos_to_line_col(rope, delete_end);
 
                         // Delete the range
                         let deleted = editor
@@ -1330,9 +1330,9 @@ impl InputHandler {
                     if let Some(abs_end) = match_abs_pos {
                         // Convert absolute positions to (line, col)
                         let (fold_start_line, _) =
-                            Motions::abs_pos_to_line_col(&rope, abs_start.min(abs_end));
+                            Motions::abs_pos_to_line_col(rope, abs_start.min(abs_end));
                         let (fold_end_line, _) =
-                            Motions::abs_pos_to_line_col(&rope, abs_start.max(abs_end));
+                            Motions::abs_pos_to_line_col(rope, abs_start.max(abs_end));
 
                         // Create fold from start to end line
                         editor

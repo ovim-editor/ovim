@@ -378,9 +378,7 @@ impl Motions {
         let mut new_col = col;
 
         // Move back at least one position
-        if new_col > 0 {
-            new_col -= 1;
-        }
+        new_col = new_col.saturating_sub(1);
 
         // Skip backward over whitespace
         while new_col > 0 && Self::is_whitespace(chars[new_col]) {
@@ -406,34 +404,32 @@ impl Motions {
                 new_col += 1;
             }
             new_col = new_col.saturating_sub(1);
-        } else {
-            if Self::is_word_char(target_char) {
-                // Move back through word characters
-                while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
-                    new_col -= 1;
-                }
-                // Now find the end of this word
-                while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
-                    new_col += 1;
-                }
-                new_col = new_col.saturating_sub(1);
-            } else {
-                // Move back through punctuation
-                while new_col > 0
-                    && !Self::is_word_char(chars[new_col - 1])
-                    && !Self::is_whitespace(chars[new_col - 1])
-                {
-                    new_col -= 1;
-                }
-                // Now find the end of this punctuation sequence
-                while new_col < chars.len()
-                    && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col])
-                {
-                    new_col += 1;
-                }
-                new_col = new_col.saturating_sub(1);
+        } else if Self::is_word_char(target_char) {
+            // Move back through word characters
+            while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
+                new_col -= 1;
             }
+            // Now find the end of this word
+            while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
+                new_col += 1;
+            }
+            new_col = new_col.saturating_sub(1);
+        } else {
+            // Move back through punctuation
+            while new_col > 0
+                && !Self::is_word_char(chars[new_col - 1])
+                && !Self::is_whitespace(chars[new_col - 1])
+            {
+                new_col -= 1;
+            }
+            // Now find the end of this punctuation sequence
+            while new_col < chars.len()
+                && !Self::is_word_char(chars[new_col])
+                && !Self::is_whitespace(chars[new_col])
+            {
+                new_col += 1;
+            }
+            new_col = new_col.saturating_sub(1);
         }
 
         buffer.cursor_mut().set_col(new_col);

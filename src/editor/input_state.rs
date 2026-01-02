@@ -13,8 +13,10 @@ use super::operators::Operator;
 /// waiting for additional input. The state determines how the next
 /// keypress will be interpreted.
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Default)]
 pub enum InputState {
     /// Ready for any command. This is the default/idle state.
+    #[default]
     Normal,
 
     /// Leader key (<Space>) was pressed, awaiting command sequence.
@@ -129,11 +131,6 @@ pub enum InputState {
     RegisterPending,
 }
 
-impl Default for InputState {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
 
 impl InputState {
     /// Returns true if the state is Normal (ready for any command).

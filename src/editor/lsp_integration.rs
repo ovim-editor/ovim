@@ -55,7 +55,7 @@ impl Editor {
 
         // Send LSP close notification
         let file_path_string = file_path.to_string();
-        let _ = lsp.did_close(uri, &language_id).await;
+        let _ = lsp.did_close(uri, language_id).await;
         self.lsp_state.document_sync.remove(&file_path_string);
     }
 
@@ -454,7 +454,7 @@ impl Editor {
             };
 
             // Send the didChange notification
-            let _ = lsp.did_change(uri, &language_id, content, None).await;
+            let _ = lsp.did_change(uri, language_id, content, None).await;
 
             // Mark as sent AFTER sending
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -498,7 +498,7 @@ impl Editor {
             };
 
             // Send the didSave notification
-            let _ = lsp.did_save(uri, &language_id, Some(content)).await;
+            let _ = lsp.did_save(uri, language_id, Some(content)).await;
 
             // Mark as sent AFTER sending
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -542,12 +542,12 @@ impl Editor {
             .lsp_state
             .document_sync
             .get(&state_key)
-            .map_or(true, |state| !state.did_open_sent);
+            .is_none_or(|state| !state.did_open_sent);
 
         if needs_did_open {
             // Send didOpen notification (uri, language_id, version, text)
             let _ = lsp
-                .did_open(uri.clone(), &language_id, 1, content.clone())
+                .did_open(uri.clone(), language_id, 1, content.clone())
                 .await;
 
             // Mark didOpen as sent
@@ -563,11 +563,11 @@ impl Editor {
             .lsp_state
             .document_sync
             .get(&state_key)
-            .map_or(false, |state| state.is_modified());
+            .is_some_and(|state| state.is_modified());
 
         if needs_flush {
             // Send the didChange notification immediately (bypass debouncing)
-            let _ = lsp.did_change(uri, &language_id, content, None).await;
+            let _ = lsp.did_change(uri, language_id, content, None).await;
 
             // Mark as sent
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -597,7 +597,7 @@ impl Editor {
         };
 
         let file_path_string = file_path.to_string();
-        let _ = lsp.did_close(uri, &language_id).await;
+        let _ = lsp.did_close(uri, language_id).await;
         self.lsp_state.document_sync.remove(&file_path_string);
     }
 
@@ -786,7 +786,7 @@ impl Editor {
 
         // Make the request WITHOUT holding self lock (already released after ensure_lsp_document_synced)
         let result = lsp
-            .goto_definition(&uri, line, character, &language_id)
+            .goto_definition(&uri, line, character, language_id)
             .await;
 
         match result {
@@ -886,7 +886,7 @@ impl Editor {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp
-            .implementation(&uri, line, character, &language_id)
+            .implementation(&uri, line, character, language_id)
             .await;
 
         match result {
@@ -898,11 +898,11 @@ impl Editor {
                     // Save current position to tag stack for Ctrl-T navigation
                     self.push_tag();
 
-                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                        if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
-                            self.set_lsp_status("Failed to open file".to_string());
-                            return Ok(false);
-                        }
+                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
+                        && self.open_file(path.to_string_lossy().as_ref()).is_err()
+                    {
+                        self.set_lsp_status("Failed to open file".to_string());
+                        return Ok(false);
                     }
 
                     self.buffer_mut().cursor_mut().set_position(target_line, target_col);
@@ -976,7 +976,7 @@ impl Editor {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp
-            .type_definition(&uri, line, character, &language_id)
+            .type_definition(&uri, line, character, language_id)
             .await;
 
         match result {
@@ -989,11 +989,11 @@ impl Editor {
                     // Save current position to tag stack for Ctrl-T navigation
                     self.push_tag();
 
-                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                        if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
-                            self.set_lsp_status("Failed to open file".to_string());
-                            return Ok(false);
-                        }
+                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
+                        && self.open_file(path.to_string_lossy().as_ref()).is_err()
+                    {
+                        self.set_lsp_status("Failed to open file".to_string());
+                        return Ok(false);
                     }
 
                     self.buffer_mut().cursor_mut().set_position(target_line, target_col);
@@ -1066,7 +1066,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let result = lsp.references(&uri, line, character, &language_id, true).await;
+        let result = lsp.references(&uri, line, character, language_id, true).await;
 
         match result {
             Ok(locations) if !locations.is_empty() => {
@@ -1148,7 +1148,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let result = lsp.document_symbols(&uri, &language_id).await;
+        let result = lsp.document_symbols(&uri, language_id).await;
 
         match result {
             Ok(symbols) if !symbols.is_empty() => {
@@ -1159,15 +1159,15 @@ impl Editor {
                 // Create picker items from symbols
                 let items: Vec<PickerResult> = symbols
                     .iter()
-                    .filter_map(|sym| {
+                    .map(|sym| {
                         let line = sym.range.start.line as usize;
                         let col = self.utf16_to_col(line, sym.range.start.character);
-                        Some(PickerResult {
+                        PickerResult {
                             display: format!("{}:{}:{} {}", file_path, line + 1, col + 1, sym.name),
                             location: file_path.to_string(),
                             line,
                             col,
-                        })
+                        }
                     })
                     .collect();
 
@@ -1216,7 +1216,7 @@ impl Editor {
 
         // TODO: Support query parameter for filtering
         let query = String::new();
-        let result = lsp.workspace_symbols(&language_id, query).await;
+        let result = lsp.workspace_symbols(language_id, query).await;
 
         match result {
             Ok(symbols) if !symbols.is_empty() => {
@@ -1303,13 +1303,13 @@ impl Editor {
 
         // First prepare call hierarchy to get items at cursor position
         let items = lsp
-            .prepare_call_hierarchy(uri, line, character, &language_id)
+            .prepare_call_hierarchy(uri, line, character, language_id)
             .await;
 
         match items {
             Ok(Some(items)) if !items.is_empty() => {
                 // Get incoming calls for the first item
-                let incoming = lsp.incoming_calls(items[0].clone(), &language_id).await;
+                let incoming = lsp.incoming_calls(items[0].clone(), language_id).await;
 
                 match incoming {
                     Ok(Some(calls)) if !calls.is_empty() => {
@@ -1423,13 +1423,13 @@ impl Editor {
 
         // First prepare call hierarchy to get items at cursor position
         let items = lsp
-            .prepare_call_hierarchy(uri, line, character, &language_id)
+            .prepare_call_hierarchy(uri, line, character, language_id)
             .await;
 
         match items {
             Ok(Some(items)) if !items.is_empty() => {
                 // Get outgoing calls for the first item
-                let outgoing = lsp.outgoing_calls(items[0].clone(), &language_id).await;
+                let outgoing = lsp.outgoing_calls(items[0].clone(), language_id).await;
 
                 match outgoing {
                     Ok(Some(calls)) if !calls.is_empty() => {
@@ -1543,7 +1543,7 @@ impl Editor {
 
         // First prepare the type hierarchy to get the item at the cursor
         let prepare_result = lsp
-            .prepare_type_hierarchy(uri.clone(), line, character, &language_id)
+            .prepare_type_hierarchy(uri.clone(), line, character, language_id)
             .await;
 
         let items = match prepare_result {
@@ -1565,7 +1565,7 @@ impl Editor {
         let mut all_types_data = Vec::new();
 
         // Fetch supertypes
-        if let Ok(Some(supertypes)) = lsp.supertypes(item.clone(), &language_id).await {
+        if let Ok(Some(supertypes)) = lsp.supertypes(item.clone(), language_id).await {
             for supertype in supertypes {
                 let location = Location {
                     uri: supertype.uri.clone(),
@@ -1577,7 +1577,7 @@ impl Editor {
         }
 
         // Fetch subtypes
-        if let Ok(Some(subtypes)) = lsp.subtypes(item.clone(), &language_id).await {
+        if let Ok(Some(subtypes)) = lsp.subtypes(item.clone(), language_id).await {
             for subtype in subtypes {
                 let location = Location {
                     uri: subtype.uri.clone(),
@@ -1817,7 +1817,7 @@ impl Editor {
         let tab_size = 4; // TODO: get from config
         let insert_spaces = true; // TODO: get from config
 
-        let result = lsp.format_document(&uri, &language_id, tab_size, insert_spaces).await;
+        let result = lsp.format_document(&uri, language_id, tab_size, insert_spaces).await;
 
         match result {
             Ok(edits) if !edits.is_empty() => {
@@ -1985,10 +1985,10 @@ impl Editor {
                                         let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
                                             .edits
                                             .iter()
-                                            .filter_map(|e| match e {
-                                                lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                            .map(|e| match e {
+                                                lsp_types::OneOf::Left(edit) => edit.clone(),
                                                 lsp_types::OneOf::Right(annot_edit) => {
-                                                    Some(annot_edit.text_edit.clone())
+                                                    annot_edit.text_edit.clone()
                                                 }
                                             })
                                             .collect();
@@ -2017,12 +2017,12 @@ impl Editor {
                                                     text_doc_edit
                                                         .edits
                                                         .iter()
-                                                        .filter_map(|e| match e {
+                                                        .map(|e| match e {
                                                             lsp_types::OneOf::Left(edit) => {
-                                                                Some(edit.clone())
+                                                                edit.clone()
                                                             }
                                                             lsp_types::OneOf::Right(annot_edit) => {
-                                                                Some(annot_edit.text_edit.clone())
+                                                                annot_edit.text_edit.clone()
                                                             }
                                                         })
                                                         .collect();
@@ -2190,11 +2190,11 @@ impl Editor {
             self.push_tag();
 
             // Open file if different from current
-            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
-                    self.set_lsp_status("Failed to open file".to_string());
-                    return;
-                }
+            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
+                && self.open_file(path.to_string_lossy().as_ref()).is_err()
+            {
+                self.set_lsp_status("Failed to open file".to_string());
+                return;
             }
 
             // Move cursor to location
@@ -2261,7 +2261,7 @@ impl Editor {
                 let organize_action = actions.into_iter().find(|action| match action {
                     lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
                         // Check if this looks like an organize imports edit
-                        code_action.edit.as_ref().map_or(false, |edit| {
+                        code_action.edit.as_ref().is_some_and(|edit| {
                             edit.changes.is_some() || edit.document_changes.is_some()
                         })
                     }
@@ -2470,10 +2470,10 @@ impl Editor {
                             let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
                                 .edits
                                 .iter()
-                                .filter_map(|e| match e {
-                                    lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                .map(|e| match e {
+                                    lsp_types::OneOf::Left(edit) => edit.clone(),
                                     lsp_types::OneOf::Right(annot_edit) => {
-                                        Some(annot_edit.text_edit.clone())
+                                        annot_edit.text_edit.clone()
                                     }
                                 })
                                 .collect();
@@ -2510,10 +2510,10 @@ impl Editor {
                                     let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
                                         .edits
                                         .iter()
-                                        .filter_map(|e| match e {
-                                            lsp_types::OneOf::Left(edit) => Some(edit.clone()),
+                                        .map(|e| match e {
+                                            lsp_types::OneOf::Left(edit) => edit.clone(),
                                             lsp_types::OneOf::Right(annot_edit) => {
-                                                Some(annot_edit.text_edit.clone())
+                                                annot_edit.text_edit.clone()
                                             }
                                         })
                                         .collect();
@@ -2552,11 +2552,10 @@ impl Editor {
                                             })
                                             .unwrap_or(!file_path.exists());
 
-                                        if should_create {
-                                            if std::fs::write(&file_path, "").is_err() {
+                                        if should_create
+                                            && std::fs::write(&file_path, "").is_err() {
                                                 all_applied = false;
                                             }
-                                        }
                                     }
                                     lsp_types::ResourceOp::Rename(rename_file) => {
                                         // Rename/move a file
@@ -2577,12 +2576,11 @@ impl Editor {
 
                                         // Create parent directories if needed
                                         if let Some(parent) = new_path.parent() {
-                                            if !parent.exists() {
-                                                if std::fs::create_dir_all(parent).is_err() {
+                                            if !parent.exists()
+                                                && std::fs::create_dir_all(parent).is_err() {
                                                     all_applied = false;
                                                     continue;
                                                 }
-                                            }
                                         }
 
                                         // Perform the rename
@@ -2600,11 +2598,10 @@ impl Editor {
                                             }
                                         };
 
-                                        if file_path.exists() {
-                                            if std::fs::remove_file(&file_path).is_err() {
+                                        if file_path.exists()
+                                            && std::fs::remove_file(&file_path).is_err() {
                                                 all_applied = false;
                                             }
-                                        }
                                     }
                                 }
                             }

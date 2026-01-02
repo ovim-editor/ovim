@@ -113,7 +113,7 @@ impl Operators {
 
     /// Deletes a word forward from cursor
     pub fn delete_word(buffer: &mut Buffer, count: usize) -> Result<String> {
-        let start_cursor = buffer.cursor().clone();
+        let start_cursor = *buffer.cursor();
         let start_line = start_cursor.line();
         let start_col = start_cursor.col();
         let start_char = buffer.rope().line_to_char(start_line) + start_col;
@@ -240,7 +240,7 @@ impl Operators {
 
     /// Yanks a word forward from cursor
     pub fn yank_word(buffer: &mut Buffer, count: usize) -> Result<String> {
-        let start_cursor = buffer.cursor().clone();
+        let start_cursor = *buffer.cursor();
         let start_line = start_cursor.line();
         let start_col = start_cursor.col();
         let start_char = buffer.rope().line_to_char(start_line) + start_col;

@@ -650,7 +650,7 @@ impl LspManager {
 
     /// Handles incoming requests from language servers that expect a response
     async fn handle_server_request(&self, language_id: &str, request: JsonRpcMessage) {
-        let method = request.method.as_ref().map(|s| s.as_str()).unwrap_or("");
+        let method = request.method.as_deref().unwrap_or("");
         let request_id = request.id.clone();
 
         lsp_info!(
@@ -1064,7 +1064,7 @@ impl LspManager {
                             Err(mpsc::error::TrySendError::Full(_)) => {
                                 // Channel full - drop notification and track it
                                 let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
-                                if count % 100 == 0 {
+                                if count.is_multiple_of(100) {
                                     // Log every 100 dropped notifications to avoid spam
                                     lsp_error!(
                                         "Listener",
@@ -1462,6 +1462,7 @@ impl LspManager {
     }
 
     /// Requests range formatting (format only a selection)
+    #[allow(clippy::too_many_arguments)]
     pub async fn format_range(
         &self,
         uri: &Uri,

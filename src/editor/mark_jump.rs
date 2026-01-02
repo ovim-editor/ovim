@@ -28,13 +28,10 @@ impl Editor {
             if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
                 // Load the file if it's different from current file
                 let current_file = self.buffer().file_path().map(|s| s.to_string());
-                if current_file.as_deref() != Some(&global_mark.file_path) {
-                    // Load the file (synchronously for now)
-                    if let Ok(_) = self.load_file(&global_mark.file_path) {
-                        // File loaded successfully
-                    } else {
-                        return false; // Failed to load file
-                    }
+                if current_file.as_deref() != Some(&global_mark.file_path)
+                    && self.load_file(&global_mark.file_path).is_err()
+                {
+                    return false; // Failed to load file
                 }
 
                 // Validate and clamp mark position to buffer bounds
@@ -86,13 +83,10 @@ impl Editor {
             if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
                 // Load the file if it's different from current file
                 let current_file = self.buffer().file_path().map(|s| s.to_string());
-                if current_file.as_deref() != Some(&global_mark.file_path) {
-                    // Load the file (synchronously for now)
-                    if let Ok(_) = self.load_file(&global_mark.file_path) {
-                        // File loaded successfully
-                    } else {
-                        return false; // Failed to load file
-                    }
+                if current_file.as_deref() != Some(&global_mark.file_path)
+                    && self.load_file(&global_mark.file_path).is_err()
+                {
+                    return false; // Failed to load file
                 }
 
                 // Validate and clamp mark line to buffer bounds

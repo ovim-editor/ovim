@@ -275,6 +275,9 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Per-line syntax highlights: maps character ranges to highlight groups
+pub type LineHighlights = Vec<Vec<(Range<usize>, HighlightGroup)>>;
+
 /// Represents a text buffer using a Rope data structure for efficient editing
 pub struct Buffer {
     /// The rope data structure holding the text content
@@ -292,7 +295,7 @@ pub struct Buffer {
     /// Optional syntax highlighter
     syntax: Option<SyntaxHighlighter>,
     /// Cached syntax highlights per line (line_idx -> Vec<(range, group)>)
-    cached_highlights: Option<Vec<Vec<(Range<usize>, HighlightGroup)>>>,
+    cached_highlights: Option<LineHighlights>,
     /// Version counter for highlight cache (incremented on every edit)
     highlight_version: u64,
     /// Whether re-highlighting is pending
@@ -309,7 +312,7 @@ pub struct Buffer {
     read_only: bool,
     /// Cached semantic token highlights from LSP (line_idx -> Vec<(range, group)>)
     /// These take precedence over tree-sitter highlights when available
-    semantic_highlights: Option<Vec<Vec<(Range<usize>, HighlightGroup)>>>,
+    semantic_highlights: Option<LineHighlights>,
 }
 
 impl Buffer {

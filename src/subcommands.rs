@@ -1,4 +1,4 @@
-///! Subcommand implementations for controlling ovim sessions
+//! Subcommand implementations for controlling ovim sessions
 use anyhow::{Context, Result};
 use serde_json::Value;
 
@@ -66,8 +66,8 @@ fn cmd_sessions() -> Result<()> {
 
     println!("Running ovim sessions:\n");
     println!(
-        "{:<15} {:<8} {:<10} {:<10} {}",
-        "SESSION", "PID", "PORT", "LSP", "FILE"
+        "{:<15} {:<8} {:<10} {:<10} FILE",
+        "SESSION", "PID", "PORT", "LSP"
     );
     println!("{}", "─".repeat(80));
 
@@ -396,7 +396,7 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
     };
 
     // Ensure mcpServers object exists
-    if !config.get("mcpServers").is_some() {
+    if config.get("mcpServers").is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
 
@@ -535,7 +535,7 @@ fn install_claude_desktop(mcp_config: &serde_json::Value, show_config: bool) -> 
     };
 
     // Ensure mcpServers object exists
-    if !config.get("mcpServers").is_some() {
+    if config.get("mcpServers").is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
 
@@ -584,7 +584,7 @@ fn install_cursor(mcp_config: &serde_json::Value, show_config: bool) -> Result<(
     };
 
     // Ensure mcpServers object exists
-    if !config.get("mcpServers").is_some() {
+    if config.get("mcpServers").is_none() {
         config["mcpServers"] = serde_json::json!({});
     }
 
