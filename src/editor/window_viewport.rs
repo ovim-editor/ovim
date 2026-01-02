@@ -92,8 +92,16 @@ impl Editor {
 
     /// Centers cursor in viewport
     pub fn center_cursor_in_viewport(&mut self) {
+        // Extract buffer cursor position before borrowing window_manager
+        let (line, col) = {
+            let cursor = self.buffer().cursor();
+            (cursor.line(), cursor.col())
+        };
+
+        // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
+                window.cursor_mut().set_position(line, col);
                 window.center_cursor();
             }
         }
@@ -101,8 +109,16 @@ impl Editor {
 
     /// Moves cursor line to top of viewport
     pub fn move_cursor_line_to_top(&mut self) {
+        // Extract buffer cursor position before borrowing window_manager
+        let (line, col) = {
+            let cursor = self.buffer().cursor();
+            (cursor.line(), cursor.col())
+        };
+
+        // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
+                window.cursor_mut().set_position(line, col);
                 window.move_cursor_to_top();
             }
         }
@@ -110,8 +126,16 @@ impl Editor {
 
     /// Moves cursor line to bottom of viewport
     pub fn move_cursor_line_to_bottom(&mut self) {
+        // Extract buffer cursor position before borrowing window_manager
+        let (line, col) = {
+            let cursor = self.buffer().cursor();
+            (cursor.line(), cursor.col())
+        };
+
+        // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
+                window.cursor_mut().set_position(line, col);
                 window.move_cursor_to_bottom();
             }
         }
