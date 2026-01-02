@@ -210,8 +210,13 @@ impl WindowNode {
 
     /// Updates dimensions for all windows in the tree
     pub fn update_dimensions(&mut self, x: u16, y: u16, width: u16, height: u16) {
+        // Note: x and y are currently only used in recursive calls to properly position
+        // child windows in splits. The leaf case ignores them as Window only stores
+        // width/height. This is intentional - the parameters maintain correct offsets
+        // through the tree traversal even though they're unused at the leaves.
         match self {
             WindowNode::Leaf(window) => {
+                let _ = (x, y); // Explicitly ignore - position tracked by parent
                 window.set_dimensions(width, height);
             }
             WindowNode::Split {

@@ -225,10 +225,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // 'Z' - Save/quit commands
         // =====================================================================
         ('Z', KeyCode::Char('Z')) => {
-            if editor.buffer().file_path().is_some() {
-                if tokio::runtime::Handle::try_current().is_ok() {
-                    let _ = editor.buffer_mut().save();
-                }
+            if editor.buffer().file_path().is_some()
+                && tokio::runtime::Handle::try_current().is_ok()
+            {
+                let _ = editor.buffer_mut().save();
             }
             editor.quit();
         }

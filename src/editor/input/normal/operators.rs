@@ -1,13 +1,13 @@
 //! Operator + motion handling in normal mode.
 //!
 //! Handles pending operators combined with motions:
-//! dd, dw, d$, dj, dk, d{, d}, d%, dG, dgg
-//! yy, yw, y$, yj, yk, y{, y}
-//! cc, cw, c$, cj, ck, c{, c}, cG, cgg
-//! >>, >j, >k, >G, >gg
-//! <<, <j, <k, <G, <gg
-//! zf{motion}
-//! gu*, gU*, g~*
+//! - `dd`, `dw`, `d$`, `dj`, `dk`, `d{`, `d}`, `d%`, `dG`, `dgg`
+//! - `yy`, `yw`, `y$`, `yj`, `yk`, `y{`, `y}`
+//! - `cc`, `cw`, `c$`, `cj`, `ck`, `c{`, `c}`, `cG`, `cgg`
+//! - `>>`, `>j`, `>k`, `>G`, `>gg`
+//! - `<<`, `<j`, `<k`, `<G`, `<gg`
+//! - `zf{motion}`
+//! - `gu*`, `gU*`, `g~*`
 
 use crate::editor::input::helpers;
 use crate::editor::{

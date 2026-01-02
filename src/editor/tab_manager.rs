@@ -50,7 +50,7 @@ impl Editor {
         }
 
         // Create the scratch buffer
-        let mut buffer = Buffer::from_str(content);
+        let mut buffer = Buffer::new_from_str(content);
         buffer.set_read_only(true);
         buffer.set_file_path(format!("[{}]", title));
         self.buffers.push(buffer);

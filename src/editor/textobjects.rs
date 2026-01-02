@@ -328,10 +328,10 @@ impl TextObjects {
         // Find closing delimiter (search forward from opening delimiter)
         let mut end_col = None;
         let mut depth = 0;
-        for i in (start_col + 1)..chars.len() {
-            if chars[i] == open_char {
+        for (i, &ch) in chars.iter().enumerate().skip(start_col + 1) {
+            if ch == open_char {
                 depth += 1;
-            } else if chars[i] == close_char {
+            } else if ch == close_char {
                 if depth == 0 {
                     end_col = Some(i);
                     break;
