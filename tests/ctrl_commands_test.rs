@@ -201,7 +201,8 @@ fn test_ctrl_v_block_select() {
 /// Test Ctrl-F (page down)
 #[test]
 fn test_ctrl_f_page_down() {
-    let mut test = EditorTest::new("l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    // Need more lines than viewport height (10 in test mode) for page down to work
+    let mut test = EditorTest::new("l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n");
 
     test.keys("gg");
     let start = test.cursor().0;

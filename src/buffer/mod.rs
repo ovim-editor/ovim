@@ -517,8 +517,32 @@ impl Buffer {
         self.file_path = Some(absolute_path.to_string_lossy().to_string());
     }
 
-    /// Gets the number of lines in the buffer
+    /// Gets the number of lines in the buffer (Vim semantics)
+    ///
+    /// Ropey's `len_lines()` counts a "phantom" empty line after trailing newlines.
+    /// For "hello\n", Ropey returns 2 lines, but Vim displays "1 line".
+    /// This function adjusts for Vim-compatible line counting.
+    ///
+    /// Use `raw_line_count()` when you need the actual Ropey line count for
+    /// internal rope operations.
     pub fn line_count(&self) -> usize {
+        let raw_count = self.rope.len_lines();
+        // If buffer ends with newline, don't count the phantom empty line
+        // Exception: empty buffer (0 chars) should still report 1 line
+        if raw_count > 1 && self.rope.len_chars() > 0 {
+            let last_char = self.rope.char(self.rope.len_chars() - 1);
+            if last_char == '\n' {
+                return raw_count - 1;
+            }
+        }
+        raw_count
+    }
+
+    /// Gets the raw Ropey line count (includes phantom empty line after trailing newline)
+    ///
+    /// Use this for internal rope operations where you need to access all lines
+    /// including the phantom empty line. For user-facing line counts, use `line_count()`.
+    pub fn raw_line_count(&self) -> usize {
         self.rope.len_lines()
     }
 
@@ -680,7 +704,9 @@ impl Buffer {
 
     /// Inserts text at a specific position (line, col)
     pub fn insert_text_at(&mut self, line: usize, col: usize, text: &str) {
-        if line >= self.line_count() {
+        // Use raw_line_count() to allow inserting at the phantom empty line
+        // (which is valid for appending at end of buffer)
+        if line >= self.raw_line_count() {
             return;
         }
 
@@ -1738,8 +1764,8 @@ mod tests {
 
         assert_eq!(buf.rope().to_string(), "hello\n", "Newline should be added");
         assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
-        assert_eq!(buf.rope().len_lines(), 2, "Should have 2 lines (content + empty)");
-        assert_eq!(buf.line_count(), 2, "Should report 2 lines");
+        assert_eq!(buf.rope().len_lines(), 2, "Ropey counts 2 lines (content + phantom empty)");
+        assert_eq!(buf.line_count(), 1, "Vim semantics: 1 line for 'hello\\n'");
         assert_eq!(buf.line(0), Some("hello\n".to_string()), "First line should include newline");
     }
 
@@ -1759,7 +1785,7 @@ mod tests {
         let buf = Buffer::from_str("line1\nline2\nline3\n");
 
         assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Content should be unchanged");
-        assert_eq!(buf.line_count(), 4, "Should have 4 lines (3 + empty)");
+        assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
         assert_eq!(buf.line(0), Some("line1\n".to_string()));
         assert_eq!(buf.line(1), Some("line2\n".to_string()));
         assert_eq!(buf.line(2), Some("line3\n".to_string()));
@@ -1771,7 +1797,7 @@ mod tests {
         let buf = Buffer::from_str("line1\nline2\nline3");
 
         assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Newline should be added");
-        assert_eq!(buf.line_count(), 4, "Should have 4 lines");
+        assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
         assert_eq!(buf.line(2), Some("line3\n".to_string()), "Last line should have newline added");
     }
 
@@ -1781,7 +1807,7 @@ mod tests {
         let buf = Buffer::from_str("line1\n\nline3\n");
 
         assert_eq!(buf.rope().to_string(), "line1\n\nline3\n");
-        assert_eq!(buf.line_count(), 4, "Should have 4 lines");
+        assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines (line1, empty, line3)");
         assert_eq!(buf.line(0), Some("line1\n".to_string()));
         assert_eq!(buf.line(1), Some("\n".to_string()), "Middle line should be just newline");
         assert_eq!(buf.line(2), Some("line3\n".to_string()));

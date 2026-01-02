@@ -185,7 +185,9 @@ fn test_R_with_backspace() {
         .press_backspace()
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello\n");
+    // After typing "HI" (replacing "he") and pressing backspace once,
+    // only the 'I' is undone (restoring 'e'), leaving "Hello"
+    assert_eq!(test.buffer_content(), "Hello\n");
     test.assert_cursor(0, 0);
 }
 
@@ -200,8 +202,11 @@ fn test_R_backspace_restores_original() {
         .press_backspace()
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 0);
+    // After typing "XXXXX" (replacing "hello") and pressing backspace 3 times,
+    // 3 characters are restored, leaving "XXllo world"
+    assert_eq!(test.buffer_content(), "XXllo world\n");
+    // Cursor at column 1 after Esc (was at column 2, moved left)
+    test.assert_cursor(0, 1);
 }
 
 // ============================================================================

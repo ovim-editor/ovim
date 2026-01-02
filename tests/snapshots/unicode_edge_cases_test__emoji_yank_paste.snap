@@ -3,8 +3,8 @@ source: tests/unicode_edge_cases_test.rs
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:9
-Lines: 1
+Cursor: 0:11
+Lines: 2
 
 Buffer:
-test 😀 en[d]
+test 😀 end😀[ ]

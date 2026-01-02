@@ -4,6 +4,7 @@ mod lsp_init;
 use anyhow::Result;
 use ovim::cli::Cli;
 use ovim::editor::Editor;
+use ovim::mode::Mode;
 use ovim::session::{SessionGuard, SessionInfo};
 use ovim::subcommands;
 use ovim::ui::UI;
@@ -50,6 +51,8 @@ async fn main() -> Result<()> {
             ed = Editor::new();
             ed.buffer_mut().set_file_path(file_path.clone());
         }
+        // Switch from Dashboard to Normal mode when a file is loaded
+        ed.set_mode(Mode::Normal);
         ed
     } else {
         // No file specified, start with empty buffer (dashboard will show)

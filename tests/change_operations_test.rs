@@ -227,11 +227,11 @@ fn test_ciw_inner_word() {
     let mut test = EditorTest::new("hello world test");
 
     test.keys("w") // Move to "world"
-        .keys("ciw") // Change inner word
+        .keys("ciw") // Change inner word (does NOT include trailing space - that's aw)
         .type_text("earth")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello earthtest\n");
+    assert_eq!(test.buffer_content(), "hello earth test\n");
     test.assert_cursor(0, 10);
 }
 
@@ -240,12 +240,12 @@ fn test_ciw_from_middle() {
     let mut test = EditorTest::new("hello world");
 
     test.keys("lll") // Move into "hello"
-        .keys("ciw")
+        .keys("ciw") // iw does NOT include trailing space
         .type_text("goodbye")
         .press_esc();
 
     // ciw deletes the entire word regardless of cursor position (correct Vim behavior)
-    assert_eq!(test.buffer_content(), "goodbyeworld\n");
+    assert_eq!(test.buffer_content(), "goodbye world\n");
     test.assert_cursor(0, 6);
 }
 
@@ -278,8 +278,10 @@ fn test_caw_last_word() {
 
     test.keys("w").keys("caw").type_text("universe").press_esc();
 
-    assert_eq!(test.buffer_content(), "hello universe\n");
-    test.assert_cursor(0, 13);
+    // For last word on line, aw includes LEADING whitespace (Vim behavior)
+    // So caw on "world" deletes " world", leaving "hello"
+    assert_eq!(test.buffer_content(), "hellouniverse\n");
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -503,8 +505,8 @@ fn test_ciw_and_undo() {
 
     test.keys("ciw").type_text("goodbye").press_esc().press('u');
 
-    // Note: ciw undo only undoes the insert, not the delete (known limitation)
-    assert_eq!(test.buffer_content(), "world\n");
+    // Undo reverts the entire ciw operation
+    assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 0);
 }
 
@@ -530,14 +532,16 @@ fn test_cw_and_repeat() {
 fn test_ciw_and_repeat() {
     let mut test = EditorTest::new("hello world test");
 
-    test.keys("ciw")
+    test.keys("ciw") // ciw deletes "hello" (iw doesn't include trailing space)
         .type_text("X")
         .press_esc()
         .keys("w")
-        .press('.');
+        .press('.'); // Repeat ciw X on "world"
 
-    assert_eq!(test.buffer_content(), "Xworld Xtest\n");
-    test.assert_cursor(0, 8);
+    // After ciw X on "hello": "X world test"
+    // After w and . on "world": "X X test"
+    assert_eq!(test.buffer_content(), "X X test\n");
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -576,7 +580,8 @@ fn test_ciw_single_char() {
 
     test.keys("ciw").type_text("alpha").press_esc();
 
-    assert_eq!(test.buffer_content(), "alphab c\n");
+    // iw on single char "a" only deletes "a", not trailing space
+    assert_eq!(test.buffer_content(), "alpha b c\n");
     test.assert_cursor(0, 4);
 }
 
@@ -645,12 +650,12 @@ fn test_cc_preserves_indentation() {
 fn test_change_in_indented_context() {
     let mut test = EditorTest::new("    hello world");
 
-    test.keys("w") // Move to "world"
-        .keys("ciw")
+    test.keys("w") // Move to "hello" (first word)
+        .keys("ciw") // iw doesn't include trailing space
         .type_text("earth")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "    earthworld\n");
+    assert_eq!(test.buffer_content(), "    earth world\n");
     test.assert_cursor(0, 8);
 }
 

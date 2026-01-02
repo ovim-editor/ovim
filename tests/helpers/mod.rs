@@ -285,8 +285,8 @@ mod tests {
     fn test_editor_test_basic() {
         let mut test = EditorTest::new("hello\nworld");
 
-        // Vim behavior: content always ends with newline, so "hello\nworld" becomes "hello\nworld\n" (3 lines)
-        test.assert_line_count(3);
+        // Vim semantics: "hello\nworld" becomes "hello\nworld\n" internally, displayed as 2 lines
+        test.assert_line_count(2);
         test.assert_cursor(0, 0);
         test.assert_mode(Mode::Normal);
 

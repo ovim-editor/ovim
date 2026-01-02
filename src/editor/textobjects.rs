@@ -38,9 +38,40 @@ impl TextObjects {
         // Find word boundaries
         let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
 
-        // If cursor is on whitespace, return None (iw doesn't select whitespace)
+        // If cursor is on whitespace, select the whitespace sequence
+        if chars[col].is_whitespace() {
+            let mut start_col = col;
+            while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col < chars.len() && chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            return Some(TextObjectRange {
+                start_line: line_idx,
+                start_col,
+                end_line: line_idx,
+                end_col,
+            });
+        }
+
+        // If cursor is on punctuation (not word char, not whitespace), select punctuation sequence
         if !is_word_char(chars[col]) {
-            return None;
+            let mut start_col = col;
+            while start_col > 0 && !is_word_char(chars[start_col - 1]) && !chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col < chars.len() && !is_word_char(chars[end_col]) && !chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            return Some(TextObjectRange {
+                start_line: line_idx,
+                start_col,
+                end_line: line_idx,
+                end_col,
+            });
         }
 
         // Find start of word
@@ -55,12 +86,7 @@ impl TextObjects {
             end_col += 1;
         }
 
-        // Include trailing whitespace (but not all of it if at end of line)
-        // Vim's iw includes "white space between words"
-        while end_col < chars.len() && chars[end_col].is_whitespace() && chars[end_col] != '\n' {
-            end_col += 1;
-        }
-
+        // Note: iw does NOT include trailing whitespace - that's aw (around word)
         Some(TextObjectRange {
             start_line: line_idx,
             start_col,
@@ -130,24 +156,21 @@ impl TextObjects {
 
         // Check if we found trailing whitespace followed by more content
         let has_trailing_space = end_col > word_end;
-        let has_content_after = end_col < chars.len() && !chars[end_col].is_whitespace();
+        let has_content_after = end_col < chars.len();
 
-        // If we have trailing whitespace followed by more content, use it
-        // Otherwise, check if this is the last word (no content after)
-        if !has_trailing_space || !has_content_after {
+        // Vim's aw behavior:
+        // - If there's trailing whitespace before more content, include it
+        // - If this is the last word (no trailing whitespace or no content after), include leading whitespace
+        if has_trailing_space && has_content_after {
+            // Keep end_col with trailing whitespace included
+        } else {
             // Reset end_col to just after the word
             end_col = word_end;
 
-            // Only include leading whitespace if this is NOT the last word
-            // (i.e., if there's content after, just no trailing whitespace)
-            if has_content_after {
-                // There's content after but no trailing whitespace,
-                // so include leading whitespace
-                while start_col > 0 && chars[start_col - 1].is_whitespace() {
-                    start_col -= 1;
-                }
+            // Include leading whitespace instead
+            while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
             }
-            // If !has_content_after, this is the last word - don't include any whitespace
         }
 
         Some(TextObjectRange {
@@ -199,26 +222,42 @@ impl TextObjects {
             backslash_count % 2 == 1
         };
 
-        // Find the opening quote before or at cursor
+        // Find all quote positions on this line (non-escaped)
+        let quote_positions: Vec<usize> = chars
+            .iter()
+            .enumerate()
+            .filter(|(i, &c)| c == quote_char && !is_escaped(*i))
+            .map(|(i, _)| i)
+            .collect();
+
+        if quote_positions.len() < 2 {
+            return None; // Need at least 2 quotes to form a pair
+        }
+
+        // Find which quote pair contains the cursor
+        // Quotes are paired: 0-1, 2-3, 4-5, etc.
+        let col = col.min(chars.len().saturating_sub(1));
+
+        // Find the pair that contains the cursor
         let mut start_col = None;
-        for i in (0..=col.min(chars.len().saturating_sub(1))).rev() {
-            if chars[i] == quote_char && !is_escaped(i) {
-                start_col = Some(i);
+        let mut end_col = None;
+
+        for i in (0..quote_positions.len()).step_by(2) {
+            if i + 1 >= quote_positions.len() {
+                break; // Odd number of quotes, last one is unpaired
+            }
+            let open_pos = quote_positions[i];
+            let close_pos = quote_positions[i + 1];
+
+            // Cursor is inside or on this pair
+            if col >= open_pos && col <= close_pos {
+                start_col = Some(open_pos);
+                end_col = Some(close_pos);
                 break;
             }
         }
 
         let start_col = start_col?;
-
-        // Find the closing quote after the opening quote (skip escaped quotes)
-        let mut end_col = None;
-        for i in (start_col + 1)..chars.len() {
-            if chars[i] == quote_char && !is_escaped(i) {
-                end_col = Some(i);
-                break;
-            }
-        }
-
         let end_col = end_col?;
 
         if include_quotes {
@@ -547,16 +586,26 @@ impl TextObjects {
             end_line += 1;
         }
 
-        // Get the end column of the last line (exclusive - one past the last char)
-        let end_line_text = buffer.rope().line(end_line).to_string();
-        let end_col = end_line_text.chars().count();
-
-        Some(TextObjectRange {
-            start_line,
-            start_col: 0,
-            end_line,
-            end_col,
-        })
+        // Paragraph operations are linewise - include the trailing newline
+        // by pointing to start of next line (or end of file if last line)
+        if end_line + 1 < line_count {
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line: end_line + 1,
+                end_col: 0,
+            })
+        } else {
+            // Last line of file - use the actual end
+            let end_line_text = buffer.rope().line(end_line).to_string();
+            let end_col = end_line_text.chars().count();
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line,
+                end_col,
+            })
+        }
     }
 
     /// Gets the range for "around paragraph" (ap)
@@ -615,16 +664,26 @@ impl TextObjects {
             }
         }
 
-        // Get the end column of the last line (exclusive - one past the last char)
-        let end_line_text = buffer.rope().line(end_line).to_string();
-        let end_col = end_line_text.chars().count();
-
-        Some(TextObjectRange {
-            start_line,
-            start_col: 0,
-            end_line,
-            end_col,
-        })
+        // Paragraph operations are linewise - include the trailing newline
+        // by pointing to start of next line (or end of file if last line)
+        if end_line + 1 < line_count {
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line: end_line + 1,
+                end_col: 0,
+            })
+        } else {
+            // Last line of file - use the actual end
+            let end_line_text = buffer.rope().line(end_line).to_string();
+            let end_col = end_line_text.chars().count();
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line,
+                end_col,
+            })
+        }
     }
 
     /// Gets the range for "inner sentence" (is)

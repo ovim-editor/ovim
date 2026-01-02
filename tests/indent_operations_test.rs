@@ -64,8 +64,8 @@ fn test_shift_right_4j() {
 
     test.keys(">4j"); // Indent 5 lines (current + 4 down)
 
-    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\nf\n");
-    test.assert_cursor(4, 0);
+    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\nf\n");
+    test.assert_cursor(4, 4);
 }
 
 #[test]
@@ -89,17 +89,18 @@ fn test_shift_right_2k() {
     test.keys("G") // Go to last line
         .keys(">2k"); // Indent 3 lines (current + 2 up)
 
-    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\n");
-    test.assert_cursor(2, 0);
+    assert_eq!(test.buffer_content(), "a\nb\n    c\n    d\n    e\n");
+    test.assert_cursor(4, 4); // Cursor stays on last line
 }
 
 #[test]
 fn test_shift_right_G() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4\nline 5");
 
-    test.keys("jj") // Line 2
-        .keys(">G"); // Indent from line 2 to end
+    test.keys("jj") // Line 2 (0-indexed, so this is the 3rd line "line 3")
+        .keys(">G"); // Indent from current line to end
 
+    // After jj we're on line 3 (0-indexed line 2), then >G indents from there to end
     assert_eq!(
         test.buffer_content(),
         "line 1\nline 2\n    line 3\n    line 4\n    line 5\n"
@@ -112,10 +113,13 @@ fn test_shift_right_gg() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
     test.keys("G") // Last line
-        .keys(">gg"); // Indent from last to first
+        .keys(">gg"); // Indent from last to first (all lines)
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
-    test.assert_cursor(3, 0);
+    assert_eq!(
+        test.buffer_content(),
+        "    line 1\n    line 2\n    line 3\n    line 4\n"
+    );
+    test.assert_cursor(3, 4); // Cursor stays on the original line (last line)
 }
 
 // ============================================================================
@@ -180,10 +184,10 @@ fn test_shift_left_j() {
 fn test_shift_left_3j() {
     let mut test = EditorTest::new("    a\n    b\n    c\n    d\n    e");
 
-    test.keys("<3j"); // Dedent 4 lines
+    test.keys("<3j"); // Dedent 4 lines (current + 3 down)
 
-    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\n");
-    test.assert_cursor(3, 0);
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\n    e\n");
+    test.assert_cursor(0, 0); // Cursor on first line after dedent
 }
 
 #[test]
@@ -253,13 +257,14 @@ fn test_visual_reselect_indent() {
 
     test.press('V')
         .keys("j")
-        .press('>') // Indent once
+        .press('>') // Indent once (lines 1 and 2)
         .keys("gv") // Reselect
-        .press('>'); // Indent again
+        .press('>'); // Indent again (lines 1 and 2 again)
 
+    // Both lines get indented twice (8 spaces total)
     assert_eq!(
         test.buffer_content(),
-        "    line 1\n        line 2\nline 3\n"
+        "        line 1\n        line 2\nline 3\n"
     );
     test.assert_cursor(1, 4);
 }
@@ -384,7 +389,7 @@ fn test_indent_undo_redo() {
 fn test_indent_mixed_content() {
     let mut test = EditorTest::new("    indented\nno indent\n        more indent");
 
-    test.keys(">G"); // Indent all
+    test.keys(">G"); // Indent all from current to end
 
     assert_eq!(
         test.buffer_content(),
@@ -434,7 +439,7 @@ fn test_indent_at_eof() {
 
     test.keys("G") // Last line
         .keys(">>")
-        .keys(">j"); // Try to indent beyond EOF
+        .keys(">j"); // Try to indent beyond EOF (no effect, already at last line)
 
     assert_eq!(test.buffer_content(), "line 1\n        line 2\n");
     test.assert_cursor(1, 4);
@@ -460,20 +465,20 @@ fn test_dedent_beyond_zero() {
 fn test_2_shift_right_3j() {
     let mut test = EditorTest::new("a\nb\nc\nd\ne\nf");
 
-    test.keys("2>3j"); // Count 2, indent, motion 3j
+    test.keys("2>3j"); // Count 2, indent, motion 3j - indents all 6 lines
 
-    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\nf\n");
-    test.assert_cursor(3, 0);
+    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\n    f\n");
+    test.assert_cursor(5, 4);
 }
 
 #[test]
 fn test_3_shift_right_2k() {
     let mut test = EditorTest::new("a\nb\nc\nd\ne");
 
-    test.keys("G").keys("3>2k"); // Count 3, indent, motion 2k
+    test.keys("G").keys("3>2k"); // Count 3, indent, motion 2k - all lines get indented
 
-    assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\n");
-    test.assert_cursor(2, 0);
+    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\n");
+    test.assert_cursor(4, 4); // Cursor stays on original line (last line)
 }
 
 // ============================================================================

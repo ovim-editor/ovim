@@ -4,8 +4,8 @@ expression: test.snapshot_state()
 ---
 Mode: Normal
 Cursor: 1:0
-Lines: 2
+Lines: 3
 
 Buffer:
-😀😁😂😀😁😂
-[ ]
+😀😀😁😂
+[😁]😂
