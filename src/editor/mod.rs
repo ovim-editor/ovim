@@ -428,7 +428,7 @@ impl Editor {
 
     /// Creates an editor with initial content
     pub fn with_content(content: &str) -> Self {
-        let buffer = Buffer::from_str(content);
+        let buffer = Buffer::new_from_str(content);
 
         Self {
             buffers: vec![buffer],

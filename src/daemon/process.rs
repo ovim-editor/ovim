@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn test_kill_current_process_fails() {
         // Trying to kill ourselves should fail (or we wouldn't be here!)
-        let pid = std::process::id() as i32;
+        let _pid = std::process::id() as i32;
 
         // Don't actually kill ourselves, just test the logic path
         // We can't actually test successful kill without spawning a process

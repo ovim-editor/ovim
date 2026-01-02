@@ -108,7 +108,7 @@ impl FileEncoding {
             }
             _ => {
                 // Use encoding_rs for other encodings
-                let encoding = self.to_encoding_rs();
+                let encoding = self.as_encoding_rs();
                 let (cow, _, had_errors) = encoding.decode(bytes);
                 if had_errors {
                     // Note: Decoding errors handled with replacement chars - don't print to stderr
@@ -144,7 +144,7 @@ impl FileEncoding {
             }
             _ => {
                 // Use encoding_rs for other encodings
-                let encoding = self.to_encoding_rs();
+                let encoding = self.as_encoding_rs();
                 let (cow, _, had_errors) = encoding.encode(content);
                 if had_errors {
                     return Err(anyhow::anyhow!(
@@ -158,7 +158,7 @@ impl FileEncoding {
     }
 
     /// Convert to encoding_rs Encoding
-    fn to_encoding_rs(&self) -> &'static encoding_rs::Encoding {
+    fn as_encoding_rs(&self) -> &'static encoding_rs::Encoding {
         match self {
             FileEncoding::Utf8 | FileEncoding::Utf8Bom => encoding_rs::UTF_8,
             FileEncoding::Utf16Le => encoding_rs::UTF_16LE,
@@ -350,19 +350,19 @@ impl Buffer {
     /// use ovim::buffer::Buffer;
     ///
     /// // Empty buffer has 0 chars, 1 empty line
-    /// let buf = Buffer::from_str("");
+    /// let buf = Buffer::new_from_str("");
     /// assert_eq!(buf.rope().len_chars(), 0);
     /// assert_eq!(buf.line_count(), 1);
     ///
     /// // Content gets trailing newline added if missing
-    /// let buf = Buffer::from_str("hello");
+    /// let buf = Buffer::new_from_str("hello");
     /// assert_eq!(buf.rope().to_string(), "hello\n");
     ///
     /// // Content with newline unchanged
-    /// let buf = Buffer::from_str("hello\n");
+    /// let buf = Buffer::new_from_str("hello\n");
     /// assert_eq!(buf.rope().to_string(), "hello\n");
     /// ```
-    pub fn from_str(content: &str) -> Self {
+    pub fn new_from_str(content: &str) -> Self {
         // Ensure content always ends with newline (Vim behavior)
         // Empty string is valid and creates an empty rope (0 chars, 1 empty line)
         let rope = if content.is_empty() || content.ends_with('\n') {
@@ -1739,7 +1739,7 @@ mod tests {
     #[test]
     fn test_from_str_empty_buffer() {
         // Empty string creates empty rope with 1 empty line
-        let buf = Buffer::from_str("");
+        let buf = Buffer::new_from_str("");
 
         assert_eq!(buf.rope().len_chars(), 0, "Empty buffer should have 0 chars");
         assert_eq!(buf.rope().len_lines(), 1, "Empty buffer should have 1 empty line");
@@ -1753,7 +1753,7 @@ mod tests {
     #[test]
     fn test_from_str_single_newline() {
         // Single newline creates rope with 1 char, 2 lines (one empty, one after newline)
-        let buf = Buffer::from_str("\n");
+        let buf = Buffer::new_from_str("\n");
 
         assert_eq!(buf.rope().len_chars(), 1, "Single newline should have 1 char");
         assert_eq!(buf.rope().len_lines(), 2, "Single newline should have 2 lines");
@@ -1763,7 +1763,7 @@ mod tests {
     #[test]
     fn test_from_str_content_without_newline() {
         // Content without trailing newline gets one added
-        let buf = Buffer::from_str("hello");
+        let buf = Buffer::new_from_str("hello");
 
         assert_eq!(buf.rope().to_string(), "hello\n", "Newline should be added");
         assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn test_from_str_content_with_newline() {
         // Content with trailing newline is unchanged
-        let buf = Buffer::from_str("hello\n");
+        let buf = Buffer::new_from_str("hello\n");
 
         assert_eq!(buf.rope().to_string(), "hello\n", "Content should be unchanged");
         assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
@@ -1785,7 +1785,7 @@ mod tests {
     #[test]
     fn test_from_str_multiple_lines() {
         // Multiple lines with trailing newline
-        let buf = Buffer::from_str("line1\nline2\nline3\n");
+        let buf = Buffer::new_from_str("line1\nline2\nline3\n");
 
         assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Content should be unchanged");
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
@@ -1797,7 +1797,7 @@ mod tests {
     #[test]
     fn test_from_str_multiple_lines_no_trailing_newline() {
         // Multiple lines without trailing newline gets one added
-        let buf = Buffer::from_str("line1\nline2\nline3");
+        let buf = Buffer::new_from_str("line1\nline2\nline3");
 
         assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Newline should be added");
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
@@ -1807,7 +1807,7 @@ mod tests {
     #[test]
     fn test_from_str_preserves_internal_empty_lines() {
         // Empty lines in the middle should be preserved
-        let buf = Buffer::from_str("line1\n\nline3\n");
+        let buf = Buffer::new_from_str("line1\n\nline3\n");
 
         assert_eq!(buf.rope().to_string(), "line1\n\nline3\n");
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines (line1, empty, line3)");
@@ -1819,7 +1819,7 @@ mod tests {
     #[test]
     fn test_from_str_initial_state() {
         // Verify all initial state is set correctly
-        let buf = Buffer::from_str("test");
+        let buf = Buffer::new_from_str("test");
 
         assert_eq!(buf.cursor().line(), 0);
         assert_eq!(buf.cursor().col(), 0);
@@ -1831,7 +1831,7 @@ mod tests {
     fn test_new_vs_from_str_empty() {
         // new() and from_str("") should create equivalent buffers
         let buf1 = Buffer::new();
-        let buf2 = Buffer::from_str("");
+        let buf2 = Buffer::new_from_str("");
 
         assert_eq!(buf1.rope().len_chars(), buf2.rope().len_chars());
         assert_eq!(buf1.rope().len_lines(), buf2.rope().len_lines());

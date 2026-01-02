@@ -191,7 +191,7 @@ impl Editor {
     /// Opens a scratch buffer with the given content and title
     /// The buffer is read-only and has no file path
     pub fn open_scratch_buffer(&mut self, title: &str, content: &str) {
-        let mut buffer = Buffer::from_str(content);
+        let mut buffer = Buffer::new_from_str(content);
         buffer.set_read_only(true);
         // Use a special naming convention for scratch buffers
         // This won't be saved to disk since there's no actual file path
