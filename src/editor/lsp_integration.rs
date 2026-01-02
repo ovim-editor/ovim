@@ -167,6 +167,11 @@ impl Editor {
         diagnostics.len()
     }
 
+    /// Get all diagnostics for the current file
+    pub fn all_diagnostics(&self) -> &[lsp_types::Diagnostic] {
+        &self.lsp_state.current_file_diagnostics
+    }
+
     /// Set LSP status message
     pub fn set_lsp_status(&mut self, status: String) {
         self.lsp_state.lsp_status = status;
@@ -261,86 +266,92 @@ impl Editor {
     // LSP Action Requests (set pending_lsp_action flag)
     // -------------------------------------------------------------------------
 
+    /// Queue an LSP action and reset the retry count
+    fn queue_lsp_action(&mut self, action: LspAction) {
+        self.lsp_state.pending_lsp_action = Some(action);
+        self.lsp_state.lsp_action_retry_count = 0;
+    }
+
     /// Request go-to-definition at current cursor position
     pub fn request_goto_definition(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::GoToDefinition);
+        self.queue_lsp_action(LspAction::GoToDefinition);
     }
 
     /// Request go-to-implementation at current cursor position
     pub fn request_goto_implementation(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::GoToImplementation);
+        self.queue_lsp_action(LspAction::GoToImplementation);
     }
 
     /// Request go-to-type-definition at current cursor position
     pub fn request_goto_type(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::GoToType);
+        self.queue_lsp_action(LspAction::GoToType);
     }
 
     /// Request hover info at current cursor position
     /// This will set the pending action flag, which will be processed
     /// in the next event loop iteration via process_pending_lsp_actions()
     pub fn request_hover(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::ShowHover);
+        self.queue_lsp_action(LspAction::ShowHover);
     }
 
     /// Request completion at current cursor position
     pub fn request_completion(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::Completion);
+        self.queue_lsp_action(LspAction::Completion);
     }
 
     /// Request document format
     pub fn request_format_document(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::FormatDocument);
+        self.queue_lsp_action(LspAction::FormatDocument);
     }
 
     /// Request code actions at current cursor position
     pub fn request_code_actions(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::CodeActions);
+        self.queue_lsp_action(LspAction::CodeActions);
     }
 
     /// Request call hierarchy (incoming calls) at current cursor position
     pub fn request_call_hierarchy_incoming(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::CallHierarchyIncoming);
+        self.queue_lsp_action(LspAction::CallHierarchyIncoming);
     }
 
     /// Request call hierarchy (outgoing calls) at current cursor position
     pub fn request_call_hierarchy_outgoing(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::CallHierarchyOutgoing);
+        self.queue_lsp_action(LspAction::CallHierarchyOutgoing);
     }
 
     /// Request type hierarchy at current cursor position
     pub fn request_type_hierarchy(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::TypeHierarchy);
+        self.queue_lsp_action(LspAction::TypeHierarchy);
     }
 
     /// Request organize imports for the current document
     pub fn request_organize_imports(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::OrganizeImports);
+        self.queue_lsp_action(LspAction::OrganizeImports);
     }
 
     /// Request find references at current cursor position
     pub fn request_find_references(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::FindReferences);
+        self.queue_lsp_action(LspAction::FindReferences);
     }
 
     /// Request document symbols for the current document
     pub fn request_document_symbols(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::DocumentSymbols);
+        self.queue_lsp_action(LspAction::DocumentSymbols);
     }
 
     /// Request workspace symbols
     pub fn request_workspace_symbols(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::WorkspaceSymbols);
+        self.queue_lsp_action(LspAction::WorkspaceSymbols);
     }
 
     /// Request rename at current cursor position
     pub fn request_rename(&mut self, new_name: String) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::Rename(new_name));
+        self.queue_lsp_action(LspAction::Rename(new_name));
     }
 
     /// Request semantic tokens for the current document
     pub fn request_semantic_tokens(&mut self) {
-        self.lsp_state.pending_lsp_action = Some(LspAction::SemanticTokens);
+        self.queue_lsp_action(LspAction::SemanticTokens);
     }
 
     /// Get current hover info text
@@ -354,9 +365,23 @@ impl Editor {
         self.lsp_state.hover_scroll = 0;
     }
 
+    /// Set hover info directly (used for command output display)
+    /// Also switches to HoverPreview mode so the popup is visible
+    pub fn set_hover_info(&mut self, info: String) {
+        self.lsp_state.hover_info = Some(info);
+        self.lsp_state.hover_scroll = 0;
+        self.mode = crate::mode::Mode::HoverPreview;
+        self.mark_dirty();
+    }
+
     /// Get hover scroll position
     pub fn hover_scroll(&self) -> usize {
         self.lsp_state.hover_scroll
+    }
+
+    /// Get the cursor position where hover was triggered
+    pub fn hover_position(&self) -> Option<(usize, usize)> {
+        self.lsp_state.hover_position
     }
 
     /// Scroll hover window down
@@ -502,25 +527,45 @@ impl Editor {
         };
 
         let state_key = file_path.to_string();
-        let mut needs_flush = false;
 
-        // Check if we have pending changes
-        if let Some(state) = self.lsp_state.document_sync.get(&state_key) {
-            if state.is_modified() {
-                needs_flush = true;
-            }
+        // Get language_id from file extension
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Get buffer content
+        let content = self.buffer().rope().to_string();
+
+        // Check if we need to send didOpen first (CRITICAL for LSP protocol)
+        let needs_did_open = self
+            .lsp_state
+            .document_sync
+            .get(&state_key)
+            .map_or(true, |state| !state.did_open_sent);
+
+        if needs_did_open {
+            // Send didOpen notification (uri, language_id, version, text)
+            let _ = lsp
+                .did_open(uri.clone(), &language_id, 1, content.clone())
+                .await;
+
+            // Mark didOpen as sent
+            let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
+            state.did_open_sent = true;
+            state.last_synced_content = Some(content.clone());
+            state.mark_change_sent();
+            return; // didOpen includes the content, no need for didChange
         }
 
+        // Check if we have pending changes
+        let needs_flush = self
+            .lsp_state
+            .document_sync
+            .get(&state_key)
+            .map_or(false, |state| state.is_modified());
+
         if needs_flush {
-            // Get buffer content BEFORE we update the state
-            let content = self.buffer().rope().to_string();
-
-            // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-                Some(id) => id,
-                None => return,
-            };
-
             // Send the didChange notification immediately (bypass debouncing)
             let _ = lsp.did_change(uri, &language_id, content, None).await;
 
@@ -598,15 +643,17 @@ impl Editor {
                         // Status message should already be set
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     // LSP request failed - retry ONCE by re-queueing the action
                     // This handles race conditions where LSP server isn't ready yet
-                    // Note: Removed eprintln to avoid interrupting user output
-                    // Original: eprintln!("LSP action failed: {:?}, retrying once...", e);
-                    let _ = e; // Suppress unused variable warning
-                    if self.lsp_state.pending_lsp_action.is_none() {
-                        self.lsp_state.pending_lsp_action = Some(action);
+                    // Only retry if we haven't already retried (prevents infinite loop)
+                    if self.lsp_state.lsp_action_retry_count < 1 {
+                        self.lsp_state.lsp_action_retry_count += 1;
+                        if self.lsp_state.pending_lsp_action.is_none() {
+                            self.lsp_state.pending_lsp_action = Some(action);
+                        }
                     }
+                    // If retry_count >= 1, we've already retried once, so give up silently
                 }
             }
         }
@@ -754,8 +801,8 @@ impl Editor {
                     let target_line = location.range.start.line as usize;
                     let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
-                    // Save current position to jump list
-                    self.add_jump();
+                    // Save current position to tag stack for Ctrl-T navigation
+                    self.push_tag();
 
                     // Open file if different from current
                     if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
@@ -848,7 +895,8 @@ impl Editor {
                     let target_line = location.range.start.line as usize;
                     let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
-                    self.add_jump();
+                    // Save current position to tag stack for Ctrl-T navigation
+                    self.push_tag();
 
                     if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
                         if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
@@ -938,7 +986,8 @@ impl Editor {
                     let target_line = location.range.start.line as usize;
                     let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
-                    self.add_jump();
+                    // Save current position to tag stack for Ctrl-T navigation
+                    self.push_tag();
 
                     if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
                         if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
@@ -1637,12 +1686,13 @@ impl Editor {
             Ok(Some(hover_text)) => {
                 self.lsp_state.hover_info = Some(hover_text);
                 self.lsp_state.hover_scroll = 0; // Reset scroll position
+                // Store cursor position for hover window positioning
+                let cursor = self.buffer().cursor();
+                self.lsp_state.hover_position = Some((cursor.line(), cursor.col()));
+                self.mode = crate::mode::Mode::HoverPreview;
+                self.mark_dirty();
                 self.set_lsp_status(String::new()); // Clear status on success
-                if self.lsp_state.hover_info.is_some() {
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
+                Ok(true)
             }
             Ok(None) => {
                 crate::lsp_debug!("LSP-HOVER", "No hover info returned");
@@ -2136,8 +2186,8 @@ impl Editor {
             let target_line = location.range.start.line as usize;
             let target_col = self.utf16_to_col(target_line, location.range.start.character);
 
-            // Save current position to jump list
-            self.add_jump();
+            // Save current position to tag stack for Ctrl-T navigation
+            self.push_tag();
 
             // Open file if different from current
             if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {

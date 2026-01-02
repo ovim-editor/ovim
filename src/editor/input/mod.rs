@@ -1,6 +1,6 @@
 use crate::editor::{
-    Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, Search,
-    TextObjects,
+    Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, RegisterType,
+    Search, TextObjects,
 };
 use crate::mode::Mode;
 use anyhow::Result;
@@ -43,9 +43,11 @@ impl InputHandler {
             Mode::Search => Self::handle_search_mode(editor, key_event),
             Mode::Replace => Self::handle_replace_mode(editor, key_event),
             Mode::Picker => Self::handle_picker_mode(editor, key_event),
-            Mode::HoverWindow => Self::handle_hover_window_mode(editor, key_event),
+            Mode::HoverPreview => Self::handle_hover_preview_mode(editor, key_event),
+            Mode::HoverNavigate => Self::handle_hover_navigate_mode(editor, key_event),
             Mode::FileTree => Self::handle_filetree_mode(editor, key_event),
             Mode::SubstituteConfirm => Self::handle_substitute_confirm_mode(editor, key_event),
+            Mode::Dashboard => Self::handle_dashboard_mode(editor, key_event),
         };
 
         // Mark the editor as dirty after processing any key event
@@ -187,9 +189,9 @@ impl InputHandler {
 
         // Handle pending operator + motion (like 'dw', 'dd', 'yy')
         // Skip this block if we have a pending text object prefix ('i' or 'a')
-        // or a motion prefix ('g' for gg)
-        // to allow text objects like di{ and motions like cgg to be handled later
-        let has_text_obj_prefix = matches!(editor.pending_command(), Some('i') | Some('a') | Some('g'));
+        // to allow text objects like di{ and ciw to be handled later
+        // Note: 'g' is NOT included because cgg/dgg handlers are inside this block
+        let has_text_obj_prefix = matches!(editor.pending_command(), Some('i') | Some('a'));
 
         if !has_text_obj_prefix && editor.pending_operator().is_some() {
             let operator = editor.pending_operator().unwrap();
@@ -272,7 +274,8 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
                     editor.add_change(change);
-                    editor.delete_to_register(deleted);
+                    // dG is linewise, use Line register type for proper paste behavior
+                    editor.delete_to_register_with_type(deleted, RegisterType::Line);
 
                     // Clamp cursor to buffer bounds
                     helpers::clamp_cursor_to_buffer(editor);
@@ -333,23 +336,20 @@ impl InputHandler {
                     helpers::insert_line_below(editor)?;
                     return Ok(());
                 }
-                (Operator::Indent, KeyCode::Char('g')) => {
-                    // >gg - indent from current line to first line
-                    editor.set_pending_command('g');
-                    return Ok(());
-                }
-                (Operator::Dedent, KeyCode::Char('g')) => {
-                    // <gg - dedent from current line to first line
-                    editor.set_pending_command('g');
-                    return Ok(());
-                }
-                (Operator::Fold, KeyCode::Char('g')) => {
-                    // zfgg - fold from current line to first line
-                    editor.set_pending_command('g');
-                    return Ok(());
-                }
-                (Operator::Change, KeyCode::Char('g')) => {
-                    // cgg - change from current line to first line
+                // Only set pending_command for first 'g' press (not second)
+                _ if key_event.code == KeyCode::Char('g')
+                    && editor.pending_command() != Some('g')
+                    && matches!(
+                        operator,
+                        Operator::Indent
+                            | Operator::Dedent
+                            | Operator::Fold
+                            | Operator::Change
+                            | Operator::Delete
+                            | Operator::Yank
+                    ) =>
+                {
+                    // First 'g' of gg motion (e.g., cg, dg, yg, >g, <g, zfg)
                     editor.set_pending_command('g');
                     return Ok(());
                 }
@@ -462,9 +462,9 @@ impl InputHandler {
             }
 
             // Don't clear pending operator if we have a text object prefix ('i' or 'a')
-            // or a motion prefix ('g' for gg)
-            // This allows text objects like 'dip', 'caw', etc. and motions like 'cgg', 'dgg' to work
-            if !matches!(editor.pending_command(), Some('i') | Some('a') | Some('g')) {
+            // This allows text objects like 'dip', 'caw', etc. to work
+            // Note: 'g' is handled above (cgg/dgg return early, so we don't reach here)
+            if !matches!(editor.pending_command(), Some('i') | Some('a')) {
                 editor.clear_pending_operator();
             }
 
@@ -508,7 +508,8 @@ impl InputHandler {
                     let range = Range::new(start_pos, end_pos);
                     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-                    editor.delete_to_register(deleted);
+                    // dd is linewise, use Line register type for proper paste behavior
+                    editor.delete_to_register_with_type(deleted, RegisterType::Line);
                     editor.add_change(change);
 
                     // Clamp cursor to buffer bounds (handles end of file)
@@ -519,6 +520,43 @@ impl InputHandler {
                     let current_line = editor.buffer().cursor().line();
                     editor.buffer_mut().cursor_mut().set_position(current_line, 0);
 
+                    editor.clear_count();
+                    return Ok(());
+                }
+                (Operator::Delete, KeyCode::Char('l')) | (Operator::Delete, KeyCode::Right) => {
+                    // dl - delete character(s) to the right
+                    let cursor = editor.buffer().cursor();
+                    let cursor_before = (cursor.line(), cursor.col());
+                    let line_idx = cursor.line();
+                    let start_col = cursor.col();
+
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let line_len = line_text.chars().count();
+                        let end_col = (start_col + count).min(line_len);
+
+                        if start_col < end_col {
+                            let start_pos = (line_idx, start_col);
+                            let end_pos = (line_idx, end_col);
+
+                            let deleted = editor
+                                .buffer_mut()
+                                .delete_range(line_idx, start_col, line_idx, end_col);
+                            let range = Range::new(start_pos, end_pos);
+                            let change = Change::delete(range, deleted.clone(), cursor_before);
+
+                            editor.delete_to_register(deleted);
+                            editor.add_change(change);
+
+                            // Position cursor at deletion start
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(line_idx, start_col);
+
+                            helpers::clamp_cursor_to_buffer(editor);
+                        }
+                    }
                     editor.clear_count();
                     return Ok(());
                 }
@@ -632,6 +670,9 @@ impl InputHandler {
                     let start_line = cursor.line();
                     let end_line = (start_line + count).min(editor.buffer().line_count());
 
+                    // Start change building BEFORE delete so everything is in one undo unit
+                    editor.start_change_building(cursor_before);
+
                     let start_pos = (start_line, 0);
                     let end_pos = (end_line, 0);
 
@@ -642,11 +683,6 @@ impl InputHandler {
                     editor.delete_to_register(deleted);
                     editor.add_change(change);
                     editor.clear_count();
-                    let cursor_before = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-                    editor.start_change_building(cursor_before);
                     editor.set_mode(Mode::Insert);
                     helpers::insert_line_above(editor)?;
                     return Ok(());
@@ -2309,6 +2345,13 @@ impl InputHandler {
                     editor.clear_pending_command();
                     return Ok(());
                 }
+                ('W', KeyCode::Char('o')) => {
+                    // Ctrl-W o - close all other windows (keep current)
+                    // TODO: Implement close_other_windows() in WindowManager
+                    // For now, just clear the pending command
+                    editor.clear_pending_command();
+                    return Ok(());
+                }
                 ('z', KeyCode::Char('z')) => {
                     // zz - center cursor in viewport
                     editor.center_cursor_in_viewport();
@@ -2347,9 +2390,9 @@ impl InputHandler {
             KeyCode::Char('o') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 editor.jump_back();
             }
-            // Jump back (Ctrl-T) - tag stack equivalent
+            // Pop tag stack (Ctrl-T) - return to position before gd/gD/gy
             KeyCode::Char('t') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                editor.jump_back();
+                editor.tag_pop();
             }
             // Window commands (Ctrl-W) - set pending command
             KeyCode::Char('w') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2766,10 +2809,14 @@ impl InputHandler {
                     }
                     last_line
                 };
+                // Add current position to jump list before moving
+                editor.add_jump();
                 editor
                     .buffer_mut()
                     .cursor_mut()
                     .set_position(target_line, 0);
+                // Add new position to jump list after moving
+                editor.add_jump();
                 editor.clear_count();
             }
             // Fold commands
@@ -3309,6 +3356,42 @@ impl InputHandler {
                     }
                 }
             }
+            // Ctrl-[ is equivalent to Esc
+            KeyCode::Char('[') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if editor.completion_menu().is_visible() {
+                    editor.hide_completion_menu();
+                } else {
+                    // Same logic as Esc - exit insert mode
+                    let cursor = editor.buffer().cursor();
+                    editor.last_insert_position = Some((cursor.line(), cursor.col()));
+                    editor.finalize_change_building();
+                    editor.update_last_inserted_register();
+                    editor.mark_buffer_modified();
+                    editor.set_mode(Mode::Normal);
+                    let cursor = editor.buffer_mut().cursor_mut();
+                    if cursor.col() > 0 {
+                        cursor.move_left(1);
+                    }
+                }
+            }
+            // Ctrl-C exits insert mode (like Esc but without triggering InsertLeave)
+            KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if editor.completion_menu().is_visible() {
+                    editor.hide_completion_menu();
+                } else {
+                    // Same logic as Esc - exit insert mode
+                    let cursor = editor.buffer().cursor();
+                    editor.last_insert_position = Some((cursor.line(), cursor.col()));
+                    editor.finalize_change_building();
+                    editor.update_last_inserted_register();
+                    editor.mark_buffer_modified();
+                    editor.set_mode(Mode::Normal);
+                    let cursor = editor.buffer_mut().cursor_mut();
+                    if cursor.col() > 0 {
+                        cursor.move_left(1);
+                    }
+                }
+            }
             // Ctrl-W - Delete word backward
             KeyCode::Char('w') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 helpers::delete_word_backward_insert(editor)?;
@@ -3324,6 +3407,10 @@ impl InputHandler {
             // Ctrl-D - Dedent current line in insert mode
             KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 helpers::dedent_line_insert(editor)?;
+            }
+            // Ctrl-H is equivalent to Backspace
+            KeyCode::Char('h') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                helpers::delete_char_before_cursor(editor)?;
             }
             // Ctrl-Space - Request code completion
             KeyCode::Char(' ') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -4541,8 +4628,29 @@ impl InputHandler {
         }
     }
 
-    /// Handles input in HoverWindow mode
-    fn handle_hover_window_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    /// Handles input in HoverPreview mode (quick peek, any key dismisses except K)
+    fn handle_hover_preview_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        match key_event.code {
+            // K - enter navigate mode (KK to navigate within hover)
+            KeyCode::Char('K') => {
+                editor.set_mode(Mode::HoverNavigate);
+            }
+            // Any other key dismisses the hover and returns to normal
+            _ => {
+                editor.clear_hover();
+                editor.set_mode(Mode::Normal);
+                // Re-process the key in normal mode (so it's not "eaten")
+                // This makes ESC just close, but j/k/etc actually perform their normal action
+                if key_event.code != KeyCode::Esc && key_event.code != KeyCode::Char('q') {
+                    Self::handle_normal_mode(editor, key_event)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handles input in HoverNavigate mode (scrollable, shows raw text)
+    fn handle_hover_navigate_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         match key_event.code {
             // Esc or q - close hover window
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -4588,7 +4696,9 @@ impl InputHandler {
                 editor.scroll_hover_down(usize::MAX); // Scroll to bottom
             }
             _ => {
-                // Ignore other keys
+                // Other keys close the hover
+                editor.clear_hover();
+                editor.set_mode(Mode::Normal);
             }
         }
         Ok(())
@@ -4669,6 +4779,122 @@ impl InputHandler {
                 // Show prompt in status
                 editor.set_lsp_status("replace with ... (y/n/a/q/l)".to_string());
             }
+        }
+        Ok(())
+    }
+
+    /// Handles input in Dashboard mode
+    /// j/k navigate menu, Enter selects, or press shortcut key directly
+    fn handle_dashboard_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        use crate::ui::MENU_ITEMS;
+
+        let current = editor.dashboard_selected();
+        let menu_count = MENU_ITEMS.len();
+
+        match key_event.code {
+            // Navigation
+            KeyCode::Char('j') | KeyCode::Down => {
+                let next = (current + 1) % menu_count;
+                editor.set_dashboard_selected(next);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let next = if current == 0 {
+                    menu_count - 1
+                } else {
+                    current - 1
+                };
+                editor.set_dashboard_selected(next);
+            }
+
+            // Select current item
+            KeyCode::Enter => {
+                Self::execute_dashboard_action(editor, current)?;
+            }
+
+            // Direct shortcuts - use execute_dashboard_action for consistency
+            KeyCode::Char('e') => {
+                Self::execute_dashboard_action(editor, 0)?; // New File
+            }
+            KeyCode::Char('f') => {
+                Self::execute_dashboard_action(editor, 1)?; // Find File
+            }
+            KeyCode::Char('r') => {
+                Self::execute_dashboard_action(editor, 2)?; // Recent Files
+            }
+            KeyCode::Char('g') => {
+                Self::execute_dashboard_action(editor, 3)?; // Find Word
+            }
+            KeyCode::Char('c') => {
+                Self::execute_dashboard_action(editor, 4)?; // Configuration
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                Self::execute_dashboard_action(editor, 5)?; // Quit
+            }
+
+            // Any other key exits dashboard to normal mode
+            KeyCode::Char(':') => {
+                // Enter command mode
+                editor.set_mode(Mode::Command);
+            }
+            KeyCode::Char('/') => {
+                // Enter search mode
+                editor.set_mode(Mode::Search);
+                editor.set_search_forward(true);
+            }
+
+            _ => {
+                // Ignore other keys
+            }
+        }
+        Ok(())
+    }
+
+    /// Execute the action for the selected dashboard menu item
+    fn execute_dashboard_action(editor: &mut Editor, index: usize) -> Result<()> {
+        match index {
+            0 => {
+                // New File - exit to normal mode
+                editor.set_mode(Mode::Normal);
+            }
+            1 => {
+                // Find File
+                let base_dir =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let picker = crate::editor::Picker::new_file_finder(base_dir);
+                editor.set_picker(picker);
+                editor.set_mode(Mode::Picker);
+                editor.mark_picker_selection_changed();
+            }
+            2 => {
+                // Recent Files - for now, use file finder (TODO: add recent files picker)
+                let base_dir =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let picker = crate::editor::Picker::new_file_finder(base_dir);
+                editor.set_picker(picker);
+                editor.set_mode(Mode::Picker);
+                editor.mark_picker_selection_changed();
+            }
+            3 => {
+                // Find Word (grep)
+                let base_dir =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let picker = crate::editor::Picker::new_live_grep(base_dir);
+                editor.set_picker(picker);
+                editor.set_mode(Mode::Picker);
+            }
+            4 => {
+                // Configuration
+                editor.set_mode(Mode::Normal);
+                let config_path = dirs::config_dir()
+                    .map(|p| p.join("ovim").join("init.lua"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("~/.config/ovim/init.lua"));
+                let _ = editor.load_file(&config_path);
+            }
+            5 => {
+                // Quit
+                editor.quit();
+            }
+            _ => {}
         }
         Ok(())
     }

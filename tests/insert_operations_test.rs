@@ -390,7 +390,8 @@ fn test_o_and_undo() {
 
     test.press('o').type_text("inserted").press_esc().press('u'); // Undo
 
-    assert_eq!(test.buffer_content(), "line 1\n\nline 2\n");
+    // Undo should restore original content (no blank line)
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
     test.assert_cursor(0, 0);
 }
 

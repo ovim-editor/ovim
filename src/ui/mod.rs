@@ -4,6 +4,7 @@ mod terminal;
 
 pub use ansi::buffer_to_ansi;
 pub use renderer::Renderer;
+pub use renderer::MENU_ITEMS;
 pub use terminal::Terminal;
 
 use anyhow::Result;

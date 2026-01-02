@@ -49,7 +49,7 @@ fn test_dot_repeat_insert() {
         .press('.'); // Repeat insert
 
     assert_eq!(test.buffer_content(), "PREFIX:line 1\nline PREFIX:2\n");
-    test.assert_cursor(1, 12);
+    test.assert_cursor(1, 11);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn test_dot_repeat_c_dollar() {
         .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "NEW\nteNEWst case\n");
-    test.assert_cursor(1, 5);
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -205,8 +205,8 @@ fn test_dot_repeat_J_join() {
     test.press('J') // Join line 1 and 2
         .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "line 1 line line 3\nline 4\n");
-    test.assert_cursor(0, 12);
+    assert_eq!(test.buffer_content(), "line 1 line 2 line 3\nline 4\n");
+    test.assert_cursor(0, 13);
 }
 
 // ============================================================================
@@ -458,7 +458,7 @@ fn test_dot_repeat_I_command() {
         .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "START:hello\nworlSTART:d\n");
-    test.assert_cursor(1, 10);
+    test.assert_cursor(1, 9);
 }
 
 // ============================================================================
@@ -606,7 +606,7 @@ fn test_dot_with_multichar_insert() {
         test.buffer_content(),
         "LONG TEXT line 1\nline LONG TEXT 2\n"
     );
-    test.assert_cursor(1, 15);
+    test.assert_cursor(1, 14);
 }
 
 #[test]
@@ -624,5 +624,5 @@ fn test_dot_repeat_complex_change() {
         test.buffer_content(),
         "REPLACEDtwo\nthree four\nREPLACEDfive six\n"
     );
-    test.assert_cursor(2, 8);
+    test.assert_cursor(2, 7);
 }

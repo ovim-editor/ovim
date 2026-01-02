@@ -26,8 +26,8 @@ fn test_command_quit() {
 }
 
 /// Test :w command
-#[test]
-fn test_command_write() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_command_write() {
     let mut test = EditorTest::new("content\n");
     test.set_file_path("/tmp/test_write.txt".to_string());
 
@@ -39,8 +39,8 @@ fn test_command_write() {
 }
 
 /// Test :wq command
-#[test]
-fn test_command_write_quit() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_command_write_quit() {
     let mut test = EditorTest::new("content\n");
     test.set_file_path("/tmp/test_wq.txt".to_string());
 
@@ -69,8 +69,8 @@ fn test_command_force_quit() {
 }
 
 /// Test :e command (edit file)
-#[test]
-fn test_command_edit_file() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_command_edit_file() {
     // Create the file first
     std::fs::write("/tmp/newfile.txt", "new content\n").unwrap();
 
@@ -390,7 +390,15 @@ fn test_command_registers() {
     test.type_text("reg");
     test.press_enter();
 
-    test.assert_mode(ovim::mode::Mode::Normal);
+    // Mode depends on whether there are registers to display:
+    // - No registers: "No registers in use" goes to status bar → Normal mode
+    // - Has registers (e.g., clipboard content): multi-line output → HoverPreview mode
+    let mode = test.editor.mode();
+    assert!(
+        mode == ovim::mode::Mode::Normal || mode == ovim::mode::Mode::HoverPreview,
+        "Expected Normal or HoverPreview mode after :reg, got {:?}",
+        mode
+    );
 }
 
 /// Test :marks command

@@ -192,3 +192,176 @@ impl JumpList {
         self.current + 1 < self.jumps.len()
     }
 }
+
+/// Represents a single entry in the tag stack (for Ctrl-T navigation)
+/// Stores the location we jumped FROM when using gd/gD/gy
+#[derive(Clone, Debug)]
+pub struct TagEntry {
+    /// Full path to the file
+    pub file_path: String,
+    /// Line number (0-indexed)
+    pub line: usize,
+    /// Column number (0-indexed)
+    pub col: usize,
+    /// Optional context (e.g., symbol name at that location)
+    pub context: String,
+}
+
+impl TagEntry {
+    /// Creates a new tag entry
+    pub fn new(file_path: String, line: usize, col: usize) -> Self {
+        Self {
+            file_path,
+            line,
+            col,
+            context: String::new(),
+        }
+    }
+
+    /// Creates a new tag entry with context
+    pub fn with_context(file_path: String, line: usize, col: usize, context: String) -> Self {
+        Self {
+            file_path,
+            line,
+            col,
+            context,
+        }
+    }
+}
+
+/// Tag stack for tracking LSP-based goto locations (gd/gD/gy)
+/// Unlike JumpList (bidirectional), this is a pure LIFO stack.
+/// Used with Ctrl-T to navigate back to where you jumped FROM.
+#[derive(Clone, Debug, Default)]
+pub struct TagStack {
+    /// Stack of tag entries (most recent at end)
+    stack: Vec<TagEntry>,
+    /// Maximum stack depth
+    max_size: usize,
+}
+
+impl TagStack {
+    /// Creates a new tag stack with default max size (100)
+    pub fn new() -> Self {
+        Self {
+            stack: Vec::new(),
+            max_size: 100,
+        }
+    }
+
+    /// Pushes a new entry onto the tag stack
+    pub fn push(&mut self, entry: TagEntry) {
+        self.stack.push(entry);
+
+        // Enforce max size by removing oldest entries
+        while self.stack.len() > self.max_size {
+            self.stack.remove(0);
+        }
+    }
+
+    /// Pops and returns the most recent tag entry
+    pub fn pop(&mut self) -> Option<TagEntry> {
+        self.stack.pop()
+    }
+
+    /// Returns the most recent tag entry without removing it
+    pub fn peek(&self) -> Option<&TagEntry> {
+        self.stack.last()
+    }
+
+    /// Returns true if the tag stack is empty
+    pub fn is_empty(&self) -> bool {
+        self.stack.is_empty()
+    }
+
+    /// Returns the number of entries in the tag stack
+    pub fn len(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// Clears the tag stack
+    pub fn clear(&mut self) {
+        self.stack.clear();
+    }
+
+    /// Returns an iterator over the tag stack (oldest to newest)
+    pub fn iter(&self) -> impl Iterator<Item = &TagEntry> {
+        self.stack.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tag_stack_push_pop() {
+        let mut stack = TagStack::new();
+        assert!(stack.is_empty());
+
+        stack.push(TagEntry::new("file1.rs".to_string(), 10, 5));
+        stack.push(TagEntry::new("file2.rs".to_string(), 20, 10));
+
+        assert_eq!(stack.len(), 2);
+        assert!(!stack.is_empty());
+
+        let entry = stack.pop().unwrap();
+        assert_eq!(entry.file_path, "file2.rs");
+        assert_eq!(entry.line, 20);
+        assert_eq!(entry.col, 10);
+
+        let entry = stack.pop().unwrap();
+        assert_eq!(entry.file_path, "file1.rs");
+        assert_eq!(entry.line, 10);
+
+        assert!(stack.is_empty());
+        assert!(stack.pop().is_none());
+    }
+
+    #[test]
+    fn test_tag_stack_max_size() {
+        let mut stack = TagStack::new();
+
+        // Push 105 entries (max is 100)
+        for i in 0..105 {
+            stack.push(TagEntry::new(format!("file{}.rs", i), i, 0));
+        }
+
+        // Should only have 100 entries
+        assert_eq!(stack.len(), 100);
+
+        // First entry should be file5.rs (0-4 were dropped)
+        let mut count = 0;
+        for (idx, entry) in stack.iter().enumerate() {
+            assert_eq!(entry.file_path, format!("file{}.rs", idx + 5));
+            count += 1;
+        }
+        assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn test_tag_stack_peek() {
+        let mut stack = TagStack::new();
+        assert!(stack.peek().is_none());
+
+        stack.push(TagEntry::new("test.rs".to_string(), 42, 7));
+
+        let peeked = stack.peek().unwrap();
+        assert_eq!(peeked.line, 42);
+        assert_eq!(stack.len(), 1); // peek doesn't remove
+
+        stack.pop();
+        assert!(stack.peek().is_none());
+    }
+
+    #[test]
+    fn test_tag_entry_with_context() {
+        let entry = TagEntry::with_context(
+            "main.rs".to_string(),
+            100,
+            15,
+            "fn calculate".to_string(),
+        );
+        assert_eq!(entry.context, "fn calculate");
+    }
+}

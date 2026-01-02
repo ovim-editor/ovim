@@ -28,8 +28,8 @@ pub async fn start_server(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let actual_addr = listener.local_addr()?;
 
-    eprintln!("REST API server listening on http://{}", actual_addr);
-    eprintln!("API URL: http://{}", actual_addr);
+    // Log to LSP log file instead of stderr to avoid garbling TUI output
+    crate::lsp_info!("API", "REST API server listening on http://{}", actual_addr);
 
     // Send the actual port back
     let _ = port_tx.send(actual_addr.port());

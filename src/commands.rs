@@ -225,42 +225,177 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             }
         }
         "LspInfo" => {
-            // Show LSP status information
+            // Show LSP status information in a scratch buffer
             let mut info = String::new();
 
-            if editor.lsp_manager().is_none() {
-                info.push_str("LSP is not enabled\n");
-            } else if editor.active_lsp_servers().is_empty() {
-                info.push_str("No active LSP servers\n");
-                if !editor.lsp_status().is_empty() {
-                    info.push_str(&format!("Status: {}\n", editor.lsp_status()));
+            if let Some(lsp_manager) = editor.lsp_manager() {
+                // Get active servers from lsp_manager (more reliable than editor's map)
+                let languages = lsp_manager.active_server_languages();
+
+                if languages.is_empty() {
+                    info.push_str("No active LSP servers\n");
+                    if !editor.lsp_status().is_empty() {
+                        info.push_str(&format!("Status: {}\n", editor.lsp_status()));
+                    }
+                } else {
+                    info.push_str("Active LSP servers:\n\n");
+                    for lang_id in &languages {
+                        if let Some(cmd) = lsp_manager.server_command(lang_id) {
+                            // Extract just the binary name from the full path
+                            let binary_name = std::path::Path::new(&cmd)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or(cmd);
+                            info.push_str(&format!("  {} -> {}\n", lang_id, binary_name));
+                        } else {
+                            info.push_str(&format!("  {}\n", lang_id));
+                        }
+                    }
+
+                    let (errors, warnings, info_count, hints) = editor.cached_diagnostic_count();
+                    info.push_str(&format!(
+                        "\nDiagnostics: {} errors, {} warnings, {} info, {} hints\n",
+                        errors, warnings, info_count, hints
+                    ));
+
+                    if !editor.lsp_status().is_empty() {
+                        info.push_str(&format!("\nStatus: {}\n", editor.lsp_status()));
+                    }
+
+                    if let Some(file_path) = editor.buffer().file_path() {
+                        info.push_str(&format!("\nCurrent file: {}\n", file_path));
+                    }
                 }
             } else {
-                info.push_str("Active LSP servers:\n");
-                for (lang_id, server_name) in editor.active_lsp_servers() {
-                    info.push_str(&format!("  {} -> {}\n", lang_id, server_name));
+                info.push_str("LSP is not enabled\n");
+            }
+
+            editor.open_scratch_buffer("LspInfo", &info);
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: None,
+                line_count: None,
+            })
+        }
+        "LspStatus" => {
+            // Show detailed diagnostics list for current file
+            use lsp_types::DiagnosticSeverity;
+
+            let mut output = String::new();
+            let diagnostics = editor.all_diagnostics();
+
+            if diagnostics.is_empty() {
+                output.push_str("No diagnostics for current file\n");
+            } else {
+                output.push_str(&format!("Diagnostics ({} total):\n\n", diagnostics.len()));
+
+                // Group by severity
+                let mut errors: Vec<_> = vec![];
+                let mut warnings: Vec<_> = vec![];
+                let mut infos: Vec<_> = vec![];
+                let mut hints: Vec<_> = vec![];
+
+                for d in diagnostics {
+                    match d.severity {
+                        Some(DiagnosticSeverity::ERROR) => errors.push(d),
+                        Some(DiagnosticSeverity::WARNING) => warnings.push(d),
+                        Some(DiagnosticSeverity::INFORMATION) => infos.push(d),
+                        Some(DiagnosticSeverity::HINT) => hints.push(d),
+                        None => infos.push(d), // Default to info if no severity
+                        _ => infos.push(d),
+                    }
                 }
 
-                let (errors, warnings, info_count, hints) = editor.cached_diagnostic_count();
-                info.push_str(&format!(
-                    "\nDiagnostics: {} errors, {} warnings, {} info, {} hints\n",
-                    errors, warnings, info_count, hints
-                ));
-
-                if !editor.lsp_status().is_empty() {
-                    info.push_str(&format!("Status: {}\n", editor.lsp_status()));
+                // Print errors first
+                if !errors.is_empty() {
+                    output.push_str("ERRORS:\n");
+                    for d in &errors {
+                        let line = d.range.start.line + 1;
+                        let col = d.range.start.character + 1;
+                        // Truncate message to first line for cleaner display
+                        let msg = d.message.lines().next().unwrap_or(&d.message);
+                        output.push_str(&format!("  {}:{}: {}\n", line, col, msg));
+                    }
+                    output.push('\n');
                 }
 
-                if let Some(file_path) = editor.buffer().file_path() {
-                    info.push_str(&format!("Current file: {}\n", file_path));
+                // Print warnings
+                if !warnings.is_empty() {
+                    output.push_str("WARNINGS:\n");
+                    for d in &warnings {
+                        let line = d.range.start.line + 1;
+                        let col = d.range.start.character + 1;
+                        let msg = d.message.lines().next().unwrap_or(&d.message);
+                        output.push_str(&format!("  {}:{}: {}\n", line, col, msg));
+                    }
+                    output.push('\n');
+                }
+
+                // Print info
+                if !infos.is_empty() {
+                    output.push_str("INFO:\n");
+                    for d in &infos {
+                        let line = d.range.start.line + 1;
+                        let col = d.range.start.character + 1;
+                        let msg = d.message.lines().next().unwrap_or(&d.message);
+                        output.push_str(&format!("  {}:{}: {}\n", line, col, msg));
+                    }
+                    output.push('\n');
+                }
+
+                // Print hints
+                if !hints.is_empty() {
+                    output.push_str("HINTS:\n");
+                    for d in &hints {
+                        let line = d.range.start.line + 1;
+                        let col = d.range.start.character + 1;
+                        let msg = d.message.lines().next().unwrap_or(&d.message);
+                        output.push_str(&format!("  {}:{}: {}\n", line, col, msg));
+                    }
                 }
             }
 
+            // Also show LSP status if set
+            if !editor.lsp_status().is_empty() {
+                output.push_str(&format!("\nLSP Status: {}\n", editor.lsp_status()));
+            }
+
+            editor.open_scratch_buffer("LspStatus", &output);
             ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some(info),
+                message: None,
                 line_count: None,
             })
+        }
+        "LspLog" => {
+            // Show LSP log file in a new tab (like Neovim)
+            let log_path = crate::lsp::get_log_path();
+            match std::fs::read_to_string(&log_path) {
+                Ok(content) => {
+                    if content.is_empty() {
+                        editor.open_scratch_buffer_in_new_tab("LspLog", "LSP log is empty\n");
+                    } else {
+                        editor.open_scratch_buffer_in_new_tab("LspLog", &content);
+                        // Jump to end of log
+                        let line_count = editor.buffer().rope().len_lines().saturating_sub(1);
+                        editor.buffer_mut().cursor_mut().set_line(line_count);
+                    }
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: None,
+                        line_count: None,
+                    })
+                }
+                Err(e) => {
+                    let msg = format!("Failed to read LSP log at {:?}: {}\n", log_path, e);
+                    editor.open_scratch_buffer_in_new_tab("LspLog", &msg);
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: None,
+                        line_count: None,
+                    })
+                }
+            }
         }
         cmd if cmd.starts_with("LspRename ") => {
             // LSP rename symbol: :LspRename new_name

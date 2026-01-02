@@ -41,6 +41,37 @@ impl Editor {
         self.lsp_state.needs_lsp_init = true;
     }
 
+    /// Opens a scratch buffer with the given content in a new tab
+    pub fn open_scratch_buffer_in_new_tab(&mut self, title: &str, content: &str) {
+        // Save current buffer index to current tab before creating new tab
+        let current_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
+            tab.set_current_buffer_index(self.current_buffer_index);
+        }
+
+        // Create the scratch buffer
+        let mut buffer = Buffer::from_str(content);
+        buffer.set_read_only(true);
+        buffer.set_file_path(format!("[{}]", title));
+        self.buffers.push(buffer);
+        let new_buffer_index = self.buffers.len() - 1;
+
+        // Create the new tab with the title
+        self.tab_page_manager.new_tab(Some(format!("[{}]", title)));
+
+        // Set the new tab's buffer index to the scratch buffer
+        let new_tab_idx = self.tab_page_manager.current_tab_index();
+        if let Some(tab) = self.tab_page_manager.tab_mut(new_tab_idx) {
+            tab.set_current_buffer_index(new_buffer_index);
+        }
+
+        // Switch editor to the new buffer
+        self.current_buffer_index = new_buffer_index;
+        // Don't need LSP for scratch buffers
+        self.lsp_state.needs_lsp_init = false;
+        self.mark_dirty();
+    }
+
     /// Gets the display title for a tab at the given index
     /// Returns filename if file is open, otherwise "[No Name]"
     pub fn get_tab_title(&self, tab_index: usize) -> String {

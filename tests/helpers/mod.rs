@@ -93,12 +93,25 @@ impl EditorTest {
                     match special_key.as_str() {
                         "Esc" => self.press_esc(),
                         "Enter" => self.press_enter(),
-                        "C-a" => self.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL),
-                        "C-x" => self.press_with(KeyCode::Char('x'), KeyModifiers::CONTROL),
-                        "C-e" => self.press_with(KeyCode::Char('e'), KeyModifiers::CONTROL),
-                        "C-y" => self.press_with(KeyCode::Char('y'), KeyModifiers::CONTROL),
-                        "C-r" => self.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL),
-                        "C-v" => self.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                        "Tab" => self.press_key(KeyCode::Tab),
+                        "BS" | "Backspace" => self.press_backspace(),
+                        "Space" => self.press(' '),
+                        // Generic Ctrl+key support
+                        key if key.starts_with("C-") => {
+                            let char_part = &key[2..];
+                            if char_part.len() == 1 {
+                                let c = char_part.chars().next().unwrap().to_ascii_lowercase();
+                                self.press_with(KeyCode::Char(c), KeyModifiers::CONTROL)
+                            } else {
+                                match char_part {
+                                    "[" => self.press_with(KeyCode::Char('['), KeyModifiers::CONTROL),
+                                    "]" => self.press_with(KeyCode::Char(']'), KeyModifiers::CONTROL),
+                                    "^" => self.press_with(KeyCode::Char('^'), KeyModifiers::CONTROL),
+                                    " " => self.press_with(KeyCode::Char(' '), KeyModifiers::CONTROL),
+                                    _ => panic!("Unknown Ctrl key: <{}>", special_key),
+                                }
+                            }
+                        }
                         _ => panic!("Unknown special key: <{}>", special_key),
                     };
                 } else {

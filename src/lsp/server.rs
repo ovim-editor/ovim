@@ -1615,6 +1615,11 @@ impl LanguageServer {
     pub async fn get_command(&self) -> String {
         self.inner.command.clone()
     }
+
+    /// Gets the command used to start the server (sync version)
+    pub fn command(&self) -> &str {
+        &self.inner.command
+    }
 }
 
 #[cfg(test)]

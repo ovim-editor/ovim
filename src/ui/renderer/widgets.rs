@@ -326,24 +326,115 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// Renders hover information as a scrollable floating window
+/// Renders hover information as a floating window positioned near the cursor
+///
+/// In preview mode: renders markdown, any key dismisses
+/// In navigate mode: shows raw text, scrollable
+#[allow(clippy::too_many_arguments)]
 pub fn render_hover_window(
     frame: &mut Frame,
+    editor: &Editor,
     hover_text: &str,
     scroll_offset: usize,
     buffer_area: Rect,
+    viewport_start: usize,
+    hover_position: Option<(usize, usize)>,
+    is_preview: bool,
 ) {
-    // Split text into lines
-    let all_lines: Vec<&str> = hover_text.lines().collect();
-    let total_lines = all_lines.len();
+    use super::markdown::{parse_markdown, render_markdown, colors};
 
-    // Calculate window dimensions (centered, large window)
-    let window_width = (buffer_area.width * 80 / 100).min(120); // 80% of screen, max 120 cols
-    let window_height = (buffer_area.height * 70 / 100).min(30); // 70% of screen, max 30 lines
+    const MIN_WIDTH: u16 = 30;
+    const MAX_WIDTH: u16 = 80;
+    const MIN_HEIGHT: u16 = 3;
+    const MAX_HEIGHT: u16 = 15;
 
-    // Center the window
-    let window_x = buffer_area.x + (buffer_area.width.saturating_sub(window_width)) / 2;
-    let window_y = buffer_area.y + (buffer_area.height.saturating_sub(window_height)) / 2;
+    // Parse markdown for preview mode
+    let elements = parse_markdown(hover_text);
+    let rendered_lines = render_markdown(&elements, MAX_WIDTH as usize);
+    let total_lines = if is_preview {
+        rendered_lines.len()
+    } else {
+        hover_text.lines().count()
+    };
+
+    // Calculate content dimensions
+    let content_width = if is_preview {
+        rendered_lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.len())
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(30)
+    } else {
+        hover_text.lines().map(|l| l.len()).max().unwrap_or(30)
+    };
+
+    let window_width = (content_width as u16 + 4)
+        .max(MIN_WIDTH)
+        .min(MAX_WIDTH)
+        .min(buffer_area.width.saturating_sub(4));
+
+    let window_height = (total_lines as u16 + 2)
+        .max(MIN_HEIGHT)
+        .min(MAX_HEIGHT)
+        .min(buffer_area.height.saturating_sub(2));
+
+    // Calculate cursor screen position
+    let (cursor_line, cursor_col) = hover_position.unwrap_or_else(|| {
+        let cursor = editor.buffer().cursor();
+        (cursor.line(), cursor.col())
+    });
+
+    // Calculate gutter width
+    let show_numbers = editor.options.number || editor.options.relative_number;
+    let max_line_num = editor.buffer().rope().len_lines();
+    let line_num_width = if show_numbers {
+        max_line_num.to_string().len().max(3)
+    } else {
+        0
+    };
+    let sign_width = 2;
+    let gutter_width = if show_numbers || sign_width > 0 {
+        sign_width + line_num_width + 1
+    } else {
+        0
+    };
+
+    // Convert cursor to screen coordinates
+    let screen_line = cursor_line.saturating_sub(viewport_start);
+    let rope = editor.buffer().rope();
+    let line_text = if cursor_line < rope.len_lines() {
+        rope.line(cursor_line).to_string()
+    } else {
+        String::new()
+    };
+    let line_text = line_text.trim_end_matches('\n');
+    let tab_width = editor.options.tab_width;
+    let display_col = super::helpers::char_col_to_display_col(line_text, cursor_col, tab_width);
+
+    let cursor_screen_x = buffer_area.x + gutter_width as u16 + display_col as u16;
+    let cursor_screen_y = buffer_area.y + screen_line as u16;
+
+    // Determine vertical position (prefer below, fallback to above)
+    let space_below = buffer_area.bottom().saturating_sub(cursor_screen_y + 1);
+    let space_above = cursor_screen_y.saturating_sub(buffer_area.y);
+
+    let window_y = if space_below >= window_height || space_below >= space_above {
+        // Position below cursor
+        (cursor_screen_y + 1).min(buffer_area.bottom().saturating_sub(window_height))
+    } else {
+        // Position above cursor
+        cursor_screen_y.saturating_sub(window_height)
+    };
+
+    // Determine horizontal position (start at cursor, shift left if needed)
+    let window_x = cursor_screen_x
+        .min(buffer_area.right().saturating_sub(window_width))
+        .max(buffer_area.x);
 
     let window_area = Rect {
         x: window_x,
@@ -352,56 +443,81 @@ pub fn render_hover_window(
         height: window_height,
     };
 
-    // Calculate visible content height (minus borders and title)
+    // Calculate visible content height
     let content_height = window_height.saturating_sub(2) as usize;
 
-    // Clamp scroll offset to valid range
+    // Clamp scroll offset
     let max_scroll = total_lines.saturating_sub(content_height);
     let clamped_scroll = scroll_offset.min(max_scroll);
 
-    // Get visible lines
-    let visible_lines: Vec<String> = all_lines
-        .iter()
-        .skip(clamped_scroll)
-        .take(content_height)
-        .map(|line| format!(" {} ", line)) // Add padding
-        .collect();
-
-    let text = visible_lines.join("\n");
-
-    // Create title with scroll indicator
-    let title = if total_lines > content_height {
-        format!(
-            " Hover Info ({}/{} lines, q to close, j/k to scroll) ",
-            clamped_scroll + 1,
-            total_lines
-        )
+    // Create title
+    let title = if is_preview {
+        " K: navigate ".to_string()
+    } else if total_lines > content_height {
+        format!(" {}/{} j/k:scroll q:close ", clamped_scroll + 1, total_lines)
     } else {
-        " Hover Info (q to close) ".to_string()
+        " q to close ".to_string()
     };
 
-    let paragraph = Paragraph::new(text)
-        .style(
-            Style::default()
-                .bg(Color::Rgb(30, 30, 40))
-                .fg(Color::Rgb(230, 230, 230)),
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(255, 200, 100)))
-                .title(title)
-                .title_style(
-                    Style::default()
-                        .fg(Color::Rgb(255, 200, 100))
-                        .add_modifier(Modifier::BOLD),
-                ),
-        )
-        .wrap(ratatui::widgets::Wrap { trim: false });
+    // Render content based on mode
+    if is_preview {
+        // Render styled markdown
+        let visible_lines: Vec<ratatui::text::Line> = rendered_lines
+            .into_iter()
+            .skip(clamped_scroll)
+            .take(content_height)
+            .collect();
 
-    // Clear background and render window
-    frame.render_widget(ratatui::widgets::Clear, window_area);
-    frame.render_widget(paragraph, window_area);
+        let paragraph = Paragraph::new(visible_lines)
+            .style(Style::default().bg(colors::BG))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(colors::BORDER))
+                    .title(title)
+                    .title_style(
+                        Style::default()
+                            .fg(colors::BORDER)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+            );
+
+        frame.render_widget(ratatui::widgets::Clear, window_area);
+        frame.render_widget(paragraph, window_area);
+    } else {
+        // Render raw text (navigate mode)
+        let all_lines: Vec<&str> = hover_text.lines().collect();
+        let visible_lines: Vec<String> = all_lines
+            .iter()
+            .skip(clamped_scroll)
+            .take(content_height)
+            .map(|line| format!(" {} ", line))
+            .collect();
+
+        let text = visible_lines.join("\n");
+
+        let paragraph = Paragraph::new(text)
+            .style(
+                Style::default()
+                    .bg(Color::Rgb(30, 30, 40))
+                    .fg(Color::Rgb(230, 230, 230)),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(137, 180, 250)))
+                    .title(title)
+                    .title_style(
+                        Style::default()
+                            .fg(Color::Rgb(137, 180, 250))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+            )
+            .wrap(ratatui::widgets::Wrap { trim: false });
+
+        frame.render_widget(ratatui::widgets::Clear, window_area);
+        frame.render_widget(paragraph, window_area);
+    }
 }
 
 /// Renders the completion menu popup
