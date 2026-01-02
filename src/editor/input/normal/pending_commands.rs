@@ -1,0 +1,473 @@
+//! Pending command handlers in normal mode.
+//!
+//! Multi-key sequences that start with a single character:
+//! g*, z*, Z*, "*, m*, '*, `*, q*, @*, f/F/t/T, [*, ]*, W* (Ctrl-W), r*
+
+use crate::editor::input::helpers;
+use crate::editor::{Editor, FindDirection, FindType, Motions, Operator};
+use crate::mode::Mode;
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent};
+
+/// Try to handle a pending command.
+///
+/// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
+pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
+    let pending = match editor.pending_command() {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+
+    editor.clear_pending_command();
+
+    match (pending, key_event.code) {
+        // =====================================================================
+        // 'r' - Replace character
+        // =====================================================================
+        ('r', KeyCode::Char(ch)) => {
+            handle_replace_char(editor, ch)?;
+        }
+
+        // =====================================================================
+        // 'g' - Go commands
+        // =====================================================================
+        ('g', KeyCode::Char('g')) => {
+            editor.add_jump();
+            let target_line = editor.count().unwrap_or(1).saturating_sub(1);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(target_line, 0);
+            editor.add_jump();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('d')) => {
+            editor.request_goto_definition();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('D')) => {
+            editor.request_goto_implementation();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('y')) => {
+            editor.request_goto_type();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('R')) => {
+            editor.request_find_references();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('c')) => {
+            editor.request_code_actions();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('q')) => {
+            editor.request_format_document();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('J')) => {
+            let count = editor.effective_count();
+            helpers::join_lines_no_space(editor, count)?;
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('e')) => {
+            let count = editor.effective_count();
+            Motions::word_end_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('E')) => {
+            let count = editor.effective_count();
+            Motions::word_end_backward_big(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('_')) => {
+            Motions::last_non_blank(editor.buffer_mut());
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('u')) => {
+            editor.set_pending_operator(Operator::Lowercase);
+        }
+        ('g', KeyCode::Char('U')) => {
+            editor.set_pending_operator(Operator::Uppercase);
+        }
+        ('g', KeyCode::Char('~')) => {
+            editor.set_pending_operator(Operator::ToggleCase);
+        }
+        ('g', KeyCode::Char('r')) => {
+            // gr prefix for LSP commands
+            editor.set_pending_command('R');
+        }
+        ('g', KeyCode::Char('i')) => {
+            // gi - go to last insert position and enter insert mode
+            if let Some((line, col)) = editor.last_insert_position {
+                editor.buffer_mut().cursor_mut().set_position(line, col);
+            }
+            let cursor_before = (
+                editor.buffer().cursor().line(),
+                editor.buffer().cursor().col(),
+            );
+            editor.start_change_building(cursor_before);
+            editor.set_mode(Mode::Insert);
+        }
+        ('g', KeyCode::Char('v')) => {
+            // gv - reselect last visual selection
+            editor.restore_last_visual_selection();
+        }
+        ('g', KeyCode::Char('I')) => {
+            // gI - insert at column 0
+            editor.buffer_mut().cursor_mut().set_col(0);
+            let cursor_before = (
+                editor.buffer().cursor().line(),
+                editor.buffer().cursor().col(),
+            );
+            editor.start_change_building(cursor_before);
+            editor.set_mode(Mode::Insert);
+        }
+        ('g', KeyCode::Char(';')) => {
+            // g; - jump to last change position
+            if let Some(change) = editor.last_change() {
+                let pos = change.cursor_before();
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(pos.0, pos.1);
+            }
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('t')) => {
+            // gt - go to next tab
+            if let Some(count) = editor.count() {
+                editor.goto_tab(count.saturating_sub(1));
+            } else {
+                editor.next_tab();
+            }
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('T')) => {
+            // gT - go to previous tab
+            editor.previous_tab();
+            editor.clear_count();
+        }
+
+        // =====================================================================
+        // 'R' - LSP gr commands (pending after 'gr')
+        // =====================================================================
+        ('R', KeyCode::Char('r')) => {
+            editor.request_find_references();
+            editor.clear_count();
+        }
+        ('R', KeyCode::Char('n')) => {
+            // grn - LSP rename
+            editor.clear_command_line();
+            editor.set_mode(Mode::Command);
+            for ch in "LspRename ".chars() {
+                editor.append_to_command_line(ch);
+            }
+        }
+        ('R', KeyCode::Char('a')) => {
+            editor.request_code_actions();
+            editor.clear_count();
+        }
+        ('R', KeyCode::Char('i')) => {
+            editor.request_goto_implementation();
+            editor.clear_count();
+        }
+        ('R', KeyCode::Char('t')) => {
+            editor.request_goto_type();
+            editor.clear_count();
+        }
+
+        // =====================================================================
+        // 'z' - Fold/scroll commands
+        // =====================================================================
+        ('z', KeyCode::Char('o')) => {
+            let line = editor.buffer().cursor().line();
+            editor.buffer_mut().open_fold(line);
+        }
+        ('z', KeyCode::Char('c')) => {
+            let line = editor.buffer().cursor().line();
+            editor.buffer_mut().close_fold(line);
+        }
+        ('z', KeyCode::Char('a')) => {
+            let line = editor.buffer().cursor().line();
+            editor.buffer_mut().toggle_fold(line);
+        }
+        ('z', KeyCode::Char('R')) => {
+            editor.buffer_mut().fold_manager_mut().open_all();
+        }
+        ('z', KeyCode::Char('M')) => {
+            editor.buffer_mut().fold_manager_mut().close_all();
+        }
+        ('z', KeyCode::Char('d')) => {
+            let line = editor.buffer().cursor().line();
+            editor.buffer_mut().fold_manager_mut().delete_fold_at(line);
+        }
+        ('z', KeyCode::Char('E')) => {
+            editor.buffer_mut().clear_folds();
+        }
+        ('z', KeyCode::Char('f')) => {
+            editor.set_pending_operator(Operator::Fold);
+        }
+        ('z', KeyCode::Char('z')) => {
+            editor.center_cursor_in_viewport();
+            editor.clear_count();
+        }
+        ('z', KeyCode::Char('t')) => {
+            editor.move_cursor_line_to_top();
+            editor.clear_count();
+        }
+        ('z', KeyCode::Char('b')) => {
+            editor.move_cursor_line_to_bottom();
+            editor.clear_count();
+        }
+
+        // =====================================================================
+        // 'Z' - Save/quit commands
+        // =====================================================================
+        ('Z', KeyCode::Char('Z')) => {
+            if editor.buffer().file_path().is_some() {
+                if tokio::runtime::Handle::try_current().is_ok() {
+                    let _ = editor.buffer_mut().save();
+                }
+            }
+            editor.quit();
+        }
+        ('Z', KeyCode::Char('Q')) => {
+            editor.quit();
+        }
+
+        // =====================================================================
+        // '"' - Register selection
+        // =====================================================================
+        ('"', KeyCode::Char(ch)) if ch.is_ascii_alphanumeric() || ch == '"' => {
+            editor.set_pending_register(ch);
+        }
+
+        // =====================================================================
+        // 'm' - Set mark
+        // =====================================================================
+        ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
+            editor.set_mark(ch);
+        }
+
+        // =====================================================================
+        // '\'' - Jump to mark line
+        // =====================================================================
+        ('\'', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
+            editor.add_jump();
+            editor.jump_to_mark_line(ch);
+        }
+        ('\'', KeyCode::Char('\'')) => {
+            editor.jump_back();
+        }
+
+        // =====================================================================
+        // '`' - Jump to mark exact position
+        // =====================================================================
+        ('`', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
+            editor.add_jump();
+            editor.jump_to_mark(ch);
+        }
+        ('`', KeyCode::Char('`')) => {
+            editor.jump_back();
+        }
+
+        // =====================================================================
+        // 'q' - Start macro recording
+        // =====================================================================
+        ('q', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+            editor.start_macro_recording(ch);
+        }
+
+        // =====================================================================
+        // '@' - Play macro
+        // =====================================================================
+        ('@', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+            if let Some(events) = editor.get_macro(ch) {
+                let events = events.clone();
+                for event in events {
+                    crate::editor::input::InputHandler::handle_key_event(editor, event)?;
+                }
+            }
+        }
+
+        // =====================================================================
+        // 'f', 'F', 't', 'T' - Find character (legacy handlers for pending_command)
+        // =====================================================================
+        ('f', KeyCode::Char(ch)) => {
+            let count = editor.effective_count();
+            if Motions::find_char_forward(editor.buffer_mut(), ch, count) {
+                editor.set_last_find(ch, FindType::Find, FindDirection::Forward);
+            }
+            editor.clear_count();
+        }
+        ('F', KeyCode::Char(ch)) => {
+            let count = editor.effective_count();
+            if Motions::find_char_backward(editor.buffer_mut(), ch, count) {
+                editor.set_last_find(ch, FindType::Find, FindDirection::Backward);
+            }
+            editor.clear_count();
+        }
+        ('t', KeyCode::Char(ch)) => {
+            let count = editor.effective_count();
+            if Motions::till_char_forward(editor.buffer_mut(), ch, count) {
+                editor.set_last_find(ch, FindType::Till, FindDirection::Forward);
+            }
+            editor.clear_count();
+        }
+        ('T', KeyCode::Char(ch)) => {
+            let count = editor.effective_count();
+            if Motions::till_char_backward(editor.buffer_mut(), ch, count) {
+                editor.set_last_find(ch, FindType::Till, FindDirection::Backward);
+            }
+            editor.clear_count();
+        }
+
+        // =====================================================================
+        // '[' - Section/bracket backward navigation
+        // =====================================================================
+        ('[', KeyCode::Char('[')) => {
+            let count = editor.effective_count();
+            Motions::section_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char(']')) => {
+            let count = editor.effective_count();
+            Motions::section_end_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('{')) => {
+            let count = editor.effective_count();
+            Motions::unmatched_brace_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('(')) => {
+            let count = editor.effective_count();
+            Motions::unmatched_paren_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('m')) => {
+            let count = editor.effective_count();
+            Motions::method_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('M')) => {
+            let count = editor.effective_count();
+            Motions::method_end_backward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        ('[', KeyCode::Char('d')) => {
+            editor.goto_prev_diagnostic();
+            editor.clear_count();
+        }
+
+        // =====================================================================
+        // ']' - Section/bracket forward navigation
+        // =====================================================================
+        (']', KeyCode::Char(']')) => {
+            let count = editor.effective_count();
+            Motions::section_forward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('[')) => {
+            let count = editor.effective_count();
+            Motions::section_end_forward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('}')) => {
+            let count = editor.effective_count();
+            Motions::unmatched_brace_forward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char(')')) => {
+            let count = editor.effective_count();
+            Motions::unmatched_paren_forward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('m')) => {
+            let count = editor.effective_count();
+            Motions::method_forward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('M')) => {
+            let count = editor.effective_count();
+            Motions::method_end_forward(editor.buffer_mut(), count);
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('d')) => {
+            editor.goto_next_diagnostic();
+            editor.clear_count();
+        }
+
+        // =====================================================================
+        // 'W' - Window commands (Ctrl-W prefix)
+        // =====================================================================
+        ('W', KeyCode::Char('w')) => {
+            editor.focus_next_window();
+        }
+        ('W', KeyCode::Char('p')) => {
+            editor.focus_prev_window();
+        }
+        ('W', KeyCode::Char('s')) => {
+            editor.split_window_horizontal();
+        }
+        ('W', KeyCode::Char('v')) => {
+            editor.split_window_vertical();
+        }
+        ('W', KeyCode::Char('o')) => {
+            // TODO: Implement close_other_windows()
+        }
+
+        _ => {
+            // Unknown command sequence
+            editor.clear_count();
+        }
+    }
+
+    Ok(true)
+}
+
+/// Handle r{char} - replace character under cursor
+fn handle_replace_char(editor: &mut Editor, ch: char) -> Result<()> {
+    use crate::editor::{Change, Range};
+
+    let count = editor.effective_count();
+    let cursor = editor.buffer().cursor();
+    let cursor_before = (cursor.line(), cursor.col());
+    let line_idx = cursor.line();
+    let col = cursor.col();
+
+    if let Some(line) = editor.buffer().line(line_idx) {
+        let line_text = line.trim_end_matches('\n');
+        let chars_count = line_text.chars().count();
+
+        if col < chars_count {
+            let replace_count = count.min(chars_count - col);
+            let end_col = col + replace_count;
+
+            // Delete the characters
+            let deleted = editor
+                .buffer_mut()
+                .delete_range(line_idx, col, line_idx, end_col);
+
+            // Insert the replacement character(s)
+            let replacement = ch.to_string().repeat(replace_count);
+            editor
+                .buffer_mut()
+                .insert_text_at(line_idx, col, &replacement);
+
+            // Create composite change for undo/redo
+            let start_pos = (line_idx, col);
+            let end_pos = (line_idx, end_col);
+            let range = Range::new(start_pos, end_pos);
+
+            let delete_change = Change::delete(range, deleted, cursor_before);
+            let insert_change = Change::insert((line_idx, col), replacement, cursor_before);
+            let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+
+            editor.add_change(change);
+        }
+    }
+    editor.clear_count();
+    Ok(())
+}
