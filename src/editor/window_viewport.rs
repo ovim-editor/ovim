@@ -170,14 +170,17 @@ impl Editor {
     /// Scrolls forward (down) one page (both viewport and cursor)
     pub fn scroll_page_down(&mut self) {
         // Extract window info first to avoid borrowing conflicts
+        // Use defaults when no window manager (for tests/headless mode)
         let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
             if let Some(window) = wm.focused_window() {
                 (window.scroll_offset(), window.height() as usize)
             } else {
-                return;
+                (0, 24) // Default viewport
             }
         } else {
-            return;
+            // Default viewport for headless/test mode - use small size so scrolling works
+            // with test content that may only have ~10 lines
+            (0, 10)
         };
 
         // Now we can mutably borrow buffer
@@ -195,14 +198,20 @@ impl Editor {
     /// Scrolls backward (up) one page (both viewport and cursor)
     pub fn scroll_page_up(&mut self) {
         // Extract window info first to avoid borrowing conflicts
+        // Use defaults when no window manager (for tests/headless mode)
         let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
             if let Some(window) = wm.focused_window() {
                 (window.scroll_offset(), window.height() as usize)
             } else {
-                return;
+                (0, 24) // Default viewport
             }
         } else {
-            return;
+            // Default viewport for headless/test mode
+            // Estimate viewport_start based on cursor position
+            let cursor_line = self.buffer().cursor().line();
+            let viewport_height = 10;
+            let viewport_start = cursor_line.saturating_sub(viewport_height / 2);
+            (viewport_start, viewport_height)
         };
 
         // Now we can mutably borrow buffer

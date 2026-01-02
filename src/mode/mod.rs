@@ -20,12 +20,16 @@ pub enum Mode {
     Replace,
     /// Picker mode - for fuzzy finding files/grep
     Picker,
-    /// HoverWindow mode - for displaying and scrolling hover information
-    HoverWindow,
+    /// HoverPreview mode - quick peek at hover info, any key dismisses
+    HoverPreview,
+    /// HoverNavigate mode - scrollable hover window (entered via KK)
+    HoverNavigate,
     /// FileTree mode - for navigating the file tree explorer
     FileTree,
     /// SubstituteConfirm mode - for confirming individual substitutions (:s///c)
     SubstituteConfirm,
+    /// Dashboard mode - startup screen with menu
+    Dashboard,
 }
 
 impl Mode {
@@ -41,10 +45,17 @@ impl Mode {
             Mode::Search => "SEARCH",
             Mode::Replace => "REPLACE",
             Mode::Picker => "PICKER",
-            Mode::HoverWindow => "HOVER",
+            Mode::HoverPreview => "HOVER",
+            Mode::HoverNavigate => "HOVER",
             Mode::FileTree => "FILETREE",
             Mode::SubstituteConfirm => "SUBSTITUTE",
+            Mode::Dashboard => "DASHBOARD",
         }
+    }
+
+    /// Returns whether this mode is a hover mode
+    pub fn is_hover(&self) -> bool {
+        matches!(self, Mode::HoverPreview | Mode::HoverNavigate)
     }
 
     /// Returns whether this mode is a visual mode

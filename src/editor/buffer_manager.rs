@@ -188,6 +188,20 @@ impl Editor {
         self.lsp_state.needs_lsp_init = true;
     }
 
+    /// Opens a scratch buffer with the given content and title
+    /// The buffer is read-only and has no file path
+    pub fn open_scratch_buffer(&mut self, title: &str, content: &str) {
+        let mut buffer = Buffer::from_str(content);
+        buffer.set_read_only(true);
+        // Use a special naming convention for scratch buffers
+        // This won't be saved to disk since there's no actual file path
+        buffer.set_file_path(format!("[{}]", title));
+        self.add_buffer(buffer);
+        // Don't need LSP for scratch buffers
+        self.lsp_state.needs_lsp_init = false;
+        self.mark_dirty();
+    }
+
     /// Finds the index of a buffer with the given file path
     /// Returns None if no buffer has that file path
     pub(crate) fn find_buffer_by_path(&self, file_path: &str) -> Option<usize> {

@@ -13,6 +13,7 @@ use ratatui::{
 use std::io;
 
 use super::buffer::render_buffer;
+use super::dashboard::render_dashboard;
 use super::helpers::char_col_to_display_col;
 use super::widgets::{
     render_command_line, render_completion_menu, render_file_tree, render_hover_window,
@@ -186,6 +187,12 @@ impl Renderer {
         let bg_paragraph = Paragraph::new(blank_lines).style(Style::default().bg(Color::Reset));
         frame.render_widget(bg_paragraph, area);
 
+        // Render dashboard if in Dashboard mode
+        if editor.should_show_dashboard() {
+            render_dashboard(frame, editor, area);
+            return;
+        }
+
         // Get color scheme from editor, fall back to Tokyonight if not found
         let scheme = editor
             .get_color_scheme()
@@ -305,6 +312,9 @@ impl Renderer {
             (viewport_start, buffer_area)
         };
 
+        // Update editor's viewport height for accurate scroll calculations
+        editor.set_viewport_height(buffer_area.height as usize);
+
         // Render progress line if present
         if has_progress {
             if let Some(progress_msg) = editor.lsp_progress_message() {
@@ -327,10 +337,21 @@ impl Renderer {
             render_picker(frame, editor, frame.area());
         }
 
-        // Render hover window if in HoverWindow mode
-        if editor.mode() == crate::mode::Mode::HoverWindow {
+        // Render hover window if in a hover mode
+        if editor.mode().is_hover() {
             if let Some(hover_text) = editor.hover_info() {
-                render_hover_window(frame, hover_text, editor.hover_scroll(), buffer_area);
+                let is_preview = editor.mode() == crate::mode::Mode::HoverPreview;
+                let hover_pos = editor.hover_position();
+                render_hover_window(
+                    frame,
+                    editor,
+                    hover_text,
+                    editor.hover_scroll(),
+                    buffer_area,
+                    viewport_start,
+                    hover_pos,
+                    is_preview,
+                );
             }
         }
 
@@ -425,7 +446,9 @@ impl Renderer {
             crate::mode::Mode::Picker => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Command => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::HoverWindow => SetCursorStyle::SteadyBlock,
+            crate::mode::Mode::HoverPreview | crate::mode::Mode::HoverNavigate => {
+                SetCursorStyle::SteadyBlock
+            }
             _ => SetCursorStyle::SteadyBlock,
         };
         crossterm::execute!(io::stdout(), cursor_style)?;

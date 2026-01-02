@@ -368,39 +368,31 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
 }
 
 pub fn insert_line_below(editor: &mut Editor) -> Result<()> {
-    let line_idx = editor.buffer().cursor().line();
-    let line_start = editor.buffer().rope().line_to_char(line_idx);
-    let line_len = editor.buffer().rope().line(line_idx).len_chars();
-    let insert_pos = line_start + line_len;
+    let cursor = editor.buffer().cursor();
+    let cursor_before = (cursor.line(), cursor.col());
+    let line_idx = cursor.line();
 
     // Get indentation from current line
     let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-    let indent = line_text
+    let indent: String = line_text
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
-        .collect::<String>();
+        .collect();
 
-    // Check if line already ends with newline
-    let added_newline = if !line_text.ends_with('\n') {
-        editor.buffer_mut().rope_mut().insert_char(insert_pos, '\n');
-        true
+    // Determine insert position and text
+    let (insert_position, text_to_insert) = if line_text.ends_with('\n') {
+        // Line ends with newline, insert at start of next line
+        ((line_idx + 1, 0), format!("{}\n", indent))
     } else {
-        false
+        // Last line without newline, insert at end of current line
+        let line_len = line_text.chars().count();
+        ((line_idx, line_len), format!("\n{}\n", indent))
     };
 
-    // Insert newline with indentation
-    // If we added a newline, insert_pos moved by 1, so insert at insert_pos + 1
-    // If line already had newline, insert_pos is at start of next line, so insert there
-    let text_to_insert = format!("{}\n", indent);
-    let final_insert_pos = if added_newline {
-        insert_pos + 1
-    } else {
-        insert_pos
-    };
-    editor
-        .buffer_mut()
-        .rope_mut()
-        .insert(final_insert_pos, &text_to_insert);
+    // Create and apply the change (this records it for undo)
+    let change = Change::insert(insert_position, text_to_insert, cursor_before);
+    change.apply(editor.buffer_mut());
+    editor.add_change(change);
 
     // Position cursor at end of indentation on new line
     editor
@@ -411,25 +403,32 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<()> {
 }
 
 pub fn insert_line_above(editor: &mut Editor) -> Result<()> {
-    let line_idx = editor.buffer().cursor().line();
-    let line_start = editor.buffer().rope().line_to_char(line_idx);
+    let cursor = editor.buffer().cursor();
+    let cursor_before = (cursor.line(), cursor.col());
+    let line_idx = cursor.line();
 
     // Get indentation from current line
     let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-    let indent = line_text
+    let indent: String = line_text
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
-        .collect::<String>();
+        .collect();
 
-    // Insert indented line above
+    // Insert indented line above current line
     let text_to_insert = format!("{}\n", indent);
+    let insert_position = (line_idx, 0);
+
+    // Create and apply the change (this records it for undo)
+    let change = Change::insert(insert_position, text_to_insert, cursor_before);
+    change.apply(editor.buffer_mut());
+    editor.add_change(change);
+
+    // Position cursor at end of indentation on the new line (which is still at line_idx
+    // because we inserted above, pushing everything down)
     editor
         .buffer_mut()
-        .rope_mut()
-        .insert(line_start, &text_to_insert);
-
-    // Cursor stays at same line index, positioned at end of indentation
-    editor.buffer_mut().cursor_mut().set_col(indent.len());
+        .cursor_mut()
+        .set_position(line_idx, indent.len());
     Ok(())
 }
 
@@ -741,11 +740,57 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
 }
 
 pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
-    Operators::join_lines(editor.buffer_mut(), count)
+    let cursor = editor.buffer().cursor();
+    let cursor_before = (cursor.line(), cursor.col());
+    let start_line = cursor.line();
+
+    // Capture the old text for undo (lines that will be affected)
+    let lines_to_join = count.max(1);
+    let end_line = (start_line + lines_to_join).min(editor.buffer().line_count());
+    let mut old_text = String::new();
+    for line_idx in start_line..end_line {
+        if let Some(line) = editor.buffer().line(line_idx) {
+            old_text.push_str(&line);
+        }
+    }
+    let old_range = Range::new(cursor_before, (end_line.saturating_sub(1), 0));
+
+    // Perform the join operation
+    Operators::join_lines(editor.buffer_mut(), count)?;
+
+    // Track the change for dot-repeat and undo
+    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+    let change = Change::join_lines(count, true, cursor_before, cursor_after, old_text, old_range);
+    editor.add_change(change);
+
+    Ok(())
 }
 
 pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
-    Operators::join_lines_no_space(editor.buffer_mut(), count)
+    let cursor = editor.buffer().cursor();
+    let cursor_before = (cursor.line(), cursor.col());
+    let start_line = cursor.line();
+
+    // Capture the old text for undo (lines that will be affected)
+    let lines_to_join = count.max(1);
+    let end_line = (start_line + lines_to_join).min(editor.buffer().line_count());
+    let mut old_text = String::new();
+    for line_idx in start_line..end_line {
+        if let Some(line) = editor.buffer().line(line_idx) {
+            old_text.push_str(&line);
+        }
+    }
+    let old_range = Range::new(cursor_before, (end_line.saturating_sub(1), 0));
+
+    // Perform the join operation
+    Operators::join_lines_no_space(editor.buffer_mut(), count)?;
+
+    // Track the change for dot-repeat and undo
+    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+    let change = Change::join_lines(count, false, cursor_before, cursor_after, old_text, old_range);
+    editor.add_change(change);
+
+    Ok(())
 }
 
 pub fn indent_lines_with_tracking(

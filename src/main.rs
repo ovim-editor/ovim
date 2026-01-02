@@ -52,10 +52,8 @@ async fn main() -> Result<()> {
         }
         ed
     } else {
-        // No file specified, show welcome message
-        Editor::with_content(
-            "Welcome to ovim!\n\nA Neovim clone written in Rust.\n\nPress 'i' to enter Insert mode.\nPress Ctrl+Q to quit.\n",
-        )
+        // No file specified, start with empty buffer (dashboard will show)
+        Editor::new()
     };
 
     // Handle --render flag (render to ANSI and exit)
@@ -103,7 +101,7 @@ async fn main() -> Result<()> {
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
-            eprintln!("API server error: {}", e);
+            ovim::lsp_error!("API", "API server error: {}", e);
         }
     });
 
@@ -111,7 +109,7 @@ async fn main() -> Result<()> {
     let port = match port_rx.await {
         Ok(port) => port,
         Err(_) => {
-            eprintln!("Failed to receive port from API server");
+            ovim::lsp_error!("API", "Failed to receive port from API server");
             return Err(anyhow::anyhow!("API server port channel closed"));
         }
     };
@@ -227,9 +225,6 @@ async fn main() -> Result<()> {
     } else {
         UI::new()?
     };
-
-    // Print API server info for TUI mode
-    eprintln!("REST API server listening on http://127.0.0.1:{}", port);
 
     // Main event loop with TUI (now with API support)
     event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx).await?;

@@ -40,7 +40,7 @@ pub use input::InputHandler;
 pub use lsp_state::{LspAction, LspResultType, LspState};
 pub use macros::MacroManager;
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
-pub use marks::{GlobalMark, JumpList, Mark, MarkManager};
+pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
 pub use performance::MAX_LATENCY_SAMPLES;
@@ -190,6 +190,8 @@ pub struct Editor {
     keymaps: KeyMapManager,
     /// Jump list for Ctrl-O and Ctrl-I
     jump_list: JumpList,
+    /// Tag stack for Ctrl-T (LSP goto definition/implementation/type navigation)
+    tag_stack: TagStack,
     /// Macro manager for recording and playback
     macro_manager: MacroManager,
     /// Last find motion (for ; and , repeat)
@@ -273,6 +275,8 @@ pub struct Editor {
     last_fold_calc_micros: Option<u64>,
     /// Last diagnostic query duration in microseconds
     last_diagnostic_query_micros: Option<u64>,
+    /// Dashboard menu selected index (0-5)
+    dashboard_selected: usize,
 }
 
 /// Cached preview data for the picker
@@ -303,6 +307,7 @@ pub enum FindDirection {
 
 impl Editor {
     /// Creates a new editor with an empty buffer
+    /// Starts in Dashboard mode when no file is opened
     pub fn new() -> Self {
         let buffer = Buffer::new();
 
@@ -310,7 +315,7 @@ impl Editor {
             buffers: vec![buffer],
             current_buffer_index: 0,
             window_manager: None, // Will be initialized when viewport size is known
-            mode: Mode::default(),
+            mode: Mode::Dashboard,
             should_quit: false,
             count: None,
             pending_operator: None,
@@ -330,6 +335,7 @@ impl Editor {
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
+            tag_stack: TagStack::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
             picker: None,
@@ -372,6 +378,7 @@ impl Editor {
             last_git_status_micros: None,
             last_fold_calc_micros: None,
             last_diagnostic_query_micros: None,
+            dashboard_selected: 0,
         }
     }
 
@@ -403,6 +410,7 @@ impl Editor {
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
+            tag_stack: TagStack::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
             picker: None,
@@ -445,6 +453,7 @@ impl Editor {
             last_git_status_micros: None,
             last_fold_calc_micros: None,
             last_diagnostic_query_micros: None,
+            dashboard_selected: 0,
         }
     }
 
@@ -518,6 +527,22 @@ impl Editor {
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
             self.visual_start = None;
         }
+    }
+
+    /// Gets the dashboard selected menu index
+    pub fn dashboard_selected(&self) -> usize {
+        self.dashboard_selected
+    }
+
+    /// Sets the dashboard selected menu index
+    pub fn set_dashboard_selected(&mut self, index: usize) {
+        self.dashboard_selected = index;
+    }
+
+    /// Returns true if the dashboard should be shown
+    /// Dashboard is shown when: no file loaded AND buffer is empty/default
+    pub fn should_show_dashboard(&self) -> bool {
+        self.mode == Mode::Dashboard
     }
 
     /// Gets the pending command

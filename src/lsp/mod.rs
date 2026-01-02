@@ -22,7 +22,7 @@ mod server;
 mod supervisor;
 mod types;
 
-pub use logger::init_lsp_logging;
+pub use logger::{get_log_path, init_lsp_logging};
 
 pub use protocol::{JsonRpcMessage, RequestId};
 pub use server::{LanguageServer, LanguageServerHealth};
@@ -334,6 +334,16 @@ impl LspManager {
         }
 
         health_infos
+    }
+
+    /// Get list of active server language IDs (sync, for command execution)
+    pub fn active_server_languages(&self) -> Vec<String> {
+        self.servers.iter().map(|r| r.key().clone()).collect()
+    }
+
+    /// Get command for a language server (sync)
+    pub fn server_command(&self, language: &str) -> Option<String> {
+        self.servers.get(language).map(|s| s.command().to_string())
     }
 
     /// Gets the current version of a document

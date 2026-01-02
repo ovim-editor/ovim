@@ -473,6 +473,8 @@ ropey, ratatui, crossterm, axum, tokio, lsp-types, mlua (optional)
 
 Files should be no longer than 3k lines of code. When it starts creeping up towards 2k lines, refactor.
 If a file is too large to read, immediately start refactoring it by splitting it up into chunks that are readable and making fields public to just *get smaller files*. First dirty refactor, then clean it up, then proceed with what you were working on before.
+Remember to remove debug logging after debugging sessions, as one stray eprintln!() may break the user facing TUI.
+Commit as you go.
 
 ## Note taking
 

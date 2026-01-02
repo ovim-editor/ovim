@@ -36,7 +36,7 @@ pub fn init_lsp_logging() -> std::io::Result<()> {
 }
 
 /// Get the path to the LSP log file
-fn get_log_path() -> PathBuf {
+pub fn get_log_path() -> PathBuf {
     if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
         PathBuf::from(cache_dir).join("ovim").join("lsp.log")
     } else if let Ok(home) = std::env::var("HOME") {

@@ -87,10 +87,14 @@ pub struct LspState {
     pub diagnostic_count: (usize, usize, usize, usize),
     /// Pending LSP action to execute in async context
     pub pending_lsp_action: Option<LspAction>,
+    /// Retry count for pending LSP action (max 1 retry, then give up)
+    pub lsp_action_retry_count: u8,
     /// Hover information to display (from LSP)
     pub hover_info: Option<String>,
     /// Scroll offset for hover window (line number)
     pub hover_scroll: usize,
+    /// Cursor position when hover was triggered (line, col) - for positioning popup
+    pub hover_position: Option<(usize, usize)>,
     /// Per-document sync state (tracked by canonical file path)
     pub document_sync: HashMap<String, DocumentSyncState>,
     /// LSP status message (errors, warnings, or info)
@@ -130,8 +134,10 @@ impl LspState {
             lsp_manager: None,
             diagnostic_count: (0, 0, 0, 0),
             pending_lsp_action: None,
+            lsp_action_retry_count: 0,
             hover_info: None,
             hover_scroll: 0,
+            hover_position: None,
             document_sync: HashMap::new(),
             lsp_status: String::new(),
             active_lsp_servers: HashMap::new(),

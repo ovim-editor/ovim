@@ -28,7 +28,10 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             // Execute the command
             execute_command(editor)?;
             editor.clear_command_line();
-            editor.set_mode(Mode::Normal);
+            // Only set mode to Normal if not already in a hover mode (command may have opened a popup)
+            if !editor.mode().is_hover() {
+                editor.set_mode(Mode::Normal);
+            }
         }
         KeyCode::Esc => {
             // Cancel command mode
@@ -761,7 +764,12 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         ApiResponse::Success(success_resp) => {
             // Command executed successfully
             if let Some(msg) = success_resp.message {
-                editor.set_lsp_status(msg);
+                // Multi-line messages go to hover popup, single-line to status bar
+                if msg.contains('\n') {
+                    editor.set_hover_info(msg);
+                } else {
+                    editor.set_lsp_status(msg);
+                }
             }
             return Ok(());
         }

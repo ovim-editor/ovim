@@ -1,4 +1,4 @@
-use super::{Editor, FindDirection, FindType};
+use super::{Editor, FindDirection, FindType, TagEntry};
 use crate::editor::MarkManager;
 
 impl Editor {
@@ -158,5 +158,78 @@ impl Editor {
     /// Gets the mark manager (for reading marks)
     pub fn marks(&self) -> &MarkManager {
         &self.marks
+    }
+
+    /// Pushes current position to tag stack before LSP navigation (gd/gD/gy)
+    /// Called just before jumping to definition/implementation/type
+    pub fn push_tag(&mut self) {
+        if let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) {
+            let cursor = self.buffer().cursor();
+            let entry = TagEntry::new(file_path, cursor.line(), cursor.col());
+            self.tag_stack.push(entry);
+        }
+    }
+
+    /// Pops from tag stack and navigates to that location (Ctrl-T)
+    /// Returns true if successfully jumped, false if stack was empty or navigation failed
+    pub fn tag_pop(&mut self) -> bool {
+        if let Some(entry) = self.tag_stack.pop() {
+            // Check if we need to switch files
+            let current_file = self.buffer().file_path().map(|s| s.to_string());
+            let needs_file_switch = current_file.as_deref() != Some(&entry.file_path);
+
+            if needs_file_switch {
+                // Load the target file
+                if self.load_file(&entry.file_path).is_err() {
+                    self.set_lsp_status(format!("Tag pop failed: cannot load {}", entry.file_path));
+                    return false;
+                }
+            }
+
+            // Validate and clamp position to buffer bounds
+            let max_line = self.buffer().line_count().saturating_sub(1);
+            let clamped_line = entry.line.min(max_line);
+
+            let line_len = if let Some(line) = self.buffer().line(clamped_line) {
+                line.trim_end_matches('\n').chars().count()
+            } else {
+                0
+            };
+            let clamped_col = entry.col.min(line_len.saturating_sub(1));
+
+            // Jump to the position
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(clamped_line, clamped_col);
+
+            // Show status
+            let remaining = self.tag_stack.len();
+            let file_name = std::path::Path::new(&entry.file_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&entry.file_path);
+            self.set_lsp_status(format!(
+                "Tag: {}:{}:{} ({} remaining)",
+                file_name,
+                clamped_line + 1,
+                clamped_col + 1,
+                remaining
+            ));
+
+            true
+        } else {
+            self.set_lsp_status("Tag stack empty".to_string());
+            false
+        }
+    }
+
+    /// Returns the number of entries in the tag stack
+    pub fn tag_stack_len(&self) -> usize {
+        self.tag_stack.len()
+    }
+
+    /// Returns true if the tag stack is empty
+    pub fn tag_stack_is_empty(&self) -> bool {
+        self.tag_stack.is_empty()
     }
 }

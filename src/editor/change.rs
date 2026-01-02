@@ -56,6 +56,17 @@ pub enum Change {
         old_text: String,
         old_range: Range,
     },
+    /// Join lines operation - stores the count and whether to add space
+    /// This allows dot-repeat to work correctly
+    JoinLines {
+        count: usize,
+        add_space: bool,
+        cursor_before: Position,
+        cursor_after: Position,
+        // Store the original lines for undo
+        old_text: String,
+        old_range: Range,
+    },
 }
 
 impl Change {
@@ -100,6 +111,25 @@ impl Change {
     ) -> Self {
         Self::NumberOperation {
             delta,
+            cursor_before,
+            cursor_after,
+            old_text,
+            old_range,
+        }
+    }
+
+    /// Creates a JoinLines change
+    pub fn join_lines(
+        count: usize,
+        add_space: bool,
+        cursor_before: Position,
+        cursor_after: Position,
+        old_text: String,
+        old_range: Range,
+    ) -> Self {
+        Self::JoinLines {
+            count,
+            add_space,
             cursor_before,
             cursor_after,
             old_text,
@@ -166,6 +196,22 @@ impl Change {
                         }
                     }
                 }
+            }
+            Self::JoinLines {
+                count,
+                add_space,
+                cursor_after,
+                ..
+            } => {
+                // For apply (redo), we need to re-execute the join operation
+                use crate::editor::operators::Operators;
+                let _ = if *add_space {
+                    Operators::join_lines(buffer, *count)
+                } else {
+                    Operators::join_lines_no_space(buffer, *count)
+                };
+                // Position cursor at the final position
+                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
             }
         }
     }
@@ -258,6 +304,25 @@ impl Change {
                     .cursor_mut()
                     .set_position(cursor_before.0, cursor_before.1);
             }
+            Self::JoinLines {
+                cursor_before,
+                old_range,
+                old_text,
+                ..
+            } => {
+                // To undo a join operation, restore the old text
+                let (start_line, start_col) = old_range.start;
+                let (end_line, end_col) = old_range.end;
+
+                // Delete the joined line and insert the old multi-line text
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.insert_text_at(start_line, start_col, old_text);
+
+                // Restore cursor to where it was before
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
+            }
         }
     }
 
@@ -334,6 +399,15 @@ impl Change {
                     }
                 }
             }
+            Self::JoinLines { count, add_space, .. } => {
+                // For dot-repeat, execute the join operation at current cursor
+                use crate::editor::operators::Operators;
+                let _ = if *add_space {
+                    Operators::join_lines(buffer, *count)
+                } else {
+                    Operators::join_lines_no_space(buffer, *count)
+                };
+            }
         }
     }
 
@@ -368,6 +442,7 @@ impl Change {
             }
             Self::DeleteText { .. } => String::new(),
             Self::NumberOperation { .. } => String::new(),
+            Self::JoinLines { .. } => String::new(),
         }
     }
 
@@ -378,6 +453,7 @@ impl Change {
             Self::DeleteText { cursor_before, .. } => *cursor_before,
             Self::Composite { cursor_before, .. } => *cursor_before,
             Self::NumberOperation { cursor_before, .. } => *cursor_before,
+            Self::JoinLines { cursor_before, .. } => *cursor_before,
         }
     }
 }
