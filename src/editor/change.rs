@@ -340,7 +340,7 @@ impl Change {
                 }
                 .apply(buffer);
             }
-            Self::DeleteText { range, .. } => {
+            Self::DeleteText { range, cursor_before, .. } => {
                 // Apply the same deletion pattern from current position
                 let cursor_pos = (buffer.cursor().line(), buffer.cursor().col());
                 let offset_line = range.end.0 - range.start.0;
@@ -350,21 +350,105 @@ impl Change {
                     range.end.1
                 };
 
-                let new_end = if offset_line == 0 {
-                    (cursor_pos.0, cursor_pos.1 + offset_col)
+                // Detect if this was a backwards deletion (like X command)
+                // where cursor_before was at the end of the range
+                let is_backwards = cursor_before == &range.end;
+
+                let (start_line, start_col, end_line, end_col) = if is_backwards {
+                    // For backwards deletion (X), treat current cursor as the END
+                    // and calculate the start by going backwards
+                    let new_start = if offset_line == 0 {
+                        (cursor_pos.0, cursor_pos.1.saturating_sub(offset_col))
+                    } else {
+                        // Multi-line backwards deletion (shouldn't happen for X, but handle it)
+                        ((cursor_pos.0).saturating_sub(offset_line), 0)
+                    };
+                    (new_start.0, new_start.1, cursor_pos.0, cursor_pos.1)
                 } else {
-                    (cursor_pos.0 + offset_line, offset_col)
+                    // For forward deletion (x, d, etc), treat current cursor as the START
+                    let new_end = if offset_line == 0 {
+                        (cursor_pos.0, cursor_pos.1 + offset_col)
+                    } else {
+                        (cursor_pos.0 + offset_line, offset_col)
+                    };
+                    (cursor_pos.0, cursor_pos.1, new_end.0, new_end.1)
                 };
 
-                let (start_line, start_col) = cursor_pos;
-                let (end_line, end_col) = new_end;
                 let _deleted = buffer.delete_range(start_line, start_col, end_line, end_col);
-                // Cursor is already positioned correctly by delete_range
+                // Position cursor at the start of the deletion
+                // For backwards deletion (X), cursor should be one position before the deletion
+                let final_col = if is_backwards && start_col > 0 {
+                    start_col - 1
+                } else {
+                    start_col
+                };
+                buffer.cursor_mut().set_position(start_line, final_col);
             }
             Self::Composite { changes, .. } => {
                 // For composite changes (like insert mode), replay all sub-changes
-                for change in changes {
-                    change.repeat(buffer);
+                // Special handling for o/O commands: detect if first change is newline insertion
+                // Detect o/O commands by checking the first change
+                // o: inserts "\nINDENT\n" (length > 1, starts with '\n') at current line
+                //    OR "INDENT\n" at next line (position.0 > cursor_before.0)
+                // O: inserts "\n" (length == 1) or "INDENT\n" (!starts_with('\n'))
+                //    at current line (position.1 == 0)
+                let (is_insert_line_below, is_insert_line_above) = changes.first().map(|c| {
+                    if let Self::InsertText { text, position, cursor_before, .. } = c {
+                        // Special case: "\n" at column 0 on same line is O, not o
+                        if text == "\n" && position.1 == 0 && position.0 == cursor_before.0 {
+                            (false, true)
+                        } else {
+                            let is_below = text.starts_with('\n') || (position.0 > cursor_before.0);
+                            let is_above = !is_below && text.ends_with('\n') && position.1 == 0;
+                            (is_below, is_above)
+                        }
+                    } else {
+                        (false, false)
+                    }
+                }).unwrap_or((false, false));
+
+                for (i, change) in changes.iter().enumerate() {
+                    if i == 0 && (is_insert_line_below || is_insert_line_above) {
+                        // Special handling for first change in o/O commands
+                        if let Self::InsertText { text, .. } = change {
+                            let cursor = buffer.cursor();
+                            let line_idx = cursor.line();
+
+                            if is_insert_line_below {
+                                // For 'o' command, insert at end of current line
+                                let position = if let Some(line) = buffer.line(line_idx) {
+                                    let line_text = line.trim_end_matches('\n');
+                                    let line_len = line_text.chars().count();
+                                    (line_idx, line_len)
+                                } else {
+                                    (line_idx, 0)
+                                };
+                                buffer.insert_text_at(position.0, position.1, text);
+                                // Cursor should be at start of new line (line_idx + 1, indent_len)
+                                // Extract indent from text (everything before last newline)
+                                let indent_len = if text.starts_with('\n') {
+                                    // Text is "\nINDENT\n" or "\n\n", indent is between the newlines
+                                    if text.len() > 2 {
+                                        text[1..text.len()-1].len()
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    // Text is "INDENT\n", indent is before the newline
+                                    text.len() - 1
+                                };
+                                buffer.cursor_mut().set_position(line_idx + 1, indent_len);
+                            } else {
+                                // For 'O' command, insert at start of current line
+                                buffer.insert_text_at(line_idx, 0, text);
+                                // Cursor should stay on the new blank line (same line_idx, at indent_len)
+                                let indent_len = text.len() - 1; // text is "INDENT\n", so indent_len = len - 1
+                                buffer.cursor_mut().set_position(line_idx, indent_len);
+                            }
+                        }
+                    } else {
+                        change.repeat(buffer);
+                    }
                 }
                 // After repeating composite change, move cursor back by 1
                 // to match the behavior of exiting insert mode with Esc
