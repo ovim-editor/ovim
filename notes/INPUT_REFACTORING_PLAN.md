@@ -2,7 +2,7 @@
 
 ## Current State
 
-`/Users/adrian/Projects/ovim/src/editor/input/mod.rs` is **5,281 lines** - nearly double the project's 3k line guideline.
+`/Users/adrian/Projects/ovim/src/editor/input/mod.rs` is **4,671 lines** after Phase 1.
 
 ### Already Extracted Modules
 
@@ -14,6 +14,13 @@
 | `helpers.rs` | 1,129 | Helper functions for cursor movement and editing |
 | `leader.rs` | 146 | Leader key sequences (`<Space>...`) |
 | `numbers.rs` | 423 | Number increment/decrement (Ctrl-A, Ctrl-X) |
+| `search_mode.rs` | 50 | Search mode handler (/, ?) - **Phase 1** |
+| `replace_mode.rs` | 165 | Replace mode handler (R) - **Phase 1** |
+| `picker_mode.rs` | 186 | Picker mode (file finder, grep, code actions) - **Phase 1** |
+| `hover_mode.rs` | 94 | Hover preview/navigate modes - **Phase 1** |
+| `filetree_mode.rs` | 56 | File tree navigation - **Phase 1** |
+| `substitute_mode.rs` | 40 | Substitute confirm mode (:s/c) - **Phase 1** |
+| `dashboard_mode.rs` | 124 | Dashboard menu navigation - **Phase 1** |
 
 ### mod.rs Structure Analysis
 
@@ -56,44 +63,42 @@ Get `mod.rs` under **2,000 lines** (ideally ~1,500).
 
 ### Priority Order (Low Risk First)
 
-#### Phase 1: Low-Risk Mode Handler Extractions
+#### Phase 1: Low-Risk Mode Handler Extractions [COMPLETED]
 
-**1. Extract `search_mode.rs`** (~50 lines)
+**Status**: All 7 mode handlers extracted successfully.
+**Lines removed from mod.rs**: ~610 lines (5,281 -> 4,671)
+**New modules created**: 7 files totaling ~715 lines
+
+**1. Extract `search_mode.rs`** (~50 lines) [DONE]
 - Move `handle_search_mode()`
 - Simple, self-contained, no dependencies on other handlers
 - **Estimated effort**: 15 minutes
 
-**2. Extract `replace_mode.rs`** (~160 lines)
+**2. Extract `replace_mode.rs`** (~160 lines) [DONE]
 - Move `handle_replace_mode()`
 - Self-contained, uses helpers for movement
-- **Estimated effort**: 20 minutes
 
-**3. Extract `picker_mode.rs`** (~180 lines)
+**3. Extract `picker_mode.rs`** (~180 lines) [DONE]
 - Move `handle_picker_mode()`
 - Self-contained picker interaction
-- **Estimated effort**: 20 minutes
 
-**4. Extract `hover_mode.rs`** (~85 lines)
+**4. Extract `hover_mode.rs`** (~85 lines) [DONE]
 - Move `handle_hover_preview_mode()` and `handle_hover_navigate_mode()`
-- Simple scroll and dismiss logic
-- **Estimated effort**: 15 minutes
+- Note: HoverPreview returns key to forward to normal mode
 
-**5. Extract `filetree_mode.rs`** (~55 lines)
+**5. Extract `filetree_mode.rs`** (~55 lines) [DONE]
 - Move `handle_filetree_mode()`
 - Simple tree navigation
-- **Estimated effort**: 10 minutes
 
-**6. Extract `substitute_mode.rs`** (~35 lines)
+**6. Extract `substitute_mode.rs`** (~35 lines) [DONE]
 - Move `handle_substitute_confirm_mode()`
 - Simple y/n/a/q/l dispatch
-- **Estimated effort**: 10 minutes
 
-**7. Extract `dashboard_mode.rs`** (~125 lines)
+**7. Extract `dashboard_mode.rs`** (~125 lines) [DONE]
 - Move `handle_dashboard_mode()` and `execute_dashboard_action()`
 - Menu navigation and action dispatch
-- **Estimated effort**: 15 minutes
 
-**Phase 1 Total**: ~690 lines extracted, ~1.5 hours
+**Phase 1 Complete**: ~715 lines in new modules, mod.rs reduced by ~610 lines
 
 ---
 
