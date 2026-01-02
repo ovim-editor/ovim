@@ -9,7 +9,7 @@ fn test_ctrl_o_jump_back() {
 
     // Make a jump
     test.keys("G");
-    test.assert_cursor(2, 0); // Last line (accounting for empty final line behavior)
+    test.assert_cursor(3, 0); // Last line (line4 is on line 3, 0-indexed)
 
     // Jump back
     test.keys("<C-o>");

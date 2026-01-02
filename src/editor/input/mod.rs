@@ -1,6 +1,6 @@
 use crate::editor::{
-    Change, Editor, FindDirection, FindType, Motions, Operator, Operators, Range, RegisterType,
-    Search, TextObjects,
+    Change, CharMotion, Editor, FindDirection, FindType, InputState, Motions, Operator, Operators,
+    PendingSemanticChange, Range, RegisterType, Search, TextObjects, TextObjectType,
 };
 use crate::mode::Mode;
 use anyhow::Result;
@@ -17,6 +17,12 @@ mod case;
 
 /// Helper functions for cursor movement and editing
 mod helpers;
+
+/// Character motion handler (f, t, F, T, r, m, ', `) - new state machine
+mod char_motion;
+
+/// Leader sequence handler (<Space>...) - new state machine
+mod leader;
 
 /// Handles input events for the editor
 pub struct InputHandler;
@@ -63,6 +69,35 @@ impl InputHandler {
     /// Handles input in Normal mode
     fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         // Hover is now handled in HoverWindow mode, no need to clear it here
+
+        // =====================================================================
+        // NEW STATE MACHINE DISPATCH
+        // =====================================================================
+        // Check the new InputState first. This handles states that were
+        // previously causing collisions (e.g., <Space>t vs t motion).
+        match editor.input_state().clone() {
+            InputState::AwaitingChar { motion, operator } => {
+                // Handle f/t/F/T/r/m/'/` second character
+                return char_motion::handle_char_motion(editor, key_event, motion, operator);
+            }
+            InputState::Leader { ref keys } => {
+                // Handle leader sequences (<Space>...)
+                let keys_clone = keys.clone();
+                return leader::handle_leader_input(editor, key_event, &keys_clone);
+            }
+            InputState::Normal => {
+                // Fall through to existing handlers below
+            }
+            // TODO: Handle other states as we migrate them
+            _ => {
+                // For unhandled states, reset and fall through
+                editor.reset_input_state();
+            }
+        }
+
+        // =====================================================================
+        // LEGACY HANDLERS (will be migrated to new state machine)
+        // =====================================================================
 
         // Handle pending leader key sequences (e.g., <Space>sf, <Space>sg, <Space>ca)
         if editor.pending_leader() {
@@ -334,6 +369,35 @@ impl InputHandler {
                     editor.start_change_building(insert_cursor);
                     editor.set_mode(Mode::Insert);
                     helpers::insert_line_below(editor)?;
+                    return Ok(());
+                }
+                // Operator + character motion (df, dt, cf, ct, yf, yt, etc.)
+                (op, KeyCode::Char('f')) if matches!(op, Operator::Delete | Operator::Change | Operator::Yank) => {
+                    editor.set_input_state(InputState::AwaitingChar {
+                        motion: CharMotion::Find,
+                        operator: Some(op),
+                    });
+                    return Ok(());
+                }
+                (op, KeyCode::Char('t')) if matches!(op, Operator::Delete | Operator::Change | Operator::Yank) => {
+                    editor.set_input_state(InputState::AwaitingChar {
+                        motion: CharMotion::Till,
+                        operator: Some(op),
+                    });
+                    return Ok(());
+                }
+                (op, KeyCode::Char('F')) if matches!(op, Operator::Delete | Operator::Change | Operator::Yank) => {
+                    editor.set_input_state(InputState::AwaitingChar {
+                        motion: CharMotion::FindBack,
+                        operator: Some(op),
+                    });
+                    return Ok(());
+                }
+                (op, KeyCode::Char('T')) if matches!(op, Operator::Delete | Operator::Change | Operator::Yank) => {
+                    editor.set_input_state(InputState::AwaitingChar {
+                        motion: CharMotion::TillBack,
+                        operator: Some(op),
+                    });
                     return Ok(());
                 }
                 // Only set pending_command for first 'g' press (not second)
@@ -644,7 +708,7 @@ impl InputHandler {
                 (Operator::Yank, KeyCode::Char('y')) => {
                     // yy - yank line
                     let yanked = Operators::yank_line(editor.buffer(), count)?;
-                    editor.yank_to_register(yanked);
+                    editor.yank_to_register_with_type(yanked, RegisterType::Line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -696,9 +760,6 @@ impl InputHandler {
                     let start_line = start_cursor.line();
                     let start_col = start_cursor.col();
 
-                    // Start change building BEFORE deletion so it's part of the composite change
-                    editor.start_change_building(cursor_before);
-
                     // Use end-of-word motion for cw (not word_forward)
                     Motions::word_end_forward(editor.buffer_mut(), count);
 
@@ -719,8 +780,7 @@ impl InputHandler {
                     let deleted = editor
                         .buffer_mut()
                         .delete_range(start_line, start_col, end_line, end_col);
-                    let range = Range::new(start_pos, end_pos);
-                    let change = Change::delete(range, deleted.clone(), cursor_before);
+                    let change_range = Range::new(start_pos, end_pos);
 
                     // Position cursor at deletion start
                     editor
@@ -728,9 +788,19 @@ impl InputHandler {
                         .cursor_mut()
                         .set_position(start_line, start_col);
 
-                    editor.delete_to_register(deleted);
-                    // Add deletion to the change builder (not directly to undo stack)
-                    editor.add_change(change);
+                    editor.delete_to_register(deleted.clone());
+
+                    // Set up pending semantic change for cw repeat
+                    editor.set_pending_semantic_change(PendingSemanticChange {
+                        object_type: None,
+                        is_word_change: true,
+                        old_text: deleted,
+                        old_range: change_range,
+                        cursor_before,
+                    });
+
+                    // Start change building for insert mode
+                    editor.start_change_building((start_line, start_col));
 
                     // Continue in insert mode - insertions will be added to the same builder
                     editor.clear_count();
@@ -951,7 +1021,7 @@ impl InputHandler {
                             yanked.push_str(&line);
                         }
                     }
-                    editor.yank_to_register(yanked);
+                    editor.yank_to_register_with_type(yanked, RegisterType::Line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -966,7 +1036,7 @@ impl InputHandler {
                             yanked.push_str(&line);
                         }
                     }
-                    editor.yank_to_register(yanked);
+                    editor.yank_to_register_with_type(yanked, RegisterType::Line);
                     editor.clear_count();
                     return Ok(());
                 }
@@ -1638,6 +1708,31 @@ impl InputHandler {
                     }
                 };
 
+                // Determine the TextObjectType for semantic repeat
+                let object_type: Option<TextObjectType> = match key_event.code {
+                    KeyCode::Char('w') => Some(TextObjectType::Word { inner: text_obj_type == 'i' }),
+                    KeyCode::Char('"') | KeyCode::Char('\'') | KeyCode::Char('`') => {
+                        let quote = match key_event.code {
+                            KeyCode::Char(c) => c,
+                            _ => unreachable!(),
+                        };
+                        Some(TextObjectType::Quote { char: quote, inner: text_obj_type == 'i' })
+                    }
+                    KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
+                        Some(TextObjectType::Paired { open: '(', close: ')', inner: text_obj_type == 'i' })
+                    }
+                    KeyCode::Char('[') | KeyCode::Char(']') => {
+                        Some(TextObjectType::Paired { open: '[', close: ']', inner: text_obj_type == 'i' })
+                    }
+                    KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
+                        Some(TextObjectType::Paired { open: '{', close: '}', inner: text_obj_type == 'i' })
+                    }
+                    KeyCode::Char('<') | KeyCode::Char('>') => {
+                        Some(TextObjectType::Paired { open: '<', close: '>', inner: text_obj_type == 'i' })
+                    }
+                    _ => None, // Tags, paragraphs, sentences, indents, functions - not yet supported for semantic repeat
+                };
+
                 if let Some(range) = result {
                     match operator {
                         Operator::Delete => {
@@ -1647,13 +1742,26 @@ impl InputHandler {
                             // Get the text to be deleted first
                             let deleted = TextObjects::yank_range(editor.buffer(), range)?;
 
-                            // Create Change (range.end_col is already exclusive)
+                            // Create Change - use semantic change if we have an object type
                             let change_range = Range::new(
                                 (range.start_line, range.start_col),
                                 (range.end_line, range.end_col),
                             );
-                            let change =
-                                Change::delete(change_range, deleted.clone(), cursor_before);
+
+                            let change = if let Some(obj_type) = object_type.clone() {
+                                // Create semantic DeleteTextObject change
+                                let cursor_after = (range.start_line, range.start_col);
+                                Change::delete_text_object(
+                                    obj_type,
+                                    cursor_before,
+                                    cursor_after,
+                                    deleted.clone(),
+                                    change_range,
+                                )
+                            } else {
+                                // Fall back to positional change
+                                Change::delete(change_range, deleted.clone(), cursor_before)
+                            };
 
                             // Apply the change to actually delete the text
                             change.apply(editor.buffer_mut());
@@ -1666,7 +1774,13 @@ impl InputHandler {
                         }
                         Operator::Yank => {
                             let yanked = TextObjects::yank_range(editor.buffer(), range)?;
-                            editor.yank_to_register(yanked);
+                            // Paragraph text objects are linewise
+                            let reg_type = if key_event.code == KeyCode::Char('p') {
+                                RegisterType::Line
+                            } else {
+                                RegisterType::Character
+                            };
+                            editor.yank_to_register_with_type(yanked, reg_type);
                         }
                         Operator::Change => {
                             let cursor = editor.buffer().cursor();
@@ -1680,17 +1794,37 @@ impl InputHandler {
                                 (range.start_line, range.start_col),
                                 (range.end_line, range.end_col),
                             );
-                            let change =
-                                Change::delete(change_range, deleted.clone(), cursor_before);
 
-                            // Apply the change to actually delete the text
-                            change.apply(editor.buffer_mut());
+                            // Apply the deletion
+                            editor.buffer_mut().delete_range(
+                                range.start_line,
+                                range.start_col,
+                                range.end_line,
+                                range.end_col,
+                            );
+                            editor.buffer_mut().cursor_mut().set_position(range.start_line, range.start_col);
 
-                            editor.delete_to_register(deleted);
-                            editor.add_change(change);
+                            editor.delete_to_register(deleted.clone());
+
+                            // If we have a semantic object type, set up pending semantic change
+                            // Otherwise fall back to old behavior
+                            if let Some(obj_type) = object_type.clone() {
+                                // Set pending semantic change - we'll create the full change when insert mode exits
+                                editor.set_pending_semantic_change(PendingSemanticChange {
+                                    object_type: Some(obj_type),
+                                    is_word_change: false,
+                                    old_text: deleted,
+                                    old_range: change_range,
+                                    cursor_before,
+                                });
+                            } else {
+                                // Fall back to old behavior for unsupported text objects
+                                let change = Change::delete(change_range, deleted, cursor_before);
+                                editor.add_change(change);
+                            }
 
                             // Don't clamp cursor - we're entering insert mode where cursor can be past end of line
-                            // The cursor is already correctly positioned by delete_range at the start of deletion
+                            // The cursor is already correctly positioned at the start of deletion
 
                             // Start building composite change for insert mode
                             let new_cursor = editor.buffer().cursor();
@@ -1898,11 +2032,13 @@ impl InputHandler {
                 }
                 ('g', KeyCode::Char('g')) => {
                     // gg - go to first line
+                    editor.add_jump(); // Add current position to jump list before moving
                     let target_line = editor.count().unwrap_or(1).saturating_sub(1);
                     editor
                         .buffer_mut()
                         .cursor_mut()
                         .set_position(target_line, 0);
+                    editor.add_jump(); // Add new position to jump list after moving
                     editor.clear_count();
                     return Ok(());
                 }
@@ -2127,10 +2263,20 @@ impl InputHandler {
                     editor.jump_to_mark_line(ch);
                     return Ok(());
                 }
+                ('\'', KeyCode::Char('\'')) => {
+                    // '' - jump to line of position before last jump (toggle)
+                    editor.jump_back();
+                    return Ok(());
+                }
                 ('`', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
                     // `{a-z} or `{A-Z} - jump to mark exact position
                     editor.add_jump(); // Add current position to jump list before jumping
                     editor.jump_to_mark(ch);
+                    return Ok(());
+                }
+                ('`', KeyCode::Char('`')) => {
+                    // `` - jump to exact position before last jump (toggle)
+                    editor.jump_back();
                     return Ok(());
                 }
                 ('q', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
@@ -2531,7 +2677,12 @@ impl InputHandler {
                     editor.buffer().cursor().line(),
                     editor.buffer().cursor().col(),
                 );
-                editor.start_change_building(cursor_before);
+                // Initialize replace mode state for dot-repeat tracking
+                editor.replace_mode_state = Some(crate::editor::ReplaceModeState {
+                    start_position: cursor_before,
+                    replacements: String::new(),
+                    old_text: String::new(),
+                });
                 editor.set_mode(Mode::Replace);
             }
             KeyCode::Char('o') => {
@@ -2754,7 +2905,8 @@ impl InputHandler {
             }
             // Leader key (Space)
             KeyCode::Char(' ') => {
-                editor.set_pending_leader(true);
+                // Use new state machine for leader sequences
+                editor.set_input_state(InputState::Leader { keys: vec![] });
             }
             // Word motions
             KeyCode::Char('w') => {
@@ -2828,22 +2980,34 @@ impl InputHandler {
                 // Set pending command to wait for second character (ZZ, ZQ)
                 editor.set_pending_command('Z');
             }
-            // Find character motions
+            // Find character motions - use new state machine
             KeyCode::Char('f') => {
                 // f{char} - find next occurrence of char on line
-                editor.set_pending_command('f');
+                editor.set_input_state(InputState::AwaitingChar {
+                    motion: CharMotion::Find,
+                    operator: None,
+                });
             }
             KeyCode::Char('F') => {
                 // F{char} - find previous occurrence of char on line
-                editor.set_pending_command('F');
+                editor.set_input_state(InputState::AwaitingChar {
+                    motion: CharMotion::FindBack,
+                    operator: None,
+                });
             }
             KeyCode::Char('t') => {
                 // t{char} - till next occurrence (cursor before char)
-                editor.set_pending_command('t');
+                editor.set_input_state(InputState::AwaitingChar {
+                    motion: CharMotion::Till,
+                    operator: None,
+                });
             }
             KeyCode::Char('T') => {
                 // T{char} - till previous occurrence (cursor after char)
-                editor.set_pending_command('T');
+                editor.set_input_state(InputState::AwaitingChar {
+                    motion: CharMotion::TillBack,
+                    operator: None,
+                });
             }
             KeyCode::Char(';') => {
                 // ; - repeat last f/F/t/T motion
@@ -2857,10 +3021,27 @@ impl InputHandler {
                             Motions::find_char_backward(editor.buffer_mut(), ch, count);
                         }
                         (FindType::Till, FindDirection::Forward) => {
-                            Motions::till_char_forward(editor.buffer_mut(), ch, count);
+                            // For t motion, we're positioned one BEFORE the target.
+                            // To find the NEXT occurrence, we need to skip past the current target.
+                            // Temporarily advance cursor by 1 so the search skips the current target.
+                            let col = editor.buffer().cursor().col();
+                            editor.buffer_mut().cursor_mut().set_col(col + 1);
+                            if !Motions::till_char_forward(editor.buffer_mut(), ch, count) {
+                                // Motion failed, restore cursor position
+                                editor.buffer_mut().cursor_mut().set_col(col);
+                            }
                         }
                         (FindType::Till, FindDirection::Backward) => {
-                            Motions::till_char_backward(editor.buffer_mut(), ch, count);
+                            // For T motion, we're positioned one AFTER the target.
+                            // To find the PREVIOUS occurrence, we need to skip past the current target.
+                            let col = editor.buffer().cursor().col();
+                            if col > 0 {
+                                editor.buffer_mut().cursor_mut().set_col(col - 1);
+                                if !Motions::till_char_backward(editor.buffer_mut(), ch, count) {
+                                    // Motion failed, restore cursor position
+                                    editor.buffer_mut().cursor_mut().set_col(col);
+                                }
+                            }
                         }
                     }
                 }
@@ -2883,9 +3064,13 @@ impl InputHandler {
                             Motions::find_char_backward(editor.buffer_mut(), ch, count);
                         }
                         (FindType::Till, FindDirection::Forward) => {
+                            // Reversing a T motion (backward) to forward
+                            // After T, target is to our LEFT, so searching forward is normal
                             Motions::till_char_forward(editor.buffer_mut(), ch, count);
                         }
                         (FindType::Till, FindDirection::Backward) => {
+                            // Reversing a t motion (forward) to backward
+                            // After t, target is to our RIGHT, so searching backward is normal
                             Motions::till_char_backward(editor.buffer_mut(), ch, count);
                         }
                     }
@@ -3099,7 +3284,7 @@ impl InputHandler {
                 // Y - yank line (same as yy)
                 let count = editor.effective_count();
                 let yanked = Operators::yank_line(editor.buffer(), count)?;
-                editor.yank_to_register(yanked);
+                editor.yank_to_register_with_type(yanked, RegisterType::Line);
                 editor.clear_count();
             }
             // Join lines
@@ -3220,6 +3405,54 @@ impl InputHandler {
                     editor.last_insert_position = Some((cursor.line(), cursor.col()));
 
                     editor.finalize_change_building();
+
+                    // Check for pending semantic change operation (ci", cw, etc.)
+                    if let Some(pending) = editor.take_pending_semantic_change() {
+                        // Get the inserted text from the last change
+                        let inserted_text = if let Some(last_change) = editor.last_change() {
+                            last_change.get_inserted_text()
+                        } else {
+                            String::new()
+                        };
+
+                        // Remove the composite change that was just added
+                        editor.pop_last_change();
+
+                        // Create the appropriate semantic change
+                        let cursor_after = (
+                            editor.buffer().cursor().line(),
+                            editor.buffer().cursor().col(),
+                        );
+
+                        let semantic_change = if pending.is_word_change {
+                            Change::change_word(
+                                inserted_text,
+                                pending.cursor_before,
+                                cursor_after,
+                                pending.old_text,
+                                pending.old_range,
+                            )
+                        } else if let Some(obj_type) = pending.object_type {
+                            Change::change_text_object(
+                                obj_type,
+                                inserted_text,
+                                pending.cursor_before,
+                                cursor_after,
+                                pending.old_text,
+                                pending.old_range,
+                            )
+                        } else {
+                            // Shouldn't happen, but fall back to composite
+                            if let Some(last_change) = editor.last_change() {
+                                last_change.clone()
+                            } else {
+                                Change::composite(vec![], pending.cursor_before, cursor_after)
+                            }
+                        };
+
+                        editor.add_change(semantic_change);
+                    }
+
                     // Update the . register with the last inserted text
                     editor.update_last_inserted_register();
                     editor.mark_buffer_modified(); // Mark for LSP didChange notification
@@ -3318,6 +3551,31 @@ impl InputHandler {
 
                     editor.set_mode(Mode::Normal);
 
+                    // Vim behavior: if current line is only whitespace when exiting insert mode,
+                    // remove the whitespace (e.g., o<Esc> should leave an empty line, not an indented one)
+                    let current_line_idx = editor.buffer().cursor().line();
+                    if let Some(line) = editor.buffer().line(current_line_idx) {
+                        let line_without_newline = line.trim_end_matches('\n');
+                        // Check if line is non-empty but only whitespace
+                        if !line_without_newline.is_empty()
+                            && line_without_newline.chars().all(|c| c.is_whitespace())
+                        {
+                            // Delete the whitespace, leaving just the newline
+                            let whitespace_len = line_without_newline.chars().count();
+                            editor.buffer_mut().delete_range(
+                                current_line_idx,
+                                0,
+                                current_line_idx,
+                                whitespace_len,
+                            );
+                            // Move cursor to column 0 since we removed the whitespace
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(current_line_idx, 0);
+                        }
+                    }
+
                     // Move cursor left when exiting insert mode (unless at column 0)
 
                     // If we were in visual block mode, move cursor to appropriate line
@@ -3368,9 +3626,36 @@ impl InputHandler {
                     editor.update_last_inserted_register();
                     editor.mark_buffer_modified();
                     editor.set_mode(Mode::Normal);
-                    let cursor = editor.buffer_mut().cursor_mut();
-                    if cursor.col() > 0 {
-                        cursor.move_left(1);
+
+                    // Vim behavior: if current line is only whitespace, remove it
+                    let current_line_idx = editor.buffer().cursor().line();
+                    if let Some(line) = editor.buffer().line(current_line_idx) {
+                        let line_without_newline = line.trim_end_matches('\n');
+                        if !line_without_newline.is_empty()
+                            && line_without_newline.chars().all(|c| c.is_whitespace())
+                        {
+                            let whitespace_len = line_without_newline.chars().count();
+                            editor.buffer_mut().delete_range(
+                                current_line_idx,
+                                0,
+                                current_line_idx,
+                                whitespace_len,
+                            );
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(current_line_idx, 0);
+                        } else {
+                            let cursor = editor.buffer_mut().cursor_mut();
+                            if cursor.col() > 0 {
+                                cursor.move_left(1);
+                            }
+                        }
+                    } else {
+                        let cursor = editor.buffer_mut().cursor_mut();
+                        if cursor.col() > 0 {
+                            cursor.move_left(1);
+                        }
                     }
                 }
             }
@@ -3386,9 +3671,36 @@ impl InputHandler {
                     editor.update_last_inserted_register();
                     editor.mark_buffer_modified();
                     editor.set_mode(Mode::Normal);
-                    let cursor = editor.buffer_mut().cursor_mut();
-                    if cursor.col() > 0 {
-                        cursor.move_left(1);
+
+                    // Vim behavior: if current line is only whitespace, remove it
+                    let current_line_idx = editor.buffer().cursor().line();
+                    if let Some(line) = editor.buffer().line(current_line_idx) {
+                        let line_without_newline = line.trim_end_matches('\n');
+                        if !line_without_newline.is_empty()
+                            && line_without_newline.chars().all(|c| c.is_whitespace())
+                        {
+                            let whitespace_len = line_without_newline.chars().count();
+                            editor.buffer_mut().delete_range(
+                                current_line_idx,
+                                0,
+                                current_line_idx,
+                                whitespace_len,
+                            );
+                            editor
+                                .buffer_mut()
+                                .cursor_mut()
+                                .set_position(current_line_idx, 0);
+                        } else {
+                            let cursor = editor.buffer_mut().cursor_mut();
+                            if cursor.col() > 0 {
+                                cursor.move_left(1);
+                            }
+                        }
+                    } else {
+                        let cursor = editor.buffer_mut().cursor_mut();
+                        if cursor.col() > 0 {
+                            cursor.move_left(1);
+                        }
                     }
                 }
             }
@@ -4354,7 +4666,26 @@ impl InputHandler {
                 let cursor_col = editor.buffer().cursor().col();
                 editor.last_insert_position = Some((cursor_line, cursor_col));
 
-                editor.finalize_change_building();
+                // Create ReplaceMode change for dot-repeat
+                if let Some(state) = editor.replace_mode_state.take() {
+                    if !state.replacements.is_empty() {
+                        let cursor_after = (cursor_line, cursor_col);
+                        let replacement_len = state.replacements.chars().count();
+                        let old_range = Range::new(
+                            state.start_position,
+                            (state.start_position.0, state.start_position.1 + replacement_len),
+                        );
+                        let change = Change::replace_mode(
+                            state.replacements,
+                            state.start_position,
+                            cursor_after,
+                            state.old_text,
+                            old_range,
+                        );
+                        editor.add_change(change);
+                    }
+                }
+
                 editor.update_last_inserted_register();
                 editor.mark_buffer_modified();
 
@@ -4375,37 +4706,31 @@ impl InputHandler {
                     let chars: Vec<char> = line_text.chars().collect();
 
                     if col < chars.len() {
+                        // Track the original character for undo
+                        let old_char = chars[col];
+
                         // Delete character under cursor
-                        let deleted = editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
+                        editor.buffer_mut().delete_range(line_idx, col, line_idx, col + 1);
 
                         // Insert new character
                         let new_char = c.to_string();
                         editor.buffer_mut().insert_text_at(line_idx, col, &new_char);
 
-                        // Track the change
-                        let cursor_before = (line_idx, col);
-                        let delete_change = Change::delete(
-                            Range::new((line_idx, col), (line_idx, col + 1)),
-                            deleted,
-                            cursor_before,
-                        );
-                        let insert_change = Change::insert(
-                            (line_idx, col),
-                            new_char.clone(),
-                            cursor_before,
-                        );
-                        let change = Change::composite(
-                            vec![delete_change, insert_change],
-                            cursor_before,
-                            (line_idx, col + 1),
-                        );
-                        editor.add_change(change);
+                        // Track for dot-repeat
+                        if let Some(ref mut state) = editor.replace_mode_state {
+                            state.replacements.push(c);
+                            state.old_text.push(old_char);
+                        }
 
                         // Move cursor forward
                         editor.buffer_mut().cursor_mut().move_right(1);
                     } else {
                         // At end of line, just insert (like append)
                         helpers::insert_char(editor, c)?;
+                        // Also track for dot-repeat
+                        if let Some(ref mut state) = editor.replace_mode_state {
+                            state.replacements.push(c);
+                        }
                     }
                 }
             }
@@ -4414,10 +4739,50 @@ impl InputHandler {
                 helpers::insert_newline(editor)?;
             }
             KeyCode::Backspace => {
-                // Backspace in replace mode moves cursor left without deleting
-                let cursor = editor.buffer_mut().cursor_mut();
-                if cursor.col() > 0 {
-                    cursor.move_left(1);
+                // Backspace in replace mode should restore original characters
+                // and move cursor left, but only within the current replace session
+                let cursor_col = editor.buffer().cursor().col();
+                let cursor_line = editor.buffer().cursor().line();
+
+                if let Some(ref mut state) = editor.replace_mode_state {
+                    let (start_line, start_col) = state.start_position;
+
+                    // Check if we're past the start position and have replacements to undo
+                    if cursor_line == start_line
+                        && cursor_col > start_col
+                        && !state.replacements.is_empty()
+                    {
+                        // Pop the last replacement
+                        state.replacements.pop();
+
+                        // If there's an old character to restore, restore it
+                        if let Some(old_char) = state.old_text.pop() {
+                            let restore_col = cursor_col - 1;
+                            // Delete the current character at restore position
+                            editor
+                                .buffer_mut()
+                                .delete_range(cursor_line, restore_col, cursor_line, restore_col + 1);
+                            // Insert the original character
+                            editor
+                                .buffer_mut()
+                                .insert_text_at(cursor_line, restore_col, &old_char.to_string());
+                        } else {
+                            // No old_text means this was an insertion at end of line, delete it
+                            let delete_col = cursor_col - 1;
+                            editor
+                                .buffer_mut()
+                                .delete_range(cursor_line, delete_col, cursor_line, delete_col + 1);
+                        }
+
+                        // Move cursor left
+                        editor.buffer_mut().cursor_mut().move_left(1);
+                    } else if cursor_col > 0 {
+                        // We're before the start position or no replacements, just move left
+                        editor.buffer_mut().cursor_mut().move_left(1);
+                    }
+                } else if cursor_col > 0 {
+                    // No replace mode state, just move left
+                    editor.buffer_mut().cursor_mut().move_left(1);
                 }
             }
             KeyCode::Left => {

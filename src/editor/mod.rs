@@ -6,6 +6,7 @@ mod completion;
 mod filetree;
 mod fold;
 mod input;
+mod input_state;
 mod keymap;
 mod lsp_state;
 mod lsp_integration;
@@ -32,11 +33,12 @@ mod visual_mode;
 mod window;
 mod window_viewport;
 
-pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range};
+pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range, TextObjectType};
 pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
+pub use input_state::{CharMotion, InputState, TextObjectPrefix};
 pub use lsp_state::{LspAction, LspResultType, LspState};
 pub use macros::MacroManager;
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
@@ -203,6 +205,9 @@ pub struct Editor {
     leader_key: char,
     /// Waiting for leader sequence (e.g., after pressing space)
     pending_leader: bool,
+    /// Input state machine for Normal mode (new architecture)
+    /// This will eventually replace pending_command, pending_leader, etc.
+    input_state: InputState,
     /// LSP-related state
     lsp_state: LspState,
     /// Channel sender for LSP commands from background tasks
@@ -277,6 +282,37 @@ pub struct Editor {
     last_diagnostic_query_micros: Option<u64>,
     /// Dashboard menu selected index (0-5)
     dashboard_selected: usize,
+    /// Pending semantic change operation (for ci", cw, etc.)
+    /// When Some, insert mode exit will create a semantic change instead of composite
+    pending_semantic_change: Option<PendingSemanticChange>,
+    /// Replace mode tracking for dot-repeat
+    replace_mode_state: Option<ReplaceModeState>,
+}
+
+/// State for tracking Replace mode for dot-repeat
+#[derive(Clone, Debug)]
+pub struct ReplaceModeState {
+    /// Cursor position when R was pressed
+    pub start_position: (usize, usize),
+    /// Characters typed during replace mode
+    pub replacements: String,
+    /// Original text that was overwritten
+    pub old_text: String,
+}
+
+/// Tracks a pending semantic change operation
+#[derive(Clone, Debug)]
+pub struct PendingSemanticChange {
+    /// The type of text object being changed
+    pub object_type: Option<TextObjectType>,
+    /// True if this is a word change (cw)
+    pub is_word_change: bool,
+    /// The original text that was deleted
+    pub old_text: String,
+    /// The original range of the deletion
+    pub old_range: Range,
+    /// Cursor position before the change
+    pub cursor_before: Position,
 }
 
 /// Cached preview data for the picker
@@ -341,6 +377,7 @@ impl Editor {
             picker: None,
             leader_key: ' ',
             pending_leader: false,
+            input_state: InputState::default(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
@@ -379,6 +416,8 @@ impl Editor {
             last_fold_calc_micros: None,
             last_diagnostic_query_micros: None,
             dashboard_selected: 0,
+            pending_semantic_change: None,
+            replace_mode_state: None,
         }
     }
 
@@ -416,6 +455,7 @@ impl Editor {
             picker: None,
             leader_key: ' ',
             pending_leader: false,
+            input_state: InputState::default(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
@@ -454,6 +494,8 @@ impl Editor {
             last_fold_calc_micros: None,
             last_diagnostic_query_micros: None,
             dashboard_selected: 0,
+            pending_semantic_change: None,
+            replace_mode_state: None,
         }
     }
 
@@ -553,6 +595,21 @@ impl Editor {
     /// Sets the pending command
     pub fn set_pending_command(&mut self, cmd: char) {
         self.pending_command = Some(cmd);
+    }
+
+    /// Gets the current input state (new state machine)
+    pub fn input_state(&self) -> &InputState {
+        &self.input_state
+    }
+
+    /// Sets the input state (new state machine)
+    pub fn set_input_state(&mut self, state: InputState) {
+        self.input_state = state;
+    }
+
+    /// Resets input state to Normal
+    pub fn reset_input_state(&mut self) {
+        self.input_state = InputState::Normal;
     }
 
     /// Sets the viewport height (called from UI layer)
@@ -903,6 +960,16 @@ impl Editor {
         self.buffer_mut()
             .change_manager_mut()
             .finalize_building_at(cursor_pos);
+    }
+
+    /// Sets a pending semantic change operation
+    pub fn set_pending_semantic_change(&mut self, pending: PendingSemanticChange) {
+        self.pending_semantic_change = Some(pending);
+    }
+
+    /// Takes and clears the pending semantic change operation
+    pub fn take_pending_semantic_change(&mut self) -> Option<PendingSemanticChange> {
+        self.pending_semantic_change.take()
     }
 
     /// Gets the leader key

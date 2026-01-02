@@ -23,8 +23,8 @@ fn test_delete_last_line_with_dd() {
     press(&mut editor, KeyCode::Char('d'));
     press(&mut editor, KeyCode::Char('d'));
 
-    // Should have 3 lines now (with_content adds trailing newline, so we started with 4 lines)
-    assert_eq!(editor.buffer().line_count(), 3);
+    // Should have 2 lines now (with_content adds trailing newline, Vim semantics: 3 lines initially)
+    assert_eq!(editor.buffer().line_count(), 2);
 
     // Cursor should be on line 1 (we deleted line 3, so cursor moves up to line 2, 0-indexed: line 1)
     // Actually dd at end moves cursor up, but with trailing newline behavior it ends at index 1
@@ -45,8 +45,8 @@ fn test_delete_multiple_lines_at_end() {
     press(&mut editor, KeyCode::Char('d'));
     press(&mut editor, KeyCode::Char('d'));
 
-    // Should have 3 lines now (with_content adds trailing newline, so we started with 5 lines)
-    assert_eq!(editor.buffer().line_count(), 3);
+    // Should have 2 lines now (with_content adds trailing newline, Vim semantics: 4 lines initially)
+    assert_eq!(editor.buffer().line_count(), 2);
 
     // Cursor should be on line 1 (we deleted lines 3-4, cursor moves up)
     assert_eq!(editor.buffer().cursor().line(), 1);
@@ -107,8 +107,8 @@ fn test_dw_at_end_of_line() {
     assert!(line.starts_with("hello "));
     assert!(!line.contains("world"));
 
-    // Line 2 should still exist (with_content adds trailing newline, so 3 lines total)
-    assert_eq!(editor.buffer().line_count(), 3);
+    // Line 2 should still exist (Vim semantics: 2 lines)
+    assert_eq!(editor.buffer().line_count(), 2);
 }
 
 #[test]

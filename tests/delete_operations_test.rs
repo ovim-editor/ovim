@@ -359,9 +359,10 @@ fn test_diw_basic() {
     let mut test = EditorTest::new("hello world test");
 
     test.keys("w") // Move to "world"
-        .keys("diw"); // Delete inner word
+        .keys("diw"); // Delete inner word (does NOT include trailing space)
 
-    assert_eq!(test.buffer_content(), "hello test\n");
+    // diw only deletes "world", leaving "hello " + " test" = "hello  test"
+    assert_eq!(test.buffer_content(), "hello  test\n");
     test.assert_cursor(0, 6);
 }
 
@@ -380,9 +381,9 @@ fn test_daw_basic() {
 fn test_diw_single_char() {
     let mut test = EditorTest::new("a b c");
 
-    test.keys("diw"); // Delete "a"
+    test.keys("diw"); // Delete "a" only (iw doesn't include trailing space)
 
-    assert_eq!(test.buffer_content(), "b c\n");
+    assert_eq!(test.buffer_content(), " b c\n");
     test.assert_cursor(0, 0);
 }
 

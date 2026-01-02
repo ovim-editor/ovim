@@ -70,14 +70,15 @@ fn test_dot_repeat_append() {
 fn test_dot_repeat_change_word() {
     let mut test = EditorTest::new("one two three");
 
-    test.keys("ciw") // Change "one"
+    test.keys("ciw") // Change "one" to "X"
         .type_text("X")
         .press_esc()
         .keys("w") // Move to "two"
-        .press('.'); // Repeat change
+        .press('.'); // Repeat: change "two" to "X"
 
-    assert_eq!(test.buffer_content(), "Xtwo Xthree\n");
-    test.assert_cursor(0, 6);
+    // ciw changes only the word, not surrounding whitespace
+    assert_eq!(test.buffer_content(), "X X three\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -150,14 +151,15 @@ fn test_dot_repeat_yank_then_change() {
     let mut test = EditorTest::new("one two three");
 
     test.keys("yiw") // Yank doesn't count as change
-        .keys("ciw") // Change word
+        .keys("ciw") // Change word "one" to "X"
         .type_text("X")
         .press_esc()
-        .keys("w")
-        .press('.'); // Should repeat change, not yank
+        .keys("w") // Move to "two"
+        .press('.'); // Should repeat change: ciw "X" on "two"
 
-    assert_eq!(test.buffer_content(), "Xtwo Xthree\n");
-    test.assert_cursor(0, 6);
+    // ciw preserves whitespace - "one" becomes "X", "two" becomes "X"
+    assert_eq!(test.buffer_content(), "X X three\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -217,12 +219,14 @@ fn test_dot_repeat_J_join() {
 fn test_dot_repeat_diw() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("diw") // Delete inner word
-        .press('w') // Move to next word
-        .press('.'); // Repeat
+    // Note: iw does NOT include trailing whitespace (that's aw)
+    test.keys("diw") // Delete "one" → " two three four" (cursor at 0)
+        .keys("w") // Move to next word "two" (cursor at 1)
+        .press('.'); // Repeat diw: delete "two" → "  three four"
 
-    assert_eq!(test.buffer_content(), "two e four\n");
-    test.assert_cursor(0, 4);
+    // Semantic repeat: re-evaluates inner word at cursor, deletes entire word
+    assert_eq!(test.buffer_content(), "  three four\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -244,11 +248,11 @@ fn test_dot_repeat_ci_quote() {
         .type_text("X")
         .press_esc()
         .keys("f\"") // Find next quote (closing quote of "X", not opening of "world"!)
-        .press('.'); // Repeat (tries to change inside the closing quote, likely no-op or finds "world")
+        .press('.'); // Repeat (finds same "X" pair, replaces X with X)
 
-    // In Vim: f" from inside "X" finds the closing quote of "X", so ci" doesn't affect "world"
+    // In Vim: f" from inside "X" finds the closing quote of "X", so ci" operates on "X" again
     assert_eq!(test.buffer_content(), "\"X\" and \"world\"\n");
-    test.assert_cursor(0, 2);
+    test.assert_cursor(0, 1); // On the X after ci" repeat
 }
 
 #[test]
@@ -261,7 +265,7 @@ fn test_dot_repeat_di_paren() {
         .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "func() and func()\n");
-    test.assert_cursor(0, 20);
+    test.assert_cursor(0, 16); // On closing paren after deletion
 }
 
 // ============================================================================
@@ -571,11 +575,17 @@ fn test_dot_with_search_motion() {
 fn test_dot_with_f_motion() {
     let mut test = EditorTest::new("a b c d e f");
 
-    test.keys("dfc") // Delete to 'c'
-        .press('.'); // Repeat (delete to next 'c'?)
+    // dfc deletes from cursor to 'c' inclusive
+    // Starting at position 0, finds 'c' at position 4, deletes "a b c" (positions 0-4)
+    // Result: " d e f" (starting with space, which was after 'c')
+    test.keys("dfc"); // Delete to 'c'
+    assert_eq!(test.buffer_content(), " d e f\n");
+    test.assert_cursor(0, 0);
 
-    assert_eq!(test.buffer_content(), "a b c d e f\n");
-    test.assert_cursor(0, 4);
+    // . tries to repeat dfc, but there's no 'c' to find, so nothing happens
+    test.press('.');
+    assert_eq!(test.buffer_content(), " d e f\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -614,16 +624,17 @@ fn test_dot_with_multichar_insert() {
 fn test_dot_repeat_complex_change() {
     let mut test = EditorTest::new("one two\nthree four\nfive six");
 
-    test.keys("ciw") // Change word
+    test.keys("ciw") // Change "one" to "REPLACED"
         .type_text("REPLACED")
         .press_esc()
-        .press('j') // Next line
-        .press('w') // Second word
-        .press('.'); // Repeat change
+        .press('j') // Next line (cursor ends up on "four")
+        .press('w') // Move to next word (wraps to "five" on line 2)
+        .press('.'); // Repeat change: ciw "REPLACED" on "five"
 
+    // ciw preserves surrounding whitespace
     assert_eq!(
         test.buffer_content(),
-        "REPLACEDtwo\nthree four\nREPLACEDfive six\n"
+        "REPLACED two\nthree four\nREPLACED six\n"
     );
     test.assert_cursor(2, 7);
 }
