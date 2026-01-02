@@ -92,6 +92,11 @@ impl Editor {
 
     /// Centers cursor in viewport
     pub fn center_cursor_in_viewport(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
         // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
@@ -109,6 +114,11 @@ impl Editor {
 
     /// Moves cursor line to top of viewport
     pub fn move_cursor_line_to_top(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
         // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
@@ -126,6 +136,11 @@ impl Editor {
 
     /// Moves cursor line to bottom of viewport
     pub fn move_cursor_line_to_bottom(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
         // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
