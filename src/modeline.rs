@@ -132,7 +132,7 @@ fn extract_options_string(s: &str) -> String {
 
     // Skip optional "set" keyword
     let s = if s.starts_with("set ") || s.starts_with("se ") {
-        &s[s.find(' ').unwrap_or(0)..].trim_start()
+        s[s.find(' ').unwrap_or(0)..].trim_start()
     } else {
         s
     };

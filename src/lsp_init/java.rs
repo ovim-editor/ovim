@@ -64,13 +64,10 @@ fn find_hyperion_binary() -> Option<PathBuf> {
             .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim())),
     ];
 
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.exists())
 }
 
 /// Handle Java LSP initialization (for TUI mode - spawns background task)

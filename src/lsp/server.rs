@@ -48,6 +48,7 @@ struct PendingRequest {
 
 /// Server state for explicit state machine
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ServerState {
     /// Server process is spawning
     Spawning,

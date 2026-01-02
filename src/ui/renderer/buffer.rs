@@ -168,11 +168,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
 
     // Find matching bracket position if showmatch is enabled
     let bracket_positions: Option<((usize, usize), (usize, usize))> = if editor.options.showmatch {
-        if let Some(matching_pos) = find_matching_bracket_position(buffer) {
-            Some(((cursor.line(), cursor.col()), matching_pos))
-        } else {
-            None
-        }
+        find_matching_bracket_position(buffer).map(|matching_pos| ((cursor.line(), cursor.col()), matching_pos))
     } else {
         None
     };
@@ -338,6 +334,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
 }
 
 /// Renders the gutter (line numbers and git signs)
+#[allow(clippy::too_many_arguments)]
 fn render_gutter(
     frame: &mut Frame,
     editor: &Editor,

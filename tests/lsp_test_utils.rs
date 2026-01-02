@@ -1,16 +1,21 @@
 //! LSP Test Framework
 //!
-//! Provides utilities and macros for writing LSP integration tests
+//! Provides utilities and macros for writing LSP integration tests.
+//!
+//! These tests require external infrastructure:
+//! - Release binary built (`cargo build --release`)
+//! - rust-analyzer installed and working
+//! - Tests spawn actual headless ovim processes
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
 
 /// Editor snapshot from API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct EditorSnapshot {
     pub buffer: BufferInfo,
     pub cursor: CursorPosition,
@@ -19,6 +24,7 @@ pub struct EditorSnapshot {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct BufferInfo {
     pub content: String,
     pub line_count: usize,

@@ -220,7 +220,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     while start_col > 0
         && chars
             .get(start_col - 1)
-            .map_or(false, |c| c.is_whitespace())
+            .is_some_and(|c| c.is_whitespace())
     {
         start_col -= 1;
     }
@@ -237,7 +237,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
                 if is_word_char(ch) {
                     // Delete word characters
                     while start_col > 0
-                        && chars.get(start_col - 1).map_or(false, |&c| is_word_char(c))
+                        && chars.get(start_col - 1).is_some_and(|&c| is_word_char(c))
                     {
                         start_col -= 1;
                     }
@@ -246,7 +246,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
                     while start_col > 0
                         && chars
                             .get(start_col - 1)
-                            .map_or(false, |&c| !is_word_char(c) && !c.is_whitespace())
+                            .is_some_and(|&c| !is_word_char(c) && !c.is_whitespace())
                     {
                         start_col -= 1;
                     }

@@ -333,10 +333,10 @@ impl WindowManager {
     }
 
     /// Static helper to avoid borrowing issues
-    fn get_window_recursive_mut_static<'a>(
-        node: &'a mut WindowNode,
+    fn get_window_recursive_mut_static(
+        node: &mut WindowNode,
         target_index: usize,
-    ) -> Option<(&'a mut Window, usize)> {
+    ) -> Option<(&mut Window, usize)> {
         match node {
             WindowNode::Leaf(window) => {
                 if target_index == 0 {

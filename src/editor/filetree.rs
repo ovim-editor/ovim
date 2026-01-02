@@ -225,7 +225,7 @@ impl FileTree {
             .map(|n| n.path().to_path_buf())
         {
             if let Some(ref mut root) = self.root {
-                Self::toggle_node_at_path(root, &selected_path);
+                Self::toggle_node_at_path(root, selected_path);
                 self.rebuild_flattened();
             }
         }

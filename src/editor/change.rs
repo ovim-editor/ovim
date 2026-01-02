@@ -911,6 +911,12 @@ pub struct ChangeManager {
     pub(crate) save_point: Option<usize>,
 }
 
+impl Default for ChangeManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChangeManager {
     pub fn new() -> Self {
         Self {
@@ -1108,11 +1114,8 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                         }
                         start_col -= 1;
                         break;
-                    } else if start_col >= 2 && prev_ch == 'x' && chars[start_col - 2] == '0' {
-                        start_col -= 2;
-                        break;
                     } else if start_col >= 2
-                        && (prev_ch == 'b' || prev_ch == 'o')
+                        && (prev_ch == 'x' || prev_ch == 'b' || prev_ch == 'o')
                         && chars[start_col - 2] == '0'
                     {
                         start_col -= 2;
@@ -1164,11 +1167,10 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
 
             while end_col < chars.len() {
                 let ch = chars[end_col];
-                if is_hex && ch.is_ascii_hexdigit() {
-                    end_col += 1;
-                } else if is_binary && (ch == '0' || ch == '1') {
-                    end_col += 1;
-                } else if !is_hex && !is_binary && ch.is_ascii_digit() {
+                let valid_digit = (is_hex && ch.is_ascii_hexdigit())
+                    || (is_binary && (ch == '0' || ch == '1'))
+                    || (!is_hex && !is_binary && ch.is_ascii_digit());
+                if valid_digit {
                     end_col += 1;
                 } else {
                     break;

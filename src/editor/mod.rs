@@ -143,6 +143,13 @@ pub enum LspCommand {
     StartNotificationListener { language_id: String },
 }
 
+/// Visual selection: (start_position, end_position, mode)
+pub type VisualSelection = ((usize, usize), (usize, usize), Mode);
+
+/// Cached preview highlights: line_idx -> Vec<(range, highlight_group)>
+pub type PreviewHighlights =
+    HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>;
+
 /// The main editor state
 pub struct Editor {
     /// List of open buffers
@@ -171,7 +178,7 @@ pub struct Editor {
     /// move_to_end: true for I/A (cursor at end_line), false for c (cursor at start_line)
     visual_block_insert_state: Option<(usize, usize, usize, bool, bool)>,
     /// Last visual selection (start, end, mode) for gv command
-    last_visual_selection: Option<((usize, usize), (usize, usize), Mode)>,
+    last_visual_selection: Option<VisualSelection>,
     /// Command line buffer (for : commands)
     command_line: String,
     /// Command history for command line mode
@@ -322,9 +329,7 @@ pub struct PreviewCache {
     pub content: String,
     /// Cached syntax-highlighted lines (line_idx -> highlights)
     /// Uses RefCell for interior mutability so we can cache highlights even with immutable reference
-    pub highlighted_lines: std::cell::RefCell<
-        HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>,
-    >,
+    pub highlighted_lines: std::cell::RefCell<PreviewHighlights>,
     /// Detected language (if any)
     pub language: Option<crate::syntax::Language>,
 }
@@ -655,7 +660,7 @@ impl Editor {
     pub fn half_page_scroll(&self) -> usize {
         self.options
             .scroll
-            .unwrap_or_else(|| self.viewport_height / 2)
+            .unwrap_or(self.viewport_height / 2)
     }
 
     /// Clears the pending command
