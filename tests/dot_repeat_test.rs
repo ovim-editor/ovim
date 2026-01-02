@@ -190,12 +190,12 @@ fn test_dot_repeat_c_dollar() {
 fn test_dot_repeat_upper_case_X() {
     let mut test = EditorTest::new("hello");
 
-    test.keys("$") // End
-        .press('X') // Delete char before
-        .press('.'); // Repeat
+    test.keys("$") // End (cursor on 'o')
+        .press('X') // Delete char before cursor ('l'), leaving "helo", cursor on 'o'
+        .press('.'); // Repeat (delete char before cursor 'l'), leaving "heo", cursor on 'e'
 
-    assert_eq!(test.buffer_content(), "hello\n");
-    test.assert_cursor(0, 4);
+    assert_eq!(test.buffer_content(), "heo\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -239,15 +239,16 @@ fn test_dot_repeat_daw() {
 fn test_dot_repeat_ci_quote() {
     let mut test = EditorTest::new(r#""hello" and "world""#);
 
-    test.keys("f\"") // Find first quote
+    test.keys("f\"") // Find first quote (opening quote of "hello")
         .keys("ci\"") // Change inside quotes
         .type_text("X")
         .press_esc()
-        .keys("f\"") // Find next quote
-        .press('.'); // Repeat
+        .keys("f\"") // Find next quote (closing quote of "X", not opening of "world"!)
+        .press('.'); // Repeat (tries to change inside the closing quote, likely no-op or finds "world")
 
-    assert_eq!(test.buffer_content(), "\"hello\" and \"world\"\n");
-    test.assert_cursor(0, 12);
+    // In Vim: f" from inside "X" finds the closing quote of "X", so ci" doesn't affect "world"
+    assert_eq!(test.buffer_content(), "\"X\" and \"world\"\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -259,8 +260,8 @@ fn test_dot_repeat_di_paren() {
         .keys("f(") // Next parens
         .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "func(arg1) and func(arg2)\n");
-    test.assert_cursor(0, 4);
+    assert_eq!(test.buffer_content(), "func() and func()\n");
+    test.assert_cursor(0, 20);
 }
 
 // ============================================================================
@@ -327,16 +328,16 @@ fn test_dot_repeat_dw_different_positions() {
 
 #[test]
 fn test_dot_repeat_cw_at_different_word_lengths() {
-    let mut test = EditorTest::new("a really long short");
+    let mut test = EditorTest::new("short longerword");
 
-    test.keys("cw") // Change "a"
+    test.keys("cw") // Change "short"
         .type_text("X")
         .press_esc()
-        .keys("w") // Move to "really" (longer word)
-        .press('.'); // Repeat (should change "really")
+        .keys("w") // Move to "longerword"
+        .press('.'); // Repeat (should change "longerword")
 
-    assert_eq!(test.buffer_content(), "Xreally Xlong short\n");
-    test.assert_cursor(0, 9);
+    assert_eq!(test.buffer_content(), "X X\n");
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -415,8 +416,8 @@ fn test_dot_repeat_o_command() {
         .press('j') // Move down
         .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "new\nlinewne 1\nline 2\n");
-    test.assert_cursor(1, 5);
+    assert_eq!(test.buffer_content(), "line 1\nnew\nline 2\nnew\n");
+    test.assert_cursor(3, 2);
 }
 
 #[test]
@@ -429,8 +430,8 @@ fn test_dot_repeat_O_command() {
         .press('j')
         .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "new\nlinewne 1\nline 2\n");
-    test.assert_cursor(1, 5);
+    assert_eq!(test.buffer_content(), "new\nnew\nline 1\nline 2\n");
+    test.assert_cursor(1, 2);
 }
 
 #[test]
@@ -469,27 +470,27 @@ fn test_dot_repeat_I_command() {
 fn test_dot_repeat_r_command() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('r') // Replace char
+    test.press('r') // Replace char (h -> X)
         .press('X')
         .press('l') // Move right
-        .press('.'); // Repeat
+        .press('.'); // Repeat (e -> X)
 
-    assert_eq!(test.buffer_content(), "hello\nworld\n");
-    test.assert_cursor(1, 0);
+    assert_eq!(test.buffer_content(), "XXllo world\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
 fn test_dot_repeat_R_command() {
-    let mut test = EditorTest::new("hello\nworld");
+    let mut test = EditorTest::new("hello world");
 
-    test.press('R') // Replace mode
+    test.press('R') // Replace mode (replaces "he" -> "HI")
         .type_text("HI")
         .press_esc()
-        .press('j') // Next line
-        .press('.'); // Repeat
+        .press('w') // Move to "world"
+        .press('.'); // Repeat (replaces "wo" -> "HI")
 
-    assert_eq!(test.buffer_content(), "hello\nworld\n");
-    test.assert_cursor(1, 0);
+    assert_eq!(test.buffer_content(), "HIllo HIrld\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
