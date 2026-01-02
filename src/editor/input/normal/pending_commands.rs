@@ -220,6 +220,21 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.move_cursor_line_to_bottom();
             editor.clear_count();
         }
+        ('z', KeyCode::Enter) => {
+            editor.move_cursor_line_to_top();
+            Motions::first_non_blank(editor.buffer_mut());
+            editor.clear_count();
+        }
+        ('z', KeyCode::Char('-')) => {
+            editor.move_cursor_line_to_bottom();
+            Motions::first_non_blank(editor.buffer_mut());
+            editor.clear_count();
+        }
+        ('z', KeyCode::Char('.')) => {
+            editor.center_cursor_in_viewport();
+            Motions::first_non_blank(editor.buffer_mut());
+            editor.clear_count();
+        }
 
         // =====================================================================
         // 'Z' - Save/quit commands
