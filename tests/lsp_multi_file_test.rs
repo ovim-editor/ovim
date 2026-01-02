@@ -180,8 +180,10 @@ fn main() {
 }
 
 /// Test LSP cleans up properly when switching files
-#[test]
-fn test_lsp_cleanup_on_file_switch() {
+/// Note: Uses multi-threaded tokio runtime because `:e` command calls load_file
+/// which uses block_in_place requiring a multi-threaded runtime
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_lsp_cleanup_on_file_switch() {
     // Create test files
     std::fs::write("/tmp/file1.rs", "fn test() {}\n").unwrap();
     std::fs::write("/tmp/file2.rs", "fn other() {}\n").unwrap();
