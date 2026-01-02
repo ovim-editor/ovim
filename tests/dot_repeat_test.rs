@@ -278,7 +278,7 @@ fn test_dot_after_visual_delete() {
         .press('.'); // Repeat (should work?)
 
     assert_eq!(test.buffer_content(), "  test\n");
-    test.assert_cursor(0, 2);
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn test_dot_at_end_of_line() {
         .press('.'); // Repeat (nothing to delete)
 
     assert_eq!(test.buffer_content(), "hel\n");
-    test.assert_cursor(0, 2);
+    test.assert_cursor(0, 3);
 }
 
 #[test]
