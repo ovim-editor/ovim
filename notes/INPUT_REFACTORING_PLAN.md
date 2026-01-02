@@ -2,7 +2,7 @@
 
 ## Current State
 
-`/Users/adrian/Projects/ovim/src/editor/input/mod.rs` is **4,671 lines** after Phase 1.
+`/Users/adrian/Projects/ovim/src/editor/input/mod.rs` is **3,454 lines** after Phase 2.
 
 ### Already Extracted Modules
 
@@ -21,24 +21,22 @@
 | `filetree_mode.rs` | 56 | File tree navigation - **Phase 1** |
 | `substitute_mode.rs` | 40 | Substitute confirm mode (:s/c) - **Phase 1** |
 | `dashboard_mode.rs` | 124 | Dashboard menu navigation - **Phase 1** |
+| `insert_mode.rs` | 407 | Insert mode handler - **Phase 2** |
+| `visual_mode.rs` | 850 | Visual/VisualLine/VisualBlock modes - **Phase 2** |
 
-### mod.rs Structure Analysis
+### mod.rs Structure Analysis (after Phase 2)
 
 The file contains the `InputHandler` struct with these major sections:
 
-1. **Lines 30-67**: Entry point `handle_key_event()` - routes to mode handlers
-2. **Lines 69-3393**: `handle_normal_mode()` - THE MONSTER (~3,300 lines!)
-3. **Lines 3395-3783**: `handle_insert_mode()` (~390 lines)
-4. **Lines 3785-4616**: `handle_visual_mode()` (~830 lines)
-5. **Lines 4618-4658**: `handle_search_mode()` (~40 lines)
-6. **Lines 4660-4806**: `handle_replace_mode()` (~150 lines)
-7. **Lines 4808-4982**: `handle_picker_mode()` (~175 lines)
-8. **Lines 4984-4994**: `poll_event()` (~10 lines)
-9. **Lines 4996-5070**: `handle_hover_preview_mode()` and `handle_hover_navigate_mode()` (~75 lines)
-10. **Lines 5072-5117**: `handle_filetree_mode()` (~45 lines)
-11. **Lines 5119-5149**: `handle_substitute_confirm_mode()` (~30 lines)
-12. **Lines 5151-5265**: `handle_dashboard_mode()` (~115 lines)
-13. **Lines 5267-5281**: Wrapper methods (~15 lines)
+1. **Lines 53-100**: Entry point `handle_key_event()` - routes to mode handlers
+2. **Lines 102-3426**: `handle_normal_mode()` - THE MONSTER (~3,325 lines!)
+3. **Lines 3428-3438**: `poll_event()` (~10 lines)
+4. **Lines 3440-3454**: Wrapper methods (~15 lines)
+
+**Extracted to separate modules:**
+- `insert_mode.rs` (407 lines) - Insert mode handler
+- `visual_mode.rs` (850 lines) - Visual modes handler
+- Plus all Phase 1 extractions (search_mode, replace_mode, picker_mode, etc.)
 
 **The main problem**: `handle_normal_mode()` at ~3,300 lines is doing way too much.
 
@@ -102,21 +100,21 @@ Get `mod.rs` under **2,000 lines** (ideally ~1,500).
 
 ---
 
-#### Phase 2: Medium-Risk Extractions
+#### Phase 2: Medium-Risk Extractions [COMPLETED]
 
-**8. Extract `insert_mode.rs`** (~400 lines)
+**8. Extract `insert_mode.rs`** (~400 lines) [DONE]
 - Move `handle_insert_mode()`
 - Contains Esc handling with visual block state, completion menu
 - Dependencies: `helpers::*` for movement, change building
-- **Estimated effort**: 45 minutes
+- **Actual**: 407 lines
 
-**9. Extract `visual_mode.rs`** (~850 lines)
+**9. Extract `visual_mode.rs`** (~850 lines) [DONE]
 - Move `handle_visual_mode()`
 - Contains text object selection, visual block operations
 - Dependencies: `helpers::*`, `numbers::*`, `TextObjects::*`
-- **Estimated effort**: 1 hour
+- **Actual**: 850 lines
 
-**Phase 2 Total**: ~1,250 lines extracted, ~2 hours
+**Phase 2 Complete**: ~1,257 lines in new modules, mod.rs reduced from 4,671 to 3,454 lines (1,217 lines removed)
 
 ---
 
