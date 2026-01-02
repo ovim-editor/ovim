@@ -68,8 +68,8 @@ fn test_q_record_change_operation() {
         .press('@')
         .press('a');
 
-    assert_eq!(test.buffer_content(), "Xtwo\nXe\n");
-    test.assert_cursor(1, 0);
+    assert_eq!(test.buffer_content(), "X\nX\nthree\n");
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -225,7 +225,7 @@ fn test_macro_with_text_objects() {
         .press('@')
         .press('a');
 
-    assert_eq!(test.buffer_content(), " two\n four\nsix\n");
+    assert_eq!(test.buffer_content(), " two\n four\n six\n");
     test.assert_cursor(2, 0);
 }
 
@@ -243,8 +243,8 @@ fn test_macro_with_search() {
         .press('@')
         .press('a'); // Play - should find next and delete
 
-    assert_eq!(test.buffer_content(), "hello world ello test\n");
-    test.assert_cursor(0, 12);
+    assert_eq!(test.buffer_content(), "ello world ello test\n");
+    test.assert_cursor(0, 11);
 }
 
 // ============================================================================
@@ -351,7 +351,7 @@ fn test_macro_yank_paste() {
         .press('@')
         .press('a');
 
-    assert_eq!(test.buffer_content(), "copy\nline 2\ncopy\nline 3copy\n\n");
+    assert_eq!(test.buffer_content(), "copy\nline 2\ncopy\nline 3\ncopy\n");
     test.assert_cursor(4, 0);
 }
 
@@ -453,8 +453,8 @@ fn test_macro_uppercase_register() {
     // Play combined macro
     test.press('@').press('a');
 
-    assert_eq!(test.buffer_content(), "estxq@a \n");
-    test.assert_cursor(0, 7);
+    assert_eq!(test.buffer_content(), "st\n");
+    test.assert_cursor(0, 1);
 }
 
 // ============================================================================
@@ -546,7 +546,7 @@ fn test_macro_with_o_command() {
 
     assert_eq!(
         test.buffer_content(),
-        "line 1\ninserted\nline 2\ninserted\n\n"
+        "line 1\ninserted\nline 2\ninserted\n"
     );
     test.assert_cursor(3, 7);
 }
