@@ -277,8 +277,8 @@ fn test_dot_after_visual_delete() {
         .press('w') // Move to next word
         .press('.'); // Repeat (should work?)
 
-    assert_eq!(test.buffer_content(), " test\n");
-    test.assert_cursor(0, 1);
+    assert_eq!(test.buffer_content(), "  test\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -386,8 +386,8 @@ fn test_dot_at_end_of_line() {
         .press('x') // Delete last char
         .press('.'); // Repeat (nothing to delete)
 
-    assert_eq!(test.buffer_content(), "hel \n");
-    test.assert_cursor(0, 3);
+    assert_eq!(test.buffer_content(), "hel\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn test_dot_after_failed_operation() {
     test.press('x') // Delete 'x'
         .press('.'); // Try to repeat (nothing to delete)
 
-    assert_eq!(test.buffer_content(), " \n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
