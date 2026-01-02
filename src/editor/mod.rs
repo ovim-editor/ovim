@@ -629,6 +629,14 @@ impl Editor {
 
     /// Gets the scroll offset (top visible line)
     pub fn scroll_offset(&self) -> usize {
+        // If we have a window manager, use the focused window's scroll offset
+        // This allows viewport commands (zz, zt, zb) to control scrolling
+        if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                return window.scroll_offset();
+            }
+        }
+        // Fall back to editor-level scroll offset for headless/test mode
         self.scroll_offset
     }
 
@@ -638,20 +646,31 @@ impl Editor {
         let scrolloff = self.options.scrolloff;
         let visible_lines = self.viewport_height;
 
+        // Calculate new scroll offset
+        let mut new_offset = self.scroll_offset;
+
         // Scroll up if cursor is too close to top
-        if cursor_line < self.scroll_offset + scrolloff {
-            self.scroll_offset = cursor_line.saturating_sub(scrolloff);
+        if cursor_line < new_offset + scrolloff {
+            new_offset = cursor_line.saturating_sub(scrolloff);
         }
         // Scroll down if cursor is too close to bottom
-        else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
-            self.scroll_offset = cursor_line + scrolloff + 1
+        else if cursor_line + scrolloff >= new_offset + visible_lines {
+            new_offset = cursor_line + scrolloff + 1
                 - visible_lines.min(cursor_line + scrolloff + 1);
         }
 
         // Ensure scroll_offset doesn't go beyond buffer
         let max_line = self.buffer().line_count().saturating_sub(1);
         if cursor_line > max_line {
-            self.scroll_offset = 0;
+            new_offset = 0;
+        }
+
+        // Update both editor-level and window-level scroll offsets
+        self.scroll_offset = new_offset;
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_offset(new_offset);
+            }
         }
     }
 
