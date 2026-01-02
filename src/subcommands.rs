@@ -1,6 +1,6 @@
 ///! Subcommand implementations for controlling ovim sessions
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::cli::Command;
 use crate::client::OvimClient;
