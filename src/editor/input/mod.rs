@@ -39,6 +39,9 @@ mod hover_mode;
 /// File tree mode handler
 mod filetree_mode;
 
+/// Substitute confirm mode handler
+mod substitute_mode;
+
 /// Handles input events for the editor
 pub struct InputHandler;
 
@@ -73,7 +76,7 @@ impl InputHandler {
             }
             Mode::HoverNavigate => hover_mode::handle_hover_navigate_mode(editor, key_event),
             Mode::FileTree => filetree_mode::handle_filetree_mode(editor, key_event),
-            Mode::SubstituteConfirm => Self::handle_substitute_confirm_mode(editor, key_event),
+            Mode::SubstituteConfirm => substitute_mode::handle_substitute_confirm_mode(editor, key_event),
             Mode::Dashboard => Self::handle_dashboard_mode(editor, key_event),
         };
 
@@ -4646,38 +4649,6 @@ impl InputHandler {
         } else {
             Ok(None)
         }
-    }
-
-    /// Handles input in SubstituteConfirm mode
-    /// Keys: y (yes), n (no/skip), a (all), q (quit), l (last - substitute and quit)
-    fn handle_substitute_confirm_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        match key_event.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                // Confirm this substitution
-                editor.confirm_substitute();
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
-                // Skip this match
-                editor.skip_substitute();
-            }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
-                // Substitute all remaining matches
-                editor.confirm_all_substitutes();
-            }
-            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                // Quit without substituting remaining matches
-                editor.end_substitute_confirm();
-            }
-            KeyCode::Char('l') | KeyCode::Char('L') => {
-                // Substitute this match and quit
-                editor.confirm_substitute_and_quit();
-            }
-            _ => {
-                // Show prompt in status
-                editor.set_lsp_status("replace with ... (y/n/a/q/l)".to_string());
-            }
-        }
-        Ok(())
     }
 
     /// Handles input in Dashboard mode
