@@ -33,6 +33,9 @@ mod replace_mode;
 /// Picker mode handler (file finder, grep, code actions)
 mod picker_mode;
 
+/// Hover mode handlers (preview and navigate)
+mod hover_mode;
+
 /// Handles input events for the editor
 pub struct InputHandler;
 
@@ -58,8 +61,14 @@ impl InputHandler {
             Mode::Search => search_mode::handle_search_mode(editor, key_event),
             Mode::Replace => replace_mode::handle_replace_mode(editor, key_event),
             Mode::Picker => picker_mode::handle_picker_mode(editor, key_event),
-            Mode::HoverPreview => Self::handle_hover_preview_mode(editor, key_event),
-            Mode::HoverNavigate => Self::handle_hover_navigate_mode(editor, key_event),
+            Mode::HoverPreview => {
+                // HoverPreview may forward keys to normal mode
+                if let Some(forwarded_key) = hover_mode::handle_hover_preview_mode(editor, key_event)? {
+                    Self::handle_normal_mode(editor, forwarded_key)?;
+                }
+                Ok(())
+            }
+            Mode::HoverNavigate => hover_mode::handle_hover_navigate_mode(editor, key_event),
             Mode::FileTree => Self::handle_filetree_mode(editor, key_event),
             Mode::SubstituteConfirm => Self::handle_substitute_confirm_mode(editor, key_event),
             Mode::Dashboard => Self::handle_dashboard_mode(editor, key_event),
@@ -4634,82 +4643,6 @@ impl InputHandler {
         } else {
             Ok(None)
         }
-    }
-
-    /// Handles input in HoverPreview mode (quick peek, any key dismisses except K)
-    fn handle_hover_preview_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        match key_event.code {
-            // K - enter navigate mode (KK to navigate within hover)
-            KeyCode::Char('K') => {
-                editor.set_mode(Mode::HoverNavigate);
-            }
-            // Any other key dismisses the hover and returns to normal
-            _ => {
-                editor.clear_hover();
-                editor.set_mode(Mode::Normal);
-                // Re-process the key in normal mode (so it's not "eaten")
-                // This makes ESC just close, but j/k/etc actually perform their normal action
-                if key_event.code != KeyCode::Esc && key_event.code != KeyCode::Char('q') {
-                    Self::handle_normal_mode(editor, key_event)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Handles input in HoverNavigate mode (scrollable, shows raw text)
-    fn handle_hover_navigate_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-        match key_event.code {
-            // Esc or q - close hover window
-            KeyCode::Esc | KeyCode::Char('q') => {
-                editor.clear_hover();
-                editor.set_mode(Mode::Normal);
-            }
-            // j or Down - scroll down
-            KeyCode::Char('j') | KeyCode::Down => {
-                editor.scroll_hover_down(1);
-            }
-            // k or Up - scroll up
-            KeyCode::Char('k') | KeyCode::Up => {
-                editor.scroll_hover_up(1);
-            }
-            // Ctrl-D - scroll down half page
-            KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                editor.scroll_hover_down(10);
-            }
-            // Ctrl-U - scroll up half page
-            KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                editor.scroll_hover_up(10);
-            }
-            // Ctrl-F or PageDown - scroll down full page
-            KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                editor.scroll_hover_down(20);
-            }
-            KeyCode::PageDown => {
-                editor.scroll_hover_down(20);
-            }
-            // Ctrl-B or PageUp - scroll up full page
-            KeyCode::Char('b') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-                editor.scroll_hover_up(20);
-            }
-            KeyCode::PageUp => {
-                editor.scroll_hover_up(20);
-            }
-            // g - go to top
-            KeyCode::Char('g') => {
-                editor.scroll_hover_up(usize::MAX); // Scroll to top
-            }
-            // G - go to bottom
-            KeyCode::Char('G') => {
-                editor.scroll_hover_down(usize::MAX); // Scroll to bottom
-            }
-            _ => {
-                // Other keys close the hover
-                editor.clear_hover();
-                editor.set_mode(Mode::Normal);
-            }
-        }
-        Ok(())
     }
 
     /// Handles input in FileTree mode
