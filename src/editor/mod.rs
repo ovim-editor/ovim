@@ -279,6 +279,9 @@ pub struct Editor {
     render_dirty: bool,
     /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
     skip_scroll_update: bool,
+    /// Viewport command active - tracks if a viewport command was recently used
+    /// When true, scrolloff is only applied if cursor moves outside current viewport
+    viewport_command_active: bool,
     /// Input latency samples in microseconds (circular buffer, max 1000 samples)
     input_latency_samples: Vec<u64>,
     /// Last LSP serialize (rope->string) duration in microseconds
@@ -418,6 +421,7 @@ impl Editor {
             last_syntax_duration_micros: None,
             render_dirty: true, // Start dirty to force initial render
             skip_scroll_update: false,
+            viewport_command_active: false,
             input_latency_samples: Vec::new(),
             last_lsp_serialize_micros: None,
             last_git_status_micros: None,
@@ -497,6 +501,7 @@ impl Editor {
             last_syntax_duration_micros: None,
             render_dirty: true, // Start dirty to force initial render
             skip_scroll_update: false,
+            viewport_command_active: false,
             input_latency_samples: Vec::new(),
             last_lsp_serialize_micros: None,
             last_git_status_micros: None,
@@ -646,25 +651,48 @@ impl Editor {
 
     /// Updates scroll offset to keep cursor visible
     ///
-    /// After viewport commands (zt, zz, zb), this uses a less aggressive approach:
-    /// only scrolls when cursor would go OFFSCREEN, not just outside scrolloff margin.
-    /// This preserves the viewport positioning while keeping cursor visible.
+    /// Uses scrolloff for comfortable cursor positioning during normal movements.
+    /// Viewport commands (zt, zz, zb) can override this by setting skip_scroll_update.
     pub fn update_scroll_offset(&mut self) {
+        // Skip if viewport command just ran - it has full control over positioning
+        if self.skip_scroll_update {
+            return;
+        }
+
         let cursor_line = self.buffer().cursor().line();
         let visible_lines = self.viewport_height;
         let current_offset = self.scroll_offset();
+        let scrolloff = self.options.scrolloff;
 
         // Calculate new scroll offset
         let mut new_offset = current_offset;
 
-        // Only scroll if cursor is actually outside the viewport (would be invisible)
-        // This is less aggressive than maintaining scrolloff, preserving viewport commands
-        if cursor_line < current_offset {
-            // Cursor above viewport - scroll up to make it visible
-            new_offset = cursor_line;
-        } else if cursor_line >= current_offset + visible_lines {
-            // Cursor below viewport - scroll down to make it visible
-            new_offset = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+        // After viewport commands, only scroll if cursor moves OUTSIDE viewport
+        // This maintains viewport command positioning while still keeping cursor visible
+        if self.viewport_command_active {
+            // Check if cursor is outside current viewport (ignore scrolloff margins)
+            if cursor_line < current_offset {
+                // Cursor above viewport - scroll up (with scrolloff margin)
+                new_offset = cursor_line.saturating_sub(scrolloff);
+                self.viewport_command_active = false; // Clear flag, we had to scroll
+            } else if cursor_line >= current_offset + visible_lines {
+                // Cursor below viewport - scroll down (with scrolloff margin)
+                new_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
+                self.viewport_command_active = false; // Clear flag, we had to scroll
+            }
+            // Cursor still within viewport - maintain current scroll position
+        } else {
+            // Normal scrolloff behavior - apply margins even when cursor is within viewport
+            // When cursor goes above viewport top + scrolloff margin
+            if cursor_line < current_offset + scrolloff {
+                // Scroll up to position cursor at scrolloff distance from top
+                new_offset = cursor_line.saturating_sub(scrolloff);
+            }
+            // When cursor goes below viewport bottom - scrolloff margin
+            else if cursor_line + scrolloff >= current_offset + visible_lines {
+                // Scroll down to position cursor at scrolloff distance from bottom
+                new_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
+            }
         }
 
         // Ensure scroll_offset doesn't go beyond buffer
