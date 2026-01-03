@@ -19,6 +19,8 @@ impl Editor {
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(mark.line, mark.col);
+                // Center cursor after jump (Vim behavior)
+                self.center_cursor_in_viewport();
                 return true;
             }
         }
@@ -49,6 +51,8 @@ impl Editor {
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(clamped_line, clamped_col);
+                // Center cursor after jump (Vim behavior)
+                self.center_cursor_in_viewport();
                 return true;
             }
         }
@@ -74,6 +78,8 @@ impl Editor {
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(mark.line, first_non_blank);
+                // Center cursor after jump (Vim behavior)
+                self.center_cursor_in_viewport();
                 return true;
             }
         }
@@ -106,6 +112,8 @@ impl Editor {
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(clamped_line, first_non_blank);
+                // Center cursor after jump (Vim behavior)
+                self.center_cursor_in_viewport();
                 return true;
             }
         }
@@ -123,6 +131,8 @@ impl Editor {
     pub fn jump_back(&mut self) -> bool {
         if let Some((line, col)) = self.jump_list.jump_back() {
             self.buffer_mut().cursor_mut().set_position(line, col);
+            // Center cursor after jump (Vim behavior)
+            self.center_cursor_in_viewport();
             true
         } else {
             false
@@ -133,6 +143,8 @@ impl Editor {
     pub fn jump_forward(&mut self) -> bool {
         if let Some((line, col)) = self.jump_list.jump_forward() {
             self.buffer_mut().cursor_mut().set_position(line, col);
+            // Center cursor after jump (Vim behavior)
+            self.center_cursor_in_viewport();
             true
         } else {
             false
