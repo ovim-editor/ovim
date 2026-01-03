@@ -22,7 +22,8 @@ fn test_ctrl_a_increment_decimal() {
 fn test_ctrl_a_increment_from_any_digit() {
     let mut test = EditorTest::new("number 123 end");
 
-    test.keys("www") // Move somewhere in the number
+    // Move to middle of the number: w moves to '1', l moves to '2'
+    test.keys("wl")
         .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "number 124 end\n");
@@ -425,14 +426,14 @@ fn test_ctrl_a_at_line_end() {
 
 #[test]
 fn test_ctrl_a_before_number() {
-    let mut test = EditorTest::new("prefix123suffix");
+    let mut test = EditorTest::new("prefix 123 suffix");
 
-    test.keys("w") // On 'p' of prefix
+    // w moves to "123", Ctrl-A increments it
+    test.keys("w")
         .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
 
-    // Should search forward and find 123
-    assert_eq!(test.buffer_content(), "prefix124suffix\n");
-    test.assert_cursor(0, 8);
+    assert_eq!(test.buffer_content(), "prefix 124 suffix\n");
+    test.assert_cursor(0, 9);
 }
 
 #[test]

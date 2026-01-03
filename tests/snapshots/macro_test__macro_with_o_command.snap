@@ -1,0 +1,13 @@
+---
+source: tests/macro_test.rs
+expression: test.snapshot_state()
+---
+Mode: Normal
+Cursor: 3:7
+Lines: 5
+
+Buffer:
+line 1
+inserted
+line 2
+inserte[d]

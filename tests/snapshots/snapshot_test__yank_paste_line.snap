@@ -4,7 +4,7 @@ expression: test.snapshot_buffer_and_cursor()
 ---
 Cursor: 1:0
 
-lline 1
-ine 1
+line 1
+line 1
 line 2
 line 3

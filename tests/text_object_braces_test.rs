@@ -65,7 +65,7 @@ fn test_yank_inside_braces() {
 
     // But we should be able to paste it
     test.keys("p");
-    assert_eq!(test.buffer_content(), "{hellhello}\n");
+    assert_eq!(test.buffer_content(), "{hellohello}\n");
 }
 
 #[test]

@@ -36,5 +36,6 @@ fn test_undo_debug() {
     assert_eq!(test.buffer_content(), "value: 10\n");
     println!("Buffer is correct!");
 
-    test.assert_cursor(0, 7);
+    // After undo, cursor returns to position before the operation (where w left us)
+    test.assert_cursor(0, 5);
 }

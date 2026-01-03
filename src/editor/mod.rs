@@ -667,32 +667,16 @@ impl Editor {
         // Calculate new scroll offset
         let mut new_offset = current_offset;
 
-        // After viewport commands, only scroll if cursor moves OUTSIDE viewport
-        // This maintains viewport command positioning while still keeping cursor visible
-        if self.viewport_command_active {
-            // Check if cursor is outside current viewport (ignore scrolloff margins)
-            if cursor_line < current_offset {
-                // Cursor above viewport - scroll up (with scrolloff margin)
-                new_offset = cursor_line.saturating_sub(scrolloff);
-                self.viewport_command_active = false; // Clear flag, we had to scroll
-            } else if cursor_line >= current_offset + visible_lines {
-                // Cursor below viewport - scroll down (with scrolloff margin)
-                new_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
-                self.viewport_command_active = false; // Clear flag, we had to scroll
-            }
-            // Cursor still within viewport - maintain current scroll position
-        } else {
-            // Normal scrolloff behavior - apply margins even when cursor is within viewport
-            // When cursor goes above viewport top + scrolloff margin
-            if cursor_line < current_offset + scrolloff {
-                // Scroll up to position cursor at scrolloff distance from top
-                new_offset = cursor_line.saturating_sub(scrolloff);
-            }
-            // When cursor goes below viewport bottom - scrolloff margin
-            else if cursor_line + scrolloff >= current_offset + visible_lines {
-                // Scroll down to position cursor at scrolloff distance from bottom
-                new_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
-            }
+        // Apply scrolloff margins - keep cursor at least scrolloff lines from edges
+        // When cursor goes above viewport top + scrolloff margin
+        if cursor_line < current_offset + scrolloff {
+            // Scroll up to position cursor at scrolloff distance from top
+            new_offset = cursor_line.saturating_sub(scrolloff);
+        }
+        // When cursor goes below viewport bottom - scrolloff margin
+        else if cursor_line + scrolloff >= current_offset + visible_lines {
+            // Scroll down to position cursor at scrolloff distance from bottom
+            new_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
         }
 
         // Ensure scroll_offset doesn't go beyond buffer
