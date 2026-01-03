@@ -149,11 +149,11 @@ viewport_test! {
     lines: 50,
     viewport: 20,
     setup: "24j",
-    action: "zb",           // Position at bottom
-    then: "j",
+    action: "zb",           // Position at bottom (scroll=5, viewport shows 5-24)
+    then: "j",              // Move to line 25 (BELOW viewport)
     expect: {
         cursor_line: 25,
-        scroll_offset: 5,   // Should STAY at 5 (24 - 19)
+        scroll_offset: 6,   // Scroll adjusts to keep cursor visible (25-19=6)
     }
 }
 
@@ -244,11 +244,11 @@ viewport_test! {
     lines: 50,
     viewport: 20,
     setup: "24j",
-    action: "zt",
-    then: "k",  // Move up
+    action: "zt",           // Position at top (scroll=24, viewport shows 24-43)
+    then: "k",              // Move to line 23 (ABOVE viewport)
     expect: {
         cursor_line: 23,
-        scroll_offset: 24,  // Scroll shouldn't change
+        scroll_offset: 23,  // Scroll adjusts to keep cursor visible
     }
 }
 
