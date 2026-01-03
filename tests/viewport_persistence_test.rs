@@ -38,6 +38,8 @@ macro_rules! viewport_test {
             test.editor.init_window_manager(80, $viewport);
             test.editor.set_viewport_height($viewport);
 
+            // Default scrolloff to 0 for viewport tests (unless explicitly set)
+            test.editor.options.scrolloff = 0;
             $(
                 test.editor.options.scrolloff = $scrolloff;
             )?

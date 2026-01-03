@@ -320,6 +320,12 @@ impl Renderer {
         // Update editor's viewport height for accurate scroll calculations
         editor.set_viewport_height(buffer_area.height as usize);
 
+        // Update window manager dimensions to match actual buffer area
+        // This ensures viewport commands (zt, zb, zz) use the correct height
+        if let Some(wm) = editor.window_manager_mut() {
+            wm.update_dimensions(buffer_area.width, buffer_area.height);
+        }
+
         // Render progress line if present
         if has_progress {
             if let Some(progress_msg) = editor.lsp_progress_message() {
