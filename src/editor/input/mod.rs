@@ -94,8 +94,12 @@ impl InputHandler {
         editor.mark_dirty();
 
         // Update scroll offset to keep cursor visible with scrolloff margin
-        // Skip if viewport commands (zz, zt, zb) explicitly set scroll position
-        if !editor.skip_scroll_update {
+        // Skip if:
+        // 1. Viewport commands (zz, zt, zb) explicitly set scroll position
+        // 2. There's a pending viewport command (e.g., 'z' waiting for 't')
+        //    This prevents scroll changes between multi-key sequences like 'zt'
+        let is_viewport_pending = matches!(editor.pending_command(), Some('z') | Some('Z'));
+        if !editor.skip_scroll_update && !is_viewport_pending {
             editor.update_scroll_offset();
         } else {
             // Reset flag for next key event
