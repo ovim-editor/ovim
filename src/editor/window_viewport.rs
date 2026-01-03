@@ -110,6 +110,9 @@ impl Editor {
                 window.center_cursor();
             }
         }
+
+        // Skip automatic scroll update - we explicitly set the scroll position
+        self.skip_scroll_update = true;
     }
 
     /// Moves cursor line to top of viewport
@@ -132,6 +135,9 @@ impl Editor {
                 window.move_cursor_to_top();
             }
         }
+
+        // Skip automatic scroll update - we explicitly set the scroll position
+        self.skip_scroll_update = true;
     }
 
     /// Moves cursor line to bottom of viewport
@@ -154,6 +160,9 @@ impl Editor {
                 window.move_cursor_to_bottom();
             }
         }
+
+        // Skip automatic scroll update - we explicitly set the scroll position
+        self.skip_scroll_update = true;
     }
 
     /// Scrolls down half a page (both viewport and cursor)

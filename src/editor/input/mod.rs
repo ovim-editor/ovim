@@ -94,7 +94,13 @@ impl InputHandler {
         editor.mark_dirty();
 
         // Update scroll offset to keep cursor visible with scrolloff margin
-        editor.update_scroll_offset();
+        // Skip if viewport commands (zz, zt, zb) explicitly set scroll position
+        if !editor.skip_scroll_update {
+            editor.update_scroll_offset();
+        } else {
+            // Reset flag for next key event
+            editor.skip_scroll_update = false;
+        }
 
         result
     }

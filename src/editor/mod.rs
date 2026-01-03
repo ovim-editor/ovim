@@ -277,6 +277,8 @@ pub struct Editor {
     last_syntax_duration_micros: Option<u64>,
     /// Render dirty flag - set when UI needs redraw
     render_dirty: bool,
+    /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
+    skip_scroll_update: bool,
     /// Input latency samples in microseconds (circular buffer, max 1000 samples)
     input_latency_samples: Vec<u64>,
     /// Last LSP serialize (rope->string) duration in microseconds
@@ -415,6 +417,7 @@ impl Editor {
             last_render_duration_micros: None,
             last_syntax_duration_micros: None,
             render_dirty: true, // Start dirty to force initial render
+            skip_scroll_update: false,
             input_latency_samples: Vec::new(),
             last_lsp_serialize_micros: None,
             last_git_status_micros: None,
@@ -493,6 +496,7 @@ impl Editor {
             last_render_duration_micros: None,
             last_syntax_duration_micros: None,
             render_dirty: true, // Start dirty to force initial render
+            skip_scroll_update: false,
             input_latency_samples: Vec::new(),
             last_lsp_serialize_micros: None,
             last_git_status_micros: None,
