@@ -1,3 +1,7 @@
+mod viewport_assertions;
+
+pub use viewport_assertions::ViewportAssertion;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
