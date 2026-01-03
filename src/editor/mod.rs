@@ -644,23 +644,27 @@ impl Editor {
         self.scroll_offset
     }
 
-    /// Updates scroll offset to keep cursor visible with scrolloff margin
+    /// Updates scroll offset to keep cursor visible
+    ///
+    /// After viewport commands (zt, zz, zb), this uses a less aggressive approach:
+    /// only scrolls when cursor would go OFFSCREEN, not just outside scrolloff margin.
+    /// This preserves the viewport positioning while keeping cursor visible.
     pub fn update_scroll_offset(&mut self) {
         let cursor_line = self.buffer().cursor().line();
-        let scrolloff = self.options.scrolloff;
         let visible_lines = self.viewport_height;
+        let current_offset = self.scroll_offset();
 
         // Calculate new scroll offset
-        let mut new_offset = self.scroll_offset;
+        let mut new_offset = current_offset;
 
-        // Scroll up if cursor is too close to top
-        if cursor_line < new_offset + scrolloff {
-            new_offset = cursor_line.saturating_sub(scrolloff);
-        }
-        // Scroll down if cursor is too close to bottom
-        else if cursor_line + scrolloff >= new_offset + visible_lines {
-            new_offset = cursor_line + scrolloff + 1
-                - visible_lines.min(cursor_line + scrolloff + 1);
+        // Only scroll if cursor is actually outside the viewport (would be invisible)
+        // This is less aggressive than maintaining scrolloff, preserving viewport commands
+        if cursor_line < current_offset {
+            // Cursor above viewport - scroll up to make it visible
+            new_offset = cursor_line;
+        } else if cursor_line >= current_offset + visible_lines {
+            // Cursor below viewport - scroll down to make it visible
+            new_offset = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
         }
 
         // Ensure scroll_offset doesn't go beyond buffer
