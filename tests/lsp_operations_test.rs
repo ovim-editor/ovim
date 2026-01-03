@@ -208,8 +208,10 @@ fn test_file_path_for_lsp() {
     // Set a file path
     test.set_file_path("/tmp/test.rs".to_string());
 
-    // File path should be set
-    assert_eq!(test.editor.buffer().file_path(), Some("/tmp/test.rs"));
+    // File path should be set (and normalized - on macOS /tmp -> /private/tmp)
+    let file_path = test.editor.buffer().file_path();
+    assert!(file_path.is_some());
+    assert!(file_path.unwrap().ends_with("/tmp/test.rs"));
 }
 
 /// Test LSP works with different file extensions
@@ -218,17 +220,17 @@ fn test_lsp_file_type_detection() {
     // Rust file
     let mut test_rs = EditorTest::empty();
     test_rs.set_file_path("/tmp/test.rs".to_string());
-    assert_eq!(test_rs.editor.buffer().file_path(), Some("/tmp/test.rs"));
+    assert!(test_rs.editor.buffer().file_path().unwrap().ends_with("/tmp/test.rs"));
 
     // JavaScript file
     let mut test_js = EditorTest::empty();
     test_js.set_file_path("/tmp/test.js".to_string());
-    assert_eq!(test_js.editor.buffer().file_path(), Some("/tmp/test.js"));
+    assert!(test_js.editor.buffer().file_path().unwrap().ends_with("/tmp/test.js"));
 
     // Python file
     let mut test_py = EditorTest::empty();
     test_py.set_file_path("/tmp/test.py".to_string());
-    assert_eq!(test_py.editor.buffer().file_path(), Some("/tmp/test.py"));
+    assert!(test_py.editor.buffer().file_path().unwrap().ends_with("/tmp/test.py"));
 }
 
 /// Test snapshot of code with LSP-relevant syntax

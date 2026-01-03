@@ -66,7 +66,7 @@ fn test_scrolloff_zero_allows_cursor_at_top() {
 }
 
 #[test]
-fn test_viewport_command_ignores_scrolloff() {
+fn test_viewport_command_respects_scrolloff() {
     let content = (1..=50)
         .map(|i| format!("Line {}", i))
         .collect::<Vec<_>>()
@@ -86,12 +86,12 @@ fn test_viewport_command_ignores_scrolloff() {
     // Cursor should be on line 24
     assert_eq!(viewport.cursor_line(), 24);
 
-    // zt should position cursor line at EXACT top (scroll_offset=24)
-    // even with scrolloff=5
+    // zt should RESPECT scrolloff - cursor positioned 5 lines from top
+    // scroll_offset = cursor_line - scrolloff = 24 - 5 = 19
     assert_eq!(
         viewport.scroll_offset(),
-        24,
-        "zt should position at exact top (scroll_offset=24) regardless of scrolloff. Got {}",
+        19,
+        "zt with scrolloff=5 should position at scroll_offset=19. Got {}",
         viewport.scroll_offset()
     );
 
@@ -101,12 +101,29 @@ fn test_viewport_command_ignores_scrolloff() {
     let viewport = ViewportAssertion::new(&test.editor);
     assert_eq!(viewport.cursor_line(), 25);
 
-    // Scroll should stay at 24 (viewport command persistence)
-    // not jump due to scrolloff
+    // Cursor at line 25 is at position 6 from top (25 - 19 = 6)
+    // This is > scrolloff=5, so still within safe zone - no scroll needed
     assert_eq!(
         viewport.scroll_offset(),
-        24,
-        "After zt, scroll_offset should persist at 24 when moving down. Got {}",
+        19,
+        "After zt+j, scroll stays at 19 (cursor still in safe zone). Got {}",
+        viewport.scroll_offset()
+    );
+
+    // Move down 5 more lines to test scrolloff kicks in
+    test.keys("jjjjj");
+
+    let viewport = ViewportAssertion::new(&test.editor);
+    assert_eq!(viewport.cursor_line(), 30);
+
+    // Cursor at line 30 would be at position 11 from top (30 - 19 = 11)
+    // This is getting close to bottom (viewport ends at position 19)
+    // Bottom - cursor = 19 - 11 = 8 lines below cursor, which is > scrolloff=5
+    // So still no scroll needed
+    assert_eq!(
+        viewport.scroll_offset(),
+        19,
+        "After moving down 6 lines total, scroll still at 19 (still in safe zone). Got {}",
         viewport.scroll_offset()
     );
 }

@@ -123,17 +123,17 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
-        // Extract buffer cursor position before borrowing window_manager
-        let (line, col) = {
+        // Extract buffer cursor position and scrolloff before borrowing window_manager
+        let (line, col, scrolloff) = {
             let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col())
+            (cursor.line(), cursor.col(), self.options.scrolloff)
         };
 
         // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_top();
+                window.move_cursor_to_top(scrolloff);
             }
         }
 
@@ -149,17 +149,17 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
-        // Extract buffer cursor position before borrowing window_manager
-        let (line, col) = {
+        // Extract buffer cursor position and scrolloff before borrowing window_manager
+        let (line, col, scrolloff) = {
             let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col())
+            (cursor.line(), cursor.col(), self.options.scrolloff)
         };
 
         // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_bottom();
+                window.move_cursor_to_bottom(scrolloff);
             }
         }
 

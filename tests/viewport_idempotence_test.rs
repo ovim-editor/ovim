@@ -10,6 +10,7 @@ fn test_zt_is_idempotent() {
     // Initialize window manager with a known viewport size
     test.editor.init_window_manager(80, 20);
     test.editor.set_viewport_height(20);
+    test.editor.options.scrolloff = 0; // Disable scrolloff for these tests
 
     // Move to line 25 (middle of buffer) - use 24j to go down 24 lines
     test.keys("24j");
@@ -85,6 +86,7 @@ fn test_zz_is_idempotent() {
     // Initialize window manager with a known viewport size
     test.editor.init_window_manager(80, 20);
     test.editor.set_viewport_height(20);
+    test.editor.options.scrolloff = 0; // Disable scrolloff for these tests
 
     // Move to line 25 (middle of buffer)
     test.keys("24j");
@@ -117,6 +119,7 @@ fn test_zb_is_idempotent() {
     // Initialize window manager with a known viewport size
     test.editor.init_window_manager(80, 20);
     test.editor.set_viewport_height(20);
+    test.editor.options.scrolloff = 0; // Disable scrolloff for these tests
 
     // Move to line 25 (middle of buffer)
     test.keys("24j");

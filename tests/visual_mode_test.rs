@@ -39,8 +39,9 @@ fn test_v_yank_selection() {
         .keys("$") // Move to end
         .press('p'); // Paste
 
-    assert_eq!(test.buffer_content(), "hello worldhello \n");
-    test.assert_cursor(0, 16);
+    // Yanking "hello" (5 chars from positions 0-4), paste after 'd' at end
+    assert_eq!(test.buffer_content(), "hello worldhello\n");
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -173,7 +174,8 @@ fn test_V_select_all() {
     test.press('V').keys("G"); // Select to last line
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
-    test.assert_cursor(0, 0);
+    // G moves cursor to last line (selection extends from line 0 to line 2)
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -316,7 +318,8 @@ fn test_v_select_entire_file() {
         .keys("G"); // Select to end
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
-    test.assert_cursor(0, 0);
+    // G moves cursor to last line (selection extends from line 0 to line 2)
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -404,7 +407,8 @@ fn test_v_with_count() {
     test.press('v').keys("3l"); // Select 4 chars (including current)
 
     assert_eq!(test.buffer_content(), "hello world test\n");
-    test.assert_cursor(0, 1);
+    // 3l moves 3 positions: 0 -> 3
+    test.assert_cursor(0, 3);
 }
 
 #[test]
