@@ -816,6 +816,8 @@ impl Editor {
 
                     // Move cursor to location
                     self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                    // Center cursor after jump (Vim behavior)
+                    self.center_cursor_in_viewport();
                     self.set_lsp_status(format!(
                         "Definition: {}:{}:{}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -906,6 +908,8 @@ impl Editor {
                     }
 
                     self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                    // Center cursor after jump (Vim behavior)
+                    self.center_cursor_in_viewport();
                     self.set_lsp_status(format!(
                         "Implementation: {}:{}:{}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -997,6 +1001,8 @@ impl Editor {
                     }
 
                     self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                    // Center cursor after jump (Vim behavior)
+                    self.center_cursor_in_viewport();
                     self.set_lsp_status(format!(
                         "Type: {}:{}:{}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
@@ -2199,6 +2205,8 @@ impl Editor {
 
             // Move cursor to location
             self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+            // Center cursor after jump (Vim behavior)
+            self.center_cursor_in_viewport();
             self.set_lsp_status(format!(
                 "Navigated to {}:{}:{}",
                 path.file_name().unwrap_or_default().to_string_lossy(),
