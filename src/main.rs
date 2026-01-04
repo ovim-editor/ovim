@@ -34,6 +34,13 @@ async fn main() -> Result<()> {
     // Otherwise, run editor mode
     let args = cli.editor_args();
 
+    // Initialize language registry (Phase 1: Foundation)
+    // This loads embedded languages.toml and merges with user config
+    if let Err(e) = ovim::language_config::LanguageRegistry::init() {
+        eprintln!("Warning: Failed to initialize language registry: {}", e);
+        eprintln!("Continuing with limited language support...");
+    }
+
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
         eprintln!("Warning: Failed to initialize LSP logging: {}", e);

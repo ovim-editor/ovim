@@ -1,0 +1,237 @@
+# ovim Language Configuration
+#
+# This file defines language support for syntax highlighting and LSP integration.
+# It is embedded into the ovim binary at compile time using include_str!().
+#
+# User overrides: Create ~/.config/ovim/languages.toml to customize or add languages.
+# User config merges with this embedded config:
+#   - Same language ID → user config overrides
+#   - New language ID → user config adds
+#
+# See: code-docs/LANGUAGE_SUPPORT_ARCHITECTURE_ANALYSIS.md for design details
+
+# ============================================================================
+# Rust
+# ============================================================================
+
+[[language]]
+id = "rust"
+name = "Rust"
+extensions = ["rs"]
+
+[language.syntax]
+grammar = "tree-sitter-rust"
+official = { crate = "tree_sitter_rust", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "rust-analyzer"
+root_markers = ["Cargo.toml", "Cargo.lock"]
+install_hint = "Install with: rustup component add rust-analyzer"
+
+# ============================================================================
+# TypeScript
+# ============================================================================
+
+[[language]]
+id = "typescript"
+name = "TypeScript"
+extensions = ["ts", "tsx", "mts", "cts"]
+
+[language.syntax]
+grammar = "tree-sitter-typescript"
+official = { crate = "tree_sitter_typescript", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "typescript-language-server"
+args = ["--stdio"]
+fallback_commands = [
+    "node_modules/.bin/typescript-language-server",
+    "~/.npm-global/bin/typescript-language-server",
+    "~/.local/share/pnpm/typescript-language-server"
+]
+root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
+install_hint = "Install with: npm install -g typescript-language-server typescript"
+
+# Note: Phase 3 will add auto_install config here
+# [language.lsp.auto_install]
+# method = { type = "npm", package = "typescript-language-server", global = true }
+
+# ============================================================================
+# JavaScript
+# ============================================================================
+
+[[language]]
+id = "javascript"
+name = "JavaScript"
+extensions = ["js", "jsx", "mjs", "cjs"]
+
+[language.syntax]
+grammar = "tree-sitter-javascript"
+official = { crate = "tree_sitter_javascript", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "typescript-language-server"
+args = ["--stdio"]
+fallback_commands = [
+    "node_modules/.bin/typescript-language-server",
+    "~/.npm-global/bin/typescript-language-server"
+]
+root_markers = ["package.json", "node_modules", ".git"]
+install_hint = "Install with: npm install -g typescript-language-server typescript"
+
+# ============================================================================
+# Python
+# ============================================================================
+
+[[language]]
+id = "python"
+name = "Python"
+extensions = ["py", "pyw", "pyi"]
+filenames = ["pipfile"]
+
+[language.syntax]
+grammar = "tree-sitter-python"
+official = { crate = "tree_sitter_python", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+# Try pyright first (current default in python.rs)
+command = "pyright-langserver"
+args = ["--stdio"]
+fallback_commands = ["pylsp", "jedi-language-server"]
+root_markers = ["pyproject.toml", "setup.py", "requirements.txt", ".git"]
+install_hint = "Install with: pip install pyright (or: pip install python-lsp-server)"
+
+# ============================================================================
+# Java
+# ============================================================================
+
+[[language]]
+id = "java"
+name = "Java"
+extensions = ["java"]
+
+[language.syntax]
+grammar = "tree-sitter-java"
+official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
+
+# Note: Java has complex auto-download logic in src/lsp_init/java.rs
+# This config is for reference. Phase 2 will continue using java.rs
+# until the auto-download system is generalized in Phase 3+
+[language.lsp]
+command = "hyperion-lsp"
+fallback_commands = [
+    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
+    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
+]
+root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
+install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+
+# ============================================================================
+# Markdown (Syntax only - no LSP needed for most use cases)
+# ============================================================================
+
+[[language]]
+id = "markdown"
+name = "Markdown"
+extensions = ["md", "markdown", "mdown", "mkd", "mkdn", "mdx"]
+filenames = ["readme", "changelog", "contributing", "license"]
+
+[language.syntax]
+grammar = "tree-sitter-md"
+file = { path = "src/syntax/queries/markdown.scm" }
+
+# No LSP configured - syntax highlighting only
+# Users can add their own LSP in ~/.config/ovim/languages.toml if desired
+
+# ============================================================================
+# Additional Languages with Syntax Support
+# (LSP not configured in Phase 1 - can be added by users)
+# ============================================================================
+
+[[language]]
+id = "json"
+name = "JSON"
+extensions = ["json", "jsonc", "json5"]
+filenames = [".eslintrc", ".prettierrc", ".babelrc"]
+
+[language.syntax]
+grammar = "tree-sitter-json"
+official = { crate = "tree_sitter_json", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "yaml"
+name = "YAML"
+extensions = ["yaml", "yml"]
+filenames = [".travis.yml", ".gitlab-ci.yml", "docker-compose.yml"]
+
+[language.syntax]
+grammar = "tree-sitter-yaml"
+# Note: tree-sitter-yaml may not have HIGHLIGHTS_QUERY constant
+# May need to create custom query file in Phase 2
+official = { crate = "tree_sitter_yaml", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "html"
+name = "HTML"
+extensions = ["html", "htm"]
+
+[language.syntax]
+grammar = "tree-sitter-html"
+official = { crate = "tree_sitter_html", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "css"
+name = "CSS"
+extensions = ["css", "scss", "sass", "less"]
+
+[language.syntax]
+grammar = "tree-sitter-css"
+official = { crate = "tree_sitter_css", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "go"
+name = "Go"
+extensions = ["go"]
+filenames = ["go.mod", "go.sum"]
+
+[language.syntax]
+grammar = "tree-sitter-go"
+official = { crate = "tree_sitter_go", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "c"
+name = "C"
+extensions = ["c", "h"]
+
+[language.syntax]
+grammar = "tree-sitter-c"
+official = { crate = "tree_sitter_c", constant = "HIGHLIGHT_QUERY" }
+
+[[language]]
+id = "cpp"
+name = "C++"
+extensions = ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"]
+
+[language.syntax]
+grammar = "tree-sitter-cpp"
+official = { crate = "tree_sitter_cpp", constant = "HIGHLIGHT_QUERY" }
+
+[[language]]
+id = "ruby"
+name = "Ruby"
+extensions = ["rb", "rake", "gemspec"]
+filenames = ["rakefile", "gemfile"]
+
+[language.syntax]
+grammar = "tree-sitter-ruby"
+official = { crate = "tree_sitter_ruby", constant = "HIGHLIGHTS_QUERY" }
+
+[[language]]
+id = "bash"
+name = "Bash"
+extensions = ["sh", "bash", "zsh"]
+filenames = [".bashrc", ".bash_profile", ".zshrc"]
+
+[language.syntax]
+grammar = "tree-sitter-bash"
+official = { crate = "tree_sitter_bash", constant = "HIGHLIGHT_QUERY" }
