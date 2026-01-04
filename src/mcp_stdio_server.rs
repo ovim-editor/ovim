@@ -1,7 +1,11 @@
-/// MCP (Model Context Protocol) stdio server
-///
-/// Implements a JSON-RPC 2.0 server that communicates via stdin/stdout.
-/// Claude Code spawns this process and sends MCP requests/responses.
+//! MCP (Model Context Protocol) stdio server
+//!
+//! Implements a JSON-RPC 2.0 server that communicates via stdin/stdout.
+//! Claude Code spawns this process and sends MCP requests/responses.
+//!
+//! This module runs as a separate process and uses stderr for debugging output.
+#![allow(clippy::print_stderr)]
+
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};

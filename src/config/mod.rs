@@ -1,4 +1,3 @@
-#[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -39,7 +38,6 @@ impl Default for EditorOptions {
 /// Configuration manager for ovim
 pub struct Config {
     /// Lua context for executing configuration
-    #[cfg(feature = "lua")]
     lua_context: LuaContext,
     /// Runtime paths for plugins and scripts
     runtime_paths: Vec<PathBuf>,
@@ -50,12 +48,10 @@ pub struct Config {
 impl Config {
     /// Creates a new configuration manager
     pub fn new() -> Result<Self> {
-        #[cfg(feature = "lua")]
         let lua_context = LuaContext::new()?;
         let runtime_paths = Self::get_runtime_paths();
 
         Ok(Self {
-            #[cfg(feature = "lua")]
             lua_context,
             runtime_paths,
             options: EditorOptions::default(),
@@ -63,25 +59,21 @@ impl Config {
     }
 
     /// Loads configuration from standard locations
-    #[cfg(feature = "lua")]
     pub fn load(&mut self) -> Result<bool> {
         self.lua_context.load_config()
     }
 
     /// Reloads configuration
-    #[cfg(feature = "lua")]
     pub fn reload(&mut self) -> Result<()> {
         self.lua_context.reload_config()
     }
 
     /// Gets a reference to the Lua context
-    #[cfg(feature = "lua")]
     pub fn lua_context(&self) -> &LuaContext {
         &self.lua_context
     }
 
     /// Gets a mutable reference to the Lua context
-    #[cfg(feature = "lua")]
     pub fn lua_context_mut(&mut self) -> &mut LuaContext {
         &mut self.lua_context
     }
@@ -129,7 +121,6 @@ impl Config {
     }
 
     /// Discovers and loads plugins from runtime paths
-    #[cfg(feature = "lua")]
     pub fn load_plugins(&mut self) -> Result<()> {
         for runtime_path in &self.runtime_paths {
             if !runtime_path.exists() {
@@ -148,7 +139,7 @@ impl Config {
                             if init_path.exists() {
                                 // Load the plugin
                                 if let Err(e) = self.lua_context.execute_file(&init_path) {
-                                    eprintln!("Failed to load plugin {:?}: {}", entry.path(), e);
+                                    crate::log_error!("config", "Failed to load plugin {:?}: {}", entry.path(), e);
                                 }
                             }
                         }

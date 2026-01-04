@@ -5,6 +5,9 @@
 //! - Session naming for multiple concurrent instances
 //! - Automatic cleanup on exit
 //! - Status checking (LSP ready, etc.)
+//!
+//! Client-side messages use stderr for user feedback.
+#![allow(clippy::print_stderr)]
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

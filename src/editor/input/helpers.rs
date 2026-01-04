@@ -105,8 +105,6 @@ pub fn clamp_cursor_with_goal_column(editor: &mut Editor) {
             desired.min(max_col)
         };
 
-        // eprintln!("[DEBUG clamp_cursor_with_goal_column] line={}, line_len={}, max_col={}, desired={}, old_col={}, target_col={}, mode={:?}",
-        //   line_idx, line_len, max_col, desired, old_col, target_col, mode);
         cursor.set_col_preserve_desired(target_col);
     }
 }

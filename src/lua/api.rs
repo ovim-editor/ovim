@@ -217,6 +217,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Number(n) => format!("set scroll={}", n as i64),
                     _ => return Err(mlua::Error::external("scroll must be number")),
                 },
+                "textwidth" | "tw" => match value {
+                    mlua::Value::Integer(n) => format!("set textwidth={}", n),
+                    mlua::Value::Number(n) => format!("set textwidth={}", n as i64),
+                    _ => return Err(mlua::Error::external("textwidth must be number")),
+                },
                 _ => {
                     return Err(mlua::Error::external(format!("Unknown option: {}", key)));
                 }
