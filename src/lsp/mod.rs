@@ -993,28 +993,36 @@ impl LspManager {
 
     /// Processes pending notifications from language servers
     /// Should be called regularly from the main event loop
-    pub async fn process_notifications(&self) {
+    pub async fn process_notifications(&self) -> usize {
         let mut rx = self.notification_rx.lock().await;
+        let mut count = 0;
 
         // Process all pending notifications (non-blocking)
         while let Ok(notification) = rx.try_recv() {
             self.handle_notification(&notification.language_id, notification.message)
                 .await;
+            count += 1;
         }
+
+        count
     }
 
     /// Processes pending flush requests from debounce timers
     /// Should be called regularly from the main event loop
-    pub async fn process_flush_requests(&self) {
+    /// Returns the number of flush requests processed
+    pub async fn process_flush_requests(&self) -> usize {
         let mut rx_opt = self.flush_rx.lock().await;
+        let mut count = 0;
         if let Some(rx) = rx_opt.as_mut() {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
                 if let Err(e) = self.flush_pending_changes(&uri).await {
                     lsp_error!("Debounce", "Error flushing changes for {}: {}", uri.as_str(), e);
                 }
+                count += 1;
             }
         }
+        count
     }
 
     /// Polls for pending workspace edits that need to be applied by the Editor
@@ -1345,26 +1353,31 @@ impl LspManager {
             lsp_info!("LSP-HOVER", "Result is null");
             None
         } else {
-            match serde_json::from_value(result.clone()) {
+            // Move result instead of cloning (from_value consumes it)
+            match serde_json::from_value(result) {
                 Ok(hover) => {
                     lsp_info!("LSP-HOVER", "Successfully parsed hover response");
                     Some(hover)
                 }
                 Err(e) => {
-                    lsp_warn!("LSP-HOVER", "Failed to parse hover response: {} | Raw: {:?}", e, result);
+                    lsp_warn!("LSP-HOVER", "Failed to parse hover response: {}", e);
                     None
                 }
             }
         };
 
-        // Extract text from hover response
+        // Extract text from hover response with optimized array handling
         let hover_text = response.and_then(|hover| match hover.contents {
             lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
-            lsp_types::HoverContents::Array(contents) => {
-                let texts: Vec<String> = contents.into_iter().map(marked_string_to_text).collect();
-                if texts.is_empty() {
+            lsp_types::HoverContents::Array(mut contents) => {
+                if contents.is_empty() {
                     None
+                } else if contents.len() == 1 {
+                    // Single item: no need to allocate a Vec and join
+                    Some(marked_string_to_text(contents.remove(0)))
                 } else {
+                    // Multiple items: allocate and join
+                    let texts: Vec<String> = contents.into_iter().map(marked_string_to_text).collect();
                     Some(texts.join("\n\n"))
                 }
             }
