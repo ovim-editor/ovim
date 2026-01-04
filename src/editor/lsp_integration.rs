@@ -2958,9 +2958,10 @@ impl Editor {
         use std::path::PathBuf;
 
         let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let display_items: Vec<String> = items.iter().map(|r| r.display.clone()).collect();
 
-        let picker = Picker::new_lsp_locations(base_dir, display_items);
+        // Use new_with_results to preserve the actual file paths in location field
+        // This is crucial for preview loading to work correctly
+        let picker = Picker::new_with_results(base_dir, items);
         self.set_picker(picker);
         self.set_mode(Mode::Picker);
         self.mark_picker_selection_changed();
