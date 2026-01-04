@@ -648,7 +648,11 @@ impl Editor {
 
             match result {
                 Ok(changed) => {
-                    if !changed {
+                    if changed {
+                        // Action changed editor state (e.g., jumped to definition)
+                        // Mark dirty to trigger redraw
+                        self.mark_dirty();
+                    } else {
                         // Action didn't change editor state (e.g., no results)
                         // Status message should already be set
                     }
