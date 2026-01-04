@@ -31,8 +31,13 @@ async fn process_editor_tick(
     }
 
     if let Some(lsp_manager) = editor.lsp_manager() {
-        lsp_manager.process_notifications().await;
-        lsp_manager.process_flush_requests().await;
+        let notification_count = lsp_manager.process_notifications().await;
+        let flush_count = lsp_manager.process_flush_requests().await;
+
+        // Mark dirty if we processed any LSP messages
+        if notification_count > 0 || flush_count > 0 {
+            editor.mark_dirty();
+        }
 
         // Poll for server-initiated workspace edits (e.g., from refactoring operations)
         let pending_edits = lsp_manager.poll_pending_workspace_edits().await;
@@ -41,12 +46,15 @@ async fn process_editor_tick(
                 Ok(applied) => {
                     if applied {
                         editor.set_lsp_status("Applied workspace edit".to_string());
+                        editor.mark_dirty(); // Redraw after applying workspace edit
                     } else {
                         editor.set_lsp_status("Partially applied workspace edit".to_string());
+                        editor.mark_dirty(); // Redraw even if partially applied
                     }
                 }
                 Err(e) => {
                     editor.set_lsp_status(format!("Failed to apply edit: {}", e));
+                    editor.mark_dirty(); // Redraw to show error status
                 }
             }
         }
@@ -60,11 +68,13 @@ async fn process_editor_tick(
     if let Some(lsp_manager) = editor.lsp_manager() {
         if lsp_manager.diagnostics_changed() {
             editor.update_diagnostic_cache().await;
+            editor.mark_dirty(); // Redraw when diagnostics change
         }
     }
 
     if editor.buffer().should_init_syntax() {
         editor.buffer_mut().enable_syntax_highlighting();
+        editor.mark_dirty(); // Redraw when syntax highlighting is enabled
     }
 
     editor.process_pending_lsp_actions().await;
