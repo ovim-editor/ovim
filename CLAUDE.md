@@ -21,6 +21,9 @@ cargo build --release
 ./target/release/ovim health                  # Auto-discover & check health
 ./target/release/ovim lsp-status              # Auto-discover & get LSP server status
 ./target/release/ovim kill                    # Auto-discover & kill session
+./target/release/ovim cleanup                 # Clean up stale/expired/corrupted session files
+./target/release/ovim cleanup --dry-run       # Show what would be cleaned up (no changes)
+./target/release/ovim cleanup --max-age 7     # Remove sessions older than 7 days
 
 # Explicit session override (when multiple sessions running)
 ./target/release/ovim send "ggK" --session dev
@@ -311,7 +314,12 @@ vim.opt.shiftwidth = 4
 ### Session Management
 - `SessionInfo` struct in `session.rs` with PID, port, file, LSP status
 - Written on startup, auto-deleted on exit (signal handlers)
-- `ovim-ctl` auto-discovers ports from session files
+- Auto-cleanup of stale sessions (dead processes) during discovery
+- PID verification with process start time to prevent PID reuse issues
+- Session health checks verify API endpoint accessibility
+- Session expiry support (optional max-age) for long-running cleanup
+- Atomic writes with temp files to prevent corruption
+- Detailed cleanup reporting with dry-run support
 
 ### LSP Integration
 - `LspManager` coordinates multiple language servers

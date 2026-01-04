@@ -201,6 +201,17 @@ pub enum Command {
         #[arg(long, default_value = "30000")]
         timeout: u64,
     },
+
+    /// Clean up stale, expired, and corrupted session files
+    Cleanup {
+        /// Maximum session age in days (sessions older than this will be removed)
+        #[arg(long)]
+        max_age: Option<u64>,
+
+        /// Show what would be cleaned up without actually removing files
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Parse dimension string like "80x24" into (width, height)

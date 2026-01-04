@@ -52,6 +52,7 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::Diagnostics { session } => cmd_diagnostics(session),
         Command::Symbols { session } => cmd_symbols(session),
         Command::WaitLsp { session, timeout } => cmd_wait_lsp(session, timeout),
+        Command::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
     }
 }
 
@@ -882,4 +883,69 @@ fn cmd_wait_lsp(session_name: Option<String>, timeout_ms: u64) -> Result<()> {
 
         thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// Clean up stale, expired, and corrupted session files
+fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
+    use crate::session::cleanup_stale_sessions;
+    use std::time::Duration;
+
+    // Convert days to Duration
+    let max_age = max_age_days.map(|days| Duration::from_secs(days * 24 * 60 * 60));
+
+    println!("Cleaning up session files...\n");
+
+    if dry_run {
+        println!("[DRY RUN MODE - no files will be removed]\n");
+    }
+
+    if let Some(days) = max_age_days {
+        println!("Maximum session age: {} days\n", days);
+    }
+
+    let result = cleanup_stale_sessions(max_age, dry_run)
+        .context("Failed to clean up sessions")?;
+
+    // Report results
+    if result.total_removed() == 0 {
+        println!("No stale sessions found. Everything is clean!");
+        return Ok(());
+    }
+
+    println!("Cleanup Summary:");
+    println!("─────────────────────────────────────────────");
+
+    if result.stale_removed > 0 {
+        println!("  Stale sessions (dead processes):  {}", result.stale_removed);
+    }
+
+    if result.expired_removed > 0 {
+        println!("  Expired sessions (too old):       {}", result.expired_removed);
+    }
+
+    if result.corrupted_removed > 0 {
+        println!("  Corrupted session files:          {}", result.corrupted_removed);
+    }
+
+    if result.temp_files_removed > 0 {
+        println!("  Orphaned temp files:              {}", result.temp_files_removed);
+    }
+
+    println!("─────────────────────────────────────────────");
+    println!("  Total removed:                    {}", result.total_removed());
+
+    if !result.removed_sessions.is_empty() {
+        println!("\nRemoved sessions:");
+        for session in &result.removed_sessions {
+            println!("  - {}", session);
+        }
+    }
+
+    if dry_run {
+        println!("\n[DRY RUN] Run without --dry-run to actually remove these files.");
+    } else {
+        println!("\nCleanup complete!");
+    }
+
+    Ok(())
 }
