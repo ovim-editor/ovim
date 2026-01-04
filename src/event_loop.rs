@@ -90,6 +90,7 @@ fn process_picker_results(
     // Try to drain pending preview loads
     while let Ok((path, cache)) = preview_rx.try_recv() {
         editor.insert_preview(path, cache);
+        editor.mark_dirty(); // Trigger redraw when preview loads
     }
     // Try to drain pending file results
     while let Ok(result) = file_rx.try_recv() {
@@ -122,6 +123,7 @@ pub async fn run_headless_loop(
             }
             Some((path, cache)) = preview_rx.recv() => {
                 editor.insert_preview(path, cache);
+                // Note: headless mode doesn't need mark_dirty() since there's no UI to redraw
             }
             Some(result) = file_rx.recv() => {
                 if let Some(picker) = editor.picker_mut() { picker.add_file_result(result); }
