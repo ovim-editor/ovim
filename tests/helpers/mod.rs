@@ -268,6 +268,68 @@ impl EditorTest {
         (c.line(), c.col())
     }
 
+    /// Set cursor position directly
+    /// This is useful for setting up test scenarios where you need the cursor
+    /// at a specific location before executing commands.
+    pub fn set_cursor(&mut self, line: usize, col: usize) -> &mut Self {
+        self.editor.buffer_mut().cursor_mut().set_position(line, col);
+        self
+    }
+
+    /// Get the visual selection range if in visual mode
+    /// Returns Some(((start_line, start_col), (end_line, end_col))) if visual mode is active
+    /// Returns None if not in visual mode
+    ///
+    /// The range is normalized so start is always before end (sorted by line then col).
+    pub fn get_visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.editor.visual_start().map(|start| {
+            let cursor = self.cursor();
+            // Normalize the range so start <= end
+            if start.0 < cursor.0 || (start.0 == cursor.0 && start.1 <= cursor.1) {
+                (start, cursor)
+            } else {
+                (cursor, start)
+            }
+        })
+    }
+
+    /// Get content from a specific register
+    /// Returns None if the register is empty or doesn't exist
+    ///
+    /// This is particularly useful for testing yank/delete operations where you want
+    /// to verify that text was correctly stored in registers.
+    pub fn get_register_content(&self, register: char) -> Option<String> {
+        let content = self.editor.registers().get(Some(register));
+        if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        }
+    }
+
+    /// Set buffer content, replacing the entire buffer
+    /// This is an alternative to using `new(content)` when you want to change
+    /// the buffer content after the EditorTest has already been created.
+    pub fn set_buffer_content(&mut self, content: &str) -> &mut Self {
+        let buffer = self.editor.buffer_mut();
+
+        // Delete all existing content (from first line, col 0 to last line end)
+        let line_count = buffer.line_count();
+        if line_count > 0 {
+            let last_line = line_count - 1;
+            let last_col = buffer.line_len(last_line);
+            buffer.delete_range(0, 0, last_line, last_col);
+        }
+
+        // Insert new content at the beginning
+        buffer.insert_text_at(0, 0, content);
+
+        // Reset cursor to start
+        buffer.cursor_mut().set_position(0, 0);
+
+        self
+    }
+
     /// Load a file into the editor
     pub fn load_file(&mut self, path: &str) -> &mut Self {
         let _ = self.editor.load_file(path);

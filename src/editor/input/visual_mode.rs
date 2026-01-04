@@ -15,9 +15,22 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::helpers;
 use super::numbers;
+use super::char_motion;
+use crate::editor::input_state::InputState;
 
 /// Handles input in Visual mode (Visual, VisualLine, VisualBlock)
 pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    // =====================================================================
+    // INPUT STATE CHECK (must happen before mode-specific handling)
+    // =====================================================================
+    // If we're awaiting a character (for f/t/F/T motions), handle that first
+    // before processing any visual mode specific keys. This prevents conflicts
+    // where the target character (like 'e' in 'fe') would be interpreted as
+    // a motion command instead of the search target.
+    if let InputState::AwaitingChar { motion, operator } = editor.input_state().clone() {
+        return char_motion::handle_char_motion(editor, key_event, motion, operator);
+    }
+
     // Handle pending command for visual block replace and g prefix
     if let Some(pending) = editor.pending_command() {
         editor.clear_pending_command();
@@ -317,6 +330,38 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 editor.set_pending_command('g');
             }
+        }
+        // Find character forward (f)
+        KeyCode::Char('f') => {
+            use crate::editor::input_state::{CharMotion, InputState};
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::Find,
+                operator: None,
+            });
+        }
+        // Find character backward (F)
+        KeyCode::Char('F') => {
+            use crate::editor::input_state::{CharMotion, InputState};
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::FindBack,
+                operator: None,
+            });
+        }
+        // Till character forward (t)
+        KeyCode::Char('t') => {
+            use crate::editor::input_state::{CharMotion, InputState};
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::Till,
+                operator: None,
+            });
+        }
+        // Till character backward (T)
+        KeyCode::Char('T') => {
+            use crate::editor::input_state::{CharMotion, InputState};
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::TillBack,
+                operator: None,
+            });
         }
         // Search forward in visual mode
         KeyCode::Char('/') => {
