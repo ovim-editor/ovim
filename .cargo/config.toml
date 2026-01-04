@@ -1,0 +1,9 @@
+# Cargo configuration for ovim
+
+[build]
+# Automatically adhoc-sign binaries on macOS (required for Apple Silicon)
+rustflags = ["-C", "link-arg=-Wl,-adhoc_codesign"]
+
+# Note: This enables linker-level adhoc signing, which should prevent
+# the "Code Signature Invalid" error on macOS. For distribution,
+# use a proper Developer ID signature via build-and-sign.sh or CI/CD.
