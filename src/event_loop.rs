@@ -77,7 +77,15 @@ async fn process_editor_tick(
         editor.mark_dirty(); // Redraw when syntax highlighting is enabled
     }
 
-    editor.process_pending_lsp_actions().await;
+    // Poll pending LSP responses (non-blocking)
+    if editor.poll_pending_lsp_responses() {
+        editor.mark_dirty(); // Redraw when response arrives
+    }
+
+    // Only process new actions if not waiting for response
+    if !editor.has_pending_lsp_response() {
+        editor.process_pending_lsp_actions().await;
+    }
 
     #[cfg(feature = "lua")]
     let _ = editor.process_lua_commands();
