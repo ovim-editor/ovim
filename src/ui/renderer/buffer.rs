@@ -20,6 +20,11 @@ fn slice_horizontal_viewport(
     h_offset: usize,
     width: usize,
 ) -> (String, bool, bool) {
+    // Safety check: if width is 0 or too small, return empty or minimal content
+    if width == 0 {
+        return (String::new(), false, false);
+    }
+
     let chars: Vec<char> = line.chars().collect();
     let line_len = chars.len();
 
