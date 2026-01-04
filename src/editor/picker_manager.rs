@@ -56,27 +56,28 @@ impl Editor {
     pub fn get_preview_to_load(&mut self) -> Option<String> {
         if let Some(picker) = self.picker() {
             if let Some(result) = picker.selected_result() {
-                // Only for file picker modes
-                if *picker.mode() != crate::editor::PickerMode::Custom
-                    && *picker.mode() != crate::editor::PickerMode::Completion
-                    && *picker.mode() != crate::editor::PickerMode::LspLocations
+                // Skip modes that don't have file paths
+                if *picker.mode() == crate::editor::PickerMode::Custom
+                    || *picker.mode() == crate::editor::PickerMode::Completion
                 {
-                    let file_path = result.location.clone();
-
-                    // Skip if already cached
-                    if self.preview_cache.contains_key(&file_path) {
-                        return None;
-                    }
-
-                    // Skip if currently loading
-                    if self.loading_preview.as_ref() == Some(&file_path) {
-                        return None;
-                    }
-
-                    // Mark as loading
-                    self.loading_preview = Some(file_path.clone());
-                    return Some(file_path);
+                    return None;
                 }
+
+                let file_path = result.location.clone();
+
+                // Skip if already cached
+                if self.preview_cache.contains_key(&file_path) {
+                    return None;
+                }
+
+                // Skip if currently loading
+                if self.loading_preview.as_ref() == Some(&file_path) {
+                    return None;
+                }
+
+                // Mark as loading
+                self.loading_preview = Some(file_path.clone());
+                return Some(file_path);
             }
         }
         None
