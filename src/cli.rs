@@ -192,6 +192,23 @@ pub enum Command {
         session: Option<String>,
     },
 
+    /// List all configured languages and their LSP status
+    ListLanguages {
+        /// Show detailed information (LSP command, root markers, etc.)
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Check language configuration and LSP status for a file
+    CheckLsp {
+        /// File path to check
+        file: String,
+
+        /// Show full language configuration
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
     /// Wait for LSP to be ready (blocks until ready)
     WaitLsp {
         /// Session name (auto-discovered if not provided)

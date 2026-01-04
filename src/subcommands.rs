@@ -51,6 +51,8 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::NextMatch { session } => cmd_next_match(session),
         Command::Diagnostics { session } => cmd_diagnostics(session),
         Command::Symbols { session } => cmd_symbols(session),
+        Command::ListLanguages { verbose } => cmd_list_languages(verbose),
+        Command::CheckLsp { file, verbose } => cmd_check_lsp(&file, verbose),
         Command::WaitLsp { session, timeout } => cmd_wait_lsp(session, timeout),
         Command::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
     }
@@ -945,6 +947,197 @@ fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
         println!("\n[DRY RUN] Run without --dry-run to actually remove these files.");
     } else {
         println!("\nCleanup complete!");
+    }
+
+    Ok(())
+}
+
+/// List all configured languages and their LSP status
+///
+/// Educational Note: CLI Introspection Patterns
+/// This command makes the system inspectable by exposing its configuration.
+/// Good CLI tools should answer: "What languages do you support?" without
+/// requiring users to dig through source code or documentation.
+///
+/// Design principles:
+/// - Default output is concise (language name + LSP status)
+/// - Verbose mode shows configuration details
+/// - Exit code reflects success (always 0 unless registry fails)
+fn cmd_list_languages(verbose: bool) -> Result<()> {
+    use crate::language_config::LanguageRegistry;
+
+    let registry = LanguageRegistry::get();
+    let languages = registry.all();
+
+    if languages.is_empty() {
+        println!("No languages configured.");
+        return Ok(());
+    }
+
+    if verbose {
+        println!("Configured Languages:\n");
+        for lang in languages {
+            println!("Language: {} ({})", lang.name, lang.id);
+            println!("  Extensions: {}", lang.extensions.join(", "));
+
+            if !lang.filenames.is_empty() {
+                println!("  Filenames: {}", lang.filenames.join(", "));
+            }
+
+            if let Some(ref syntax) = lang.syntax {
+                println!("  Syntax: {}", syntax.grammar);
+            } else {
+                println!("  Syntax: None");
+            }
+
+            if let Some(ref lsp) = lang.lsp {
+                println!("  LSP Command: {}", lsp.command);
+                if !lsp.args.is_empty() {
+                    println!("  LSP Args: {}", lsp.args.join(" "));
+                }
+                if !lsp.fallback_commands.is_empty() {
+                    println!("  Fallbacks: {}", lsp.fallback_commands.join(", "));
+                }
+                if !lsp.root_markers.is_empty() {
+                    println!("  Root Markers: {}", lsp.root_markers.join(", "));
+                }
+                if let Some(ref hint) = lsp.install_hint {
+                    println!("  Install Hint: {}", hint);
+                }
+                if lsp.auto_install.is_some() {
+                    println!("  Auto-Install: Enabled");
+                }
+            } else {
+                println!("  LSP: None");
+            }
+
+            println!();
+        }
+    } else {
+        // Concise output: ID, name, LSP status
+        println!("{:<15} {:<20} {:<10}", "ID", "Name", "LSP");
+        println!("{}", "-".repeat(50));
+
+        for lang in languages {
+            let lsp_status = if lang.lsp.is_some() {
+                "Configured"
+            } else {
+                "-"
+            };
+
+            println!("{:<15} {:<20} {:<10}", lang.id, lang.name, lsp_status);
+        }
+
+        println!("\nUse --verbose for detailed configuration");
+    }
+
+    Ok(())
+}
+
+/// Check language configuration and LSP status for a file
+///
+/// Educational Note: Debugging Language Detection
+/// This command helps users understand:
+/// 1. Which language was detected for a file
+/// 2. Which LSP server would be used
+/// 3. Whether the LSP server is actually installed
+/// 4. What the project root would be
+///
+/// This is invaluable for debugging "why doesn't LSP work for this file?"
+fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
+    use crate::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
+    use std::path::Path;
+
+    let path = Path::new(file_path);
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    println!("File: {}", abs_path.display());
+    println!();
+
+    // Detect language
+    let registry = LanguageRegistry::get();
+    let lang_config = match registry.detect(&abs_path) {
+        Some(config) => config,
+        None => {
+            println!("❌ No language configuration found for this file");
+            println!("\nSupported extensions: ");
+            for lang in registry.all() {
+                if !lang.extensions.is_empty() {
+                    println!("  {} → {}", lang.extensions.join(", "), lang.name);
+                }
+            }
+            return Ok(());
+        }
+    };
+
+    println!("✓ Language Detected: {} ({})", lang_config.name, lang_config.id);
+    println!("  Extensions: {}", lang_config.extensions.join(", "));
+
+    // Check syntax highlighting
+    if let Some(ref syntax) = lang_config.syntax {
+        println!("\n✓ Syntax Highlighting: {} grammar", syntax.grammar);
+    } else {
+        println!("\n❌ Syntax Highlighting: Not configured");
+    }
+
+    // Check LSP configuration
+    if let Some(ref lsp) = lang_config.lsp {
+        println!("\n✓ LSP Configuration:");
+        println!("  Primary Command: {}", lsp.command);
+
+        if !lsp.args.is_empty() {
+            println!("  Args: {}", lsp.args.join(" "));
+        }
+
+        if !lsp.fallback_commands.is_empty() {
+            println!("  Fallback Commands: {}", lsp.fallback_commands.join(", "));
+        }
+
+        // Check if LSP server is actually available
+        match find_lsp_command(lsp) {
+            Some(ref found_command) => {
+                println!("\n✓ LSP Server Found: {}", found_command);
+
+                // Try to find project root
+                let root_markers = &lsp.root_markers;
+                if !root_markers.is_empty() {
+                    let project_root = find_project_root(&abs_path, root_markers);
+                    println!("✓ Project Root: {}", project_root.display());
+                    println!("  (detected using markers: {})", root_markers.join(", "));
+                }
+            }
+            None => {
+                println!("\n❌ LSP Server Not Found");
+                println!("  Searched for: {}", lsp.command);
+                if !lsp.fallback_commands.is_empty() {
+                    println!("  Also searched: {}", lsp.fallback_commands.join(", "));
+                }
+
+                if let Some(ref hint) = lsp.install_hint {
+                    println!("\n  Installation:");
+                    println!("  {}", hint);
+                }
+
+                if lsp.auto_install.is_some() {
+                    println!("\n  Auto-install is configured for this language.");
+                    println!("  LSP will be installed automatically when you open a {} file in ovim.", lang_config.id);
+                }
+            }
+        }
+
+        // Show full config in verbose mode
+        if verbose {
+            println!("\n--- Full LSP Configuration ---");
+            println!("{:#?}", lsp);
+        }
+    } else {
+        println!("\n❌ LSP: Not configured for {}", lang_config.name);
+        println!("\nYou can add LSP support by creating ~/.config/ovim/languages.toml");
+        println!("See: user-docs/LANGUAGE_SUPPORT.md");
     }
 
     Ok(())

@@ -93,14 +93,50 @@ ovim kill --session projectA
 
 This makes the common single-session workflow frictionless while still supporting complex multi-session setups.
 
+### Language Support
+
+**Introspection Commands**:
+```bash
+ovim list-languages              # Show all configured languages
+ovim list-languages --verbose    # Show detailed LSP configuration
+ovim check-lsp file.rs           # Check language detection & LSP status for file
+ovim check-lsp file.ts --verbose # Show full config + installation hints
+```
+
+**Supported Languages** (out-of-the-box):
+- **Rust** - rust-analyzer (install via `rustup component add rust-analyzer`)
+- **TypeScript/JavaScript** - typescript-language-server (auto-installs via npm)
+- **Python** - pyright-langserver (install via `pip install pyright`)
+- **Java** - hyperion-lsp (auto-downloads, zero config!)
+- **Markdown, JSON, YAML, HTML, CSS, Go, C/C++, Ruby, Bash** - syntax highlighting only
+
+**Adding/Customizing Languages**:
+Create `~/.config/ovim/languages.toml`:
+```toml
+[[language]]
+id = "go"
+name = "Go"
+extensions = ["go"]
+
+[language.lsp]
+command = "gopls"
+root_markers = ["go.mod"]
+install_hint = "go install golang.org/x/tools/gopls@latest"
+```
+
+See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for complete guide.
+
 ### LSP Features
 
-**Zero-config Java**:
+**Zero-config TypeScript** (auto-install):
+```bash
+ovim app.tsx  # Detects TypeScript, offers to install LSP via npm
+```
+
+**Zero-config Java** (auto-download):
 ```bash
 ovim MyClass.java  # Auto-downloads jdtls, detects Java version, full IDE
 ```
-
-**Rust, Python, JavaScript** also supported (rust-analyzer, pyright, typescript-language-server).
 
 **LSP Logging** (all requests/responses logged to stderr):
 ```

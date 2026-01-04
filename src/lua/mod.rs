@@ -36,7 +36,7 @@ impl LuaContext {
     }
 
     /// Executes Lua code string
-    pub fn execute(&self, code: &str) -> Result<Value> {
+    pub fn execute(&self, code: &str) -> Result<Value<'_>> {
         let result = self.lua.load(code).eval()?;
         Ok(result)
     }

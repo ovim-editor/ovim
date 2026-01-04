@@ -17,8 +17,7 @@
 //
 // The pattern: Try → Fail gracefully → Guide user to success
 
-use crate::language_config::{AutoInstallConfig, InstallMethod};
-use std::io::{BufRead, BufReader};
+use ovim::language_config::{AutoInstallConfig, InstallMethod};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tokio::process::Command as TokioCommand;
@@ -50,7 +49,7 @@ pub enum InstallResult {
 /// Making it async allows the editor to remain responsive during installation.
 pub async fn attempt_auto_install(
     language_name: &str,
-    package_name: &str,
+    _package_name: &str,
     config: &AutoInstallConfig,
 ) -> InstallResult {
     match &config.method {
@@ -83,7 +82,7 @@ pub async fn attempt_auto_install(
 /// 4. Package not found → Failed with package name check
 ///
 /// Each failure mode gets a specific, actionable error message.
-async fn install_via_npm(language_name: &str, package: &str, global: bool) -> InstallResult {
+async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> InstallResult {
     // Step 1: Check if npm is available
     let npm_check = Command::new("npm").arg("--version").output();
 
@@ -112,7 +111,7 @@ async fn install_via_npm(language_name: &str, package: &str, global: bool) -> In
     );
 
     // Step 3: Run npm install with output streaming
-    let mut child = match TokioCommand::new("npm")
+    let child = match TokioCommand::new("npm")
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -243,7 +242,7 @@ async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult
     ovim::lsp_info!("AutoInstall", "Installing {} via cargo install", package);
 
     // Run cargo install
-    let mut child = match TokioCommand::new("cargo")
+    let child = match TokioCommand::new("cargo")
         .args(&["install", package])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -313,7 +312,7 @@ async fn install_via_shell(_language_name: &str, command: &str) -> InstallResult
         return InstallResult::Failed("Empty install command".to_string());
     }
 
-    let mut child = match TokioCommand::new(parts[0])
+    let child = match TokioCommand::new(parts[0])
         .args(&parts[1..])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
