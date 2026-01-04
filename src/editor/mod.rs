@@ -900,33 +900,28 @@ impl Editor {
     }
 
     /// Process pending syntax re-highlighting (CPU-intensive, runs in background)
+    /// This now uses incremental parsing - the parse tree was already updated incrementally
+    /// via InputEdit when the buffer was modified, so we just need to query it for highlights.
     pub async fn process_pending_rehighlight(&mut self) {
         // Check if buffer needs re-highlighting
-        let Some((content, version, language)) = self.buffer().get_rehighlight_data() else {
+        if !self.buffer().needs_rehighlight() {
             return;
-        };
+        }
 
-        // Spawn blocking task for CPU-intensive parsing
-        let highlights = tokio::task::spawn_blocking(move || {
-            // Create a new highlighter for this language
-            let mut highlighter = match crate::syntax::SyntaxHighlighter::new(language) {
-                Ok(h) => h,
-                Err(_) => return None,
-            };
+        let start = std::time::Instant::now();
+        let line_count = self.buffer().line_count();
 
-            // Parse the content
-            highlighter.parse(&content);
-
-            // Build highlights for all lines using efficient single-pass method
-            let all_highlights = highlighter.highlights_for_all_lines(&content);
-
-            Some(all_highlights)
-        })
-        .await;
-
-        // Apply highlights if successful and version still matches
-        if let Ok(Some(highlights)) = highlights {
-            self.buffer_mut().apply_highlights(highlights, version);
+        // Rebuild highlight cache from the incrementally-updated parse tree
+        // This is FAST because tree-sitter already updated the tree via InputEdit.
+        // We're just querying the tree for highlights, not re-parsing!
+        if let Some(_version) = self.buffer_mut().rebuild_highlight_cache() {
+            let elapsed = start.elapsed();
+            eprintln!(
+                "[SYNTAX] Incremental highlight rebuild: {} lines in {:.2}ms ({:.0} lines/sec)",
+                line_count,
+                elapsed.as_secs_f64() * 1000.0,
+                line_count as f64 / elapsed.as_secs_f64()
+            );
         }
     }
 
