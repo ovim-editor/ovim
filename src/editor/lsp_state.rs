@@ -39,9 +39,10 @@ impl DocumentSyncState {
         self.buffer_saved
     }
 
-    pub fn mark_change_sent(&mut self) {
+    pub fn mark_change_sent(&mut self, synced_content: String) {
         self.buffer_modified = false;
         self.last_change_sent = Some(std::time::Instant::now());
+        self.last_synced_content = Some(synced_content);
     }
 
     pub fn mark_save_sent(&mut self) {
