@@ -198,6 +198,7 @@ impl SyntaxHighlighter {
             "parameter" => return HighlightGroup::Parameter,
             "label" => return HighlightGroup::Label,
             "punctuation" => return HighlightGroup::Punctuation,
+            "tag" => return HighlightGroup::Tag,
             _ => {}
         }
 
@@ -220,6 +221,7 @@ impl SyntaxHighlighter {
                 "parameter" => return HighlightGroup::Parameter,
                 "label" => return HighlightGroup::Label,
                 "punctuation" => return HighlightGroup::Punctuation,
+                "tag" => return HighlightGroup::Tag,
                 _ => {}
             }
         }
