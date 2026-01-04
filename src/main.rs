@@ -1,3 +1,7 @@
+//! # TUI Safety: No stdout/stderr output!
+//! Use log_info!, log_warn!, log_error!, log_debug! instead of println!/eprintln!
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 mod event_loop;
 mod lsp_init;
 
@@ -23,13 +27,20 @@ fn sanitize_session_name(name: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize logging FIRST - before anything else
+    if let Err(e) = ovim::log::init() {
+        // Log initialization failed, but logging will fall back to on-demand file opening
+        let _ = e;
+    }
+    ovim::log_info!("main", "ovim starting up");
+
     let cli = Cli::parse_args();
 
     // Initialize language registry early (needed for both editor and subcommands)
     // This loads embedded languages.toml and merges with user config
     if let Err(e) = ovim::language_config::LanguageRegistry::init() {
-        eprintln!("Warning: Failed to initialize language registry: {}", e);
-        eprintln!("Continuing with limited language support...");
+        ovim::log_warn!("main", "Failed to initialize language registry: {}", e);
+        ovim::log_warn!("main", "Continuing with limited language support...");
     }
 
     // Check if we're running a subcommand (client mode)
@@ -43,7 +54,7 @@ async fn main() -> Result<()> {
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
-        eprintln!("Warning: Failed to initialize LSP logging: {}", e);
+        ovim::log_warn!("main", "Failed to initialize LSP logging: {}", e);
     }
 
     // Load file from command line argument if provided
@@ -51,8 +62,9 @@ async fn main() -> Result<()> {
         let mut ed = Editor::new();
         if let Err(e) = ed.load_file(file_path) {
             // If file doesn't exist, create empty buffer with that filename
-            eprintln!(
-                "Note: Could not load file '{}': {}. Starting with empty buffer.",
+            ovim::log_warn!(
+                "main",
+                "Could not load file '{}': {}. Starting with empty buffer.",
                 file_path, e
             );
             ed = Editor::new();
@@ -67,6 +79,7 @@ async fn main() -> Result<()> {
     };
 
     // Handle --render flag (render to ANSI and exit)
+    // This path outputs to stdout and never starts the TUI, so eprintln! is safe
     if args.render {
         let (width, height) = args.dimension.unwrap_or((80, 24));
         match editor.render_to_ansi(width, height) {
@@ -75,7 +88,10 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             Err(e) => {
-                eprintln!("Failed to render: {}", e);
+                #[allow(clippy::print_stderr)]
+                {
+                    eprintln!("Failed to render: {}", e);
+                }
                 return Err(e);
             }
         }
@@ -85,9 +101,8 @@ async fn main() -> Result<()> {
     editor.enable_lsp();
 
     // Enable Lua support
-    #[cfg(feature = "lua")]
     if let Err(e) = editor.enable_lua() {
-        eprintln!("Warning: Failed to enable Lua support: {}", e);
+        ovim::log_error!("main", "Failed to enable Lua support: {}", e);
     }
 
     // Create channel for Java LSP status updates (needed for both headless and TUI modes)
@@ -119,6 +134,8 @@ async fn main() -> Result<()> {
     };
 
     // Handle headless mode
+    // Headless mode uses stderr for user feedback (no TUI), so eprintln! is safe
+    #[allow(clippy::print_stderr)]
     if args.headless {
         // Write session info
         let session_name = args
@@ -195,30 +212,37 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Create session for TUI mode with random ID and timestamp
-    let session_name = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default();
-        let timestamp = now.as_secs();
-        let nanos = now.subsec_nanos();
-        let pid = std::process::id();
-        // Combine nanos and pid for uniqueness
-        let random_part = ((nanos as u64) ^ (pid as u64)).wrapping_mul(31);
-        format!("tui_{}_{}", random_part, timestamp)
+    // TUI mode - eprintln! allowed only for session setup messages (before TUI starts)
+    let session_info = {
+        #[allow(clippy::print_stderr)]
+        {
+            let session_name = {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default();
+                let timestamp = now.as_secs();
+                let nanos = now.subsec_nanos();
+                let pid = std::process::id();
+                // Combine nanos and pid for uniqueness
+                let random_part = ((nanos as u64) ^ (pid as u64)).wrapping_mul(31);
+                format!("tui_{}_{}", random_part, timestamp)
+            };
+
+            let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
+
+            if let Err(e) = session_info.write() {
+                eprintln!("Warning: Failed to write session info: {}", e);
+            } else {
+                eprintln!(
+                    "Session '{}' created at ~/.cache/ovim/sessions/{}.json",
+                    session_name, session_name
+                );
+            }
+
+            session_info
+        }
     };
-
-    let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
-
-    if let Err(e) = session_info.write() {
-        eprintln!("Warning: Failed to write session info: {}", e);
-    } else {
-        eprintln!(
-            "Session '{}' created at ~/.cache/ovim/sessions/{}.json",
-            session_name, session_name
-        );
-    }
 
     // Create a guard to ensure cleanup on panic
     let _session_guard = SessionGuard::new(session_info.clone());

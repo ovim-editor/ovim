@@ -1120,9 +1120,7 @@ impl Buffer {
         if let Some(ref path) = self.file_path {
             if let Some(lang) = LanguageRegistry::detect_from_path(path) {
                 if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
-                    let start = std::time::Instant::now();
                     let source = self.rope.to_string();
-                    let line_count = self.line_count();
 
                     highlighter.parse(&source);
 
@@ -1130,14 +1128,6 @@ impl Buffer {
                     self.build_highlight_cache(&highlighter, &source);
 
                     self.syntax = Some(highlighter);
-
-                    let elapsed = start.elapsed();
-                    eprintln!(
-                        "[SYNTAX] Initial parse: {} lines in {:.2}ms ({:.0} lines/sec)",
-                        line_count,
-                        elapsed.as_secs_f64() * 1000.0,
-                        line_count as f64 / elapsed.as_secs_f64()
-                    );
                 }
             }
         }

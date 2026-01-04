@@ -1052,9 +1052,12 @@ fn render_picker_preview(
     // Terminal UIs don't automatically clear - old content persists unless overwritten.
     // Without this, when rendering "Loading preview..." (1 line), the other ~39 lines
     // would show ghost text from the editor buffer underneath.
-    let clear_block = Block::default()
+    //
+    // We need to render actual blank content, not just set a background color.
+    let blank_lines = vec![" ".repeat(inner_area.width as usize); inner_area.height as usize];
+    let clear_widget = Paragraph::new(blank_lines.join("\n"))
         .style(Style::default().bg(Color::Rgb(25, 29, 40)));
-    frame.render_widget(clear_block, inner_area);
+    frame.render_widget(clear_widget, inner_area);
 
     // Try to get preview (only show exact match, no fallback to avoid scroll artifacts)
     let file_path = &result.location;

@@ -1,4 +1,8 @@
 //! HTTP client for communicating with ovim sessions
+//!
+//! Client-side code that outputs to stderr for user feedback.
+#![allow(clippy::print_stderr)]
+
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 

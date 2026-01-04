@@ -901,21 +901,10 @@ impl Editor {
             return;
         }
 
-        let start = std::time::Instant::now();
-        let line_count = self.buffer().line_count();
-
         // Rebuild highlight cache from the incrementally-updated parse tree
         // This is FAST because tree-sitter already updated the tree via InputEdit.
         // We're just querying the tree for highlights, not re-parsing!
-        if let Some(_version) = self.buffer_mut().rebuild_highlight_cache() {
-            let elapsed = start.elapsed();
-            eprintln!(
-                "[SYNTAX] Incremental highlight rebuild: {} lines in {:.2}ms ({:.0} lines/sec)",
-                line_count,
-                elapsed.as_secs_f64() * 1000.0,
-                line_count as f64 / elapsed.as_secs_f64()
-            );
-        }
+        let _ = self.buffer_mut().rebuild_highlight_cache();
     }
 
     /// Apply modeline options to editor settings

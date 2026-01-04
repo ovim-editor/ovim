@@ -35,12 +35,12 @@ impl Editor {
                     // No config file found - not an error
                 }
                 Err(e) => {
-                    eprintln!("Warning: Error loading config: {}", e);
+                    crate::log_error!("lua", "Error loading Lua config: {}", e);
                 }
             }
             // Load plugins from plugin directories
             if let Err(e) = context.load_plugins() {
-                eprintln!("Warning: Error loading plugins: {}", e);
+                crate::log_error!("lua", "Error loading Lua plugins: {}", e);
             }
             // Process any commands from plugins
             let commands = bridge.drain_commands();
