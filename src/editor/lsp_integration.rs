@@ -519,18 +519,18 @@ impl Editor {
     /// the debounced didChange (150ms) might not have been sent yet. This causes
     /// LSP to return stale results. We flush pending changes here to ensure LSP
     /// has the latest content.
-    async fn ensure_lsp_document_synced(&mut self) {
+    async fn ensure_lsp_document_synced(&mut self) -> bool {
         let Some(ref lsp) = self.lsp_state.lsp_manager else {
-            return;
+            return false;
         };
 
         let Some(file_path) = self.buffer().file_path() else {
-            return;
+            return false;
         };
 
         let uri = match uri_from_file_path(file_path) {
             Some(u) => u,
-            None => return,
+            None => return false,
         };
 
         let state_key = file_path.to_string();
@@ -538,7 +538,7 @@ impl Editor {
         // Get language_id from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
             Some(id) => id,
-            None => return,
+            None => return false,
         };
 
         // Get buffer content
@@ -562,7 +562,7 @@ impl Editor {
             state.did_open_sent = true;
             state.last_synced_content = Some(content.clone());
             state.mark_change_sent();
-            return; // didOpen includes the content, no need for didChange
+            return true; // We sent didOpen (includes content flush)
         }
 
         // Check if we have pending changes
@@ -579,7 +579,10 @@ impl Editor {
             // Mark as sent
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
             state.mark_change_sent();
+            return true; // We flushed changes
         }
+
+        false // No flush needed
     }
 
     /// Sends didClose notification to LSP for the pending file
@@ -785,7 +788,10 @@ impl Editor {
         // Ensure document is synced before making the request
         // CRITICAL: If we just typed something, the debounced didChange might not
         // have been sent yet. We need to flush it to get correct results.
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
 
         // Give LSP server a moment to process the change
         // This prevents race conditions where the request arrives before the change
@@ -891,7 +897,10 @@ impl Editor {
 
         self.set_lsp_status("Requesting implementation...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp
@@ -983,7 +992,10 @@ impl Editor {
 
         self.set_lsp_status("Requesting type definition...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp
@@ -1076,7 +1088,10 @@ impl Editor {
 
         self.set_lsp_status("Finding references...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp.references(&uri, line, character, language_id, true).await;
@@ -1158,7 +1173,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching document symbols...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp.document_symbols(&uri, language_id).await;
@@ -1224,7 +1242,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching workspace symbols...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // TODO: Support query parameter for filtering
@@ -1311,7 +1332,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching incoming calls...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // First prepare call hierarchy to get items at cursor position
@@ -1431,7 +1455,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching outgoing calls...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // First prepare call hierarchy to get items at cursor position
@@ -1551,7 +1578,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching type hierarchy...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // First prepare the type hierarchy to get the item at the cursor
@@ -1710,8 +1740,11 @@ impl Editor {
         self.set_lsp_status("Requesting hover info...".to_string());
 
         // Ensure document is synced before making the request
-        self.ensure_lsp_document_synced().await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            // Only sleep if we flushed changes (gives LSP time to process)
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
 
         let result = lsp.hover(&uri, line, character, language_id).await;
 
@@ -1791,7 +1824,10 @@ impl Editor {
 
         self.set_lsp_status("Requesting completions...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp.completion(&uri, line, character, language_id).await;
@@ -1852,7 +1888,10 @@ impl Editor {
 
         self.set_lsp_status("Formatting document...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Get tab settings from buffer
@@ -1920,7 +1959,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching code actions...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Get diagnostics for the current line to provide context for code actions
@@ -2292,7 +2334,10 @@ impl Editor {
 
         self.set_lsp_status("Organizing imports...".to_string());
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Request code actions for organize imports (at file start, no diagnostics needed)
@@ -2373,7 +2418,10 @@ impl Editor {
 
         self.set_lsp_status(format!("Renaming to '{}'...", new_name));
 
-        self.ensure_lsp_document_synced().await;
+        let did_flush = self.ensure_lsp_document_synced().await;
+        if did_flush {
+            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         // Call the rename method with individual parameters (using UTF-16 character position)
