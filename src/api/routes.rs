@@ -11,7 +11,8 @@ use axum::{
 
 /// Create the API router with all routes
 pub fn create_router(state: ApiState) -> Router {
-    Router::new()
+    // V1 API routes (current stable API)
+    let v1_routes = Router::new()
         .route("/health", get(get_health))
         .route("/snapshot", get(get_snapshot))
         .route("/keys", post(send_keys))
@@ -24,6 +25,16 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/render", get(get_render))
         .route("/lsp/status", get(get_lsp_status))
         .route("/metrics", get(get_metrics))
-        .route("/mcp", post(handle_mcp))
+        .route("/mcp", post(handle_mcp));
+
+    // Root router with version namespaces
+    Router::new()
+        // V1 API under /v1 prefix (recommended)
+        .nest("/v1", v1_routes.clone())
+
+        // Legacy routes (no prefix) - for backward compatibility
+        // These will be removed in ovim v1.0
+        .merge(v1_routes)
+
         .with_state(state)
 }

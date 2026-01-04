@@ -107,26 +107,30 @@ ovim MyClass.java  # Auto-downloads jdtls, detects Java version, full IDE
 
 **LSP Introspection**:
 ```bash
-curl http://127.0.0.1:PORT/lsp/status  # Server states, pending requests
-curl http://127.0.0.1:PORT/health      # LSP readiness check
+curl http://127.0.0.1:PORT/v1/lsp/status  # Server states, pending requests
+curl http://127.0.0.1:PORT/v1/health      # LSP readiness check
 ```
 
 ### REST API Endpoints
 
 **HTTP Server**: Always runs on both headless and UI modes on `http://127.0.0.1:PORT`
 
+**API Version**: All endpoints are available under `/v1/` prefix (recommended) and without prefix (legacy, deprecated).
+
 | Endpoint | Method | Use Case |
 |----------|--------|----------|
-| `/health` | GET | Health + LSP readiness |
-| `/lsp/status` | GET | Server states & pending requests |
-| `/snapshot` | GET | Complete editor state (buffer, cursor, mode, registers, marks) |
-| `/buffer` | GET/PUT | Buffer content |
-| `/cursor` | GET | Cursor position |
-| `/mode` | GET | Current mode |
-| `/keys` | POST | Send keystrokes (e.g., `{"keys": "ggK"}`) |
-| `/command` | POST | Execute ex command (e.g., `{"command": "w"}`) |
-| `/render` | GET | ANSI rendering |
-| `/mcp` | POST | Model Context Protocol (MCP) JSON-RPC 2.0 endpoint |
+| `/v1/health` | GET | Health + LSP readiness |
+| `/v1/lsp/status` | GET | Server states & pending requests |
+| `/v1/snapshot` | GET | Complete editor state (buffer, cursor, mode, registers, marks) |
+| `/v1/buffer` | GET/PUT | Buffer content |
+| `/v1/cursor` | GET | Cursor position |
+| `/v1/mode` | GET | Current mode |
+| `/v1/keys` | POST | Send keystrokes (e.g., `{"keys": "ggK"}`) |
+| `/v1/command` | POST | Execute ex command (e.g., `{"command": "w"}`) |
+| `/v1/render` | GET | ANSI rendering |
+| `/v1/mcp` | POST | Model Context Protocol (MCP) JSON-RPC 2.0 endpoint |
+
+**Note**: Legacy unversioned endpoints (e.g., `/health`, `/buffer`) still work but are deprecated and will be removed in ovim v1.0. They return `X-API-Deprecation` and `Sunset` headers. Update your clients to use `/v1/` prefix.
 
 ### MCP (Model Context Protocol) Support
 
@@ -211,27 +215,27 @@ This ensures predictable behavior when working with multiple sessions simultaneo
 **Example MCP Usage**:
 ```bash
 # Initialize
-curl -X POST http://127.0.0.1:PORT/mcp \
+curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"client","version":"1.0"}}}'
 
 # List tools
-curl -X POST http://127.0.0.1:PORT/mcp \
+curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 
 # Call tool (send keys)
-curl -X POST http://127.0.0.1:PORT/mcp \
+curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_keys","arguments":{"keys":"gg"}}}'
 
 # Set editor mode (ensures correct state before operations)
-curl -X POST http://127.0.0.1:PORT/mcp \
+curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"set_mode","arguments":{"mode":"NORMAL"}}}'
 
 # Read resource
-curl -X POST http://127.0.0.1:PORT/mcp \
+curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"ovim://buffer"}}'
 ```
@@ -347,8 +351,8 @@ cat ~/Library/Caches/ovim/sessions/test.json  # macOS
 cat ~/.cache/ovim/sessions/test.json          # Linux
 
 # Test LSP endpoints
-curl http://127.0.0.1:PORT/lsp/status | jq '.'
-curl http://127.0.0.1:PORT/health | jq '.'
+curl http://127.0.0.1:PORT/v1/lsp/status | jq '.'
+curl http://127.0.0.1:PORT/v1/health | jq '.'
 ```
 
 ## AI-First IDE
@@ -391,7 +395,7 @@ ovim install claude
 ovim install cursor
 
 # Or just use HTTP directly with any tool
-curl -X POST http://127.0.0.1:PORT/mcp \
+curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
