@@ -1048,6 +1048,14 @@ fn render_picker_preview(
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
+    // Clear the entire inner area first to prevent text bleeding from previous frames.
+    // Terminal UIs don't automatically clear - old content persists unless overwritten.
+    // Without this, when rendering "Loading preview..." (1 line), the other ~39 lines
+    // would show ghost text from the editor buffer underneath.
+    let clear_block = Block::default()
+        .style(Style::default().bg(Color::Rgb(25, 29, 40)));
+    frame.render_widget(clear_block, inner_area);
+
     // Try to get preview (only show exact match, no fallback to avoid scroll artifacts)
     let file_path = &result.location;
     let preview = match editor.get_preview_cache(file_path) {
