@@ -189,6 +189,312 @@ impl Editor {
         }
     }
 
+    /// Returns true if there's a pending LSP response being waited for
+    pub fn has_pending_lsp_response(&self) -> bool {
+        self.lsp_state.pending_lsp_response.is_some()
+    }
+
+    /// Polls pending LSP responses (non-blocking)
+    /// Returns true if a response was processed and UI should redraw
+    pub fn poll_pending_lsp_responses(&mut self) -> bool {
+        let Some(pending) = self.lsp_state.pending_lsp_response.take() else {
+            return false; // No pending request
+        };
+
+        match pending {
+            crate::editor::lsp_state::PendingLspResponse::Hover(mut pending) => {
+                use tokio::sync::oneshot::error::TryRecvError;
+                match pending.receiver.try_recv() {
+                    Ok(Ok(Some(hover_text))) => {
+                        // Success! Set hover info and cache
+                        crate::lsp_debug!("LSP-HOVER", "Received hover response");
+
+                        // Get current position and buffer version for caching
+                        let cursor = self.buffer().cursor();
+                        let buffer_version = self.buffer().version();
+                        let cursor_line = cursor.line();
+                        let cursor_col = cursor.col();
+                        let file_path = self.buffer().file_path().unwrap_or("").to_string();
+
+                        // Cache the hover result
+                        self.lsp_state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
+                            file_path,
+                            cursor_line,
+                            cursor_col,
+                            buffer_version,
+                            hover_text.clone(),
+                        ));
+
+                        self.lsp_state.hover_info = Some(hover_text);
+                        self.lsp_state.hover_scroll = 0;
+                        self.lsp_state.hover_position = Some((cursor_line, cursor_col));
+                        self.mode = crate::mode::Mode::HoverPreview;
+                        self.mark_dirty();
+                        self.set_lsp_status(String::new());
+                        true // UI should redraw
+                    }
+                    Ok(Ok(None)) => {
+                        // No hover info available
+                        crate::lsp_debug!("LSP-HOVER", "No hover info available");
+                        self.set_lsp_status("No hover info available".to_string());
+                        false
+                    }
+                    Ok(Err(e)) => {
+                        // LSP error
+                        crate::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
+                        self.set_lsp_status(format!("Hover failed: {}", e));
+                        false
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // Check for timeout
+                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
+                            crate::lsp_debug!("LSP-HOVER", "Hover request timed out, aborting task");
+                            pending.task.abort();
+                            self.set_lsp_status("Hover request timed out".to_string());
+                            return false;
+                        }
+
+                        // Still waiting - put it back
+                        self.lsp_state.pending_lsp_response =
+                            Some(crate::editor::lsp_state::PendingLspResponse::Hover(pending));
+                        false
+                    }
+                    Err(TryRecvError::Closed) => {
+                        // Sender dropped (shouldn't happen)
+                        crate::lsp_debug!("LSP-HOVER", "Hover request cancelled (sender dropped)");
+                        self.set_lsp_status("Hover request cancelled".to_string());
+                        false
+                    }
+                }
+            }
+
+            crate::editor::lsp_state::PendingLspResponse::Definition(mut pending) => {
+                use tokio::sync::oneshot::error::TryRecvError;
+                match pending.receiver.try_recv() {
+                    Ok(Ok(Some(location))) => {
+                        // Success! Navigate to the definition
+                        crate::lsp_debug!("LSP-DEFINITION", "Received definition response");
+
+                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
+                            let target_line = location.range.start.line as usize;
+                            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+
+                            // Save current position to tag stack for Ctrl-T navigation
+                            self.push_tag();
+
+                            // Open file if different from current
+                            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
+                                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
+                                    self.set_lsp_status("Failed to open file".to_string());
+                                    return false;
+                                }
+                            }
+
+                            // Move cursor to location
+                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            // Center cursor after jump (Vim behavior)
+                            self.center_cursor_in_viewport();
+                            self.set_lsp_status(format!(
+                                "Definition: {}:{}:{}",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                target_line + 1,
+                                target_col + 1
+                            ));
+                            self.mark_dirty();
+
+                            true // UI should redraw
+                        } else {
+                            self.set_lsp_status("Invalid file path in LSP response".to_string());
+                            false
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        // No definition found
+                        crate::lsp_debug!("LSP-DEFINITION", "No definition found");
+                        self.set_lsp_status("No definition found".to_string());
+                        false
+                    }
+                    Ok(Err(e)) => {
+                        // LSP error
+                        crate::lsp_debug!("LSP-DEFINITION", "Definition request failed: {:?}", e);
+                        self.set_lsp_status(format!("Definition failed: {}", e));
+                        false
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // Check for timeout
+                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
+                            crate::lsp_debug!("LSP-DEFINITION", "Definition request timed out, aborting task");
+                            pending.task.abort();
+                            self.set_lsp_status("Definition request timed out".to_string());
+                            return false;
+                        }
+
+                        // Still waiting - put it back
+                        self.lsp_state.pending_lsp_response =
+                            Some(crate::editor::lsp_state::PendingLspResponse::Definition(pending));
+                        false
+                    }
+                    Err(TryRecvError::Closed) => {
+                        // Sender dropped (shouldn't happen)
+                        crate::lsp_debug!("LSP-DEFINITION", "Definition request cancelled (sender dropped)");
+                        self.set_lsp_status("Definition request cancelled".to_string());
+                        false
+                    }
+                }
+            }
+
+            crate::editor::lsp_state::PendingLspResponse::Implementation(mut pending) => {
+                use tokio::sync::oneshot::error::TryRecvError;
+                match pending.receiver.try_recv() {
+                    Ok(Ok(Some(location))) => {
+                        // Success! Navigate to the implementation
+                        crate::lsp_debug!("LSP-IMPLEMENTATION", "Received implementation response");
+
+                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
+                            let target_line = location.range.start.line as usize;
+                            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+
+                            // Save current position to tag stack for Ctrl-T navigation
+                            self.push_tag();
+
+                            // Open file if different from current
+                            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
+                                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
+                                    self.set_lsp_status("Failed to open file".to_string());
+                                    return false;
+                                }
+                            }
+
+                            // Move cursor to location
+                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            // Center cursor after jump (Vim behavior)
+                            self.center_cursor_in_viewport();
+                            self.set_lsp_status(format!(
+                                "Implementation: {}:{}:{}",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                target_line + 1,
+                                target_col + 1
+                            ));
+                            self.mark_dirty();
+
+                            true // UI should redraw
+                        } else {
+                            self.set_lsp_status("Invalid file path in LSP response".to_string());
+                            false
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        // No implementation found
+                        crate::lsp_debug!("LSP-IMPLEMENTATION", "No implementation found");
+                        self.set_lsp_status("No implementation found".to_string());
+                        false
+                    }
+                    Ok(Err(e)) => {
+                        // LSP error
+                        crate::lsp_debug!("LSP-IMPLEMENTATION", "Implementation request failed: {:?}", e);
+                        self.set_lsp_status(format!("Implementation failed: {}", e));
+                        false
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // Check for timeout
+                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
+                            crate::lsp_debug!("LSP-IMPLEMENTATION", "Implementation request timed out, aborting task");
+                            pending.task.abort();
+                            self.set_lsp_status("Implementation request timed out".to_string());
+                            return false;
+                        }
+
+                        // Still waiting - put it back
+                        self.lsp_state.pending_lsp_response =
+                            Some(crate::editor::lsp_state::PendingLspResponse::Implementation(pending));
+                        false
+                    }
+                    Err(TryRecvError::Closed) => {
+                        // Sender dropped (shouldn't happen)
+                        crate::lsp_debug!("LSP-IMPLEMENTATION", "Implementation request cancelled (sender dropped)");
+                        self.set_lsp_status("Implementation request cancelled".to_string());
+                        false
+                    }
+                }
+            }
+
+            crate::editor::lsp_state::PendingLspResponse::TypeDefinition(mut pending) => {
+                use tokio::sync::oneshot::error::TryRecvError;
+                match pending.receiver.try_recv() {
+                    Ok(Ok(Some(location))) => {
+                        // Success! Navigate to the type definition
+                        crate::lsp_debug!("LSP-TYPE", "Received type definition response");
+
+                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
+                            let target_line = location.range.start.line as usize;
+                            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+
+                            // Save current position to tag stack for Ctrl-T navigation
+                            self.push_tag();
+
+                            // Open file if different from current
+                            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
+                                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
+                                    self.set_lsp_status("Failed to open file".to_string());
+                                    return false;
+                                }
+                            }
+
+                            // Move cursor to location
+                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            // Center cursor after jump (Vim behavior)
+                            self.center_cursor_in_viewport();
+                            self.set_lsp_status(format!(
+                                "Type: {}:{}:{}",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                target_line + 1,
+                                target_col + 1
+                            ));
+                            self.mark_dirty();
+
+                            true // UI should redraw
+                        } else {
+                            self.set_lsp_status("Invalid file path in LSP response".to_string());
+                            false
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        // No type definition found
+                        crate::lsp_debug!("LSP-TYPE", "No type definition found");
+                        self.set_lsp_status("No type definition found".to_string());
+                        false
+                    }
+                    Ok(Err(e)) => {
+                        // LSP error
+                        crate::lsp_debug!("LSP-TYPE", "Type definition request failed: {:?}", e);
+                        self.set_lsp_status(format!("Type definition failed: {}", e));
+                        false
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // Check for timeout
+                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
+                            crate::lsp_debug!("LSP-TYPE", "Type definition request timed out, aborting task");
+                            pending.task.abort();
+                            self.set_lsp_status("Type definition request timed out".to_string());
+                            return false;
+                        }
+
+                        // Still waiting - put it back
+                        self.lsp_state.pending_lsp_response =
+                            Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending));
+                        false
+                    }
+                    Err(TryRecvError::Closed) => {
+                        // Sender dropped (shouldn't happen)
+                        crate::lsp_debug!("LSP-TYPE", "Type definition request cancelled (sender dropped)");
+                        self.set_lsp_status("Type definition request cancelled".to_string());
+                        false
+                    }
+                }
+            }
+        }
+    }
+
     /// Register a new LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
         self.lsp_state.lsp_status = format!("LSP: {} ready", server_name);
@@ -787,7 +1093,11 @@ impl Editor {
             uri
         );
 
-        self.set_lsp_status("Requesting definition...".to_string());
+        // Cancel any existing pending definition request by aborting the task
+        if let Some(crate::editor::lsp_state::PendingLspResponse::Definition(old)) = self.lsp_state.pending_lsp_response.take() {
+            crate::lsp_debug!("LSP-DEFINITION", "Aborting previous pending definition request");
+            old.task.abort();
+        }
 
         // Ensure document is synced before making the request
         // CRITICAL: If we just typed something, the debounced didChange might not
@@ -797,66 +1107,28 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
-        // Give LSP server a moment to process the change
-        // This prevents race conditions where the request arrives before the change
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        // Spawn definition request in background (non-blocking)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = lsp.goto_definition(&uri, line, character, language_id).await;
+            let _ = tx.send(result); // Send to receiver (ignore if dropped)
+            Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
+        });
 
-        // Make the request WITHOUT holding self lock (already released after ensure_lsp_document_synced)
-        let result = lsp
-            .goto_definition(&uri, line, character, language_id)
-            .await;
-
-        match result {
-            Ok(Some(location)) => {
-                crate::lsp_debug!(
-                    "LSP-RESPONSE",
-                    "goto_definition: found location"
-                );
-
-                // Navigate to the location
-                if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
-                    let target_line = location.range.start.line as usize;
-                    let target_col = self.utf16_to_col(target_line, location.range.start.character);
-
-                    // Save current position to tag stack for Ctrl-T navigation
-                    self.push_tag();
-
-                    // Open file if different from current
-                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                        if let Ok(()) = self.open_file(path.to_string_lossy().as_ref()) {
-                            // File opened successfully
-                        } else {
-                            self.set_lsp_status("Failed to open file".to_string());
-                            return Ok(false);
-                        }
-                    }
-
-                    // Move cursor to location
-                    self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                    // Center cursor after jump (Vim behavior)
-                    self.center_cursor_in_viewport();
-                    self.set_lsp_status(format!(
-                        "Definition: {}:{}:{}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        target_line + 1,
-                        target_col + 1
-                    ));
-
-                    Ok(true) // Changed editor state
-                } else {
-                    self.set_lsp_status("Invalid file path in LSP response".to_string());
-                    Ok(false)
+        // Store task handle and receiver for polling
+        self.lsp_state.pending_lsp_response =
+            Some(crate::editor::lsp_state::PendingLspResponse::Definition(
+                crate::editor::lsp_state::PendingLspRequest {
+                    task,
+                    receiver: rx,
+                    started: std::time::Instant::now(),
                 }
-            }
-            Ok(None) => {
-                self.set_lsp_status("No definition found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Definition request failed: {}", e));
-                Err(e)
-            }
-        }
+            ));
+
+        // Show loading status
+        self.set_lsp_status("Jumping to definition...".to_string());
+
+        Ok(false) // Return immediately - result will be processed by poll_pending_lsp_responses
     }
 
     async fn goto_implementation_impl(&mut self) -> Result<bool> {
@@ -899,59 +1171,39 @@ impl Editor {
             }
         };
 
-        self.set_lsp_status("Requesting implementation...".to_string());
+        // Cancel any existing pending implementation request by aborting the task
+        if let Some(crate::editor::lsp_state::PendingLspResponse::Implementation(old)) = self.lsp_state.pending_lsp_response.take() {
+            crate::lsp_debug!("LSP-IMPLEMENTATION", "Aborting previous pending implementation request");
+            old.task.abort();
+        }
 
         let did_flush = self.ensure_lsp_document_synced().await;
         if did_flush {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let result = lsp
-            .implementation(&uri, line, character, language_id)
-            .await;
+        // Spawn implementation request in background (non-blocking)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = lsp.implementation(&uri, line, character, language_id).await;
+            let _ = tx.send(result); // Send to receiver (ignore if dropped)
+            Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
+        });
 
-        match result {
-            Ok(Some(location)) => {
-                if let Some(path) = uri_to_file_path(&location.uri) {
-                    let target_line = location.range.start.line as usize;
-                    let target_col = self.utf16_to_col(target_line, location.range.start.character);
-
-                    // Save current position to tag stack for Ctrl-T navigation
-                    self.push_tag();
-
-                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
-                        && self.open_file(path.to_string_lossy().as_ref()).is_err()
-                    {
-                        self.set_lsp_status("Failed to open file".to_string());
-                        return Ok(false);
-                    }
-
-                    self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                    // Center cursor after jump (Vim behavior)
-                    self.center_cursor_in_viewport();
-                    self.set_lsp_status(format!(
-                        "Implementation: {}:{}:{}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        target_line + 1,
-                        target_col + 1
-                    ));
-
-                    Ok(true)
-                } else {
-                    self.set_lsp_status("Invalid file path in LSP response".to_string());
-                    Ok(false)
+        // Store task handle and receiver for polling
+        self.lsp_state.pending_lsp_response =
+            Some(crate::editor::lsp_state::PendingLspResponse::Implementation(
+                crate::editor::lsp_state::PendingLspRequest {
+                    task,
+                    receiver: rx,
+                    started: std::time::Instant::now(),
                 }
-            }
-            Ok(None) => {
-                self.set_lsp_status("No implementation found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Implementation request failed: {}", e));
-                Err(e)
-            }
-        }
+            ));
+
+        // Show loading status
+        self.set_lsp_status("Jumping to implementation...".to_string());
+
+        Ok(false) // Return immediately - result will be processed by poll_pending_lsp_responses
     }
 
     async fn goto_type_impl(&mut self) -> Result<bool> {
@@ -994,60 +1246,39 @@ impl Editor {
             }
         };
 
-        self.set_lsp_status("Requesting type definition...".to_string());
+        // Cancel any existing pending type definition request by aborting the task
+        if let Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(old)) = self.lsp_state.pending_lsp_response.take() {
+            crate::lsp_debug!("LSP-TYPE", "Aborting previous pending type definition request");
+            old.task.abort();
+        }
 
         let did_flush = self.ensure_lsp_document_synced().await;
         if did_flush {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        let result = lsp
-            .type_definition(&uri, line, character, language_id)
-            .await;
+        // Spawn type definition request in background (non-blocking)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = lsp.type_definition(&uri, line, character, language_id).await;
+            let _ = tx.send(result); // Send to receiver (ignore if dropped)
+            Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
+        });
 
-        match result {
-            Ok(Some(location)) => {
-
-                if let Some(path) = uri_to_file_path(&location.uri) {
-                    let target_line = location.range.start.line as usize;
-                    let target_col = self.utf16_to_col(target_line, location.range.start.character);
-
-                    // Save current position to tag stack for Ctrl-T navigation
-                    self.push_tag();
-
-                    if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
-                        && self.open_file(path.to_string_lossy().as_ref()).is_err()
-                    {
-                        self.set_lsp_status("Failed to open file".to_string());
-                        return Ok(false);
-                    }
-
-                    self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                    // Center cursor after jump (Vim behavior)
-                    self.center_cursor_in_viewport();
-                    self.set_lsp_status(format!(
-                        "Type: {}:{}:{}",
-                        path.file_name().unwrap_or_default().to_string_lossy(),
-                        target_line + 1,
-                        target_col + 1
-                    ));
-
-                    Ok(true)
-                } else {
-                    self.set_lsp_status("Invalid file path in LSP response".to_string());
-                    Ok(false)
+        // Store task handle and receiver for polling
+        self.lsp_state.pending_lsp_response =
+            Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(
+                crate::editor::lsp_state::PendingLspRequest {
+                    task,
+                    receiver: rx,
+                    started: std::time::Instant::now(),
                 }
-            }
-            Ok(None) => {
-                self.set_lsp_status("No type definition found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Type request failed: {}", e));
-                Err(e)
-            }
-        }
+            ));
+
+        // Show loading status
+        self.set_lsp_status("Jumping to type definition...".to_string());
+
+        Ok(false) // Return immediately - result will be processed by poll_pending_lsp_responses
     }
 
     async fn find_references_impl(&mut self) -> Result<bool> {
@@ -1705,6 +1936,12 @@ impl Editor {
             }
         }
 
+        // Cancel any existing pending hover request by aborting the task
+        if let Some(crate::editor::lsp_state::PendingLspResponse::Hover(old)) = self.lsp_state.pending_lsp_response.take() {
+            crate::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
+            old.task.abort();
+        }
+
         let abs_path = if std::path::Path::new(&file_path).is_absolute() {
             file_path.clone()
         } else {
@@ -1741,8 +1978,6 @@ impl Editor {
             uri
         );
 
-        self.set_lsp_status("Requesting hover info...".to_string());
-
         // Ensure document is synced before making the request
         let did_flush = self.ensure_lsp_document_synced().await;
         if did_flush {
@@ -1750,40 +1985,29 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
-        let result = lsp.hover(&uri, line, character, language_id).await;
+        // Spawn hover request in background (non-blocking)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = lsp.hover(&uri, line, character, language_id).await;
+            let _ = tx.send(result); // Send to receiver (ignore if dropped)
+            Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
+        });
 
-        match result {
-            Ok(Some(hover_text)) => {
-                // Cache the hover result
-                self.lsp_state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
-                    file_path,
-                    cursor_line,
-                    cursor_col,
-                    buffer_version,
-                    hover_text.clone(),
-                ));
+        // Store task handle and receiver for polling
+        self.lsp_state.pending_lsp_response = Some(crate::editor::lsp_state::PendingLspResponse::Hover(
+            crate::editor::lsp_state::PendingLspRequest {
+                task,
+                receiver: rx,
+                started: std::time::Instant::now(),
+            }
+        ));
 
-                self.lsp_state.hover_info = Some(hover_text);
-                self.lsp_state.hover_scroll = 0; // Reset scroll position
-                // Store cursor position for hover window positioning
-                let cursor = self.buffer().cursor();
-                self.lsp_state.hover_position = Some((cursor.line(), cursor.col()));
-                self.mode = crate::mode::Mode::HoverPreview;
-                self.mark_dirty();
-                self.set_lsp_status(String::new()); // Clear status on success
-                Ok(true)
-            }
-            Ok(None) => {
-                crate::lsp_debug!("LSP-HOVER", "No hover info returned");
-                self.set_lsp_status("No hover info available".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                crate::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
-                self.set_lsp_status(format!("Hover request failed: {}", e));
-                Err(e)
-            }
-        }
+        // Show loading status
+        self.set_lsp_status("Loading hover...".to_string());
+        crate::lsp_debug!("LSP-HOVER", "Spawned hover request, waiting for response");
+
+        // Return immediately - no blocking!
+        Ok(false) // No state change yet
     }
 
     async fn completion_impl(&mut self) -> Result<bool> {

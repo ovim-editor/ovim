@@ -83,6 +83,21 @@ impl HoverCache {
     }
 }
 
+/// Pending LSP request with task handle for cancellation (Phase 5)
+pub struct PendingLspRequest<T> {
+    pub task: tokio::task::JoinHandle<anyhow::Result<T>>,
+    pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<T>>,
+    pub started: std::time::Instant,
+}
+
+/// Pending LSP response (non-blocking infrastructure for Phase 1-5)
+pub enum PendingLspResponse {
+    Hover(PendingLspRequest<Option<String>>),
+    Definition(PendingLspRequest<Option<lsp_types::Location>>),
+    Implementation(PendingLspRequest<Option<lsp_types::Location>>),
+    TypeDefinition(PendingLspRequest<Option<lsp_types::Location>>),
+}
+
 /// LSP-related state for the editor
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LspResultType {
@@ -161,6 +176,8 @@ pub struct LspState {
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
     /// Cached hover result to avoid redundant LSP requests
     pub hover_cache: Option<HoverCache>,
+    /// Pending LSP response that we're waiting for (non-blocking infrastructure)
+    pub pending_lsp_response: Option<PendingLspResponse>,
 }
 
 impl LspState {
@@ -190,6 +207,7 @@ impl LspState {
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             hover_cache: None,
+            pending_lsp_response: None,
         }
     }
 }
