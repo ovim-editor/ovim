@@ -719,6 +719,9 @@ impl Buffer {
 
     /// Inserts text at a specific position (line, col)
     pub fn insert_text_at(&mut self, line: usize, col: usize, text: &str) {
+        // Track buffer edit metrics
+        crate::metrics::BUFFER_EDITS_TOTAL.inc();
+
         // Use raw_line_count() to allow inserting at the phantom empty line
         // (which is valid for appending at end of buffer)
         if line >= self.raw_line_count() {
@@ -740,6 +743,10 @@ impl Buffer {
         self.rope.insert(insert_pos, text);
         self.modified = true;
 
+        // Update buffer size metrics
+        crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
+        crate::metrics::BUFFER_LINES.set(self.rope.len_lines() as i64);
+
         // Apply incremental tree-sitter edit (much faster than full re-parse)
         if let Some(edit) = ts_edit {
             self.apply_incremental_syntax_edit(edit);
@@ -759,6 +766,9 @@ impl Buffer {
         end_line: usize,
         end_col: usize,
     ) -> String {
+        // Track buffer edit metrics
+        crate::metrics::BUFFER_EDITS_TOTAL.inc();
+
         if start_line >= self.line_count() {
             return String::new();
         }
@@ -810,6 +820,10 @@ impl Buffer {
 
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
+
+        // Update buffer size metrics
+        crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
+        crate::metrics::BUFFER_LINES.set(self.rope.len_lines() as i64);
 
         // Apply incremental tree-sitter edit (much faster than full re-parse)
         if let Some(edit) = ts_edit {

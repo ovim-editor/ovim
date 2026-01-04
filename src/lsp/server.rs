@@ -1033,6 +1033,10 @@ impl LanguageServer {
 
     /// Sends a request and waits for the response
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        // Track LSP request metrics
+        let _timer = crate::metrics::LSP_REQUEST_DURATION.start_timer();
+        crate::metrics::LSP_REQUESTS_TOTAL.inc();
+
         let request_id =
             RequestId::Number(self.inner.next_request_id.fetch_add(1, Ordering::SeqCst));
 
@@ -1121,7 +1125,10 @@ impl LanguageServer {
                             json_str
                         }
                     },
-                    Err(e) => format!("Error: {}", e)
+                    Err(e) => {
+                        crate::metrics::LSP_ERRORS_TOTAL.inc();
+                        format!("Error: {}", e)
+                    }
                 };
                 crate::lsp_info!(
                     &self.log_prefix(),
@@ -1135,10 +1142,12 @@ impl LanguageServer {
             }
             Ok(Err(_)) => {
                 let _elapsed = start_time.elapsed();
+                crate::metrics::LSP_ERRORS_TOTAL.inc();
                 // eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);
                 Err(anyhow!("Response channel closed for method '{}'", method))
             }
             Err(_) => {
+                crate::metrics::LSP_ERRORS_TOTAL.inc();
                 // eprintln!("[LSP-ERROR] Timeout: {} | After: {:?}", method, timeout_duration);
                 // Timeout - remove pending request
                 let mut pending = self.inner.pending_requests.lock().await;

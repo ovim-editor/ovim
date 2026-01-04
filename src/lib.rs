@@ -11,6 +11,7 @@ pub mod lsp;
 #[cfg(feature = "lua")]
 pub mod lua;
 pub mod mcp_stdio_server;
+pub mod metrics;
 pub mod modeline;
 pub mod mode;
 pub mod session;

@@ -121,7 +121,6 @@ impl Default for EditorOptions {
 }
 
 use crate::buffer::Buffer;
-#[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
 use crate::syntax::ColorSchemeRegistry;
@@ -231,10 +230,8 @@ pub struct Editor {
     /// Channel receiver for LSP commands from background tasks
     lsp_command_rx: Option<mpsc::UnboundedReceiver<LspCommand>>,
     /// Lua context for configuration and plugins (optional)
-    #[cfg(feature = "lua")]
     lua_context: Option<LuaContext>,
     /// Bridge for Lua-Editor communication (optional)
-    #[cfg(feature = "lua")]
     editor_bridge: Option<crate::lua::EditorBridge>,
     /// Last insert position (line, col) for gi command
     last_insert_position: Option<(usize, usize)>,
@@ -400,9 +397,7 @@ impl Editor {
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
-            #[cfg(feature = "lua")]
             lua_context: None,
-            #[cfg(feature = "lua")]
             editor_bridge: None,
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
@@ -480,9 +475,7 @@ impl Editor {
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
-            #[cfg(feature = "lua")]
             lua_context: None,
-            #[cfg(feature = "lua")]
             editor_bridge: None,
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),

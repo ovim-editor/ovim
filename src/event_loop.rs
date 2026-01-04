@@ -87,7 +87,6 @@ async fn process_editor_tick(
         editor.process_pending_lsp_actions().await;
     }
 
-    #[cfg(feature = "lua")]
     let _ = editor.process_lua_commands();
 
     if editor.mode() == Mode::Picker {
