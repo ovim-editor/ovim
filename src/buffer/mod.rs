@@ -313,6 +313,9 @@ pub struct Buffer {
     /// Cached semantic token highlights from LSP (line_idx -> Vec<(range, group)>)
     /// These take precedence over tree-sitter highlights when available
     semantic_highlights: Option<LineHighlights>,
+    /// Monotonically increasing version number, incremented on every edit
+    /// Used for cache invalidation in LSP hover, completion, etc.
+    version: usize,
 }
 
 impl Buffer {
@@ -335,6 +338,7 @@ impl Buffer {
             file_mtime: None,
             read_only: false,
             semantic_highlights: None,
+            version: 0,
         }
     }
 
@@ -422,6 +426,7 @@ impl Buffer {
             file_mtime: None,
             read_only: false,
             semantic_highlights: None,
+            version: 0,
         }
     }
 
@@ -499,6 +504,13 @@ impl Buffer {
     /// Sets the read-only status of the buffer
     pub fn set_read_only(&mut self, read_only: bool) {
         self.read_only = read_only;
+    }
+
+    /// Returns the current version of this buffer.
+    /// The version increments on every edit operation (insert, delete, etc.)
+    /// and is used for cache invalidation.
+    pub fn version(&self) -> usize {
+        self.version
     }
 
     /// Gets the file path if set
@@ -725,7 +737,8 @@ impl Buffer {
         self.rope.insert(insert_pos, text);
         self.modified = true;
 
-        // Increment version and mark re-highlight as pending
+        // Increment versions for cache invalidation
+        self.version += 1;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
     }
@@ -776,7 +789,8 @@ impl Buffer {
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
 
-        // Increment version and mark re-highlight as pending
+        // Increment versions for cache invalidation
+        self.version += 1;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
 
@@ -850,6 +864,7 @@ impl Buffer {
             file_mtime,
             read_only,
             semantic_highlights: None,
+            version: 0,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
@@ -1003,6 +1018,8 @@ impl Buffer {
         self.modified = true;
         // Reset cursor to beginning
         self.cursor = Cursor::new(0, 0);
+        // Increment version for cache invalidation
+        self.version += 1;
     }
 
     /// Gets the word under the cursor
