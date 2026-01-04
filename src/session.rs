@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::process;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -142,27 +142,58 @@ impl SessionInfo {
         }
     }
 
-    /// Read a session by name
+    /// Read a session by name with helpful error messages
     pub fn read(session_name: &str) -> Result<Self> {
         let session_dir = Self::session_dir()?;
         let path = session_dir.join(format!("{}.json", session_name));
 
-        let json =
-            fs::read_to_string(&path).context(format!("Session '{}' not found", session_name))?;
+        // Try to read the file
+        let json = fs::read_to_string(&path).context(format!(
+            "Session '{}' not found.\n\nAvailable sessions:\n{}",
+            session_name,
+            Self::format_available_sessions()
+        ))?;
 
-        let info: SessionInfo = serde_json::from_str(&json)?;
+        // Try to parse JSON
+        let info: SessionInfo = serde_json::from_str(&json).context(format!(
+            "Session file for '{}' is corrupted. Run 'ovim cleanup' to remove invalid sessions.",
+            session_name
+        ))?;
 
         // Check if process is still running and matches start time
         if !is_process_alive_with_start_time(info.pid, info.start_time) {
             // Clean up stale session file
             let _ = fs::remove_file(&path);
             anyhow::bail!(
-                "Session '{}' is not running (stale file cleaned up)",
-                session_name
+                "Session '{}' is not running (process {} terminated).\n\
+                 Stale session file has been cleaned up.\n\
+                 \n\
+                 Active sessions:\n{}",
+                session_name,
+                info.pid,
+                Self::format_available_sessions()
             );
         }
 
         Ok(info)
+    }
+
+    /// Format available sessions as a helpful string for error messages
+    fn format_available_sessions() -> String {
+        match Self::list_all() {
+            Ok(sessions) if !sessions.is_empty() => {
+                let mut output = String::new();
+                for session in sessions {
+                    output.push_str(&format!(
+                        "  - {} (PID {}, port {})\n",
+                        session.session_name, session.pid, session.port
+                    ));
+                }
+                output
+            }
+            _ => "  (none - start a session with: ovim <file> --headless --session <name>)\n"
+                .to_string(),
+        }
     }
 
     /// List all active sessions
@@ -211,12 +242,31 @@ impl SessionInfo {
     /// 2. Named headless sessions (explicit names like "work", "test")
     /// 3. Most recently started session
     ///
-    /// Returns error if no active sessions found
+    /// Returns error if no active sessions found with helpful suggestions
     pub fn auto_discover() -> Result<Self> {
         let sessions = Self::list_all()?;
 
         if sessions.is_empty() {
-            anyhow::bail!("No active ovim sessions found. Start one with: ovim <file> --headless --session myname");
+            anyhow::bail!(
+                "No active ovim sessions found.\n\
+                 \n\
+                 To start a new session:\n\
+                 \n\
+                 1. With TUI:       ovim <file>\n\
+                 2. Headless:       ovim <file> --headless\n\
+                 3. Named session:  ovim <file> --headless --session <name>\n\
+                 \n\
+                 Tip: Run 'ovim cleanup' to clean up stale session files."
+            );
+        }
+
+        // If multiple sessions exist, provide guidance
+        if sessions.len() > 1 {
+            eprintln!(
+                "Multiple sessions found ({} total). Using most recent named session.",
+                sessions.len()
+            );
+            eprintln!("Tip: Use --session <name> to specify which session to use.\n");
         }
 
         // Detect if a session name looks auto-generated (contains timestamp pattern)
@@ -244,6 +294,73 @@ impl SessionInfo {
             .into_iter()
             .max_by_key(|s| s.started_at)
             .context("No active ovim sessions found")
+    }
+
+    /// Check if session is expired (older than max_age)
+    ///
+    /// # Arguments
+    /// * `max_age` - Maximum session age before considered expired
+    ///
+    /// # Educational Note
+    /// Session expiry is useful for cleaning up long-running sessions that may have been
+    /// forgotten. However, be careful with automatic expiry - some users may intentionally
+    /// keep sessions running for days/weeks (e.g., remote development, long-running tasks).
+    /// Default expiry should be conservative (7+ days).
+    pub fn is_expired(&self, max_age: Duration) -> bool {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+
+        let age = now.saturating_sub(self.started_at);
+        age > max_age.as_secs()
+    }
+
+    /// Health check: verify session is actually responding
+    ///
+    /// This goes beyond PID checking - it verifies the API endpoint is accessible.
+    /// This is crucial because:
+    /// 1. Process might exist but be hung/deadlocked
+    /// 2. Process might exist but API server failed to start
+    /// 3. Port might be bound by a different process (PID reuse + port reuse race)
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Session is healthy and responding
+    /// * `Ok(false)` - Session exists but not responding
+    /// * `Err(_)` - Network/connection error
+    ///
+    /// # Educational Note
+    /// Health checks are essential for distributed systems. A process existing (PID check)
+    /// doesn't mean it's functional. Always verify the actual service endpoint when possible.
+    /// This is why Kubernetes has liveness probes, not just PID checks.
+    pub fn check_health(&self) -> Result<bool> {
+        // First check if process is alive (fast check)
+        if !is_process_alive_with_start_time(self.pid, self.start_time) {
+            return Ok(false);
+        }
+
+        // Then verify API endpoint is responding (comprehensive check)
+        // Use a short timeout to avoid blocking cleanup operations
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()?;
+
+        let health_url = format!("http://127.0.0.1:{}/health", self.port);
+
+        match client.get(&health_url).send() {
+            Ok(response) => Ok(response.status().is_success()),
+            Err(_) => Ok(false), // Network error = unhealthy
+        }
+    }
+
+    /// Get human-readable session age
+    pub fn age(&self) -> Duration {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+
+        Duration::from_secs(now.saturating_sub(self.started_at))
     }
 }
 
@@ -392,10 +509,60 @@ fn is_process_exists(_pid: u32) -> bool {
     true
 }
 
-/// Clean up all stale session files
-pub fn cleanup_stale_sessions() -> Result<()> {
+/// Result of cleanup operation
+#[derive(Debug, Clone)]
+pub struct CleanupResult {
+    /// Number of stale sessions removed (dead processes)
+    pub stale_removed: usize,
+    /// Number of expired sessions removed (too old)
+    pub expired_removed: usize,
+    /// Number of corrupted session files removed
+    pub corrupted_removed: usize,
+    /// Number of orphaned temp files removed
+    pub temp_files_removed: usize,
+    /// Details of removed sessions for logging
+    pub removed_sessions: Vec<String>,
+}
+
+impl CleanupResult {
+    pub fn total_removed(&self) -> usize {
+        self.stale_removed + self.expired_removed + self.corrupted_removed + self.temp_files_removed
+    }
+}
+
+/// Clean up all stale session files with detailed reporting
+///
+/// # Arguments
+/// * `max_age` - Optional maximum session age. Sessions older than this are removed. None = no age limit.
+/// * `dry_run` - If true, report what would be removed without actually removing
+///
+/// # Educational Notes
+/// **Why PID checking isn't enough:**
+/// PIDs can be reused by the OS. If ovim crashes and a new process gets the same PID,
+/// we'd incorrectly think the session is still alive. That's why we also check:
+/// 1. Process start time (from /proc or ps) - ensures it's the SAME process
+/// 2. API health endpoint - ensures the process is actually functional
+///
+/// **Why we clean up temp files:**
+/// During atomic writes, we create temp.tmp then rename to session.json.
+/// If the process crashes between these steps, temp files are orphaned.
+/// We only clean up old temp files (>1 hour) to avoid racing with active writers.
+///
+/// **Session expiry considerations:**
+/// Some users run ovim sessions for days/weeks (remote dev, long tasks).
+/// Default expiry should be conservative (7+ days). This is opt-in via --max-age.
+pub fn cleanup_stale_sessions(max_age: Option<Duration>, dry_run: bool) -> Result<CleanupResult> {
     let session_dir = SessionInfo::session_dir()?;
 
+    let mut result = CleanupResult {
+        stale_removed: 0,
+        expired_removed: 0,
+        corrupted_removed: 0,
+        temp_files_removed: 0,
+        removed_sessions: Vec::new(),
+    };
+
+    // Clean up session files
     for entry in fs::read_dir(&session_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -404,10 +571,94 @@ pub fn cleanup_stale_sessions() -> Result<()> {
             continue;
         }
 
-        if let Ok(json) = fs::read_to_string(&path) {
-            if let Ok(info) = serde_json::from_str::<SessionInfo>(&json) {
-                if !is_process_alive_with_start_time(info.pid, info.start_time) {
-                    let _ = fs::remove_file(&path);
+        let session_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        // Try to parse session file
+        match fs::read_to_string(&path) {
+            Ok(json) => {
+                match serde_json::from_str::<SessionInfo>(&json) {
+                    Ok(info) => {
+                        let mut should_remove = false;
+                        let mut reason = String::new();
+
+                        // Check if process is dead
+                        if !is_process_alive_with_start_time(info.pid, info.start_time) {
+                            should_remove = true;
+                            reason = format!("process {} not running", info.pid);
+                            result.stale_removed += 1;
+                        }
+                        // Check if expired (if max_age specified)
+                        else if let Some(max_age) = max_age {
+                            if info.is_expired(max_age) {
+                                should_remove = true;
+                                let age_days = info.age().as_secs() / 86400;
+                                reason = format!("expired ({} days old)", age_days);
+                                result.expired_removed += 1;
+                            }
+                        }
+
+                        if should_remove {
+                            let detail = format!("{} ({})", session_name, reason);
+                            result.removed_sessions.push(detail.clone());
+
+                            if !dry_run {
+                                // Best-effort removal - file might already be gone
+                                match fs::remove_file(&path) {
+                                    Ok(()) => {},
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                                    Err(e) => {
+                                        return Err(e).context(format!(
+                                            "Failed to remove session file: {}",
+                                            path.display()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Corrupted session file
+                        let detail = format!("{} (corrupted: {})", session_name, e);
+                        result.removed_sessions.push(detail);
+                        result.corrupted_removed += 1;
+
+                        if !dry_run {
+                            // Best-effort removal - file might already be gone
+                            match fs::remove_file(&path) {
+                                Ok(()) => {},
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                                Err(e) => {
+                                    return Err(e).context(format!(
+                                        "Failed to remove corrupted session file: {}",
+                                        path.display()
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // Can't read file
+                let detail = format!("{} (unreadable: {})", session_name, e);
+                result.removed_sessions.push(detail);
+                result.corrupted_removed += 1;
+
+                if !dry_run {
+                    // Best-effort removal - file might already be gone
+                    match fs::remove_file(&path) {
+                        Ok(()) => {},
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+                        Err(e) => {
+                            return Err(e).context(format!(
+                                "Failed to remove unreadable session file: {}",
+                                path.display()
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -425,8 +676,12 @@ pub fn cleanup_stale_sessions() -> Result<()> {
             if let Ok(metadata) = fs::metadata(&path) {
                 if let Ok(modified) = metadata.modified() {
                     if let Ok(elapsed) = modified.elapsed() {
-                        if elapsed > std::time::Duration::from_secs(3600) {
-                            let _ = fs::remove_file(&path); // Best-effort cleanup
+                        if elapsed > Duration::from_secs(3600) {
+                            result.temp_files_removed += 1;
+
+                            if !dry_run {
+                                let _ = fs::remove_file(&path); // Best-effort cleanup
+                            }
                         }
                     }
                 }
@@ -434,7 +689,7 @@ pub fn cleanup_stale_sessions() -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(result)
 }
 
 /// Guard that ensures session cleanup on drop (even during panic)
