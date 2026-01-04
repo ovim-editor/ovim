@@ -766,12 +766,17 @@ impl Editor {
                 None => return,
             };
 
-            // Send the didChange notification
-            let _ = lsp.did_change(uri, language_id, content, None).await;
+            // Get old content for incremental sync
+            let old_content = self.lsp_state.document_sync
+                .get(&state_key)
+                .and_then(|state| state.last_synced_content.clone());
 
-            // Mark as sent AFTER sending
+            // Send the didChange notification with old_text for incremental sync
+            let _ = lsp.did_change(uri, language_id, content.clone(), old_content).await;
+
+            // Mark as sent AFTER sending and store the synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
-            state.mark_change_sent();
+            state.mark_change_sent(content);
         }
     }
 
@@ -866,8 +871,7 @@ impl Editor {
             // Mark didOpen as sent
             let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
             state.did_open_sent = true;
-            state.last_synced_content = Some(content.clone());
-            state.mark_change_sent();
+            state.mark_change_sent(content.clone());
             return true; // We sent didOpen (includes content flush)
         }
 
@@ -879,12 +883,17 @@ impl Editor {
             .is_some_and(|state| state.is_modified());
 
         if needs_flush {
-            // Send the didChange notification immediately (bypass debouncing)
-            let _ = lsp.did_change(uri, language_id, content, None).await;
+            // Get old content for incremental sync
+            let old_content = self.lsp_state.document_sync
+                .get(&state_key)
+                .and_then(|state| state.last_synced_content.clone());
 
-            // Mark as sent
+            // Send the didChange notification immediately (bypass debouncing) with incremental sync
+            let _ = lsp.did_change(uri, language_id, content.clone(), old_content).await;
+
+            // Mark as sent and store synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
-            state.mark_change_sent();
+            state.mark_change_sent(content);
             return true; // We flushed changes
         }
 

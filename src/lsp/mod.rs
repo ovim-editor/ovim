@@ -440,10 +440,30 @@ impl LspManager {
         // Check if server supports incremental sync and we have old content
         let supports_incremental = server.supports_incremental_sync().await;
 
+        let full_doc_size = text.len();
         let content_changes = if supports_incremental && old_text.is_some() {
             // Try incremental sync
             if let Some(old) = old_text {
                 if let Some((range, new_text)) = compute_simple_diff(&old, &text) {
+                    // Log bandwidth savings
+                    let incremental_size = new_text.len();
+                    let reduction_ratio = if full_doc_size > 0 {
+                        full_doc_size as f64 / incremental_size.max(1) as f64
+                    } else {
+                        1.0
+                    };
+                    eprintln!(
+                        "[LSP-SYNC] Incremental: {} bytes (was {} bytes, {:.1}x reduction) | Range: {}:{}-{}:{} | File: {}",
+                        incremental_size,
+                        full_doc_size,
+                        reduction_ratio,
+                        range.start.line,
+                        range.start.character,
+                        range.end.line,
+                        range.end.character,
+                        uri.path()
+                    );
+
                     // Use incremental change
                     vec![TextDocumentContentChangeEvent {
                         range: Some(range),
@@ -452,10 +472,12 @@ impl LspManager {
                     }]
                 } else {
                     // No changes detected or identical content
+                    eprintln!("[LSP-SYNC] No changes detected (identical content) | File: {}", uri.path());
                     return Ok(());
                 }
             } else {
                 // Fallback to full sync
+                eprintln!("[LSP-SYNC] Full sync (no old_text): {} bytes | File: {}", full_doc_size, uri.path());
                 vec![TextDocumentContentChangeEvent {
                     range: None,
                     range_length: None,
@@ -464,6 +486,12 @@ impl LspManager {
             }
         } else {
             // Use full document sync
+            let reason = if !supports_incremental {
+                "server doesn't support incremental"
+            } else {
+                "no old_text provided"
+            };
+            eprintln!("[LSP-SYNC] Full sync ({}): {} bytes | File: {}", reason, full_doc_size, uri.path());
             vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
