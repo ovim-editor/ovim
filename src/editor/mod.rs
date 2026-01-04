@@ -88,6 +88,12 @@ pub struct EditorOptions {
     pub backup: bool,
     /// Minimum number of lines to keep above and below cursor (default: 10)
     pub scrolloff: usize,
+    /// Wrap long lines (default: true)
+    pub wrap: bool,
+    /// Horizontal scroll step size (default: 0 = jump to center cursor)
+    pub sidescroll: usize,
+    /// Minimum columns to keep left and right of cursor (default: 5)
+    pub sidescrolloff: usize,
 }
 
 impl Default for EditorOptions {
@@ -107,6 +113,9 @@ impl Default for EditorOptions {
             swapfile: true,
             backup: false,
             scrolloff: 10,
+            wrap: true,
+            sidescroll: 0,
+            sidescrolloff: 5,
         }
     }
 }
@@ -649,6 +658,17 @@ impl Editor {
         self.scroll_offset
     }
 
+    /// Gets the horizontal scroll offset (leftmost visible column)
+    pub fn horizontal_offset(&self) -> usize {
+        if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                return window.horizontal_offset();
+            }
+        }
+        // Fall back to 0 for headless/test mode
+        0
+    }
+
     /// Updates scroll offset to keep cursor visible
     ///
     /// Uses scrolloff for comfortable cursor positioning during normal movements.
@@ -687,9 +707,27 @@ impl Editor {
 
         // Update both editor-level and window-level scroll offsets
         self.scroll_offset = new_offset;
+
+        // Extract cursor column and options before mutably borrowing window_manager
+        let cursor_col = self.buffer().cursor().col();
+        let wrap = self.options.wrap;
+        let sidescroll = self.options.sidescroll;
+        let sidescrolloff = self.options.sidescrolloff;
+
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.set_scroll_offset(new_offset);
+
+                // Update horizontal scroll offset to keep cursor visible horizontally
+                if window.ensure_cursor_visible_horizontal(
+                    cursor_col,
+                    wrap,
+                    sidescroll,
+                    sidescrolloff,
+                ) {
+                    // Horizontal offset changed, mark for re-render
+                    self.mark_dirty();
+                }
             }
         }
     }

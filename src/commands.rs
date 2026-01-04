@@ -1713,6 +1713,22 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                 line_count: None,
             });
         }
+        "wrap" => {
+            editor.options.wrap = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  wrap".to_string()),
+                line_count: None,
+            });
+        }
+        "nowrap" => {
+            editor.options.wrap = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  nowrap".to_string()),
+                line_count: None,
+            });
+        }
         _ => {}
     }
 

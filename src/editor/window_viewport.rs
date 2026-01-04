@@ -276,4 +276,42 @@ impl Editor {
             }
         }
     }
+
+    /// Scrolls horizontally to put cursor at left edge (zs command)
+    pub fn scroll_cursor_to_left_edge(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
+        let cursor_col = self.buffer().cursor().col();
+
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_horizontal_offset(cursor_col);
+            }
+        }
+
+        self.mark_dirty();
+    }
+
+    /// Scrolls horizontally to put cursor at right edge (ze command)
+    pub fn scroll_cursor_to_right_edge(&mut self) {
+        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
+        let cursor_col = self.buffer().cursor().col();
+
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                let width = window.width() as usize;
+                let new_offset = cursor_col.saturating_sub(width.saturating_sub(1));
+                window.set_horizontal_offset(new_offset);
+            }
+        }
+
+        self.mark_dirty();
+    }
 }
