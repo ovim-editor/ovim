@@ -182,6 +182,13 @@ impl Editor {
         &self.lsp_state.lsp_status
     }
 
+    /// Invalidate hover cache when buffer is modified
+    pub fn invalidate_hover_cache(&mut self) {
+        if self.lsp_state.hover_cache.is_some() {
+            self.lsp_state.hover_cache = None;
+        }
+    }
+
     /// Register a new LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
         self.lsp_state.lsp_status = format!("LSP: {} ready", server_name);
@@ -1639,16 +1646,36 @@ impl Editor {
             }
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path_str) = self.buffer().file_path() else {
             self.set_lsp_status("Save file first to use hover".to_string());
             return Ok(false);
         };
+        let file_path = file_path_str.to_string(); // Clone to avoid borrow issues
 
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
+        // Check hover cache first (extract values to avoid borrow issues)
+        let cursor = self.buffer().cursor();
+        let buffer_version = self.buffer().version();
+        let cursor_line = cursor.line();
+        let cursor_col = cursor.col();
+
+        if let Some(ref cache) = self.lsp_state.hover_cache {
+            if cache.is_valid(&file_path, cursor_line, cursor_col, buffer_version) {
+                crate::lsp_info!("LSP-HOVER", "Cache HIT");
+                self.lsp_state.hover_info = Some(cache.hover_text.clone());
+                self.lsp_state.hover_scroll = 0;
+                self.lsp_state.hover_position = Some((cursor_line, cursor_col));
+                self.mode = crate::mode::Mode::HoverPreview;
+                self.mark_dirty();
+                self.set_lsp_status(String::new());
+                return Ok(true);
+            }
+        }
+
+        let abs_path = if std::path::Path::new(&file_path).is_absolute() {
+            file_path.clone()
         } else {
             match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
                     self.set_lsp_status("Failed to resolve file path".to_string());
                     return Ok(false);
@@ -1662,7 +1689,7 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -1690,6 +1717,15 @@ impl Editor {
 
         match result {
             Ok(Some(hover_text)) => {
+                // Cache the hover result
+                self.lsp_state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
+                    file_path,
+                    cursor_line,
+                    cursor_col,
+                    buffer_version,
+                    hover_text.clone(),
+                ));
+
                 self.lsp_state.hover_info = Some(hover_text);
                 self.lsp_state.hover_scroll = 0; // Reset scroll position
                 // Store cursor position for hover window positioning

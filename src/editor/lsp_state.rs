@@ -49,6 +49,40 @@ impl DocumentSyncState {
     }
 }
 
+/// Cache for LSP hover results to avoid redundant requests
+#[derive(Debug, Clone)]
+pub struct HoverCache {
+    pub file_path: String,
+    pub line: usize,
+    pub col: usize,
+    pub buffer_version: usize,
+    pub hover_text: String,
+    pub cached_at: std::time::Instant,
+}
+
+impl HoverCache {
+    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+    pub fn is_valid(&self, file_path: &str, line: usize, col: usize, buffer_version: usize) -> bool {
+        self.file_path == file_path
+            && self.line == line
+            && self.col == col
+            && self.buffer_version == buffer_version
+            && self.cached_at.elapsed() < Self::MAX_AGE
+    }
+
+    pub fn new(file_path: String, line: usize, col: usize, buffer_version: usize, hover_text: String) -> Self {
+        Self {
+            file_path,
+            line,
+            col,
+            buffer_version,
+            hover_text,
+            cached_at: std::time::Instant::now(),
+        }
+    }
+}
+
 /// LSP-related state for the editor
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LspResultType {
@@ -125,6 +159,8 @@ pub struct LspState {
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
+    /// Cached hover result to avoid redundant LSP requests
+    pub hover_cache: Option<HoverCache>,
 }
 
 impl LspState {
@@ -153,6 +189,7 @@ impl LspState {
             inlay_hints: Vec::new(),
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
+            hover_cache: None,
         }
     }
 }
