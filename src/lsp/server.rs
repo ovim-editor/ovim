@@ -508,8 +508,14 @@ impl LanguageServer {
                         if msg.is_response() {
                             // Handle response
                             if let Some(id) = msg.id {
-                                let mut pending = inner_clone.pending_requests.lock().await;
-                                if let Some(req) = pending.remove(&id) {
+                                // Extract the PendingRequest from the map without holding lock during send
+                                let pending_req = {
+                                    let mut pending = inner_clone.pending_requests.lock().await;
+                                    pending.remove(&id)
+                                }; // Lock released immediately
+
+                                // Send response outside the lock scope to reduce contention
+                                if let Some(req) = pending_req {
                                     // CRITICAL FIX: Propagate errors instead of just logging
                                     if let Some(error) = msg.error {
                                         // Don't print to stderr - propagate error to caller
