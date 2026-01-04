@@ -6,6 +6,7 @@ pub enum Language {
     Rust,
     JavaScript,
     TypeScript,
+    Tsx,
     Python,
     Java,
     Go,
@@ -55,8 +56,11 @@ impl LanguageRegistry {
             // JavaScript
             "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" | "es7" => Some(Language::JavaScript),
 
-            // TypeScript
-            "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
+            // TypeScript (without JSX)
+            "ts" | "mts" | "cts" => Some(Language::TypeScript),
+
+            // TSX (TypeScript with JSX)
+            "tsx" => Some(Language::Tsx),
 
             // Python
             "py" | "pyw" | "pyi" | "pyx" | "pxd" | "pxi" | "pyc" | "pyd" | "pyo" | "pyz"
@@ -118,6 +122,9 @@ impl LanguageRegistry {
             // TypeScript special files
             ".eslintrc.ts" | ".prettierrc.ts" => Some(Language::TypeScript),
 
+            // TSX special files (React component configs)
+            ".eslintrc.tsx" | ".prettierrc.tsx" => Some(Language::Tsx),
+
             // Bash special files
             ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".zshrc"
             | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" | "bashrc" | "zshrc" => {
@@ -155,6 +162,8 @@ impl LanguageRegistry {
                     Some(Language::Python)
                 } else if lower.ends_with(".js") {
                     Some(Language::JavaScript)
+                } else if lower.ends_with(".tsx") {
+                    Some(Language::Tsx)
                 } else if lower.ends_with(".ts") {
                     Some(Language::TypeScript)
                 } else if lower.starts_with(".bash") || lower.starts_with(".zsh") {
@@ -177,6 +186,7 @@ impl LanguageRegistry {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
@@ -207,6 +217,8 @@ impl LanguageRegistry {
             Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
             Language::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY,
             Language::TypeScript => tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            // TSX uses the same highlight query as TypeScript (shared across both grammars)
+            Language::Tsx => tree_sitter_typescript::HIGHLIGHTS_QUERY,
             Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
             Language::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
             Language::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
@@ -233,6 +245,7 @@ impl LanguageRegistry {
             Language::Rust => "rust",
             Language::JavaScript => "javascript",
             Language::TypeScript => "typescript",
+            Language::Tsx => "typescriptreact",
             Language::Python => "python",
             Language::Java => "java",
             Language::Go => "go",

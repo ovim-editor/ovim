@@ -35,10 +35,39 @@ install_hint = "Install with: rustup component add rust-analyzer"
 [[language]]
 id = "typescript"
 name = "TypeScript"
-extensions = ["ts", "tsx", "mts", "cts"]
+extensions = ["ts", "mts", "cts"]
 
 [language.syntax]
 grammar = "tree-sitter-typescript"
+official = { crate = "tree_sitter_typescript", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "typescript-language-server"
+args = ["--stdio"]
+fallback_commands = [
+    "node_modules/.bin/typescript-language-server",
+    "~/.npm-global/bin/typescript-language-server",
+    "~/.local/share/pnpm/typescript-language-server"
+]
+root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
+install_hint = "Install with: npm install -g typescript-language-server typescript"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "typescript-language-server", global = true }
+
+# ============================================================================
+# TSX (TypeScript with JSX)
+# ============================================================================
+
+[[language]]
+id = "tsx"
+name = "TSX"
+extensions = ["tsx"]
+
+[language.syntax]
+grammar = "tree-sitter-typescript"
+# TSX uses LANGUAGE_TSX grammar variant (separate from LANGUAGE_TYPESCRIPT)
+# but shares the same HIGHLIGHTS_QUERY as TypeScript
 official = { crate = "tree_sitter_typescript", constant = "HIGHLIGHTS_QUERY" }
 
 [language.lsp]

@@ -18,6 +18,7 @@ pub enum HighlightGroup {
     Parameter,
     Label,
     Punctuation,
+    Tag,
     Other,
 }
 
@@ -118,6 +119,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, Color::White);
         scheme.set_syntax(HighlightGroup::Label, Color::Yellow);
         scheme.set_syntax(HighlightGroup::Punctuation, Color::White);
+        scheme.set_syntax(HighlightGroup::Tag, Color::Blue);
         scheme.set_syntax(HighlightGroup::Other, Color::White);
 
         // UI colors
@@ -172,6 +174,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, blue);
         scheme.set_syntax(HighlightGroup::Label, orange);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, aqua);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -226,6 +229,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, blue);
         scheme.set_syntax(HighlightGroup::Label, orange);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, aqua);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -282,6 +286,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, violet);
         scheme.set_syntax(HighlightGroup::Punctuation, base0);
+        scheme.set_syntax(HighlightGroup::Tag, cyan);
         scheme.set_syntax(HighlightGroup::Other, base0);
 
         // UI colors
@@ -338,6 +343,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, violet);
         scheme.set_syntax(HighlightGroup::Punctuation, base00);
+        scheme.set_syntax(HighlightGroup::Tag, cyan);
         scheme.set_syntax(HighlightGroup::Other, base00);
 
         // UI colors
@@ -391,6 +397,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, yellow);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, blue);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -446,6 +453,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, cyan);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, pink);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -507,6 +515,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, yellow);
         scheme.set_syntax(HighlightGroup::Label, blue);
         scheme.set_syntax(HighlightGroup::Punctuation, cyan);
+        scheme.set_syntax(HighlightGroup::Tag, teal);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
