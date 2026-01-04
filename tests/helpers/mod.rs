@@ -1,6 +1,9 @@
 mod viewport_assertions;
+pub mod test_session;
 
+#[allow(unused_imports)]
 pub use viewport_assertions::ViewportAssertion;
+pub use test_session::TestSession;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ovim::editor::{Editor, InputHandler};
