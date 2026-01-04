@@ -45,6 +45,7 @@ dirs = "5.0"
 arboard = "3.4"
 encoding_rs = "0.8"
 chardetng = "0.1"
+prometheus = { version = "0.13", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
@@ -54,8 +55,9 @@ libc = "0.2"
 sysinfo = "0.32"
 
 [features]
-default = []
+default = ["lua"]
 lua = ["mlua"]
+metrics = ["prometheus"]
 
 [dev-dependencies]
 criterion = "0.5"

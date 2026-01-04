@@ -1,6 +1,6 @@
 use super::handlers::{
     execute_command, get_buffer, get_cursor, get_health, get_lsp_status, get_metrics, get_mode,
-    get_render, get_snapshot, send_keys, set_buffer, set_mode,
+    get_prometheus_metrics, get_render, get_snapshot, send_keys, set_buffer, set_mode,
 };
 use super::mcp_handler::handle_mcp;
 use super::state::ApiState;
@@ -25,6 +25,7 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/render", get(get_render))
         .route("/lsp/status", get(get_lsp_status))
         .route("/metrics", get(get_metrics))
+        .route("/prometheus", get(get_prometheus_metrics))
         .route("/mcp", post(handle_mcp));
 
     // Root router with version namespaces

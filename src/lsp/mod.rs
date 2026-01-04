@@ -316,6 +316,7 @@ impl LspManager {
 
     /// Sets diagnostics for a file (called when receiving publishDiagnostics)
     pub async fn set_diagnostics(&self, uri: Uri, diagnostics: Vec<Diagnostic>) {
+        crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
         let mut diags = self.diagnostics.lock().await;
         diags.insert(uri, diagnostics);
         self.diagnostics_changed.store(true, Ordering::SeqCst);
@@ -520,6 +521,7 @@ impl LspManager {
 
             // Send notification while still holding version lock
             // This ensures version ordering matches send ordering
+            crate::metrics::LSP_DIDCHANGE_TOTAL.inc();
             server
                 .notify("textDocument/didChange", serde_json::to_value(params)?)
                 .await?;

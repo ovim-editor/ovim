@@ -885,45 +885,27 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 }
             // Handle :lua <code>
             } else if let Some(_code) = command.strip_prefix("lua ") {
-                #[cfg(feature = "lua")]
-                {
-                    match editor.execute_lua(_code) {
-                        Ok(result) => ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(result),
-                            line_count: None,
-                        }),
-                        Err(e) => ApiResponse::Error(ErrorResponse {
-                            error: format!("Lua error: {}", e),
-                        }),
-                    }
-                }
-                #[cfg(not(feature = "lua"))]
-                {
-                    ApiResponse::Error(ErrorResponse {
-                        error: "Lua support not enabled".to_string(),
-                    })
+                match editor.execute_lua(_code) {
+                    Ok(result) => ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(result),
+                        line_count: None,
+                    }),
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Lua error: {}", e),
+                    }),
                 }
             // Handle :luafile <path>
             } else if let Some(_path) = command.strip_prefix("luafile ") {
-                #[cfg(feature = "lua")]
-                {
-                    match editor.execute_lua_file(_path) {
-                        Ok(_) => ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Executed {}", _path)),
-                            line_count: None,
-                        }),
-                        Err(e) => ApiResponse::Error(ErrorResponse {
-                            error: format!("Lua error: {}", e),
-                        }),
-                    }
-                }
-                #[cfg(not(feature = "lua"))]
-                {
-                    ApiResponse::Error(ErrorResponse {
-                        error: "Lua support not enabled".to_string(),
-                    })
+                match editor.execute_lua_file(_path) {
+                    Ok(_) => ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Executed {}", _path)),
+                        line_count: None,
+                    }),
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Lua error: {}", e),
+                    }),
                 }
             // Handle :colorscheme <name> or :colorscheme (to show current)
             // Also support :colo abbreviation
@@ -981,62 +963,43 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             // Handle config reload
             } else if command == "ConfigReload" || command == "reload" {
-                #[cfg(feature = "lua")]
-                {
-                    match editor.reload_lua_config() {
-                        Ok(msg) => ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(msg),
-                            line_count: None,
-                        }),
-                        Err(e) => ApiResponse::Error(ErrorResponse {
-                            error: format!("Failed to reload config: {}", e),
-                        }),
-                    }
-                }
-                #[cfg(not(feature = "lua"))]
-                {
-                    ApiResponse::Error(ErrorResponse {
-                        error: "Lua support not enabled".to_string(),
-                    })
+                match editor.reload_lua_config() {
+                    Ok(msg) => ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(msg),
+                        line_count: None,
+                    }),
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to reload config: {}", e),
+                    }),
                 }
             // Handle :source - load and execute a Lua file
             } else if let Some(file) = command.strip_prefix("source ").or_else(|| command.strip_prefix("so ")) {
                 let file = file.trim();
-                #[cfg(feature = "lua")]
-                {
-                    if let Some(ref mut context) = editor.lua_context {
-                        let path = std::path::PathBuf::from(file);
-                        match context.execute_file(&path) {
-                            Ok(_) => {
-                                // Process any commands from the sourced file
-                                if let Some(ref bridge) = editor.editor_bridge {
-                                    let commands = bridge.drain_commands();
-                                    for cmd in commands {
-                                        let _ = crate::editor::input::InputHandler::execute_command_string(editor, &cmd);
-                                    }
+                if let Some(ref mut context) = editor.lua_context {
+                    let path = std::path::PathBuf::from(file);
+                    match context.execute_file(&path) {
+                        Ok(_) => {
+                            // Process any commands from the sourced file
+                            if let Some(ref bridge) = editor.editor_bridge {
+                                let commands = bridge.drain_commands();
+                                for cmd in commands {
+                                    let _ = crate::editor::input::InputHandler::execute_command_string(editor, &cmd);
                                 }
-                                ApiResponse::Success(SuccessResponse {
-                                    success: true,
-                                    message: Some(format!("Sourced: {}", file)),
-                                    line_count: None,
-                                })
                             }
-                            Err(e) => ApiResponse::Error(ErrorResponse {
-                                error: format!("Failed to source {}: {}", file, e),
-                            }),
+                            ApiResponse::Success(SuccessResponse {
+                                success: true,
+                                message: Some(format!("Sourced: {}", file)),
+                                line_count: None,
+                            })
                         }
-                    } else {
-                        ApiResponse::Error(ErrorResponse {
-                            error: "Lua not enabled".to_string(),
-                        })
+                        Err(e) => ApiResponse::Error(ErrorResponse {
+                            error: format!("Failed to source {}: {}", file, e),
+                        }),
                     }
-                }
-                #[cfg(not(feature = "lua"))]
-                {
-                    let _ = file;
+                } else {
                     ApiResponse::Error(ErrorResponse {
-                        error: "Lua support not enabled".to_string(),
+                        error: "Lua not enabled".to_string(),
                     })
                 }
             // Handle :bn (next buffer)
