@@ -1,0 +1,364 @@
+# ovim Language Configuration
+# This file defines language support for syntax highlighting and LSP integration
+#
+# Location (embedded): languages.toml (in repo root, embedded in binary)
+# Location (user): ~/.config/ovim/languages.toml (user overrides)
+#
+# User config merges with embedded config:
+# - Same language ID → user config overrides
+# - New language ID → user config adds
+
+# ============================================================================
+# Rust
+# ============================================================================
+
+[[language]]
+id = "rust"
+name = "Rust"
+extensions = ["rs"]
+
+[language.syntax]
+grammar = "tree-sitter-rust"
+official = { crate = "tree_sitter_rust", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "rust-analyzer"
+root_markers = ["Cargo.toml"]
+install_hint = "Install with: rustup component add rust-analyzer"
+
+# ============================================================================
+# TypeScript / JavaScript
+# ============================================================================
+
+[[language]]
+id = "typescript"
+name = "TypeScript"
+extensions = ["ts", "tsx", "mts", "cts"]
+
+[language.syntax]
+grammar = "tree-sitter-typescript"
+official = { crate = "tree_sitter_typescript", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "typescript-language-server"
+args = ["--stdio"]
+fallback_commands = [
+    "node_modules/.bin/typescript-language-server",
+    "~/.npm-global/bin/typescript-language-server",
+    "~/.local/share/pnpm/typescript-language-server"
+]
+root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
+install_hint = "Install with: npm install -g typescript-language-server typescript"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "typescript-language-server", global = true }
+
+[[language]]
+id = "javascript"
+name = "JavaScript"
+extensions = ["js", "jsx", "mjs", "cjs"]
+
+[language.syntax]
+grammar = "tree-sitter-javascript"
+official = { crate = "tree_sitter_javascript", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "typescript-language-server"
+args = ["--stdio"]
+fallback_commands = ["node_modules/.bin/typescript-language-server"]
+root_markers = ["package.json", "node_modules"]
+install_hint = "Install with: npm install -g typescript-language-server typescript"
+
+# ============================================================================
+# Python
+# ============================================================================
+
+[[language]]
+id = "python"
+name = "Python"
+extensions = ["py", "pyw", "pyi"]
+filenames = ["pipfile"]
+
+[language.syntax]
+grammar = "tree-sitter-python"
+official = { crate = "tree_sitter_python", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+# Try pyright first, fallback to pylsp
+command = "pyright-langserver"
+args = ["--stdio"]
+fallback_commands = ["pylsp", "jedi-language-server"]
+root_markers = ["pyproject.toml", "setup.py", "requirements.txt", ".git"]
+install_hint = "Install with: pip install pyright (or: pip install python-lsp-server)"
+
+# ============================================================================
+# Java
+# ============================================================================
+
+[[language]]
+id = "java"
+name = "Java"
+extensions = ["java"]
+
+[language.syntax]
+grammar = "tree-sitter-java"
+official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
+
+# Note: Java LSP has complex auto-download logic in java.rs
+# This config is for reference, but java.rs takes precedence
+[language.lsp]
+command = "hyperion-lsp"
+fallback_commands = [
+    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
+    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
+]
+root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
+install_hint = "Hyperion LSP auto-download is handled automatically"
+
+# ============================================================================
+# Markdown (Syntax only, no LSP)
+# ============================================================================
+
+[[language]]
+id = "markdown"
+name = "Markdown"
+extensions = ["md", "markdown", "mdown", "mkd", "mkdn", "mdx"]
+filenames = ["readme", "changelog", "contributing", "license"]
+
+[language.syntax]
+grammar = "tree-sitter-md"
+file = { path = "src/syntax/queries/markdown.scm" }
+
+# No LSP configured - syntax highlighting only
+
+# ============================================================================
+# Go (Example of adding a new language)
+# ============================================================================
+
+[[language]]
+id = "go"
+name = "Go"
+extensions = ["go"]
+filenames = ["go.mod", "go.sum"]
+
+[language.syntax]
+grammar = "tree-sitter-go"
+official = { crate = "tree_sitter_go", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "gopls"
+root_markers = ["go.mod", "go.sum"]
+install_hint = "Install with: go install golang.org/x/tools/gopls@latest"
+
+[language.lsp.auto_install]
+method = { type = "shell", command = "go install golang.org/x/tools/gopls@latest" }
+
+# ============================================================================
+# JSON
+# ============================================================================
+
+[[language]]
+id = "json"
+name = "JSON"
+extensions = ["json", "jsonc", "json5"]
+filenames = [".eslintrc", ".prettierrc", ".babelrc", "package.json", "tsconfig.json"]
+
+[language.syntax]
+grammar = "tree-sitter-json"
+official = { crate = "tree_sitter_json", constant = "HIGHLIGHTS_QUERY" }
+
+# No LSP - JSON doesn't typically need one for simple editing
+
+# ============================================================================
+# YAML
+# ============================================================================
+
+[[language]]
+id = "yaml"
+name = "YAML"
+extensions = ["yaml", "yml"]
+filenames = [".travis.yml", ".gitlab-ci.yml", "docker-compose.yml"]
+
+[language.syntax]
+grammar = "tree-sitter-yaml"
+file = { path = "src/syntax/queries/yaml.scm" }
+
+[language.lsp]
+command = "yaml-language-server"
+args = ["--stdio"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g yaml-language-server"
+
+# ============================================================================
+# C
+# ============================================================================
+
+[[language]]
+id = "c"
+name = "C"
+extensions = ["c", "h"]
+
+[language.syntax]
+grammar = "tree-sitter-c"
+official = { crate = "tree_sitter_c", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "clangd"
+root_markers = ["compile_commands.json", ".git"]
+install_hint = "Install with: apt install clangd (or: brew install llvm)"
+
+# ============================================================================
+# C++
+# ============================================================================
+
+[[language]]
+id = "cpp"
+name = "C++"
+extensions = ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"]
+
+[language.syntax]
+grammar = "tree-sitter-cpp"
+official = { crate = "tree_sitter_cpp", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "clangd"
+root_markers = ["compile_commands.json", ".git"]
+install_hint = "Install with: apt install clangd (or: brew install llvm)"
+
+# ============================================================================
+# Ruby
+# ============================================================================
+
+[[language]]
+id = "ruby"
+name = "Ruby"
+extensions = ["rb", "rake", "gemspec"]
+filenames = ["rakefile", "gemfile"]
+
+[language.syntax]
+grammar = "tree-sitter-ruby"
+official = { crate = "tree_sitter_ruby", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "solargraph"
+args = ["stdio"]
+root_markers = ["Gemfile", ".git"]
+install_hint = "Install with: gem install solargraph"
+
+# ============================================================================
+# Bash
+# ============================================================================
+
+[[language]]
+id = "bash"
+name = "Bash"
+extensions = ["sh", "bash", "zsh"]
+filenames = [".bashrc", ".bash_profile", ".zshrc"]
+
+[language.syntax]
+grammar = "tree-sitter-bash"
+official = { crate = "tree_sitter_bash", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "bash-language-server"
+args = ["start"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g bash-language-server"
+
+# ============================================================================
+# HTML
+# ============================================================================
+
+[[language]]
+id = "html"
+name = "HTML"
+extensions = ["html", "htm"]
+
+[language.syntax]
+grammar = "tree-sitter-html"
+official = { crate = "tree_sitter_html", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "vscode-html-language-server"
+args = ["--stdio"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g vscode-langservers-extracted"
+
+# ============================================================================
+# CSS
+# ============================================================================
+
+[[language]]
+id = "css"
+name = "CSS"
+extensions = ["css", "scss", "sass", "less"]
+
+[language.syntax]
+grammar = "tree-sitter-css"
+official = { crate = "tree_sitter_css", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "vscode-css-language-server"
+args = ["--stdio"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g vscode-langservers-extracted"
+
+# ============================================================================
+# TOML
+# ============================================================================
+
+[[language]]
+id = "toml"
+name = "TOML"
+extensions = ["toml"]
+filenames = ["cargo.toml", "pyproject.toml"]
+
+[language.syntax]
+# Use JSON highlighting as fallback (tree-sitter-toml has version conflicts)
+grammar = "tree-sitter-json"
+official = { crate = "tree_sitter_json", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "taplo"
+args = ["lsp", "stdio"]
+root_markers = [".git"]
+install_hint = "Install with: cargo install taplo-cli"
+
+# ============================================================================
+# Dockerfile
+# ============================================================================
+
+[[language]]
+id = "dockerfile"
+name = "Dockerfile"
+filenames = ["dockerfile", "dockerfile.prod", "dockerfile.dev"]
+
+[language.syntax]
+# Use Bash highlighting (tree-sitter-dockerfile has version conflicts)
+grammar = "tree-sitter-bash"
+official = { crate = "tree_sitter_bash", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "docker-langserver"
+args = ["--stdio"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g dockerfile-language-server-nodejs"
+
+# ============================================================================
+# Example: Custom Language (User Override)
+# ============================================================================
+# Users can create ~/.config/ovim/languages.toml with:
+#
+# [[language]]
+# id = "zig"
+# name = "Zig"
+# extensions = ["zig"]
+#
+# [language.syntax]
+# grammar = "tree-sitter-zig"
+# official = { crate = "tree_sitter_zig", constant = "HIGHLIGHTS_QUERY" }
+#
+# [language.lsp]
+# command = "zls"
+# root_markers = ["build.zig"]
+# install_hint = "Install ZLS from https://github.com/zigtools/zls"
