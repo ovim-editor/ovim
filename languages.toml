@@ -52,9 +52,8 @@ fallback_commands = [
 root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
 install_hint = "Install with: npm install -g typescript-language-server typescript"
 
-# Note: Phase 3 will add auto_install config here
-# [language.lsp.auto_install]
-# method = { type = "npm", package = "typescript-language-server", global = true }
+[language.lsp.auto_install]
+method = { type = "npm", package = "typescript-language-server", global = true }
 
 # ============================================================================
 # JavaScript

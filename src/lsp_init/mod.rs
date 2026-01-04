@@ -1,5 +1,7 @@
+mod auto_install;
 mod java;
 
+use auto_install::{attempt_auto_install, InstallResult};
 use ovim::editor::Editor;
 use ovim::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
 use std::path::{Path, PathBuf};
@@ -52,27 +54,76 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     };
 
     // Try to find LSP server binary (primary command + fallbacks)
-    let Some(server_command) = find_lsp_command(lsp_config) else {
-        // LSP server not found - show helpful install hint
-        let hint = lsp_config
-            .install_hint
-            .as_deref()
-            .unwrap_or("LSP server not found in PATH");
+    let server_command = match find_lsp_command(lsp_config) {
+        Some(cmd) => cmd,
+        None => {
+            // LSP server not found - try auto-install if configured
+            if let Some(auto_install_config) = &lsp_config.auto_install {
+                ovim::lsp_info!(
+                    "LSP",
+                    "{} language server not found. Attempting auto-install...",
+                    lang_config.name
+                );
 
-        editor.set_lsp_status(format!("LSP: {}", hint));
-        ovim::lsp_warn!(
-            "LSP",
-            "Language server not found for {} (tried: {}, fallbacks: {:?})",
-            lang_config.name,
-            lsp_config.command,
-            lsp_config.fallback_commands
-        );
+                editor.set_lsp_status(format!("LSP: Installing {}...", lsp_config.command));
 
-        // TODO Phase 3: Attempt auto-install if configured
-        // if let Some(auto_install) = &lsp_config.auto_install {
-        //     attempt_auto_install(&lang_config.id, auto_install, editor).await;
-        // }
-        return;
+                // Attempt auto-install
+                let install_result = attempt_auto_install(
+                    &lang_config.name,
+                    &lsp_config.command,
+                    auto_install_config,
+                )
+                .await;
+
+                match install_result {
+                    InstallResult::Success(path) => {
+                        editor.set_lsp_status(format!(
+                            "LSP: {} installed successfully!",
+                            lsp_config.command
+                        ));
+                        ovim::lsp_info!(
+                            "LSP",
+                            "Auto-installed {} to {}",
+                            lsp_config.command,
+                            path.display()
+                        );
+
+                        // Use the installed command
+                        path.to_string_lossy().to_string()
+                    }
+                    InstallResult::Failed(error) => {
+                        editor.set_lsp_status(format!("LSP: Auto-install failed: {}", error));
+                        ovim::lsp_warn!("LSP", "Auto-install failed: {}", error);
+                        return;
+                    }
+                    InstallResult::PrerequisitesMissing(msg) => {
+                        editor.set_lsp_status(format!("LSP: {}", msg));
+                        ovim::lsp_warn!("LSP", "Prerequisites missing: {}", msg);
+                        return;
+                    }
+                    InstallResult::Declined => {
+                        editor.set_lsp_status("LSP: Installation declined".to_string());
+                        return;
+                    }
+                }
+            } else {
+                // No auto-install configured - show manual install hint
+                let hint = lsp_config
+                    .install_hint
+                    .as_deref()
+                    .unwrap_or("LSP server not found in PATH");
+
+                editor.set_lsp_status(format!("LSP: {}", hint));
+                ovim::lsp_warn!(
+                    "LSP",
+                    "Language server not found for {} (tried: {}, fallbacks: {:?})",
+                    lang_config.name,
+                    lsp_config.command,
+                    lsp_config.fallback_commands
+                );
+                return;
+            }
+        }
     };
 
     // Find project root using configured markers
