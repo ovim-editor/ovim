@@ -10,6 +10,86 @@ use ratatui::{
 
 use super::helpers::expand_tabs_with_mapping;
 use super::styles::{get_git_sign_style, get_line_number_style, remap_highlights};
+use crate::syntax::HighlightGroup;
+use std::ops::Range;
+
+/// Slices a line for horizontal viewport with visual indicators
+/// Returns (sliced_text, precedes_indicator, extends_indicator)
+fn slice_horizontal_viewport(
+    line: &str,
+    h_offset: usize,
+    width: usize,
+) -> (String, bool, bool) {
+    let chars: Vec<char> = line.chars().collect();
+    let line_len = chars.len();
+
+    // Line fits entirely in viewport
+    if line_len <= width {
+        return (chars.iter().collect(), false, false);
+    }
+
+    let precedes = h_offset > 0;
+    let extends = h_offset + width < line_len;
+
+    let start = h_offset.min(line_len);
+    let mut end = (h_offset + width).min(line_len);
+
+    let mut result = String::new();
+
+    // Add precedes indicator (<) if scrolled right
+    if precedes {
+        result.push('<');
+        // Take one less char to make room for indicator
+        end = (start + width - 1).min(line_len);
+        if extends {
+            end = end.saturating_sub(1); // Make room for extends indicator too
+        }
+        result.push_str(&chars[start..end].iter().collect::<String>());
+    } else {
+        // Not scrolled right, but might need extends indicator
+        if extends {
+            end = (start + width - 1).min(line_len);
+        }
+        result.push_str(&chars[start..end].iter().collect::<String>());
+    }
+
+    // Add extends indicator (>) if content continues right
+    if extends {
+        result.push('>');
+    }
+
+    (result, precedes, extends)
+}
+
+/// Shifts syntax highlight ranges for horizontal viewport
+fn shift_highlights_for_viewport(
+    highlights: &[(Range<usize>, HighlightGroup)],
+    h_offset: usize,
+    width: usize,
+    precedes: bool,
+) -> Vec<(Range<usize>, HighlightGroup)> {
+    let offset_adjustment = if precedes { 1 } else { 0 }; // Account for '<' indicator
+
+    highlights
+        .iter()
+        .filter_map(|(range, group)| {
+            // Highlight is completely before viewport
+            if range.end <= h_offset {
+                return None;
+            }
+            // Highlight is completely after viewport
+            if range.start >= h_offset + width {
+                return None;
+            }
+
+            // Clip highlight range to viewport and shift to screen coordinates
+            let start = range.start.saturating_sub(h_offset).max(0) + offset_adjustment;
+            let end = (range.end.saturating_sub(h_offset)).min(width) + offset_adjustment;
+
+            Some((start..end, *group))
+        })
+        .collect()
+}
 
 /// Apply a style to a specific column in a line
 fn apply_style_at_column(line: &mut Line<'static>, target_col: usize, style: Style) {
@@ -130,6 +210,10 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     let start_line = editor.scroll_offset();
     let end_line = (start_line + visible_lines).min(rope.len_lines());
 
+    // Get horizontal viewport settings
+    let h_offset = editor.horizontal_offset();
+    let wrap = editor.options.wrap;
+
     // Calculate gutter width
     let show_numbers = editor.options.number || editor.options.relative_number;
     let max_line_num = rope.len_lines();
@@ -203,9 +287,26 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
             // Expand tabs to spaces for proper rendering and get byte mapping
             let (line_text, byte_mapping) = expand_tabs_with_mapping(line_text, tab_width);
 
+            // Apply horizontal viewport slicing if nowrap is set
+            let (line_text, precedes, _extends) = if !wrap {
+                slice_horizontal_viewport(&line_text, h_offset, text_area.width as usize)
+            } else {
+                (line_text.to_string(), false, false)
+            };
+
             // Get syntax highlights for this line and remap them for expanded text
             let original_highlights = buffer.highlights_for_line(line_idx);
-            let syntax_highlights = remap_highlights(&original_highlights, &byte_mapping);
+            let mut syntax_highlights = remap_highlights(&original_highlights, &byte_mapping);
+
+            // Shift syntax highlights for horizontal viewport if nowrap
+            if !wrap {
+                syntax_highlights = shift_highlights_for_viewport(
+                    &syntax_highlights,
+                    h_offset,
+                    text_area.width as usize,
+                    precedes,
+                );
+            }
 
             // Check if we need special highlighting (visual selection or search)
             let has_visual_selection = visual_selection
@@ -233,6 +334,21 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                     None
                 }
             });
+
+            // Adjust bracket column for horizontal viewport if nowrap
+            let bracket_col = if !wrap {
+                bracket_col.and_then(|col| {
+                    // Check if bracket is in visible horizontal range
+                    if col >= h_offset && col < h_offset + text_area.width as usize {
+                        let offset_adjustment = if precedes { 1 } else { 0 };
+                        Some(col - h_offset + offset_adjustment)
+                    } else {
+                        None // Bracket is outside viewport
+                    }
+                })
+            } else {
+                bracket_col
+            };
 
             // Get diagnostics for this line
             let line_diagnostics = editor.diagnostics_for_line(line_idx);

@@ -220,6 +220,16 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.move_cursor_line_to_bottom();
             editor.clear_count();
         }
+        ('z', KeyCode::Char('s')) => {
+            // zs - scroll horizontally to put cursor at start (left edge)
+            editor.scroll_cursor_to_left_edge();
+            editor.clear_count();
+        }
+        ('z', KeyCode::Char('e')) => {
+            // ze - scroll horizontally to put cursor at end (right edge)
+            editor.scroll_cursor_to_right_edge();
+            editor.clear_count();
+        }
         ('z', KeyCode::Enter) => {
             editor.move_cursor_line_to_top();
             Motions::first_non_blank(editor.buffer_mut());

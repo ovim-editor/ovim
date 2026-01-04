@@ -10,6 +10,8 @@ pub struct Window {
     cursor: Cursor,
     /// Scroll offset (top line visible in window)
     scroll_offset: usize,
+    /// Horizontal scroll offset (leftmost visible column)
+    horizontal_offset: usize,
     /// Window width (columns)
     width: u16,
     /// Window height (rows)
@@ -23,6 +25,7 @@ impl Window {
             buffer_id,
             cursor: Cursor::new(0, 0),
             scroll_offset: 0,
+            horizontal_offset: 0,
             width,
             height,
         }
@@ -51,6 +54,16 @@ impl Window {
     /// Sets the scroll offset
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset;
+    }
+
+    /// Gets the horizontal scroll offset
+    pub fn horizontal_offset(&self) -> usize {
+        self.horizontal_offset
+    }
+
+    /// Sets the horizontal scroll offset
+    pub fn set_horizontal_offset(&mut self, offset: usize) {
+        self.horizontal_offset = offset;
     }
 
     /// Gets the window width
@@ -90,6 +103,59 @@ impl Window {
         else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
             self.scroll_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
         }
+    }
+
+    /// Ensures the cursor column is visible horizontally, adjusting horizontal offset if needed
+    /// Returns true if horizontal offset changed
+    pub fn ensure_cursor_visible_horizontal(
+        &mut self,
+        cursor_col: usize,
+        wrap: bool,
+        sidescroll: usize,
+        sidescrolloff: usize,
+    ) -> bool {
+        // If wrap enabled, no horizontal scrolling needed
+        if wrap {
+            if self.horizontal_offset != 0 {
+                self.horizontal_offset = 0;
+                return true;
+            }
+            return false;
+        }
+
+        let visible_width = self.width as usize;
+        let old_offset = self.horizontal_offset;
+
+        // Calculate bounds with sidescrolloff
+        let left_bound = self.horizontal_offset + sidescrolloff;
+        let right_bound = self.horizontal_offset + visible_width.saturating_sub(sidescrolloff + 1);
+
+        // Cursor is too far left
+        if cursor_col < left_bound {
+            if sidescroll == 0 {
+                // Jump to center cursor horizontally
+                self.horizontal_offset = cursor_col.saturating_sub(visible_width / 2);
+            } else {
+                // Scroll left by sidescroll amount
+                let scroll_amount = left_bound - cursor_col;
+                let scroll_step = scroll_amount.div_ceil(sidescroll) * sidescroll;
+                self.horizontal_offset = self.horizontal_offset.saturating_sub(scroll_step);
+            }
+        }
+        // Cursor is too far right
+        else if cursor_col > right_bound {
+            if sidescroll == 0 {
+                // Jump to center cursor horizontally
+                self.horizontal_offset = cursor_col.saturating_sub(visible_width / 2);
+            } else {
+                // Scroll right by sidescroll amount
+                let scroll_amount = cursor_col - right_bound;
+                let scroll_step = scroll_amount.div_ceil(sidescroll) * sidescroll;
+                self.horizontal_offset += scroll_step;
+            }
+        }
+
+        old_offset != self.horizontal_offset
     }
 
     /// Centers the cursor in the window
