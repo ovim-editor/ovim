@@ -153,6 +153,22 @@ impl Picker {
         }
     }
 
+    /// Creates a new LSP locations picker with pre-built PickerResult items
+    /// This preserves the actual file paths in location field for preview loading
+    pub fn new_with_results(base_dir: PathBuf, results: Vec<PickerResult>) -> Self {
+        Self {
+            mode: PickerMode::LspLocations,
+            query: String::new(),
+            query_cursor: 0,
+            all_results: results.clone(),
+            filtered_results: results,
+            selected_index: 0,
+            base_dir,
+            loading: false,
+            loading_spawned: false,
+        }
+    }
+
     /// Sets the prompt for the picker
     pub fn set_prompt(&mut self, _prompt: String) {
         // Prompt display is handled by the UI layer
