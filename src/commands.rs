@@ -976,16 +976,14 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             // Handle :source - load and execute a Lua file
             } else if let Some(file) = command.strip_prefix("source ").or_else(|| command.strip_prefix("so ")) {
                 let file = file.trim();
-                if let Some(ref mut context) = editor.lua_context {
+                if let Some(context) = editor.lua_context_mut() {
                     let path = std::path::PathBuf::from(file);
                     match context.execute_file(&path) {
                         Ok(_) => {
-                            // Process any commands from the sourced file
-                            if let Some(ref bridge) = editor.editor_bridge {
-                                let commands = bridge.drain_commands();
-                                for cmd in commands {
-                                    let _ = crate::editor::input::InputHandler::execute_command_string(editor, &cmd);
-                                }
+                            // Process any commands from the sourced file using the public API
+                            let commands = editor.get_lua_commands();
+                            for cmd in commands {
+                                let _ = crate::editor::InputHandler::execute_command_string(editor, &cmd);
                             }
                             ApiResponse::Success(SuccessResponse {
                                 success: true,

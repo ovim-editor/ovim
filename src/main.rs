@@ -25,6 +25,13 @@ fn sanitize_session_name(name: &str) -> String {
 async fn main() -> Result<()> {
     let cli = Cli::parse_args();
 
+    // Initialize language registry early (needed for both editor and subcommands)
+    // This loads embedded languages.toml and merges with user config
+    if let Err(e) = ovim::language_config::LanguageRegistry::init() {
+        eprintln!("Warning: Failed to initialize language registry: {}", e);
+        eprintln!("Continuing with limited language support...");
+    }
+
     // Check if we're running a subcommand (client mode)
     if let Some(command) = cli.command {
         // Run subcommand and exit
@@ -33,13 +40,6 @@ async fn main() -> Result<()> {
 
     // Otherwise, run editor mode
     let args = cli.editor_args();
-
-    // Initialize language registry (Phase 1: Foundation)
-    // This loads embedded languages.toml and merges with user config
-    if let Err(e) = ovim::language_config::LanguageRegistry::init() {
-        eprintln!("Warning: Failed to initialize language registry: {}", e);
-        eprintln!("Continuing with limited language support...");
-    }
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {

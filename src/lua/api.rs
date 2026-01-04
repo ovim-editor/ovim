@@ -16,7 +16,7 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
     vim.set("fn", fn_table)?;
 
     // Create vim.cmd function
-    let cmd = create_cmd_function(lua, bridge)?;
+    let cmd = create_cmd_function(lua, bridge.clone())?;
     vim.set("cmd", cmd)?;
 
     // Create vim.g (global variables) namespace with metatable
@@ -34,7 +34,7 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
 }
 
 /// Creates the vim.api table with editor API functions
-fn create_api_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
+fn create_api_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
     let api = lua.create_table()?;
 
     // vim.api.nvim_command(cmd)
@@ -81,7 +81,7 @@ fn create_api_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
 }
 
 /// Creates the vim.fn table with vim functions
-fn create_fn_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
+fn create_fn_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
     let fn_table = lua.create_table()?;
 
     // vim.fn.line('.')
@@ -124,7 +124,7 @@ fn create_fn_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
 }
 
 /// Creates the vim.cmd function for executing ex commands
-fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function> {
+fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function<'_>> {
     let cmd = lua.create_function(move |_lua, command: String| {
         bridge
             .execute_command(command)
@@ -135,7 +135,7 @@ fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function
 }
 
 /// Creates the vim.g table with metatable for global variables
-fn create_g_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
+fn create_g_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
     let g = lua.create_table()?;
     let metatable = lua.create_table()?;
 
@@ -178,7 +178,7 @@ fn create_g_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
 }
 
 /// Creates the vim.opt table with metatable for setting options
-fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
+fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
     let opt = lua.create_table()?;
     let metatable = lua.create_table()?;
 
@@ -186,20 +186,20 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
     let bridge_clone = bridge.clone();
     let newindex = lua.create_function(
         move |_lua, (_, key, value): (mlua::Value, String, mlua::Value)| {
-            let cmd = match key.as_str() {
+            let cmd: String = match key.as_str() {
                 "number" | "nu" => match value {
-                    mlua::Value::Boolean(true) => "set number",
-                    mlua::Value::Boolean(false) => "set nonumber",
+                    mlua::Value::Boolean(true) => "set number".to_string(),
+                    mlua::Value::Boolean(false) => "set nonumber".to_string(),
                     _ => return Err(mlua::Error::external("number must be boolean")),
                 },
                 "relativenumber" | "rnu" => match value {
-                    mlua::Value::Boolean(true) => "set relativenumber",
-                    mlua::Value::Boolean(false) => "set norelativenumber",
+                    mlua::Value::Boolean(true) => "set relativenumber".to_string(),
+                    mlua::Value::Boolean(false) => "set norelativenumber".to_string(),
                     _ => return Err(mlua::Error::external("relativenumber must be boolean")),
                 },
                 "expandtab" | "et" => match value {
-                    mlua::Value::Boolean(true) => "set expandtab",
-                    mlua::Value::Boolean(false) => "set noexpandtab",
+                    mlua::Value::Boolean(true) => "set expandtab".to_string(),
+                    mlua::Value::Boolean(false) => "set noexpandtab".to_string(),
                     _ => return Err(mlua::Error::external("expandtab must be boolean")),
                 },
                 "tabstop" | "ts" => match value {
@@ -223,7 +223,7 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table> {
             };
 
             bridge_clone
-                .execute_command(cmd.to_string())
+                .execute_command(cmd)
                 .map_err(mlua::Error::external)?;
             Ok(())
         },
