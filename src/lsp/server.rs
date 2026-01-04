@@ -518,14 +518,36 @@ impl LanguageServer {
                                 if let Some(req) = pending_req {
                                     // CRITICAL FIX: Propagate errors instead of just logging
                                     if let Some(error) = msg.error {
-                                        // Don't print to stderr - propagate error to caller
-                                        // Errors will be shown in status line by the editor
-                                        let error_msg =
-                                            format!("{} (code {})", error.message, error.code);
-                                        // Removed eprintln - leaks into TUI display
-                                        let _ = req
-                                            .sender
-                                            .send(Err(anyhow!("LSP error: {}", error_msg)));
+                                        // LSP Error Code -32800 is "Request Cancelled"
+                                        // This is expected when we cancel requests, not a real error
+                                        const LSP_ERROR_REQUEST_CANCELLED: i32 = -32800;
+
+                                        if error.code == LSP_ERROR_REQUEST_CANCELLED {
+                                            // Request was cancelled - this is expected behavior
+                                            // Log at debug level, not error level
+                                            crate::lsp_debug!(
+                                                &inner_clone.log_prefix(),
+                                                "Request ID {:?} cancelled by server (code -32800): {}",
+                                                id,
+                                                error.message
+                                            );
+
+                                            // Send cancellation error to caller
+                                            // Caller can distinguish this from actual LSP errors
+                                            let _ = req.sender.send(Err(anyhow!(
+                                                "Request cancelled: {}",
+                                                error.message
+                                            )));
+                                        } else {
+                                            // Real LSP error - propagate to caller
+                                            // Errors will be shown in status line by the editor
+                                            let error_msg =
+                                                format!("{} (code {})", error.message, error.code);
+                                            // Removed eprintln - leaks into TUI display
+                                            let _ = req
+                                                .sender
+                                                .send(Err(anyhow!("LSP error: {}", error_msg)));
+                                        }
                                     } else if let Some(result) = msg.result {
                                         let _ = req.sender.send(Ok(result));
                                     } else {
@@ -1627,6 +1649,170 @@ impl LanguageServer {
     /// Gets the command used to start the server (sync version)
     pub fn command(&self) -> &str {
         &self.inner.command
+    }
+
+    /// Cancels all pending requests for a specific method
+    ///
+    /// This is useful for high-frequency, low-priority operations like hover and completion
+    /// where only the latest request matters. When a new request is made, previous ones
+    /// become stale and can be safely cancelled.
+    ///
+    /// # LSP Cancellation Protocol
+    ///
+    /// The LSP protocol supports request cancellation via the `$/cancelRequest` notification:
+    /// ```json
+    /// {
+    ///   "jsonrpc": "2.0",
+    ///   "method": "$/cancelRequest",
+    ///   "params": { "id": 123 }
+    /// }
+    /// ```
+    ///
+    /// # Server Behavior
+    ///
+    /// According to the LSP spec, servers may respond in three ways to cancellation:
+    /// 1. **Stop processing** and respond with error -32800 (Request Cancelled)
+    /// 2. **Continue processing** and respond normally if work already done
+    /// 3. **Ignore** the cancellation if the request already completed
+    ///
+    /// # Race Conditions in Async Systems
+    ///
+    /// Request cancellation introduces interesting race conditions:
+    ///
+    /// **Race 1: Cancel vs Response**
+    /// - Client sends request ID 1
+    /// - Server starts processing
+    /// - Client sends `$/cancelRequest` for ID 1
+    /// - Server finishes and sends response for ID 1
+    /// - Result: Client receives response after cancellation (harmless, we ignore it)
+    ///
+    /// **Race 2: Multiple Cancellations**
+    /// - Client sends request ID 1, 2, 3
+    /// - Client cancels 1, 2, 3
+    /// - Server might respond to 2 before processing cancellation for 1
+    /// - Result: Out-of-order responses (we filter by removing from pending_requests)
+    ///
+    /// # Why Request Ordering Matters
+    ///
+    /// Consider rapid cursor movement over symbols A → B → C:
+    ///
+    /// **Without cancellation:**
+    /// ```
+    /// t=0ms:  Request hover for A (ID 1)
+    /// t=50ms: Request hover for B (ID 2)
+    /// t=100ms: Request hover for C (ID 3)
+    /// t=200ms: Response for A arrives → UI shows stale hover for A
+    /// t=250ms: Response for B arrives → UI shows stale hover for B
+    /// t=300ms: Response for C arrives → UI shows correct hover for C
+    /// ```
+    /// User sees flickering UI with wrong information!
+    ///
+    /// **With cancellation:**
+    /// ```
+    /// t=0ms:  Request hover for A (ID 1)
+    /// t=50ms: Cancel ID 1, Request hover for B (ID 2)
+    /// t=100ms: Cancel ID 2, Request hover for C (ID 3)
+    /// t=150ms: Response for C arrives → UI shows correct hover immediately
+    /// ```
+    /// Server only processes final request, UI is always correct.
+    ///
+    /// # Implementation Strategy
+    ///
+    /// 1. **Find** all pending request IDs matching the method
+    /// 2. **Send** `$/cancelRequest` notification for each (don't wait for response)
+    /// 3. **Remove** from pending_requests map (fail the oneshot receiver)
+    /// 4. **Continue** - caller's await will fail with "Request cancelled"
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - LSP method name (e.g., "textDocument/hover", "textDocument/completion")
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Cancellations sent successfully
+    /// * `Err` - Failed to send cancellation notification
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // In hover implementation:
+    /// server.cancel_requests_by_method("textDocument/hover").await?;
+    /// let result = server.request("textDocument/hover", params).await?;
+    /// ```
+    pub async fn cancel_requests_by_method(&self, method: &str) -> Result<()> {
+        // Find all request IDs for this method
+        // We need to do this in two steps to avoid holding the lock during async operations
+        let to_cancel: Vec<RequestId> = {
+            let pending = self.inner.pending_requests.lock().await;
+            pending
+                .iter()
+                .filter(|(_, req)| req.method == method)
+                .map(|(id, _)| id.clone())
+                .collect()
+        }; // Lock released here
+
+        if to_cancel.is_empty() {
+            // No requests to cancel - fast path
+            return Ok(());
+        }
+
+        crate::lsp_debug!(
+            &self.log_prefix(),
+            "Cancelling {} pending requests for method '{}'",
+            to_cancel.len(),
+            method
+        );
+
+        // Send $/cancelRequest notification for each request ID
+        // These are fire-and-forget notifications - we don't wait for acknowledgment
+        for id in &to_cancel {
+            let params = serde_json::json!({ "id": id });
+
+            // Log the cancellation for debugging
+            crate::lsp_debug!(
+                &self.log_prefix(),
+                "Sending $/cancelRequest for ID {:?} (method: {})",
+                id,
+                method
+            );
+
+            // Send cancellation notification
+            // This is a notification, not a request, so we don't expect a response
+            if let Err(e) = self.notify("$/cancelRequest", params).await {
+                // If we fail to send cancellation, log but continue
+                // The server might still respond, but we'll ignore it by removing from pending
+                crate::lsp_warn!(
+                    &self.log_prefix(),
+                    "Failed to send $/cancelRequest for ID {:?}: {}",
+                    id,
+                    e
+                );
+            }
+        }
+
+        // Remove cancelled requests from pending map and fail their receivers
+        // This ensures callers waiting on these requests get an error
+        {
+            let mut pending = self.inner.pending_requests.lock().await;
+            for id in to_cancel {
+                if let Some(req) = pending.remove(&id) {
+                    // Send cancellation error to the waiting caller
+                    // The underscore pattern ignores send errors (receiver might have dropped)
+                    let _ = req.sender.send(Err(anyhow!(
+                        "Request '{}' cancelled by client (newer request supersedes this one)",
+                        method
+                    )));
+
+                    crate::lsp_debug!(
+                        &self.log_prefix(),
+                        "Removed cancelled request ID {:?} from pending map",
+                        id
+                    );
+                }
+            }
+        } // Lock released here
+
+        Ok(())
     }
 }
 

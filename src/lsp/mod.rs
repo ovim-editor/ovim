@@ -1362,6 +1362,18 @@ impl LspManager {
 
         lsp_info!("LSP-HOVER", "Server supports hover, sending request");
 
+        // Cancel any pending hover requests before sending new one
+        // This prevents stale hover information from appearing when cursor moves rapidly
+        // Only the latest hover request matters - previous ones are obsolete
+        if let Err(e) = server.cancel_requests_by_method("textDocument/hover").await {
+            lsp_warn!(
+                "LSP-HOVER",
+                "Failed to cancel previous hover requests: {}",
+                e
+            );
+            // Continue anyway - cancellation failure is not critical
+        }
+
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -1437,6 +1449,17 @@ impl LspManager {
         // Check if server supports completion
         if !server.supports_completion().await {
             return Ok(Vec::new()); // Return empty list if not supported
+        }
+
+        // Cancel any pending completion requests before sending new one
+        // Completion is high-frequency and only latest matters (user is still typing)
+        if let Err(e) = server.cancel_requests_by_method("textDocument/completion").await {
+            lsp_warn!(
+                "LSP-COMPLETION",
+                "Failed to cancel previous completion requests: {}",
+                e
+            );
+            // Continue anyway - cancellation failure is not critical
         }
 
         let params = CompletionParams {
@@ -1755,6 +1778,17 @@ impl LspManager {
         // Check if server supports signature help
         if !server.supports_signature_help().await {
             return Ok(None); // Return None if not supported
+        }
+
+        // Cancel any pending signature help requests before sending new one
+        // Signature help is triggered during typing, only latest position matters
+        if let Err(e) = server.cancel_requests_by_method("textDocument/signatureHelp").await {
+            lsp_warn!(
+                "LSP-SIGNATURE",
+                "Failed to cancel previous signature help requests: {}",
+                e
+            );
+            // Continue anyway - cancellation failure is not critical
         }
 
         let params = SignatureHelpParams {
