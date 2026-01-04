@@ -731,11 +731,19 @@ impl Buffer {
         // Clamp to valid position
         let insert_pos = insert_pos.min(self.rope.len_chars());
 
+        // Create tree-sitter edit BEFORE modifying rope (needs old state)
+        let ts_edit = self.create_ts_insert_edit(line, col, text);
+
         // Shift highlights BEFORE modifying rope
         self.shift_highlights_for_insertion(line, col, text);
 
         self.rope.insert(insert_pos, text);
         self.modified = true;
+
+        // Apply incremental tree-sitter edit (much faster than full re-parse)
+        if let Some(edit) = ts_edit {
+            self.apply_incremental_syntax_edit(edit);
+        }
 
         // Increment versions for cache invalidation
         self.version += 1;
@@ -762,15 +770,20 @@ impl Buffer {
         let start_line_char = self.rope.line_to_char(start_line);
         let start_pos = start_line_char + actual_start_col;
 
-        let end_pos = if end_line >= self.line_count() {
-            self.rope.len_chars()
+        // Calculate actual end position and column
+        let (end_pos, actual_end_line, actual_end_col) = if end_line >= self.line_count() {
+            (
+                self.rope.len_chars(),
+                self.line_count().saturating_sub(1),
+                self.line_len(self.line_count().saturating_sub(1)),
+            )
         } else {
             // Validate end column is within line bounds to prevent addition overflow
             let end_line_len = self.line_len(end_line);
             let actual_end_col = end_col.min(end_line_len);
 
             let end_line_char = self.rope.line_to_char(end_line);
-            end_line_char + actual_end_col
+            (end_line_char + actual_end_col, end_line, actual_end_col)
         };
 
         // Final safety clamp to buffer length (should be redundant after column validation)
@@ -783,11 +796,25 @@ impl Buffer {
 
         let deleted = self.rope.slice(start_pos..end_pos).to_string();
 
+        // Create tree-sitter edit BEFORE modifying rope (needs old state)
+        let ts_edit = self.create_ts_delete_edit(
+            start_line,
+            actual_start_col,
+            actual_end_line,
+            actual_end_col,
+            &deleted,
+        );
+
         // Shift highlights BEFORE modifying rope
         self.shift_highlights_for_deletion(start_line, start_col, end_line, end_col);
 
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
+
+        // Apply incremental tree-sitter edit (much faster than full re-parse)
+        if let Some(edit) = ts_edit {
+            self.apply_incremental_syntax_edit(edit);
+        }
 
         // Increment versions for cache invalidation
         self.version += 1;
@@ -1079,13 +1106,24 @@ impl Buffer {
         if let Some(ref path) = self.file_path {
             if let Some(lang) = LanguageRegistry::detect_from_path(path) {
                 if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
+                    let start = std::time::Instant::now();
                     let source = self.rope.to_string();
+                    let line_count = self.line_count();
+
                     highlighter.parse(&source);
 
                     // Build initial highlight cache
                     self.build_highlight_cache(&highlighter, &source);
 
                     self.syntax = Some(highlighter);
+
+                    let elapsed = start.elapsed();
+                    eprintln!(
+                        "[SYNTAX] Initial parse: {} lines in {:.2}ms ({:.0} lines/sec)",
+                        line_count,
+                        elapsed.as_secs_f64() * 1000.0,
+                        line_count as f64 / elapsed.as_secs_f64()
+                    );
                 }
             }
         }
@@ -1206,6 +1244,109 @@ impl Buffer {
             if line + newline_count < cache.len() {
                 cache[line + newline_count] = after_insert;
             }
+        }
+    }
+
+    /// Creates a tree-sitter InputEdit for an insertion operation
+    /// This enables incremental parsing instead of full re-parse
+    fn create_ts_insert_edit(
+        &self,
+        line: usize,
+        col: usize,
+        text: &str,
+    ) -> Option<tree_sitter::InputEdit> {
+        let line_start = self.rope.line_to_char(line);
+        let insert_pos = (line_start + col).min(self.rope.len_chars());
+
+        let start_byte = self.rope.char_to_byte(insert_pos);
+        let old_end_byte = start_byte;
+        let new_end_byte = start_byte + text.len();
+
+        // Calculate positions (row, column) for tree-sitter
+        let start_position = tree_sitter::Point {
+            row: line,
+            column: col,
+        };
+
+        // For insertions, old_end == start
+        let old_end_position = start_position;
+
+        // Calculate new_end position based on newlines in inserted text
+        let newline_count = text.matches('\n').count();
+        let new_end_position = if newline_count == 0 {
+            // Single-line insertion
+            tree_sitter::Point {
+                row: line,
+                column: col + text.chars().count(),
+            }
+        } else {
+            // Multi-line insertion
+            let last_line = text.split('\n').last().unwrap_or("");
+            tree_sitter::Point {
+                row: line + newline_count,
+                column: last_line.chars().count(),
+            }
+        };
+
+        Some(tree_sitter::InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position,
+            old_end_position,
+            new_end_position,
+        })
+    }
+
+    /// Creates a tree-sitter InputEdit for a deletion operation
+    /// This enables incremental parsing instead of full re-parse
+    fn create_ts_delete_edit(
+        &self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+        deleted_text: &str,
+    ) -> Option<tree_sitter::InputEdit> {
+        let start_line_char = self.rope.line_to_char(start_line);
+        let start_pos = (start_line_char + start_col).min(self.rope.len_chars());
+
+        let start_byte = self.rope.char_to_byte(start_pos);
+        let old_end_byte = start_byte + deleted_text.len();
+        let new_end_byte = start_byte;
+
+        let start_position = tree_sitter::Point {
+            row: start_line,
+            column: start_col,
+        };
+
+        let old_end_position = tree_sitter::Point {
+            row: end_line,
+            column: end_col,
+        };
+
+        // For deletions, new_end == start
+        let new_end_position = start_position;
+
+        Some(tree_sitter::InputEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+            start_position,
+            old_end_position,
+            new_end_position,
+        })
+    }
+
+    /// Applies an incremental tree-sitter edit to the syntax highlighter
+    /// This is much faster than full re-parse for small edits
+    fn apply_incremental_syntax_edit(&mut self, edit: tree_sitter::InputEdit) {
+        if let Some(ref mut syntax) = self.syntax {
+            let source = self.rope.to_string();
+            syntax.update(edit, &source);
+
+            // Invalidate cache - will be rebuilt in background
+            self.cached_highlights = None;
         }
     }
 
@@ -1425,6 +1566,29 @@ impl Buffer {
         let language = syntax.language();
 
         Some((content, version, language))
+    }
+
+    /// Rebuilds highlight cache from the existing syntax highlighter
+    /// This uses the incrementally-updated parse tree, so it's fast!
+    /// The tree-sitter parse tree was already updated incrementally via `update()`,
+    /// so this just queries it for highlights (no re-parsing needed).
+    pub fn rebuild_highlight_cache(&mut self) -> Option<u64> {
+        if !self.needs_rehighlight() {
+            return None;
+        }
+
+        let syntax = self.syntax.as_ref()?;
+        let content = self.rope.to_string();
+        let version = self.highlight_version;
+
+        // Query the incrementally-updated parse tree for highlights
+        // This is fast because tree-sitter already updated the tree via InputEdit
+        let highlights = syntax.highlights_for_all_lines(&content);
+
+        self.cached_highlights = Some(highlights);
+        self.pending_rehighlight = false;
+
+        Some(version)
     }
 
     /// Applies re-highlighted results if version matches
