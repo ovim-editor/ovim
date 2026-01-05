@@ -17,11 +17,19 @@ fn test_lsp_goto_definition_multi_file() {
 
     // File 2: utils.rs
     let file2 = temp_dir.join("utils.rs");
-    fs::write(&file2, "pub fn helper() -> i32 {\n    42\n}\n\npub fn caller() {\n    let x = helper();\n}\n").unwrap();
+    fs::write(
+        &file2,
+        "pub fn helper() -> i32 {\n    42\n}\n\npub fn caller() {\n    let x = helper();\n}\n",
+    )
+    .unwrap();
 
     // File 3: main.rs
     let file3 = temp_dir.join("main.rs");
-    fs::write(&file3, "mod utils;\n\nfn main() {\n    utils::helper();\n}\n").unwrap();
+    fs::write(
+        &file3,
+        "mod utils;\n\nfn main() {\n    utils::helper();\n}\n",
+    )
+    .unwrap();
 
     // Test navigation from main.rs
     let mut test = EditorTest::new("mod utils;\n\nfn main() {\n    utils::helper();\n}\n");
@@ -140,7 +148,7 @@ fn main() {
     // Go back with Ctrl-O
     test.press_with(
         crossterm::event::KeyCode::Char('o'),
-        crossterm::event::KeyModifiers::CONTROL
+        crossterm::event::KeyModifiers::CONTROL,
     );
 
     // Should be back at original position (or close to it)
@@ -172,8 +180,10 @@ fn main() {
 }
 
 /// Test LSP cleans up properly when switching files
-#[test]
-fn test_lsp_cleanup_on_file_switch() {
+/// Note: Uses multi-threaded tokio runtime because `:e` command calls load_file
+/// which uses block_in_place requiring a multi-threaded runtime
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_lsp_cleanup_on_file_switch() {
     // Create test files
     std::fs::write("/tmp/file1.rs", "fn test() {}\n").unwrap();
     std::fs::write("/tmp/file2.rs", "fn other() {}\n").unwrap();

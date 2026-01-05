@@ -1,10 +1,11 @@
-mod terminal;
-mod renderer;
 mod ansi;
+mod renderer;
+mod terminal;
 
-pub use terminal::Terminal;
-pub use renderer::Renderer;
 pub use ansi::buffer_to_ansi;
+pub use renderer::Renderer;
+pub use renderer::MENU_ITEMS;
+pub use terminal::Terminal;
 
 use anyhow::Result;
 

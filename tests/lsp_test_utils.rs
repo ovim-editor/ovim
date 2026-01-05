@@ -1,16 +1,21 @@
 //! LSP Test Framework
 //!
-//! Provides utilities and macros for writing LSP integration tests
+//! Provides utilities and macros for writing LSP integration tests.
+//!
+//! These tests require external infrastructure:
+//! - Release binary built (`cargo build --release`)
+//! - rust-analyzer installed and working
+//! - Tests spawn actual headless ovim processes
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use tokio::time::sleep;
 
 /// Editor snapshot from API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct EditorSnapshot {
     pub buffer: BufferInfo,
     pub cursor: CursorPosition,
@@ -19,6 +24,7 @@ pub struct EditorSnapshot {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct BufferInfo {
     pub content: String,
     pub line_count: usize,
@@ -71,15 +77,15 @@ impl OvimTestSession {
 
         // Read port from session file
         let session_path = Self::get_session_path(&session_name);
-        let session_json = std::fs::read_to_string(&session_path)
-            .context("Failed to read session file")?;
+        let session_json =
+            std::fs::read_to_string(&session_path).context("Failed to read session file")?;
 
         #[derive(Deserialize)]
         struct SessionInfo {
             port: u16,
         }
-        let info: SessionInfo = serde_json::from_str(&session_json)
-            .context("Failed to parse session info")?;
+        let info: SessionInfo =
+            serde_json::from_str(&session_json).context("Failed to parse session info")?;
 
         let session = Self {
             port: info.port,
@@ -96,11 +102,17 @@ impl OvimTestSession {
     /// Get session file path
     fn get_session_path(name: &str) -> String {
         if cfg!(target_os = "macos") {
-            format!("{}/Library/Caches/ovim/sessions/{}.json",
-                std::env::var("HOME").unwrap(), name)
+            format!(
+                "{}/Library/Caches/ovim/sessions/{}.json",
+                std::env::var("HOME").unwrap(),
+                name
+            )
         } else {
-            format!("{}/.cache/ovim/sessions/{}.json",
-                std::env::var("HOME").unwrap(), name)
+            format!(
+                "{}/.cache/ovim/sessions/{}.json",
+                std::env::var("HOME").unwrap(),
+                name
+            )
         }
     }
 
@@ -108,8 +120,9 @@ impl OvimTestSession {
     async fn wait_for_lsp_ready(&self) -> Result<()> {
         for _ in 0..60 {
             if let Ok(status) = self.get_lsp_status().await {
-                if !status.servers.is_empty() &&
-                   status.servers.iter().any(|s| s.state.contains("Ready")) {
+                if !status.servers.is_empty()
+                    && status.servers.iter().any(|s| s.state.contains("Ready"))
+                {
                     return Ok(());
                 }
             }
@@ -130,7 +143,9 @@ impl OvimTestSession {
 
         let response = client
             .post(&url)
-            .json(&SendKeysRequest { keys: keys.to_string() })
+            .json(&SendKeysRequest {
+                keys: keys.to_string(),
+            })
             .send()
             .await
             .context("Failed to send keys")?;
@@ -224,7 +239,10 @@ macro_rules! assert_hover {
     ($session:expr, contains $expected:expr) => {
         let hover = $session.get_hover_info().await?;
         assert!(
-            hover.as_ref().map(|h| h.contains($expected)).unwrap_or(false),
+            hover
+                .as_ref()
+                .map(|h| h.contains($expected))
+                .unwrap_or(false),
             "Expected hover to contain {:?}, got {:?}",
             $expected,
             hover
@@ -236,7 +254,11 @@ macro_rules! assert_hover {
     };
     ($session:expr, is_none) => {
         let hover = $session.get_hover_info().await?;
-        assert!(hover.is_none(), "Expected hover info to be None, got {:?}", hover);
+        assert!(
+            hover.is_none(),
+            "Expected hover info to be None, got {:?}",
+            hover
+        );
     };
 }
 
@@ -249,7 +271,10 @@ macro_rules! assert_cursor {
             (cursor.line, cursor.column),
             ($line, $col),
             "Expected cursor at ({}, {}), got ({}, {})",
-            $line, $col, cursor.line, cursor.column
+            $line,
+            $col,
+            cursor.line,
+            cursor.column
         );
     };
 }

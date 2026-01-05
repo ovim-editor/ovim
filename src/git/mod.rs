@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use git2::{Diff, DiffOptions, Repository};
+use anyhow::Result;
+use git2::{DiffOptions, Repository};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -77,10 +77,11 @@ impl GitStatus {
         diff_opts.pathspec(relative_path);
         diff_opts.context_lines(0); // We only need the changed lines
 
-        let diff = match repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts)) {
-            Ok(diff) => diff,
-            Err(_) => return Ok(Self::new()),
-        };
+        let diff =
+            match repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts)) {
+                Ok(diff) => diff,
+                Err(_) => return Ok(Self::new()),
+            };
 
         // Parse the diff
         let mut line_status = HashMap::new();
@@ -116,7 +117,8 @@ impl GitStatus {
                 }
                 true
             }),
-        ).ok();
+        )
+        .ok();
 
         // Detect modified lines (lines that have both additions and deletions nearby)
         // This is a simple heuristic - in a real implementation you'd want more sophisticated detection
@@ -126,13 +128,12 @@ impl GitStatus {
                 if *status == LineStatus::Added {
                     // Check if there's a removal nearby
                     for offset in 1..=3 {
-                        if line >= offset {
-                            if line_status.get(&(line - offset)) == Some(&LineStatus::Removed) {
+                        if line >= offset
+                            && line_status.get(&(line - offset)) == Some(&LineStatus::Removed) {
                                 // Likely a modification
                                 line_status.insert(line, LineStatus::Modified);
                                 break;
                             }
-                        }
                         if line_status.get(&(line + offset)) == Some(&LineStatus::Removed) {
                             line_status.insert(line, LineStatus::Modified);
                             break;

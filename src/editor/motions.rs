@@ -1,5 +1,9 @@
 use crate::buffer::Buffer;
 
+// TODO: Grapheme cluster support needed throughout this file
+// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
+// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
+
 /// Utilities for cursor motions
 pub struct Motions;
 
@@ -45,10 +49,32 @@ impl Motions {
         let chars: Vec<char> = line.chars().collect();
 
         if col >= chars.len() {
+            // Fix Bug 4: Handle consecutive empty lines properly
             // At end of line, move to next line
             if line_idx + 1 < rope.len_lines() {
-                buffer.cursor_mut().set_position(line_idx + 1, 0);
-                // Skip leading whitespace
+                let mut next_line_idx = line_idx + 1;
+
+                // Skip over consecutive empty lines
+                loop {
+                    let next_line = rope.line(next_line_idx).to_string();
+                    let next_line_trimmed = next_line.trim_end_matches('\n');
+
+                    if next_line_trimmed.is_empty() {
+                        // Empty line - try next one
+                        if next_line_idx + 1 < rope.len_lines() {
+                            next_line_idx += 1;
+                        } else {
+                            // Reached end of file on empty line
+                            break;
+                        }
+                    } else {
+                        // Found non-empty line
+                        break;
+                    }
+                }
+
+                buffer.cursor_mut().set_position(next_line_idx, 0);
+                // Skip leading whitespace on the line we landed on
                 Self::skip_whitespace_forward(buffer);
             } else {
                 // At end of last line - clamp cursor to valid position
@@ -83,7 +109,8 @@ impl Motions {
                 // In punctuation
                 while new_col < chars.len()
                     && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col]) {
+                    && !Self::is_whitespace(chars[new_col])
+                {
                     new_col += 1;
                 }
             }
@@ -94,11 +121,34 @@ impl Motions {
         }
 
         if new_col >= chars.len() && line_idx + 1 < rope.len_lines() {
-            // Reached end of line, move to next line
-            buffer.cursor_mut().set_position(line_idx + 1, 0);
+            // Fix Bug 4: Skip consecutive empty lines when moving to next line
+            let mut next_line_idx = line_idx + 1;
+
+            // Skip over consecutive empty lines
+            loop {
+                let next_line = rope.line(next_line_idx).to_string();
+                let next_line_trimmed = next_line.trim_end_matches('\n');
+
+                if next_line_trimmed.is_empty() {
+                    // Empty line - try next one
+                    if next_line_idx + 1 < rope.len_lines() {
+                        next_line_idx += 1;
+                    } else {
+                        // Reached end of file on empty line
+                        break;
+                    }
+                } else {
+                    // Found non-empty line
+                    break;
+                }
+            }
+
+            buffer.cursor_mut().set_position(next_line_idx, 0);
             Self::skip_whitespace_forward(buffer);
         } else {
-            buffer.cursor_mut().set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
+            buffer
+                .cursor_mut()
+                .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
         }
     }
 
@@ -138,10 +188,9 @@ impl Motions {
                 let prev_line = rope.line(line_idx - 1).to_string();
                 let prev_line = prev_line.trim_end_matches('\n');
                 let prev_len = prev_line.chars().count();
-                buffer.cursor_mut().set_position(
-                    line_idx - 1,
-                    prev_len.saturating_sub(1).max(0)
-                );
+                buffer
+                    .cursor_mut()
+                    .set_position(line_idx - 1, prev_len.saturating_sub(1).max(0));
             }
             return;
         }
@@ -176,7 +225,8 @@ impl Motions {
                 // Move back through punctuation
                 while new_col > 0
                     && !Self::is_word_char(chars[new_col - 1])
-                    && !Self::is_whitespace(chars[new_col - 1]) {
+                    && !Self::is_whitespace(chars[new_col - 1])
+                {
                     new_col -= 1;
                 }
             }
@@ -258,13 +308,17 @@ impl Motions {
                 // Move through punctuation
                 while new_col < chars.len()
                     && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col]) {
+                    && !Self::is_whitespace(chars[new_col])
+                {
                     new_col += 1;
                 }
             }
         }
 
-        buffer.cursor_mut().set_col((new_col - 1).min(chars.len().saturating_sub(1)));
+        // Fix Bug 1: Use saturating_sub to prevent underflow when new_col is 0
+        buffer
+            .cursor_mut()
+            .set_col(new_col.saturating_sub(1).min(chars.len().saturating_sub(1)));
     }
 
     /// Moves cursor backward to the end of the previous word
@@ -324,9 +378,7 @@ impl Motions {
         let mut new_col = col;
 
         // Move back at least one position
-        if new_col > 0 {
-            new_col -= 1;
-        }
+        new_col = new_col.saturating_sub(1);
 
         // Skip backward over whitespace
         while new_col > 0 && Self::is_whitespace(chars[new_col]) {
@@ -352,32 +404,32 @@ impl Motions {
                 new_col += 1;
             }
             new_col = new_col.saturating_sub(1);
-        } else {
-            if Self::is_word_char(target_char) {
-                // Move back through word characters
-                while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
-                    new_col -= 1;
-                }
-                // Now find the end of this word
-                while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
-                    new_col += 1;
-                }
-                new_col = new_col.saturating_sub(1);
-            } else {
-                // Move back through punctuation
-                while new_col > 0
-                    && !Self::is_word_char(chars[new_col - 1])
-                    && !Self::is_whitespace(chars[new_col - 1]) {
-                    new_col -= 1;
-                }
-                // Now find the end of this punctuation sequence
-                while new_col < chars.len()
-                    && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col]) {
-                    new_col += 1;
-                }
-                new_col = new_col.saturating_sub(1);
+        } else if Self::is_word_char(target_char) {
+            // Move back through word characters
+            while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
+                new_col -= 1;
             }
+            // Now find the end of this word
+            while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
+                new_col += 1;
+            }
+            new_col = new_col.saturating_sub(1);
+        } else {
+            // Move back through punctuation
+            while new_col > 0
+                && !Self::is_word_char(chars[new_col - 1])
+                && !Self::is_whitespace(chars[new_col - 1])
+            {
+                new_col -= 1;
+            }
+            // Now find the end of this punctuation sequence
+            while new_col < chars.len()
+                && !Self::is_word_char(chars[new_col])
+                && !Self::is_whitespace(chars[new_col])
+            {
+                new_col += 1;
+            }
+            new_col = new_col.saturating_sub(1);
         }
 
         buffer.cursor_mut().set_col(new_col);
@@ -402,7 +454,9 @@ impl Motions {
             new_col += 1;
         }
 
-        buffer.cursor_mut().set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
+        buffer
+            .cursor_mut()
+            .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
     }
 
     /// Finds next occurrence of character on current line (f motion)
@@ -597,7 +651,12 @@ impl Motions {
     }
 
     /// Find matching closing bracket searching forward
-    pub fn find_matching_bracket_forward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+    pub fn find_matching_bracket_forward(
+        chars: &[char],
+        start_pos: usize,
+        open: char,
+        close: char,
+    ) -> Option<usize> {
         let mut depth = 1;
         for (i, &ch) in chars.iter().enumerate().skip(start_pos + 1) {
             if ch == open {
@@ -613,7 +672,12 @@ impl Motions {
     }
 
     /// Find matching opening bracket searching backward
-    pub fn find_matching_bracket_backward(chars: &[char], start_pos: usize, open: char, close: char) -> Option<usize> {
+    pub fn find_matching_bracket_backward(
+        chars: &[char],
+        start_pos: usize,
+        open: char,
+        close: char,
+    ) -> Option<usize> {
         let mut depth = 1;
         for i in (0..start_pos).rev() {
             let ch = chars[i];
@@ -647,9 +711,7 @@ impl Motions {
             let chars: Vec<char> = line_text.chars().collect();
 
             // Find first non-whitespace character
-            let first_non_blank = chars.iter()
-                .position(|&c| !c.is_whitespace())
-                .unwrap_or(0);
+            let first_non_blank = chars.iter().position(|&c| !c.is_whitespace()).unwrap_or(0);
 
             buffer.cursor_mut().set_col(first_non_blank);
         }
@@ -747,7 +809,7 @@ impl Motions {
 
         line_idx = line_idx.saturating_sub(1);
 
-        // Skip blank lines backward
+        // Fix: Skip blank lines backward - check line 0 explicitly
         while line_idx > 0 {
             if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
@@ -757,8 +819,21 @@ impl Motions {
             }
             line_idx = line_idx.saturating_sub(1);
         }
+        // Check line 0 after loop (loop condition skips it)
+        if line_idx == 0 {
+            if let Some(line) = buffer.line(0) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    // Line 0 is non-blank, continue to next phase
+                } else {
+                    // Line 0 is blank, stop here
+                    buffer.cursor_mut().set_position(0, 0);
+                    return;
+                }
+            }
+        }
 
-        // Skip non-blank lines backward until we find a blank line
+        // Fix: Skip non-blank lines backward until we find a blank line
         while line_idx > 0 {
             if let Some(line) = buffer.line(line_idx) {
                 let trimmed = line.trim();
@@ -767,6 +842,17 @@ impl Motions {
                 }
             }
             line_idx = line_idx.saturating_sub(1);
+        }
+        // Check line 0 after loop - if we're here, check if it's blank
+        if line_idx == 0 {
+            if let Some(line) = buffer.line(0) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    // Line 0 is non-blank, we've gone as far back as we can
+                    // The paragraph starts at line 0
+                }
+                // If line 0 is blank, line_idx is already 0
+            }
         }
 
         buffer.cursor_mut().set_position(line_idx, 0);
@@ -780,6 +866,11 @@ impl Motions {
     }
 
     fn sentence_forward_once(buffer: &mut Buffer) {
+        // TODO (Bug 4): Sentence motion doesn't handle abbreviations like "Dr.", "e.g.", "i.e."
+        // Vim's sentence motion has some heuristics for this (e.g., two spaces after period)
+        // but implementing full abbreviation support would require a dictionary or more
+        // sophisticated pattern matching. Low priority since basic sentence navigation works.
+
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
@@ -798,7 +889,8 @@ impl Motions {
                     let ch = chars[current_col];
                     if ch == '.' || ch == '!' || ch == '?' {
                         // Check if followed by space or at end of line
-                        if current_col + 1 >= chars.len() || chars[current_col + 1].is_whitespace() {
+                        if current_col + 1 >= chars.len() || chars[current_col + 1].is_whitespace()
+                        {
                             // Skip whitespace after punctuation
                             current_col += 1;
                             while current_col < chars.len() && chars[current_col].is_whitespace() {
@@ -810,7 +902,10 @@ impl Motions {
                                 if current_line + 1 < rope.len_lines() {
                                     buffer.cursor_mut().set_position(current_line + 1, 0);
                                 } else {
-                                    buffer.cursor_mut().set_position(current_line, chars.len().saturating_sub(1).max(0));
+                                    buffer.cursor_mut().set_position(
+                                        current_line,
+                                        chars.len().saturating_sub(1).max(0),
+                                    );
                                 }
                             } else {
                                 buffer.cursor_mut().set_position(current_line, current_col);
@@ -853,7 +948,11 @@ impl Motions {
         } else if line_idx > 0 {
             line_idx -= 1;
             if let Some(line) = buffer.line(line_idx) {
-                col = line.trim_end_matches('\n').chars().count().saturating_sub(1);
+                col = line
+                    .trim_end_matches('\n')
+                    .chars()
+                    .count()
+                    .saturating_sub(1);
             }
         }
 
@@ -875,7 +974,9 @@ impl Motions {
                         if col >= chars.len() && line_idx + 1 < buffer.rope().len_lines() {
                             buffer.cursor_mut().set_position(line_idx + 1, 0);
                         } else {
-                            buffer.cursor_mut().set_position(line_idx, col.min(chars.len().saturating_sub(1)));
+                            buffer
+                                .cursor_mut()
+                                .set_position(line_idx, col.min(chars.len().saturating_sub(1)));
                         }
                         return;
                     }
@@ -890,7 +991,11 @@ impl Motions {
 
             line_idx -= 1;
             if let Some(line) = buffer.line(line_idx) {
-                col = line.trim_end_matches('\n').chars().count().saturating_sub(1);
+                col = line
+                    .trim_end_matches('\n')
+                    .chars()
+                    .count()
+                    .saturating_sub(1);
             }
         }
     }
@@ -910,16 +1015,23 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer.cursor_mut().set_position(target_line, first_non_blank);
+            buffer
+                .cursor_mut()
+                .set_position(target_line, first_non_blank);
         }
     }
 
     /// Moves cursor to the middle of the visible screen (M command)
     /// viewport_start: first visible line
     /// viewport_height: number of visible lines
-    pub fn move_to_screen_middle(buffer: &mut Buffer, viewport_start: usize, viewport_height: usize) {
+    pub fn move_to_screen_middle(
+        buffer: &mut Buffer,
+        viewport_start: usize,
+        viewport_height: usize,
+    ) {
         let middle_offset = viewport_height / 2;
-        let target_line = (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
+        let target_line =
+            (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
         if let Some(line) = buffer.line(target_line) {
@@ -929,7 +1041,9 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer.cursor_mut().set_position(target_line, first_non_blank);
+            buffer
+                .cursor_mut()
+                .set_position(target_line, first_non_blank);
         }
     }
 
@@ -937,9 +1051,16 @@ impl Motions {
     /// viewport_start: first visible line
     /// viewport_height: number of visible lines
     /// offset: optional offset from bottom (0 = last line, 1 = second to last, etc.)
-    pub fn move_to_screen_bottom(buffer: &mut Buffer, viewport_start: usize, viewport_height: usize, offset: usize) {
+    pub fn move_to_screen_bottom(
+        buffer: &mut Buffer,
+        viewport_start: usize,
+        viewport_height: usize,
+        offset: usize,
+    ) {
         let last_visible = viewport_start + viewport_height.saturating_sub(1);
-        let target_line = last_visible.saturating_sub(offset).min(buffer.line_count().saturating_sub(1));
+        let target_line = last_visible
+            .saturating_sub(offset)
+            .min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
         if let Some(line) = buffer.line(target_line) {
@@ -949,7 +1070,9 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer.cursor_mut().set_position(target_line, first_non_blank);
+            buffer
+                .cursor_mut()
+                .set_position(target_line, first_non_blank);
         }
     }
 
@@ -1067,7 +1190,8 @@ impl Motions {
         // Move cursor down by the same amount (keep relative position in viewport)
         let cursor_line = buffer.cursor().line();
         let cursor_offset = cursor_line.saturating_sub(viewport_start);
-        let new_cursor_line = (new_viewport + cursor_offset).min(buffer.line_count().saturating_sub(1));
+        let new_cursor_line =
+            (new_viewport + cursor_offset).min(buffer.line_count().saturating_sub(1));
 
         // Keep cursor in same column if possible
         let col = buffer.cursor().col();
@@ -1118,5 +1242,521 @@ impl Motions {
         }
 
         new_viewport
+    }
+
+    /// Section navigation: jump to next section start (`{` at column 0)
+    /// `]]` motion in Vim
+    pub fn section_forward(buffer: &mut Buffer, count: usize) {
+        let rope = buffer.rope();
+        let total_lines = rope.len_lines();
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            current_line += 1;
+            while current_line < total_lines {
+                if let Some(line) = buffer.line(current_line) {
+                    if line.starts_with('{') {
+                        break;
+                    }
+                }
+                current_line += 1;
+            }
+            if current_line >= total_lines {
+                current_line = total_lines.saturating_sub(1);
+                break;
+            }
+        }
+
+        buffer.cursor_mut().set_position(current_line, 0);
+    }
+
+    /// Section navigation: jump to previous section start (`{` at column 0)
+    /// `[[` motion in Vim
+    pub fn section_backward(buffer: &mut Buffer, count: usize) {
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            if current_line == 0 {
+                break;
+            }
+            current_line -= 1;
+            while current_line > 0 {
+                if let Some(line) = buffer.line(current_line) {
+                    if line.starts_with('{') {
+                        break;
+                    }
+                }
+                current_line -= 1;
+            }
+            // Check if line 0 is a match
+            if current_line == 0 {
+                if let Some(line) = buffer.line(0) {
+                    if !line.starts_with('{') {
+                        // No match found, stay at line 0
+                    }
+                }
+            }
+        }
+
+        buffer.cursor_mut().set_position(current_line, 0);
+    }
+
+    /// Section navigation: jump to next section end (`}` at column 0)
+    /// `][` motion in Vim
+    pub fn section_end_forward(buffer: &mut Buffer, count: usize) {
+        let rope = buffer.rope();
+        let total_lines = rope.len_lines();
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            current_line += 1;
+            while current_line < total_lines {
+                if let Some(line) = buffer.line(current_line) {
+                    if line.starts_with('}') {
+                        break;
+                    }
+                }
+                current_line += 1;
+            }
+            if current_line >= total_lines {
+                current_line = total_lines.saturating_sub(1);
+                break;
+            }
+        }
+
+        buffer.cursor_mut().set_position(current_line, 0);
+    }
+
+    /// Section navigation: jump to previous section end (`}` at column 0)
+    /// `[]` motion in Vim
+    pub fn section_end_backward(buffer: &mut Buffer, count: usize) {
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            if current_line == 0 {
+                break;
+            }
+            current_line -= 1;
+            while current_line > 0 {
+                if let Some(line) = buffer.line(current_line) {
+                    if line.starts_with('}') {
+                        break;
+                    }
+                }
+                current_line -= 1;
+            }
+        }
+
+        buffer.cursor_mut().set_position(current_line, 0);
+    }
+
+    /// Jump to enclosing `{` brace
+    /// `[{` motion in Vim
+    pub fn jump_to_enclosing_open_brace(buffer: &mut Buffer) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Convert to absolute position
+        let text = rope.to_string();
+        let chars: Vec<char> = text.chars().collect();
+
+        let mut abs_pos = 0;
+        for i in 0..line_idx {
+            if let Some(line) = buffer.line(i) {
+                abs_pos += line.chars().count();
+            }
+        }
+        abs_pos += col;
+
+        if abs_pos >= chars.len() {
+            return false;
+        }
+
+        // Search backward for unmatched `{`
+        let mut depth = 0;
+        let mut search_pos = abs_pos;
+
+        while search_pos > 0 {
+            search_pos -= 1;
+            match chars[search_pos] {
+                '}' => depth += 1,
+                '{' => {
+                    if depth == 0 {
+                        // Found unmatched opening brace
+                        let (new_line, new_col) = Self::abs_pos_to_line_col(rope, search_pos);
+                        buffer.cursor_mut().set_position(new_line, new_col);
+                        return true;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+
+        // Check position 0
+        if chars[0] == '{' && depth == 0 {
+            buffer.cursor_mut().set_position(0, 0);
+            return true;
+        }
+
+        false
+    }
+
+    /// Jump to enclosing `}` brace
+    /// `]}` motion in Vim
+    pub fn jump_to_enclosing_close_brace(buffer: &mut Buffer) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Convert to absolute position
+        let text = rope.to_string();
+        let chars: Vec<char> = text.chars().collect();
+
+        let mut abs_pos = 0;
+        for i in 0..line_idx {
+            if let Some(line) = buffer.line(i) {
+                abs_pos += line.chars().count();
+            }
+        }
+        abs_pos += col;
+
+        if abs_pos >= chars.len() {
+            return false;
+        }
+
+        // Search forward for unmatched `}`
+        let mut depth = 0;
+        let mut search_pos = abs_pos;
+
+        while search_pos < chars.len() {
+            match chars[search_pos] {
+                '{' => depth += 1,
+                '}' => {
+                    if depth == 0 {
+                        // Found unmatched closing brace
+                        let (new_line, new_col) = Self::abs_pos_to_line_col(rope, search_pos);
+                        buffer.cursor_mut().set_position(new_line, new_col);
+                        return true;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            search_pos += 1;
+        }
+
+        false
+    }
+
+    /// Unmatched brace backward: `[{` motion in Vim
+    /// Jumps to the previous unmatched `{` (opening brace that has no matching closer before cursor)
+    pub fn unmatched_brace_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_open_brace(buffer) {
+                break;
+            }
+        }
+    }
+
+    /// Unmatched brace forward: `]}` motion in Vim
+    /// Jumps to the next unmatched `}` (closing brace that has no matching opener after cursor)
+    pub fn unmatched_brace_forward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_close_brace(buffer) {
+                break;
+            }
+        }
+    }
+
+    /// Unmatched parenthesis backward: `[(` motion in Vim
+    /// Jumps to the previous unmatched `(` (opening paren that has no matching closer before cursor)
+    pub fn unmatched_paren_backward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_char(buffer, '(', ')', true) {
+                break;
+            }
+        }
+    }
+
+    /// Unmatched parenthesis forward: `])` motion in Vim
+    /// Jumps to the next unmatched `)` (closing paren that has no matching opener after cursor)
+    pub fn unmatched_paren_forward(buffer: &mut Buffer, count: usize) {
+        for _ in 0..count {
+            if !Self::jump_to_enclosing_char(buffer, '(', ')', false) {
+                break;
+            }
+        }
+    }
+
+    /// Generic jump to enclosing character
+    /// If `backward` is true, searches for unmatched opener; otherwise, searches for unmatched closer
+    fn jump_to_enclosing_char(
+        buffer: &mut Buffer,
+        open_char: char,
+        close_char: char,
+        backward: bool,
+    ) -> bool {
+        let rope = buffer.rope();
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        // Convert to absolute position
+        let text = rope.to_string();
+        let chars: Vec<char> = text.chars().collect();
+
+        let mut abs_pos = 0;
+        for i in 0..line_idx {
+            if let Some(line) = buffer.line(i) {
+                abs_pos += line.chars().count();
+            }
+        }
+        abs_pos += col;
+
+        if abs_pos >= chars.len() {
+            return false;
+        }
+
+        if backward {
+            // Search backward for unmatched opener
+            let mut depth = 0;
+            let mut search_pos = abs_pos;
+
+            while search_pos > 0 {
+                search_pos -= 1;
+                match chars[search_pos] {
+                    c if c == close_char => depth += 1,
+                    c if c == open_char => {
+                        if depth == 0 {
+                            let (new_line, new_col) = Self::abs_pos_to_line_col(rope, search_pos);
+                            buffer.cursor_mut().set_position(new_line, new_col);
+                            return true;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Check position 0
+            if chars[0] == open_char && depth == 0 {
+                buffer.cursor_mut().set_position(0, 0);
+                return true;
+            }
+        } else {
+            // Search forward for unmatched closer
+            let mut depth = 0;
+            let mut search_pos = abs_pos;
+
+            while search_pos < chars.len() {
+                match chars[search_pos] {
+                    c if c == open_char => depth += 1,
+                    c if c == close_char => {
+                        if depth == 0 {
+                            let (new_line, new_col) = Self::abs_pos_to_line_col(rope, search_pos);
+                            buffer.cursor_mut().set_position(new_line, new_col);
+                            return true;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+                search_pos += 1;
+            }
+        }
+
+        false
+    }
+
+    /// Method navigation: jump to next method/function start
+    /// `]m` motion in Vim
+    /// Looks for patterns like: fn name(, def name(, function name(, etc.
+    pub fn method_forward(buffer: &mut Buffer, count: usize) {
+        let total_lines = buffer.rope().len_lines();
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            current_line += 1;
+            while current_line < total_lines {
+                if Self::is_method_start(buffer, current_line) {
+                    break;
+                }
+                current_line += 1;
+            }
+            if current_line >= total_lines {
+                current_line = total_lines.saturating_sub(1);
+                break;
+            }
+        }
+
+        // Position cursor at first non-whitespace
+        if let Some(line) = buffer.line(current_line) {
+            let col = line
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .count();
+            buffer.cursor_mut().set_position(current_line, col);
+        } else {
+            buffer.cursor_mut().set_position(current_line, 0);
+        }
+    }
+
+    /// Method navigation: jump to previous method/function start
+    /// `[m` motion in Vim
+    pub fn method_backward(buffer: &mut Buffer, count: usize) {
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            if current_line == 0 {
+                break;
+            }
+            current_line -= 1;
+            while current_line > 0 {
+                if Self::is_method_start(buffer, current_line) {
+                    break;
+                }
+                current_line -= 1;
+            }
+            // Check line 0
+            if current_line == 0 && !Self::is_method_start(buffer, 0) {
+                // No match found, stay at line 0
+            }
+        }
+
+        // Position cursor at first non-whitespace
+        if let Some(line) = buffer.line(current_line) {
+            let col = line
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .count();
+            buffer.cursor_mut().set_position(current_line, col);
+        } else {
+            buffer.cursor_mut().set_position(current_line, 0);
+        }
+    }
+
+    /// Method navigation: jump to next method/function end
+    /// `]M` motion in Vim
+    pub fn method_end_forward(buffer: &mut Buffer, count: usize) {
+        let total_lines = buffer.rope().len_lines();
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            current_line += 1;
+            while current_line < total_lines {
+                if Self::is_method_end(buffer, current_line) {
+                    break;
+                }
+                current_line += 1;
+            }
+            if current_line >= total_lines {
+                current_line = total_lines.saturating_sub(1);
+                break;
+            }
+        }
+
+        // Position at the closing brace
+        if let Some(line) = buffer.line(current_line) {
+            let col = line.find('}').unwrap_or(0);
+            buffer.cursor_mut().set_position(current_line, col);
+        } else {
+            buffer.cursor_mut().set_position(current_line, 0);
+        }
+    }
+
+    /// Method navigation: jump to previous method/function end
+    /// `[M` motion in Vim
+    pub fn method_end_backward(buffer: &mut Buffer, count: usize) {
+        let mut current_line = buffer.cursor().line();
+
+        for _ in 0..count {
+            if current_line == 0 {
+                break;
+            }
+            current_line -= 1;
+            while current_line > 0 {
+                if Self::is_method_end(buffer, current_line) {
+                    break;
+                }
+                current_line -= 1;
+            }
+        }
+
+        // Position at the closing brace
+        if let Some(line) = buffer.line(current_line) {
+            let col = line.find('}').unwrap_or(0);
+            buffer.cursor_mut().set_position(current_line, col);
+        } else {
+            buffer.cursor_mut().set_position(current_line, 0);
+        }
+    }
+
+    /// Check if a line is the start of a method/function
+    fn is_method_start(buffer: &Buffer, line_idx: usize) -> bool {
+        if let Some(line) = buffer.line(line_idx) {
+            let trimmed = line.trim();
+            // Common function definition patterns
+            // Rust: fn name(, pub fn name(, async fn name(
+            // Python: def name(
+            // JavaScript/TypeScript: function name(, async function name(
+            // C/C++/Java: type name(, void name(, int name(, etc.
+
+            // Check for Rust-style fn
+            if trimmed.contains("fn ") && trimmed.contains('(') {
+                return true;
+            }
+            // Check for Python-style def
+            if trimmed.starts_with("def ") && trimmed.contains('(') {
+                return true;
+            }
+            // Check for JavaScript/TypeScript function
+            if trimmed.contains("function ") && trimmed.contains('(') {
+                return true;
+            }
+            // Check for C/C++/Java/Go style - identifier followed by ( at start of line
+            // Look for pattern: word word( or word( at reasonable indent level
+            let indent = line.len() - line.trim_start().len();
+            if indent <= 8 && trimmed.contains('(') && !trimmed.starts_with("if ")
+                && !trimmed.starts_with("for ")
+                && !trimmed.starts_with("while ")
+                && !trimmed.starts_with("switch ")
+                && !trimmed.starts_with("match ")
+                && !trimmed.starts_with("return ")
+                && !trimmed.starts_with("//")
+                && !trimmed.starts_with("/*")
+                && !trimmed.starts_with("*")
+            {
+                // Check if line ends with { or has { after )
+                if trimmed.ends_with('{') || (trimmed.contains(") {") || trimmed.contains("){")) {
+                    return true;
+                }
+                // Check if next line starts with {
+                if let Some(next_line) = buffer.line(line_idx + 1) {
+                    if next_line.trim().starts_with('{') {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a line is the end of a method/function
+    /// A method end is a closing } at low indentation
+    fn is_method_end(buffer: &Buffer, line_idx: usize) -> bool {
+        if let Some(line) = buffer.line(line_idx) {
+            let trimmed = line.trim();
+            let indent = line.len() - line.trim_start().len();
+            // A method end is typically a } at indentation <= 4 (or 8 for nested classes)
+            // and the line is just the closing brace (possibly with semicolon for C++)
+            if indent <= 4 && (trimmed == "}" || trimmed == "};" || trimmed == "},") {
+                return true;
+            }
+        }
+        false
     }
 }

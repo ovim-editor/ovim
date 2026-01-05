@@ -1,0 +1,196 @@
+//! Picker management and preview cache
+
+use super::{Editor, Picker, PreviewCache};
+use std::collections::HashMap;
+
+impl Editor {
+    /// Sets the picker
+    pub fn set_picker(&mut self, picker: Picker) {
+        self.picker = Some(picker);
+    }
+
+    /// Gets a reference to the picker
+    pub fn picker(&self) -> Option<&Picker> {
+        self.picker.as_ref()
+    }
+
+    /// Gets a mutable reference to the picker
+    pub fn picker_mut(&mut self) -> Option<&mut Picker> {
+        self.picker.as_mut()
+    }
+
+    /// Marks that picker query was just changed (for debouncing preview loading)
+    pub fn mark_picker_query_changed(&mut self) {
+        self.last_picker_query_change = Some(std::time::Instant::now());
+        // Clear loading flag since query changed
+        self.loading_preview = None;
+    }
+
+    /// Marks that the picker selection moved (for debouncing preview loading)
+    pub fn mark_picker_selection_changed(&mut self) {
+        self.last_picker_selection_change = Some(std::time::Instant::now());
+        // Allow new preview to load for the freshly selected entry
+        self.loading_preview = None;
+    }
+
+    /// Checks if enough time has elapsed since picker query changed (for debouncing)
+    /// Returns true if we should load preview now
+    pub fn should_load_picker_preview(&self, debounce_ms: u64) -> bool {
+        let mut last_change = self.last_picker_query_change;
+
+        if let Some(selection_change) = self.last_picker_selection_change {
+            last_change = match last_change {
+                Some(existing) => Some(std::cmp::max(existing, selection_change)),
+                None => Some(selection_change),
+            };
+        }
+
+        match last_change {
+            None => true, // No recent change, load immediately
+            Some(last_change) => last_change.elapsed().as_millis() >= debounce_ms as u128,
+        }
+    }
+
+    /// Gets the path that should be loaded for preview (if any)
+    /// Returns None if already cached or already loading
+    pub fn get_preview_to_load(&mut self) -> Option<String> {
+        if let Some(picker) = self.picker() {
+            if let Some(result) = picker.selected_result() {
+                // Skip modes that don't have file paths
+                if *picker.mode() == crate::editor::PickerMode::Custom
+                    || *picker.mode() == crate::editor::PickerMode::Completion
+                {
+                    return None;
+                }
+
+                let file_path = result.location.clone();
+
+                // Skip if already cached
+                if self.preview_cache.contains_key(&file_path) {
+                    return None;
+                }
+
+                // Skip if currently loading
+                if self.loading_preview.as_ref() == Some(&file_path) {
+                    return None;
+                }
+
+                // Mark as loading
+                self.loading_preview = Some(file_path.clone());
+                return Some(file_path);
+            }
+        }
+        None
+    }
+
+    /// Inserts a loaded preview into the cache
+    pub fn insert_preview(&mut self, file_path: String, cache: PreviewCache) {
+        self.preview_cache.insert(file_path.clone(), cache);
+        // Clear loading flag
+        if self.loading_preview.as_ref() == Some(&file_path) {
+            self.loading_preview = None;
+        }
+        // Trim cache
+        self.trim_preview_cache(50);
+    }
+
+    /// Closes the picker
+    pub fn close_picker(&mut self) {
+        self.picker = None;
+        // Clear preview cache when closing picker to free memory
+        self.preview_cache.clear();
+        self.last_picker_selection_change = None;
+    }
+
+    /// Gets preview from cache or loads it (async version)
+    pub async fn get_or_load_preview_async(&mut self, file_path: &str) -> Option<&PreviewCache> {
+        // Check if already cached
+        if self.preview_cache.contains_key(file_path) {
+            return self.preview_cache.get(file_path);
+        }
+
+        // Check file size before loading (max 1MB for preview)
+        const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
+        if let Ok(metadata) = tokio::fs::metadata(file_path).await {
+            if metadata.len() > MAX_PREVIEW_SIZE {
+                // File too large, create a placeholder cache entry
+                let cache = PreviewCache {
+                    content: format!("File too large for preview ({} bytes)", metadata.len()),
+                    highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+                    language: None,
+                };
+                self.preview_cache.insert(file_path.to_string(), cache);
+                return self.preview_cache.get(file_path);
+            }
+        }
+
+        // Load the file
+        let content = match tokio::fs::read_to_string(file_path).await {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        // Detect language
+        let language = crate::syntax::LanguageRegistry::detect_from_path(file_path);
+
+        // Create cache entry
+        let cache = PreviewCache {
+            content,
+            highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+            language,
+        };
+
+        self.preview_cache.insert(file_path.to_string(), cache);
+        self.preview_cache.get(file_path)
+    }
+
+    /// Gets preview from cache or loads it (blocking wrapper)
+    pub fn get_or_load_preview(&mut self, file_path: &str) -> Option<&PreviewCache> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.get_or_load_preview_async(file_path))
+        })
+    }
+
+    /// Gets cached preview if available
+    pub fn get_preview_cache(&self, file_path: &str) -> Option<&PreviewCache> {
+        self.preview_cache.get(file_path)
+    }
+
+    /// Gets preview with fallback - prefers current file, but shows last preview if loading
+    /// This provides smooth transitions without "Loading..." flicker
+    pub fn get_preview_with_fallback(
+        &mut self,
+        file_path: &str,
+    ) -> Option<(&PreviewCache, String)> {
+        // Try to get the requested preview
+        if let Some(preview) = self.preview_cache.get(file_path) {
+            // Update last shown
+            self.last_shown_preview = Some(file_path.to_string());
+            return Some((preview, file_path.to_string()));
+        }
+
+        // Fall back to last shown preview while new one loads
+        if let Some(last_path) = &self.last_shown_preview {
+            if let Some(preview) = self.preview_cache.get(last_path) {
+                // Return the old preview (with its path for reference)
+                return Some((preview, last_path.clone()));
+            }
+        }
+
+        None
+    }
+
+    /// Limits preview cache size to prevent memory bloat
+    pub fn trim_preview_cache(&mut self, max_entries: usize) {
+        if self.preview_cache.len() > max_entries {
+            // Keep only the most recent entries
+            // Simple strategy: clear half when limit is exceeded
+            let to_remove = self.preview_cache.len() - max_entries / 2;
+            let keys_to_remove: Vec<String> =
+                self.preview_cache.keys().take(to_remove).cloned().collect();
+            for key in keys_to_remove {
+                self.preview_cache.remove(&key);
+            }
+        }
+    }
+}

@@ -1,5 +1,5 @@
-use ovim::editor::{Editor, InputHandler};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -23,10 +23,11 @@ fn test_delete_last_line_with_dd() {
     press(&mut editor, KeyCode::Char('d'));
     press(&mut editor, KeyCode::Char('d'));
 
-    // Should have 2 lines now
+    // Should have 2 lines now (with_content adds trailing newline, Vim semantics: 3 lines initially)
     assert_eq!(editor.buffer().line_count(), 2);
 
-    // Cursor should be on line 1 (second line, 0-indexed)
+    // Cursor should be on line 1 (we deleted line 3, so cursor moves up to line 2, 0-indexed: line 1)
+    // Actually dd at end moves cursor up, but with trailing newline behavior it ends at index 1
     assert_eq!(editor.buffer().cursor().line(), 1);
 }
 
@@ -44,16 +45,17 @@ fn test_delete_multiple_lines_at_end() {
     press(&mut editor, KeyCode::Char('d'));
     press(&mut editor, KeyCode::Char('d'));
 
-    // Should have 2 lines now
+    // Should have 2 lines now (with_content adds trailing newline, Vim semantics: 4 lines initially)
     assert_eq!(editor.buffer().line_count(), 2);
 
-    // Cursor should be on line 1 (0-indexed)
+    // Cursor should be on line 1 (we deleted lines 3-4, cursor moves up)
     assert_eq!(editor.buffer().cursor().line(), 1);
 }
 
 #[test]
 fn test_x_at_end_of_line() {
     // Test x at end of line clamps cursor
+    // Note: with_content adds trailing newline, so "hello" becomes "hello\n"
     let mut editor = Editor::with_content("hello");
 
     // Move to last character
@@ -62,8 +64,8 @@ fn test_x_at_end_of_line() {
     // Delete last character
     press(&mut editor, KeyCode::Char('x'));
 
-    // Buffer should be "hell"
-    assert_eq!(editor.buffer().line(0).unwrap(), "hell");
+    // Buffer should be "hell\n" (with trailing newline from normalization)
+    assert_eq!(editor.buffer().line(0).unwrap(), "hell\n");
 
     // Cursor should be at col 3 (last char)
     assert_eq!(editor.buffer().cursor().col(), 3);
@@ -72,14 +74,15 @@ fn test_x_at_end_of_line() {
 #[test]
 fn test_x_delete_all_chars_on_line() {
     // Test deleting all characters on a line
+    // Note: with_content adds trailing newline, so "abc" becomes "abc\n"
     let mut editor = Editor::with_content("abc");
 
     // Delete all 3 characters
     press(&mut editor, KeyCode::Char('3'));
     press(&mut editor, KeyCode::Char('x'));
 
-    // Buffer should be empty
-    assert_eq!(editor.buffer().line(0).unwrap(), "");
+    // Buffer should just have newline (from normalization)
+    assert_eq!(editor.buffer().line(0).unwrap(), "\n");
 
     // Cursor should be at col 0
     assert_eq!(editor.buffer().cursor().col(), 0);
@@ -104,7 +107,7 @@ fn test_dw_at_end_of_line() {
     assert!(line.starts_with("hello "));
     assert!(!line.contains("world"));
 
-    // Line 2 should still exist
+    // Line 2 should still exist (Vim semantics: 2 lines)
     assert_eq!(editor.buffer().line_count(), 2);
 }
 
@@ -160,8 +163,8 @@ fn test_d_at_end_of_line() {
     // Delete to end of line (deletes the 'd')
     press(&mut editor, KeyCode::Char('D'));
 
-    // Buffer should have "hello worl" (last char deleted)
-    assert_eq!(editor.buffer().line(0).unwrap(), "hello worl");
+    // Buffer should have "hello worl\n" (last char deleted, with trailing newline from normalization)
+    assert_eq!(editor.buffer().line(0).unwrap(), "hello worl\n");
 
     // Cursor should be clamped to the new last character
     assert_eq!(editor.buffer().cursor().col(), 9);
@@ -179,7 +182,11 @@ fn test_diw_deletes_word() {
 
     // "hello" should be deleted, leaving " world" or something similar
     let line = editor.buffer().line(0).unwrap();
-    assert!(!line.contains("hello"), "Expected 'hello' to be deleted, got: {}", line);
+    assert!(
+        !line.contains("hello"),
+        "Expected 'hello' to be deleted, got: {}",
+        line
+    );
 
     // Cursor should be at start of deletion
     assert_eq!(editor.buffer().cursor().line(), 0);

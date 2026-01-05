@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ovim": {
+      "args": [
+        "mcp-server",
+        "--workspace",
+        "/Users/adrian.helvik/.ovim-workspace"
+      ],
+      "command": "/Users/adrian.helvik/Personal/ovim/target/release/ovim",
+      "type": "stdio"
+    }
+  }
+}

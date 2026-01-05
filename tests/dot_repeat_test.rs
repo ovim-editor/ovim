@@ -9,8 +9,8 @@ use helpers::EditorTest;
 fn test_dot_repeat_delete_char() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete 'h'
-        .press('.');      // Repeat (delete 'e')
+    test.press('x') // Delete 'h'
+        .press('.'); // Repeat (delete 'e')
 
     assert_eq!(test.buffer_content(), "llo\n");
     test.assert_cursor(0, 0);
@@ -20,8 +20,8 @@ fn test_dot_repeat_delete_char() {
 fn test_dot_repeat_delete_word() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("dw")       // Delete "one "
-        .press('.');      // Repeat (delete "two ")
+    test.keys("dw") // Delete "one "
+        .press('.'); // Repeat (delete "two ")
 
     assert_eq!(test.buffer_content(), "three four\n");
     test.assert_cursor(0, 0);
@@ -31,8 +31,8 @@ fn test_dot_repeat_delete_word() {
 fn test_dot_repeat_delete_line() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.keys("dd")       // Delete line 1
-        .press('.');      // Repeat (delete line 2)
+    test.keys("dd") // Delete line 1
+        .press('.'); // Repeat (delete line 2)
 
     assert_eq!(test.buffer_content(), "line 3\nline 4\n");
     test.assert_cursor(0, 0);
@@ -45,11 +45,11 @@ fn test_dot_repeat_insert() {
     test.press('i')
         .type_text("PREFIX:")
         .press_esc()
-        .press('j')       // Next line
-        .press('.');      // Repeat insert
+        .press('j') // Next line
+        .press('.'); // Repeat insert
 
     assert_eq!(test.buffer_content(), "PREFIX:line 1\nline PREFIX:2\n");
-    test.assert_cursor(1, 12);
+    test.assert_cursor(1, 11);
 }
 
 #[test]
@@ -59,8 +59,8 @@ fn test_dot_repeat_append() {
     test.press('a')
         .type_text("!")
         .press_esc()
-        .press('j')       // Next line
-        .press('.');      // Repeat append
+        .press('j') // Next line
+        .press('.'); // Repeat append
 
     assert_eq!(test.buffer_content(), "h!ello\nw!orld\n");
     test.assert_cursor(1, 2);
@@ -70,25 +70,26 @@ fn test_dot_repeat_append() {
 fn test_dot_repeat_change_word() {
     let mut test = EditorTest::new("one two three");
 
-    test.keys("ciw")      // Change "one"
+    test.keys("ciw") // Change "one" to "X"
         .type_text("X")
         .press_esc()
-        .keys("w")        // Move to "two"
-        .press('.');      // Repeat change
+        .keys("w") // Move to "two"
+        .press('.'); // Repeat: change "two" to "X"
 
-    assert_eq!(test.buffer_content(), "Xtwo Xthree\n");
-    test.assert_cursor(0, 6);
+    // ciw changes only the word, not surrounding whitespace
+    assert_eq!(test.buffer_content(), "X X three\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
 fn test_dot_repeat_substitute() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('s')       // Substitute 'h'
+    test.press('s') // Substitute 'h'
         .type_text("H")
         .press_esc()
-        .keys("w")        // Move to 'w'
-        .press('.');      // Repeat substitute
+        .keys("w") // Move to 'w'
+        .press('.'); // Repeat substitute
 
     assert_eq!(test.buffer_content(), "Hello Hworld\n");
     test.assert_cursor(0, 7);
@@ -102,8 +103,8 @@ fn test_dot_repeat_substitute() {
 fn test_dot_with_count() {
     let mut test = EditorTest::new("abcdefgh");
 
-    test.press('x')       // Delete one char
-        .keys("3.");      // Repeat 3 times
+    test.press('x') // Delete one char
+        .keys("3."); // Repeat 3 times
 
     assert_eq!(test.buffer_content(), "cdefgh\n");
     test.assert_cursor(0, 0);
@@ -113,8 +114,8 @@ fn test_dot_with_count() {
 fn test_original_count_vs_repeat_count() {
     let mut test = EditorTest::new("one two three four five six");
 
-    test.keys("2dw")      // Delete 2 words
-        .press('.');      // Repeat (should delete 2 more words)
+    test.keys("2dw") // Delete 2 words
+        .press('.'); // Repeat (should delete 2 more words)
 
     assert_eq!(test.buffer_content(), "ur five six\n");
     test.assert_cursor(0, 0);
@@ -124,8 +125,8 @@ fn test_original_count_vs_repeat_count() {
 fn test_dot_override_original_count() {
     let mut test = EditorTest::new("one two three four five six");
 
-    test.keys("2dw")      // Delete 2 words
-        .keys("3.");      // Repeat with different count
+    test.keys("2dw") // Delete 2 words
+        .keys("3."); // Repeat with different count
 
     assert_eq!(test.buffer_content(), "ur five six\n");
     test.assert_cursor(0, 0);
@@ -135,10 +136,7 @@ fn test_dot_override_original_count() {
 fn test_dot_repeat_counted_insert() {
     let mut test = EditorTest::new("line");
 
-    test.press('i')
-        .type_text("X")
-        .press_esc()
-        .keys("3.");      // Repeat 3 times
+    test.press('i').type_text("X").press_esc().keys("3."); // Repeat 3 times
 
     assert_eq!(test.buffer_content(), "XXline\n");
     test.assert_cursor(0, 1);
@@ -152,24 +150,25 @@ fn test_dot_repeat_counted_insert() {
 fn test_dot_repeat_yank_then_change() {
     let mut test = EditorTest::new("one two three");
 
-    test.keys("yiw")      // Yank doesn't count as change
-        .keys("ciw")      // Change word
+    test.keys("yiw") // Yank doesn't count as change
+        .keys("ciw") // Change word "one" to "X"
         .type_text("X")
         .press_esc()
-        .keys("w")
-        .press('.');      // Should repeat change, not yank
+        .keys("w") // Move to "two"
+        .press('.'); // Should repeat change: ciw "X" on "two"
 
-    assert_eq!(test.buffer_content(), "Xtwo Xthree\n");
-    test.assert_cursor(0, 6);
+    // ciw preserves whitespace - "one" becomes "X", "two" becomes "X"
+    assert_eq!(test.buffer_content(), "X X three\n");
+    test.assert_cursor(0, 2);
 }
 
 #[test]
 fn test_dot_repeat_d_dollar() {
     let mut test = EditorTest::new("hello world\ntest case");
 
-    test.keys("d$")       // Delete to end of line
-        .press('j')       // Next line
-        .press('.');      // Repeat
+    test.keys("d$") // Delete to end of line
+        .press('j') // Next line
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "\n\n");
     test.assert_cursor(1, 0);
@@ -179,37 +178,37 @@ fn test_dot_repeat_d_dollar() {
 fn test_dot_repeat_c_dollar() {
     let mut test = EditorTest::new("hello world\ntest case");
 
-    test.keys("c$")       // Change to end
+    test.keys("c$") // Change to end
         .type_text("NEW")
         .press_esc()
         .press('j')
-        .press('.');      // Repeat
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "NEW\nteNEWst case\n");
-    test.assert_cursor(1, 5);
+    test.assert_cursor(1, 4);
 }
 
 #[test]
 fn test_dot_repeat_upper_case_X() {
     let mut test = EditorTest::new("hello");
 
-    test.keys("$")        // End
-        .press('X')       // Delete char before
-        .press('.');      // Repeat
+    test.keys("$") // End (cursor on 'o')
+        .press('X') // Delete char before cursor ('l'), leaving "helo", cursor on 'o'
+        .press('.'); // Repeat (delete char before cursor 'l'), leaving "heo", cursor on 'e'
 
-    assert_eq!(test.buffer_content(), "hello\n");
-    test.assert_cursor(0, 4);
+    assert_eq!(test.buffer_content(), "heo\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
 fn test_dot_repeat_J_join() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.press('J')       // Join line 1 and 2
-        .press('.');      // Repeat
+    test.press('J') // Join line 1 and 2
+        .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "line 1 line line 3\nline 4\n");
-    test.assert_cursor(0, 12);
+    assert_eq!(test.buffer_content(), "line 1 line 2 line 3\nline 4\n");
+    test.assert_cursor(0, 13);
 }
 
 // ============================================================================
@@ -220,20 +219,21 @@ fn test_dot_repeat_J_join() {
 fn test_dot_repeat_diw() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("diw")      // Delete inner word
-        .press('w')       // Move to next word
-        .press('.');      // Repeat
+    // Note: iw does NOT include trailing whitespace (that's aw)
+    test.keys("diw") // Delete "one" → " two three four" (cursor at 0)
+        .keys("w") // Move to next word "two" (cursor at 1)
+        .press('.'); // Repeat diw: delete "two" → "  three four"
 
-    assert_eq!(test.buffer_content(), "two e four\n");
-    test.assert_cursor(0, 4);
+    // Semantic repeat: re-evaluates inner word at cursor, deletes entire word
+    assert_eq!(test.buffer_content(), "  three four\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
 fn test_dot_repeat_daw() {
     let mut test = EditorTest::new("one two three four");
 
-    test.keys("daw")
-        .press('.');      // Repeat on next word
+    test.keys("daw").press('.'); // Repeat on next word
 
     assert_eq!(test.buffer_content(), "three four\n");
     test.assert_cursor(0, 0);
@@ -243,15 +243,16 @@ fn test_dot_repeat_daw() {
 fn test_dot_repeat_ci_quote() {
     let mut test = EditorTest::new(r#""hello" and "world""#);
 
-    test.keys("f\"")      // Find first quote
-        .keys("ci\"")     // Change inside quotes
+    test.keys("f\"") // Find first quote (opening quote of "hello")
+        .keys("ci\"") // Change inside quotes
         .type_text("X")
         .press_esc()
-        .keys("f\"")      // Find next quote
-        .press('.');      // Repeat
+        .keys("f\"") // Find next quote (closing quote of "X", not opening of "world"!)
+        .press('.'); // Repeat (finds same "X" pair, replaces X with X)
 
-    assert_eq!(test.buffer_content(), "\"hello\" and \"world\"\n");
-    test.assert_cursor(0, 12);
+    // In Vim: f" from inside "X" finds the closing quote of "X", so ci" operates on "X" again
+    assert_eq!(test.buffer_content(), "\"X\" and \"world\"\n");
+    test.assert_cursor(0, 1); // On the X after ci" repeat
 }
 
 #[test]
@@ -259,12 +260,12 @@ fn test_dot_repeat_di_paren() {
     let mut test = EditorTest::new("func(arg1) and func(arg2)");
 
     test.keys("f(")
-        .keys("di(")      // Delete inside parens
-        .keys("f(")       // Next parens
-        .press('.');      // Repeat
+        .keys("di(") // Delete inside parens
+        .keys("f(") // Next parens
+        .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "func(arg1) and func(arg2)\n");
-    test.assert_cursor(0, 4);
+    assert_eq!(test.buffer_content(), "func() and func()\n");
+    test.assert_cursor(0, 16); // On closing paren after deletion
 }
 
 // ============================================================================
@@ -276,12 +277,12 @@ fn test_dot_after_visual_delete() {
     let mut test = EditorTest::new("hello world test");
 
     test.press('v')
-        .keys("e")        // Select word
-        .press('d')       // Delete
-        .press('w')       // Move to next word
-        .press('.');      // Repeat (should work?)
+        .keys("e") // Select word
+        .press('d') // Delete
+        .press('w') // Move to next word
+        .press('.'); // Repeat (should work?)
 
-    assert_eq!(test.buffer_content(), " test\n");
+    assert_eq!(test.buffer_content(), "  test\n");
     test.assert_cursor(0, 1);
 }
 
@@ -290,12 +291,12 @@ fn test_dot_after_visual_change() {
     let mut test = EditorTest::new("one two three");
 
     test.press('v')
-        .keys("e")        // Select "one"
-        .press('c')       // Change
+        .keys("e") // Select "one"
+        .press('c') // Change
         .type_text("X")
         .press_esc()
         .press('w')
-        .press('.');      // Repeat
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "X Xtwo three\n");
     test.assert_cursor(0, 3);
@@ -305,9 +306,9 @@ fn test_dot_after_visual_change() {
 fn test_dot_after_visual_line_delete() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
-    test.press('V')       // Visual line
-        .press('d')       // Delete
-        .press('.');      // Repeat
+    test.press('V') // Visual line
+        .press('d') // Delete
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "line 3\nline 4\n");
     test.assert_cursor(0, 0);
@@ -321,9 +322,9 @@ fn test_dot_after_visual_line_delete() {
 fn test_dot_repeat_dw_different_positions() {
     let mut test = EditorTest::new("one two three four five");
 
-    test.keys("dw")       // Delete "one "
-        .keys("w")        // Move to "three"
-        .press('.');      // Delete "three "
+    test.keys("dw") // Delete "one "
+        .keys("w") // Move to "three"
+        .press('.'); // Delete "three "
 
     assert_eq!(test.buffer_content(), "two e four five\n");
     test.assert_cursor(0, 4);
@@ -331,16 +332,16 @@ fn test_dot_repeat_dw_different_positions() {
 
 #[test]
 fn test_dot_repeat_cw_at_different_word_lengths() {
-    let mut test = EditorTest::new("a really long short");
+    let mut test = EditorTest::new("short longerword");
 
-    test.keys("cw")       // Change "a"
+    test.keys("cw") // Change "short"
         .type_text("X")
         .press_esc()
-        .keys("w")        // Move to "really" (longer word)
-        .press('.');      // Repeat (should change "really")
+        .keys("w") // Move to "longerword"
+        .press('.'); // Repeat (should change "longerword")
 
-    assert_eq!(test.buffer_content(), "Xreally Xlong short\n");
-    test.assert_cursor(0, 9);
+    assert_eq!(test.buffer_content(), "X X\n");
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -351,7 +352,7 @@ fn test_dot_repeat_cw_at_different_word_lengths() {
 fn test_dot_without_previous_change() {
     let mut test = EditorTest::new("hello");
 
-    test.press('.');      // No previous change
+    test.press('.'); // No previous change
 
     assert_eq!(test.buffer_content(), "hello\n");
     test.assert_cursor(0, 0);
@@ -361,8 +362,8 @@ fn test_dot_without_previous_change() {
 fn test_dot_after_movement_only() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("w")        // Just move
-        .press('.');      // No change to repeat
+    test.keys("w") // Just move
+        .press('.'); // No change to repeat
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 6);
@@ -372,11 +373,11 @@ fn test_dot_after_movement_only() {
 fn test_dot_across_lines() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press('x')       // Delete char
-        .press('j')       // Next line
-        .press('.')       // Repeat
-        .press('j')       // Next line
-        .press('.');      // Repeat again
+    test.press('x') // Delete char
+        .press('j') // Next line
+        .press('.') // Repeat
+        .press('j') // Next line
+        .press('.'); // Repeat again
 
     assert_eq!(test.buffer_content(), "ello\norld\nest\n");
     test.assert_cursor(2, 0);
@@ -386,11 +387,11 @@ fn test_dot_across_lines() {
 fn test_dot_at_end_of_line() {
     let mut test = EditorTest::new("hello");
 
-    test.keys("$")        // End
-        .press('x')       // Delete last char
-        .press('.');      // Repeat (nothing to delete)
+    test.keys("$") // End
+        .press('x') // Delete last char
+        .press('.'); // Repeat (nothing to delete)
 
-    assert_eq!(test.buffer_content(), "hel \n");
+    assert_eq!(test.buffer_content(), "hel\n");
     test.assert_cursor(0, 3);
 }
 
@@ -398,10 +399,10 @@ fn test_dot_at_end_of_line() {
 fn test_dot_after_failed_operation() {
     let mut test = EditorTest::new("x");
 
-    test.press('x')       // Delete 'x'
-        .press('.');      // Try to repeat (nothing to delete)
+    test.press('x') // Delete 'x'
+        .press('.'); // Try to repeat (nothing to delete)
 
-    assert_eq!(test.buffer_content(), " \n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -413,39 +414,39 @@ fn test_dot_after_failed_operation() {
 fn test_dot_repeat_o_command() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('o')       // Open line below
+    test.press('o') // Open line below
         .type_text("new")
         .press_esc()
-        .press('j')       // Move down
-        .press('.');      // Repeat
+        .press('j') // Move down
+        .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "new\nlinewne 1\nline 2\n");
-    test.assert_cursor(1, 5);
+    assert_eq!(test.buffer_content(), "line 1\nnew\nline 2\nnew\n");
+    test.assert_cursor(3, 2);
 }
 
 #[test]
 fn test_dot_repeat_O_command() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('O')       // Open line above
+    test.press('O') // Open line above
         .type_text("new")
         .press_esc()
         .press('j')
-        .press('.');      // Repeat
+        .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "new\nlinewne 1\nline 2\n");
-    test.assert_cursor(1, 5);
+    assert_eq!(test.buffer_content(), "new\nnew\nline 1\nline 2\n");
+    test.assert_cursor(1, 2);
 }
 
 #[test]
 fn test_dot_repeat_A_command() {
     let mut test = EditorTest::new("hello\nworld");
 
-    test.press('A')       // Append at end
+    test.press('A') // Append at end
         .type_text("!")
         .press_esc()
         .press('j')
-        .press('.');      // Repeat
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "hello!\nworl!d\n");
     test.assert_cursor(1, 5);
@@ -455,14 +456,14 @@ fn test_dot_repeat_A_command() {
 fn test_dot_repeat_I_command() {
     let mut test = EditorTest::new("hello\nworld");
 
-    test.press('I')       // Insert at beginning
+    test.press('I') // Insert at beginning
         .type_text("START:")
         .press_esc()
         .press('j')
-        .press('.');      // Repeat
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "START:hello\nworlSTART:d\n");
-    test.assert_cursor(1, 10);
+    test.assert_cursor(1, 9);
 }
 
 // ============================================================================
@@ -473,27 +474,27 @@ fn test_dot_repeat_I_command() {
 fn test_dot_repeat_r_command() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('r')       // Replace char
+    test.press('r') // Replace char (h -> X)
         .press('X')
-        .press('l')       // Move right
-        .press('.');      // Repeat
+        .press('l') // Move right
+        .press('.'); // Repeat (e -> X)
 
-    assert_eq!(test.buffer_content(), "hello\nworld\n");
-    test.assert_cursor(1, 0);
+    assert_eq!(test.buffer_content(), "XXllo world\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
 fn test_dot_repeat_R_command() {
-    let mut test = EditorTest::new("hello\nworld");
+    let mut test = EditorTest::new("hello world");
 
-    test.press('R')       // Replace mode
+    test.press('R') // Replace mode (replaces "he" -> "HI")
         .type_text("HI")
         .press_esc()
-        .press('j')       // Next line
-        .press('.');      // Repeat
+        .press('w') // Move to "world"
+        .press('.'); // Repeat (replaces "wo" -> "HI")
 
-    assert_eq!(test.buffer_content(), "hello\nworld\n");
-    test.assert_cursor(1, 0);
+    assert_eq!(test.buffer_content(), "HIllo HIrld\n");
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -504,11 +505,11 @@ fn test_dot_repeat_R_command() {
 fn test_dot_repeat_multiple_times() {
     let mut test = EditorTest::new("abcdefghijkl");
 
-    test.press('x')       // Delete 'a'
-        .press('.')       // Delete 'b'
-        .press('.')       // Delete 'c'
-        .press('.')       // Delete 'd'
-        .press('.');      // Delete 'e'
+    test.press('x') // Delete 'a'
+        .press('.') // Delete 'b'
+        .press('.') // Delete 'c'
+        .press('.') // Delete 'd'
+        .press('.'); // Delete 'e'
 
     assert_eq!(test.buffer_content(), "fghijkl\n");
     test.assert_cursor(0, 0);
@@ -518,9 +519,9 @@ fn test_dot_repeat_multiple_times() {
 fn test_dot_changes_after_different_operation() {
     let mut test = EditorTest::new("one two three four");
 
-    test.press('x')       // Delete char
-        .keys("dw")       // Delete word (new change)
-        .press('.');      // Should repeat dw, not x
+    test.press('x') // Delete char
+        .keys("dw") // Delete word (new change)
+        .press('.'); // Should repeat dw, not x
 
     assert_eq!(test.buffer_content(), " three four\n");
     test.assert_cursor(0, 0);
@@ -530,9 +531,9 @@ fn test_dot_changes_after_different_operation() {
 fn test_dot_with_undo() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete
-        .press('u')       // Undo
-        .press('.');      // Repeat (should work)
+    test.press('x') // Delete
+        .press('u') // Undo
+        .press('.'); // Repeat (should work)
 
     assert_eq!(test.buffer_content(), "ello\n");
     test.assert_cursor(0, 0);
@@ -542,13 +543,13 @@ fn test_dot_with_undo() {
 fn test_dot_after_undo_redo() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x')       // Delete 'h'
-        .press('u')       // Undo
+    test.press('x') // Delete 'h'
+        .press('u') // Undo
         .press_with(
             crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL
-        )                 // Redo
-        .press('.');      // Repeat
+            crossterm::event::KeyModifiers::CONTROL,
+        ) // Redo
+        .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "llo\n");
     test.assert_cursor(0, 0);
@@ -562,9 +563,9 @@ fn test_dot_after_undo_redo() {
 fn test_dot_with_search_motion() {
     let mut test = EditorTest::new("hello world hello test");
 
-    test.keys("d/world")  // Delete to "world"
+    test.keys("d/world") // Delete to "world"
         .press_enter()
-        .press('.');      // Repeat (delete to next match?)
+        .press('.'); // Repeat (delete to next match?)
 
     assert_eq!(test.buffer_content(), "hello world hello test\n");
     test.assert_cursor(0, 6);
@@ -574,11 +575,17 @@ fn test_dot_with_search_motion() {
 fn test_dot_with_f_motion() {
     let mut test = EditorTest::new("a b c d e f");
 
-    test.keys("dfc")      // Delete to 'c'
-        .press('.');      // Repeat (delete to next 'c'?)
+    // dfc deletes from cursor to 'c' inclusive
+    // Starting at position 0, finds 'c' at position 4, deletes "a b c" (positions 0-4)
+    // Result: " d e f" (starting with space, which was after 'c')
+    test.keys("dfc"); // Delete to 'c'
+    assert_eq!(test.buffer_content(), " d e f\n");
+    test.assert_cursor(0, 0);
 
-    assert_eq!(test.buffer_content(), "a b c d e f\n");
-    test.assert_cursor(0, 4);
+    // . tries to repeat dfc, but there's no 'c' to find, so nothing happens
+    test.press('.');
+    assert_eq!(test.buffer_content(), " d e f\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -589,8 +596,8 @@ fn test_dot_with_f_motion() {
 fn test_dot_preserves_original_count() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4\nline 5");
 
-    test.keys("2dd")      // Delete 2 lines
-        .press('.');      // Should delete 2 more lines
+    test.keys("2dd") // Delete 2 lines
+        .press('.'); // Should delete 2 more lines
 
     assert_eq!(test.buffer_content(), "line 5\n");
     test.assert_cursor(0, 0);
@@ -604,23 +611,30 @@ fn test_dot_with_multichar_insert() {
         .type_text("LONG TEXT ")
         .press_esc()
         .press('j')
-        .press('.');      // Should insert same text
+        .press('.'); // Should insert same text
 
-    assert_eq!(test.buffer_content(), "LONG TEXT line 1\nline LONG TEXT 2\n");
-    test.assert_cursor(1, 15);
+    assert_eq!(
+        test.buffer_content(),
+        "LONG TEXT line 1\nline LONG TEXT 2\n"
+    );
+    test.assert_cursor(1, 14);
 }
 
 #[test]
 fn test_dot_repeat_complex_change() {
     let mut test = EditorTest::new("one two\nthree four\nfive six");
 
-    test.keys("ciw")      // Change word
+    test.keys("ciw") // Change "one" to "REPLACED"
         .type_text("REPLACED")
         .press_esc()
-        .press('j')       // Next line
-        .press('w')       // Second word
-        .press('.');      // Repeat change
+        .press('j') // Next line (cursor ends up on "four")
+        .press('w') // Move to next word (wraps to "five" on line 2)
+        .press('.'); // Repeat change: ciw "REPLACED" on "five"
 
-    assert_eq!(test.buffer_content(), "REPLACEDtwo\nthree four\nREPLACEDfive six\n");
-    test.assert_cursor(2, 8);
+    // ciw preserves surrounding whitespace
+    assert_eq!(
+        test.buffer_content(),
+        "REPLACED two\nthree four\nREPLACED six\n"
+    );
+    test.assert_cursor(2, 7);
 }

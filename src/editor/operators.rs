@@ -1,6 +1,15 @@
 use crate::buffer::Buffer;
 use anyhow::Result;
 
+// TODO: Grapheme cluster support needed throughout this file
+// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
+// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
+
+// TODO (Bug 5): Count of 0 handling inconsistency
+// Different operators handle count=0 differently. Some treat it as count=1 (e.g., dd with 0dd),
+// others ignore it. Vim's behavior varies by operator - standardizing this would require
+// careful testing against Vim to match expected behavior. Low priority - users rarely use count=0.
+
 /// Represents the different operators in Vim
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
@@ -9,10 +18,10 @@ pub enum Operator {
     Yank,
     Indent,
     Dedent,
+    AutoIndent,
     Lowercase,
     Uppercase,
     ToggleCase,
-    ReplaceWithRegister,
     Fold,
 }
 
@@ -104,7 +113,7 @@ impl Operators {
 
     /// Deletes a word forward from cursor
     pub fn delete_word(buffer: &mut Buffer, count: usize) -> Result<String> {
-        let start_cursor = buffer.cursor().clone();
+        let start_cursor = *buffer.cursor();
         let start_line = start_cursor.line();
         let start_col = start_cursor.col();
         let start_char = buffer.rope().line_to_char(start_line) + start_col;
@@ -160,8 +169,13 @@ impl Operators {
         // Adjust cursor if at end of line
         let new_line = buffer.line(line_idx).unwrap_or_default();
         let new_line_len = new_line.trim_end_matches('\n').chars().count();
-        if col >= new_line_len && new_line_len > 0 {
-            buffer.cursor_mut().set_col(new_line_len - 1);
+        if col >= new_line_len {
+            if new_line_len > 0 {
+                buffer.cursor_mut().set_col(new_line_len - 1);
+            } else {
+                // Line is now empty - cursor must be at column 0
+                buffer.cursor_mut().set_col(0);
+            }
         }
 
         Ok(deleted)
@@ -226,7 +240,7 @@ impl Operators {
 
     /// Yanks a word forward from cursor
     pub fn yank_word(buffer: &mut Buffer, count: usize) -> Result<String> {
-        let start_cursor = buffer.cursor().clone();
+        let start_cursor = *buffer.cursor();
         let start_line = start_cursor.line();
         let start_col = start_cursor.col();
         let start_char = buffer.rope().line_to_char(start_line) + start_col;
@@ -250,7 +264,12 @@ impl Operators {
 
     /// Indents line(s) by adding spaces/tabs at the beginning
     /// Returns the number of lines indented
-    pub fn indent_lines(buffer: &mut Buffer, start_line: usize, end_line: usize, tab_width: usize) -> Result<usize> {
+    pub fn indent_lines(
+        buffer: &mut Buffer,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+    ) -> Result<usize> {
         let indent_str = " ".repeat(tab_width);
         let mut lines_indented = 0;
 
@@ -265,7 +284,12 @@ impl Operators {
 
     /// Dedents line(s) by removing spaces/tabs from the beginning
     /// Returns the number of lines dedented
-    pub fn dedent_lines(buffer: &mut Buffer, start_line: usize, end_line: usize, tab_width: usize) -> Result<usize> {
+    pub fn dedent_lines(
+        buffer: &mut Buffer,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+    ) -> Result<usize> {
         let mut lines_dedented = 0;
 
         for line_idx in start_line..end_line.min(buffer.line_count()) {
@@ -297,6 +321,95 @@ impl Operators {
         Ok(lines_dedented)
     }
 
+    /// Auto-indents lines based on bracket context (= operator)
+    /// Returns the number of lines auto-indented
+    pub fn auto_indent_lines(
+        buffer: &mut Buffer,
+        start_line: usize,
+        end_line: usize,
+        tab_width: usize,
+    ) -> Result<usize> {
+        let end_line = end_line.min(buffer.line_count());
+        if start_line >= end_line {
+            return Ok(0);
+        }
+
+        // Determine base indent from the line before start_line (or 0 if first line)
+        let mut current_indent = if start_line > 0 {
+            if let Some(prev_line) = buffer.line(start_line - 1) {
+                let prev_text = prev_line.trim_end_matches('\n');
+                Self::count_leading_spaces(prev_text, tab_width)
+                    + if prev_text.trim_end().ends_with('{')
+                        || prev_text.trim_end().ends_with('(')
+                        || prev_text.trim_end().ends_with('[')
+                    {
+                        tab_width
+                    } else {
+                        0
+                    }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let mut lines_indented = 0;
+
+        for line_idx in start_line..end_line {
+            if let Some(line) = buffer.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let trimmed = line_text.trim_start();
+
+                // Decrease indent if line starts with closing bracket
+                if trimmed.starts_with('}')
+                    || trimmed.starts_with(')')
+                    || trimmed.starts_with(']')
+                {
+                    current_indent = current_indent.saturating_sub(tab_width);
+                }
+
+                // Calculate current leading spaces
+                let current_spaces = Self::count_leading_spaces(line_text, tab_width);
+
+                // Apply new indentation if different
+                if current_spaces != current_indent && !trimmed.is_empty() {
+                    // Remove existing indent
+                    let leading_len = line_text.len() - trimmed.len();
+                    if leading_len > 0 {
+                        buffer.delete_range(line_idx, 0, line_idx, leading_len);
+                    }
+                    // Add new indent
+                    if current_indent > 0 {
+                        let indent_str = " ".repeat(current_indent);
+                        buffer.insert_text_at(line_idx, 0, &indent_str);
+                    }
+                    lines_indented += 1;
+                }
+
+                // Increase indent if line ends with opening bracket
+                if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+                    current_indent += tab_width;
+                }
+            }
+        }
+
+        Ok(lines_indented)
+    }
+
+    /// Count leading spaces (tabs count as tab_width spaces)
+    fn count_leading_spaces(line: &str, tab_width: usize) -> usize {
+        let mut count = 0;
+        for ch in line.chars() {
+            match ch {
+                ' ' => count += 1,
+                '\t' => count += tab_width,
+                _ => break,
+            }
+        }
+        count
+    }
+
     /// Joins the current line with the next line (J command)
     /// Adds a space between the lines unless the current line already ends with whitespace
     pub fn join_lines(buffer: &mut Buffer, count: usize) -> Result<()> {
@@ -311,7 +424,6 @@ impl Operators {
     /// Internal implementation for joining lines
     fn join_lines_impl(buffer: &mut Buffer, count: usize, add_space: bool) -> Result<()> {
         let start_line = buffer.cursor().line();
-        let cursor_col = buffer.cursor().col();
 
         // Join 'count' times (count = 1 means join current with next)
         let lines_to_join = count.max(1);
@@ -362,9 +474,10 @@ impl Operators {
             // Insert the joined line with newline
             buffer.insert_text_at(start_line, 0, &format!("{}\n", joined));
 
-            // Keep cursor at the original line, but clamp column
-            let new_col = cursor_col.min(joined.len().saturating_sub(1).max(0));
-            buffer.cursor_mut().set_position(start_line, new_col);
+            // Fix: Position cursor at the junction point (end of original first line)
+            // This is where the separator (space) was inserted
+            let junction_col = current_line_text.len();
+            buffer.cursor_mut().set_position(start_line, junction_col);
         }
 
         Ok(())

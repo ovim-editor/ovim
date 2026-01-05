@@ -67,10 +67,7 @@ impl QuickfixEntry {
         };
 
         let file_part = if let Some(ref path) = self.filename {
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             format!("{}:{}:{}", filename, self.lnum, self.col)
         } else {
             "".to_string()

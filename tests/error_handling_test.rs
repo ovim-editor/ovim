@@ -44,8 +44,8 @@ fn test_lsp_invalid_response() {
 }
 
 /// Test file not found error handling
-#[test]
-fn test_file_not_found_error() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_file_not_found_error() {
     let mut test = EditorTest::new("test\n");
 
     test.keys(":e /nonexistent/file.txt");
@@ -56,8 +56,8 @@ fn test_file_not_found_error() {
 }
 
 /// Test write to read-only file
-#[test]
-fn test_write_readonly_error() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_write_readonly_error() {
     let mut test = EditorTest::new("test\n");
     test.set_file_path("/root/readonly.txt".to_string());
 

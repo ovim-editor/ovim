@@ -36,7 +36,7 @@ impl LuaContext {
     }
 
     /// Executes Lua code string
-    pub fn execute(&self, code: &str) -> Result<Value> {
+    pub fn execute(&self, code: &str) -> Result<Value<'_>> {
         let result = self.lua.load(code).eval()?;
         Ok(result)
     }
@@ -51,7 +51,10 @@ impl LuaContext {
     pub fn execute_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path = path.as_ref();
         let code = std::fs::read_to_string(path)?;
-        self.lua.load(&code).set_name(path.to_string_lossy().as_ref()).exec()?;
+        self.lua
+            .load(&code)
+            .set_name(path.to_string_lossy().as_ref())
+            .exec()?;
         Ok(())
     }
 
@@ -120,8 +123,82 @@ impl LuaContext {
         Ok(())
     }
 
+    /// Loads plugins from plugin directories
+    pub fn load_plugins(&mut self) -> Result<()> {
+        let plugin_paths = Self::get_plugin_paths();
+
+        for plugin_dir in plugin_paths {
+            if !plugin_dir.exists() {
+                continue;
+            }
+
+            // Iterate through directories in plugin path
+            if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
+                for entry in entries.flatten() {
+                    if let Ok(file_type) = entry.file_type() {
+                        if file_type.is_dir() {
+                            // Try to load init.lua from plugin directory
+                            let mut init_path = entry.path();
+                            init_path.push("init.lua");
+
+                            if init_path.exists() {
+                                // Load the plugin, log errors but continue
+                                if let Err(e) = self.execute_file(&init_path) {
+                                    crate::log_error!("lua", "Failed to load plugin {:?}: {}", entry.path(), e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Gets the list of plugin directories
+    fn get_plugin_paths() -> Vec<std::path::PathBuf> {
+        let mut paths = Vec::new();
+
+        // $OVIM_CONFIG/plugins
+        if let Ok(ovim_config) = std::env::var("OVIM_CONFIG") {
+            let mut path = std::path::PathBuf::from(ovim_config);
+            path.push("plugins");
+            paths.push(path);
+        }
+
+        // $XDG_CONFIG_HOME/ovim/plugins
+        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
+            let mut path = std::path::PathBuf::from(xdg_config);
+            path.push("ovim");
+            path.push("plugins");
+            paths.push(path);
+        }
+
+        // ~/.config/ovim/plugins
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut path = std::path::PathBuf::from(&home);
+            path.push(".config");
+            path.push("ovim");
+            path.push("plugins");
+            paths.push(path);
+
+            // ~/.ovim/plugins
+            let mut alt_path = std::path::PathBuf::from(&home);
+            alt_path.push(".ovim");
+            alt_path.push("plugins");
+            paths.push(alt_path);
+        }
+
+        paths
+    }
+
     /// Sets a global variable in Lua
-    pub fn set_global<'lua, V: mlua::IntoLua<'lua>>(&'lua self, name: &str, value: V) -> Result<()> {
+    pub fn set_global<'lua, V: mlua::IntoLua<'lua>>(
+        &'lua self,
+        name: &str,
+        value: V,
+    ) -> Result<()> {
         self.lua.globals().set(name, value)?;
         Ok(())
     }

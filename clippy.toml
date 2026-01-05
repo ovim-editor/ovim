@@ -1,0 +1,6 @@
+# Clippy configuration for ovim
+# This enforces TUI-safe coding practices
+
+# Ban println! and eprintln! in source code (not tests)
+# These will corrupt the TUI display
+# Use log_info!, log_warn!, log_error!, log_debug! instead

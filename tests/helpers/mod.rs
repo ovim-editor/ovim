@@ -1,6 +1,13 @@
+mod viewport_assertions;
+pub mod test_session;
+
+#[allow(unused_imports)]
+pub use viewport_assertions::ViewportAssertion;
+pub use test_session::TestSession;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Test helper that provides a fluent API for driving editor operations
 /// and capturing snapshots of editor state
@@ -66,10 +73,66 @@ impl EditorTest {
     }
 
     /// Execute a sequence of vim keys (simple parser for common operations)
-    /// Examples: "gg", "dd", "yy", "3j", "dw", "ciw"
+    /// Examples: "gg", "dd", "yy", "3j", "dw", "ciw", "<C-a>", "<C-x>"
     pub fn keys(&mut self, keys: &str) -> &mut Self {
-        for c in keys.chars() {
-            self.press(c);
+        let mut chars = keys.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '<' {
+                // Look ahead to see if this is a special key notation
+                // Peek through the characters to find either '>' or determine it's not a special key
+                let mut lookahead = vec![];
+                let mut found_close = false;
+
+                // Collect characters until we find '>' or run out
+                while let Some(&next_c) = chars.peek() {
+                    lookahead.push(next_c);
+                    chars.next(); // consume it
+                    if next_c == '>' {
+                        found_close = true;
+                        break;
+                    }
+                }
+
+                // If we found a closing '>' and have content, it's a special key
+                if found_close && lookahead.len() > 1 {
+                    let special_key: String = lookahead.iter().take(lookahead.len() - 1).collect();
+                    // Handle the special key
+                    match special_key.as_str() {
+                        "Esc" => self.press_esc(),
+                        "Enter" => self.press_enter(),
+                        "Tab" => self.press_key(KeyCode::Tab),
+                        "BS" | "Backspace" => self.press_backspace(),
+                        "Space" => self.press(' '),
+                        // Generic Ctrl+key support
+                        key if key.starts_with("C-") => {
+                            let char_part = &key[2..];
+                            if char_part.len() == 1 {
+                                let c = char_part.chars().next().unwrap().to_ascii_lowercase();
+                                self.press_with(KeyCode::Char(c), KeyModifiers::CONTROL)
+                            } else {
+                                match char_part {
+                                    "[" => self.press_with(KeyCode::Char('['), KeyModifiers::CONTROL),
+                                    "]" => self.press_with(KeyCode::Char(']'), KeyModifiers::CONTROL),
+                                    "^" => self.press_with(KeyCode::Char('^'), KeyModifiers::CONTROL),
+                                    " " => self.press_with(KeyCode::Char(' '), KeyModifiers::CONTROL),
+                                    _ => panic!("Unknown Ctrl key: <{}>", special_key),
+                                }
+                            }
+                        }
+                        _ => panic!("Unknown special key: <{}>", special_key),
+                    };
+                } else {
+                    // Not a special key - press '<' and put back what we consumed
+                    self.press('<');
+                    for ch in lookahead {
+                        if ch != '>' {  // Don't put back the '>' if we found one for empty special key
+                            self.press(ch);
+                        }
+                    }
+                }
+            } else {
+                self.press(c);
+            }
         }
         self
     }
@@ -104,7 +167,10 @@ impl EditorTest {
                     // Show cursor position with a marker
                     let before = line_display.chars().take(cursor.col()).collect::<String>();
                     let at_cursor = line_display.chars().nth(cursor.col()).unwrap_or(' ');
-                    let after = line_display.chars().skip(cursor.col() + 1).collect::<String>();
+                    let after = line_display
+                        .chars()
+                        .skip(cursor.col() + 1)
+                        .collect::<String>();
                     lines.push(format!("{}[{}]{}", before, at_cursor, after));
                 } else {
                     lines.push(line_display.to_string());
@@ -145,7 +211,10 @@ impl EditorTest {
             (cursor.line(), cursor.col()),
             (line, col),
             "Expected cursor at {}:{}, got {}:{}",
-            line, col, cursor.line(), cursor.col()
+            line,
+            col,
+            cursor.line(),
+            cursor.col()
         );
     }
 
@@ -173,15 +242,11 @@ impl EditorTest {
 
     /// Assert specific line content
     pub fn assert_line(&self, line_idx: usize, expected: &str) {
-        let actual = self.editor.buffer().line(line_idx)
-            .unwrap_or_default();
+        let actual = self.editor.buffer().line(line_idx).unwrap_or_default();
         assert_eq!(
-            actual,
-            expected,
+            actual, expected,
             "Line {} mismatch:\nExpected: {:?}\nGot: {:?}",
-            line_idx,
-            expected,
-            actual
+            line_idx, expected, actual
         );
     }
 
@@ -206,6 +271,68 @@ impl EditorTest {
         (c.line(), c.col())
     }
 
+    /// Set cursor position directly
+    /// This is useful for setting up test scenarios where you need the cursor
+    /// at a specific location before executing commands.
+    pub fn set_cursor(&mut self, line: usize, col: usize) -> &mut Self {
+        self.editor.buffer_mut().cursor_mut().set_position(line, col);
+        self
+    }
+
+    /// Get the visual selection range if in visual mode
+    /// Returns Some(((start_line, start_col), (end_line, end_col))) if visual mode is active
+    /// Returns None if not in visual mode
+    ///
+    /// The range is normalized so start is always before end (sorted by line then col).
+    pub fn get_visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.editor.visual_start().map(|start| {
+            let cursor = self.cursor();
+            // Normalize the range so start <= end
+            if start.0 < cursor.0 || (start.0 == cursor.0 && start.1 <= cursor.1) {
+                (start, cursor)
+            } else {
+                (cursor, start)
+            }
+        })
+    }
+
+    /// Get content from a specific register
+    /// Returns None if the register is empty or doesn't exist
+    ///
+    /// This is particularly useful for testing yank/delete operations where you want
+    /// to verify that text was correctly stored in registers.
+    pub fn get_register_content(&self, register: char) -> Option<String> {
+        let content = self.editor.registers().get(Some(register));
+        if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        }
+    }
+
+    /// Set buffer content, replacing the entire buffer
+    /// This is an alternative to using `new(content)` when you want to change
+    /// the buffer content after the EditorTest has already been created.
+    pub fn set_buffer_content(&mut self, content: &str) -> &mut Self {
+        let buffer = self.editor.buffer_mut();
+
+        // Delete all existing content (from first line, col 0 to last line end)
+        let line_count = buffer.line_count();
+        if line_count > 0 {
+            let last_line = line_count - 1;
+            let last_col = buffer.line_len(last_line);
+            buffer.delete_range(0, 0, last_line, last_col);
+        }
+
+        // Insert new content at the beginning
+        buffer.insert_text_at(0, 0, content);
+
+        // Reset cursor to start
+        buffer.cursor_mut().set_position(0, 0);
+
+        self
+    }
+
     /// Load a file into the editor
     pub fn load_file(&mut self, path: &str) -> &mut Self {
         let _ = self.editor.load_file(path);
@@ -227,6 +354,7 @@ mod tests {
     fn test_editor_test_basic() {
         let mut test = EditorTest::new("hello\nworld");
 
+        // Vim semantics: "hello\nworld" becomes "hello\nworld\n" internally, displayed as 2 lines
         test.assert_line_count(2);
         test.assert_cursor(0, 0);
         test.assert_mode(Mode::Normal);
@@ -239,9 +367,7 @@ mod tests {
     fn test_fluent_api() {
         let mut test = EditorTest::new("test");
 
-        test.press('i')
-            .type_text("hello ")
-            .press_esc();
+        test.press('i').type_text("hello ").press_esc();
 
         assert!(test.buffer_content().contains("hello"));
     }

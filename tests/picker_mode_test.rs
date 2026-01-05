@@ -1,6 +1,6 @@
 mod helpers;
-use helpers::EditorTest;
 use crossterm::event::{KeyCode, KeyModifiers};
+use helpers::EditorTest;
 use ovim::mode::Mode;
 
 // ============================================================================

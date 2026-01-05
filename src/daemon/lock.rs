@@ -68,8 +68,10 @@ async fn acquire_lock_with_timeout(lock_path: &Path, timeout: Duration) -> Resul
         match try_acquire_lock(lock_path).await {
             Ok(file) => return Ok(file),
 
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
                 // Lock held by another process (AlreadyExists from O_CREAT|O_EXCL)
 
                 if start.elapsed() > timeout {
@@ -84,7 +86,10 @@ async fn acquire_lock_with_timeout(lock_path: &Path, timeout: Duration) -> Resul
 
                     // Try one more time
                     return try_acquire_lock(lock_path).await.with_context(|| {
-                        format!("Failed to acquire lock after breaking: {}", lock_path.display())
+                        format!(
+                            "Failed to acquire lock after breaking: {}",
+                            lock_path.display()
+                        )
                     });
                 }
 
@@ -125,7 +130,10 @@ async fn try_acquire_lock(lock_path: &Path) -> std::io::Result<File> {
 
 /// Force break a stale lock
 async fn force_break_lock(lock_path: &Path) -> Result<()> {
-    eprintln!("[daemon] Warning: Force breaking lock: {}", lock_path.display());
+    eprintln!(
+        "[daemon] Warning: Force breaking lock: {}",
+        lock_path.display()
+    );
 
     // Remove the lock file
     if let Err(e) = tokio::fs::remove_file(lock_path).await {
@@ -265,8 +273,6 @@ mod tests {
         }
 
         // Cleanup
-        tokio::fs::remove_dir_all(temp_dir.as_ref())
-            .await
-            .unwrap();
+        tokio::fs::remove_dir_all(temp_dir.as_ref()).await.unwrap();
     }
 }

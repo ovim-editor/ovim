@@ -1,5 +1,8 @@
 #!/usr/bin/env zsh
 
+# TODO: This is deprecated and should be removed in favor of ovim-ctl.
+#       It is used in some ad-hoc tests that must be updated first.
+
 # send-cmd - Thin curl wrapper for ovim REST API
 # Usage:
 #   ./send-cmd <port> keys "gg"

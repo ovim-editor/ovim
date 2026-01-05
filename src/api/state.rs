@@ -12,10 +12,13 @@ pub enum ApiRequest {
     SetBuffer(String, oneshot::Sender<ApiResponse>),
     GetCursor(oneshot::Sender<ApiResponse>),
     GetMode(oneshot::Sender<ApiResponse>),
+    SetMode(String, oneshot::Sender<ApiResponse>),
     ExecuteCommand(String, oneshot::Sender<ApiResponse>),
     GetRender(oneshot::Sender<ApiResponse>),
     GetLspStatus(oneshot::Sender<ApiResponse>),
     GetHealth(oneshot::Sender<ApiResponse>),
+    GetMetrics(oneshot::Sender<ApiResponse>),
+    GetContextWindow(oneshot::Sender<ApiResponse>),
 }
 
 /// Response types that can be returned from the editor
@@ -29,12 +32,25 @@ pub enum ApiResponse {
     Render(RenderInfo),
     LspStatus(LspStatusInfo),
     Health(HealthInfo),
+    Metrics(MetricsInfo),
+    ContextWindow(ContextWindowInfo),
+    SendKeysResult(SendKeysResult),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
 
+/// Result of send_keys operation with context window
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendKeysResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Context window showing result of key operation
+    pub context: ContextWindowInfo,
+}
+
 /// Complete snapshot of editor state
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorSnapshot {
     pub buffer: BufferInfo,
     pub cursor: CursorPosition,
@@ -49,7 +65,7 @@ pub struct EditorSnapshot {
 }
 
 /// Picker state information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PickerInfo {
     pub mode: String,
     pub query: String,
@@ -58,7 +74,7 @@ pub struct PickerInfo {
 }
 
 /// Picker result information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PickerResultInfo {
     pub display: String,
     pub location: String,
@@ -67,7 +83,7 @@ pub struct PickerResultInfo {
 }
 
 /// Buffer information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BufferInfo {
     pub content: String,
     pub line_count: usize,
@@ -75,20 +91,20 @@ pub struct BufferInfo {
 }
 
 /// Cursor position
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CursorPosition {
     pub line: usize,
     pub column: usize,
 }
 
 /// Mode information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ModeInfo {
     pub mode: String,
 }
 
 /// Rendered output with ANSI codes
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct RenderInfo {
     pub width: u16,
     pub height: u16,
@@ -96,13 +112,15 @@ pub struct RenderInfo {
 }
 
 /// LSP status information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspStatusInfo {
     pub servers: Vec<LspServerInfoItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<String>,
 }
 
 /// Information about a single LSP server
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspServerInfoItem {
     pub language: String,
     pub command: String,
@@ -112,7 +130,7 @@ pub struct LspServerInfoItem {
 }
 
 /// Health check information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthInfo {
     pub status: String,
     pub uptime_seconds: u64,
@@ -121,8 +139,46 @@ pub struct HealthInfo {
     pub ready: bool,
 }
 
-/// Visual selection range
+/// Performance metrics information
 #[derive(Debug, Clone, Serialize)]
+pub struct MetricsInfo {
+    pub buffer_line_count: usize,
+    pub buffer_byte_size: usize,
+    pub syntax_enabled: bool,
+    pub is_large_file: bool,
+    pub render_count: u64,
+    pub last_render_duration_micros: Option<u64>,
+    pub last_syntax_duration_micros: Option<u64>,
+    pub memory_usage_mb: f64,
+    // Input latency percentiles (microseconds)
+    pub input_latency_p50_micros: Option<u64>,
+    pub input_latency_p95_micros: Option<u64>,
+    pub input_latency_p99_micros: Option<u64>,
+    pub input_latency_samples: usize,
+    // Operation timings (microseconds)
+    pub last_lsp_serialize_micros: Option<u64>,
+    pub last_git_status_micros: Option<u64>,
+    pub last_fold_calc_micros: Option<u64>,
+    pub last_diagnostic_query_micros: Option<u64>,
+}
+
+/// Context window information (21-line view around cursor)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextWindowInfo {
+    /// Formatted context window with line numbers and cursor markers
+    pub context: String,
+    /// Current file name or path
+    pub file: Option<String>,
+    /// Current mode (NORMAL, INSERT, etc)
+    pub mode: String,
+    /// Current cursor line (0-indexed)
+    pub line: usize,
+    /// Current cursor column (0-indexed)
+    pub column: usize,
+}
+
+/// Visual selection range
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualSelection {
     pub start: CursorPosition,
     pub end: CursorPosition,
@@ -157,7 +213,18 @@ impl ApiState {
 }
 
 /// Parse a key string into KeyEvent
-pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
+/// Maximum allowed length for key string input to prevent DoS
+const MAX_KEY_STRING_LENGTH: usize = 1024;
+
+pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
+    // First, validate input length
+    if s.len() > MAX_KEY_STRING_LENGTH {
+        return Err(format!(
+            "Key string too long. Max length is {} characters",
+            MAX_KEY_STRING_LENGTH
+        ));
+    }
+
     let mut events = Vec::new();
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
@@ -165,11 +232,52 @@ pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
     while i < chars.len() {
         let c = chars[i];
 
-        // Handle special keys
+        // Handle escape sequences: \e, \c, \n, \\
+        if c == '\\' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            match next {
+                'e' => {
+                    // \e = Escape
+                    events.push(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    i += 2;
+                    continue;
+                }
+                'c' => {
+                    // \c = Ctrl+C
+                    events.push(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+                    i += 2;
+                    continue;
+                }
+                'n' => {
+                    // \n = Enter/newline
+                    events.push(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    i += 2;
+                    continue;
+                }
+                '\\' => {
+                    // \\ = Literal backslash
+                    events.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    // Not a recognized escape sequence, treat backslash as literal
+                    events.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        // Handle special keys with <> notation
         if c == '<' {
             // Find the closing >
             if let Some(end) = s[i..].find('>') {
-                let key_name = &s[i+1..i+end];
+                let key_name = &s[i + 1..i + end];
+                // Additional length check for special key names
+                if key_name.len() > 32 {
+                    return Err("Special key name too long".to_string());
+                }
                 if let Some(event) = parse_special_key(key_name) {
                     events.push(event);
                     i += end + 1;
@@ -183,7 +291,7 @@ pub fn parse_key_string(s: &str) -> Vec<KeyEvent> {
         i += 1;
     }
 
-    events
+    Ok(events)
 }
 
 /// Parse special key names like "CR", "Esc", "C-w"
@@ -207,4 +315,77 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
         "Right" => Some(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
         _ => None,
     }
+}
+
+/// Format a 21-line context window around the cursor
+///
+/// Shows 10 lines above, current line (with >> marker), and 10 lines below
+/// Includes line numbers, cursor position indicator (^), and truncates long lines
+pub fn format_context_window(
+    buffer_content: &str,
+    cursor_line: usize,
+    cursor_column: usize,
+    file_path: Option<&str>,
+    mode: &str,
+) -> String {
+    let lines: Vec<&str> = buffer_content.lines().collect();
+    let total_lines = lines.len();
+
+    // Calculate visible range: 10 lines above, current, 10 below
+    let start_line = cursor_line.saturating_sub(10);
+    let end_line = (cursor_line + 11).min(total_lines);
+
+    // Determine max line number width for padding
+    let max_line_num = (total_lines - 1).max(cursor_line);
+    let line_num_width = max_line_num.to_string().len();
+
+    // Build header
+    let file_display = file_path
+        .and_then(|p| p.split('/').next_back())
+        .unwrap_or("unnamed");
+    let header = format!(
+        "[ovim: {} | {} | L{}:C{}]",
+        file_display, mode, cursor_line + 1, cursor_column + 1
+    );
+
+    let mut result = String::new();
+    result.push_str(&header);
+    result.push('\n');
+
+    // Show context lines
+    for line_idx in start_line..end_line {
+        let is_current = line_idx == cursor_line;
+        let marker = if is_current { ">>" } else { "  " };
+
+        // Line number
+        let line_num_str = format!("{:width$}", line_idx + 1, width = line_num_width);
+        result.push_str(&format!("{} {} | ", marker, line_num_str));
+
+        // Line content with truncation
+        let line = if line_idx < lines.len() {
+            let content = lines[line_idx];
+            if content.len() > 80 {
+                format!("{}...", &content[..77])
+            } else {
+                content.to_string()
+            }
+        } else {
+            String::new()
+        };
+        result.push_str(&line);
+        result.push('\n');
+
+        // Add cursor indicator for current line
+        if is_current && cursor_column <= lines[line_idx].len() {
+            let spaces = " ".repeat(marker.len() + 1 + line_num_width + 3 + cursor_column);
+            result.push_str(&format!("{}{}\n", spaces, "^"));
+        }
+    }
+
+    // Add FILE END marker if we're showing the end
+    if end_line >= total_lines && total_lines > 0 {
+        result.push_str("FILE END\n");
+    }
+
+    result
 }

@@ -211,8 +211,9 @@ fn test_dw_at_end_of_line() {
     test.keys("w") // Move to "world"
         .keys("dw"); // Delete "world"
 
-    assert_eq!(test.buffer_content(), "hello d\n");
-    test.assert_cursor(0, 6);
+    // After deleting "world", only "hello " remains (with trailing newline from normalization)
+    assert_eq!(test.buffer_content(), "hello \n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -221,7 +222,8 @@ fn test_dw_last_word_no_newline() {
 
     test.keys("dw"); // Delete only word
 
-    assert_eq!(test.buffer_content(), "o\n");
+    // After deleting "hello", buffer is empty (just trailing newline from normalization)
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -357,9 +359,10 @@ fn test_diw_basic() {
     let mut test = EditorTest::new("hello world test");
 
     test.keys("w") // Move to "world"
-        .keys("diw"); // Delete inner word
+        .keys("diw"); // Delete inner word (does NOT include trailing space)
 
-    assert_eq!(test.buffer_content(), "hello test\n");
+    // diw only deletes "world", leaving "hello " + " test" = "hello  test"
+    assert_eq!(test.buffer_content(), "hello  test\n");
     test.assert_cursor(0, 6);
 }
 
@@ -378,9 +381,9 @@ fn test_daw_basic() {
 fn test_diw_single_char() {
     let mut test = EditorTest::new("a b c");
 
-    test.keys("diw"); // Delete "a"
+    test.keys("diw"); // Delete "a" only (iw doesn't include trailing space)
 
-    assert_eq!(test.buffer_content(), "b c\n");
+    assert_eq!(test.buffer_content(), " b c\n");
     test.assert_cursor(0, 0);
 }
 
@@ -415,8 +418,9 @@ fn test_d3l_delete_3_chars_right() {
 
     test.keys("d3l"); // Delete 3 chars to the right
 
-    assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 3);
+    // d3l deletes 3 characters starting from cursor: "hel" → "lo world"
+    assert_eq!(test.buffer_content(), "lo world\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -516,10 +520,11 @@ fn test_d_percent_curly_braces() {
     let mut test = EditorTest::new("fn test() {\n    code here\n}");
 
     test.keys("10l") // Move to opening brace
-        .keys("d%"); // Delete from { to }
+        .keys("d%"); // Delete from { to } (inclusive, multiline)
 
-    assert_eq!(test.buffer_content(), "fn test() {\n    code here\n}\n");
-    test.assert_cursor(0, 1);
+    // d% deletes from { to matching } inclusive
+    assert_eq!(test.buffer_content(), "fn test() \n");
+    test.assert_cursor(0, 9);
 }
 
 #[test]

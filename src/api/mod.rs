@@ -1,12 +1,61 @@
 mod handlers;
+pub mod mcp;
+mod mcp_handler;
 mod routes;
 mod state;
 
+pub use mcp::{JsonRpcRequest, JsonRpcResponse, get_tools, get_resources};
 pub use routes::create_router;
-pub use state::{ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition, EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection, parse_key_string};
+pub use state::{
+    parse_key_string, format_context_window, ApiRequest, ApiResponse, ApiState, BufferInfo, ContextWindowInfo, CursorPosition,
+    EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, MetricsInfo,
+    ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SendKeysResult, SuccessResponse, VisualSelection,
+};
 
 use anyhow::Result;
+use axum::{
+    middleware::{self, Next},
+    response::Response,
+    http::Request,
+};
 use tokio::sync::mpsc;
+
+/// Middleware to add deprecation warning for unversioned API routes
+async fn deprecation_middleware(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+
+    // Check if this is an unversioned route (not starting with /v1, /v2, etc.)
+    let is_unversioned = !path.starts_with("/v1") &&
+                         !path.starts_with("/v2") &&
+                         path != "/" &&
+                         path != "/favicon.ico";
+
+    let mut response = next.run(req).await;
+
+    if is_unversioned {
+        // Add deprecation header
+        if let Ok(header_value) = "Unversioned API paths are deprecated. Use /v1/* instead.".parse() {
+            response.headers_mut().insert(
+                "X-API-Deprecation",
+                header_value
+            );
+        }
+
+        // Add Sunset header (API sunset date - 6 months from now)
+        // Note: This is a static date and should be updated periodically
+        if let Ok(header_value) = "Wed, 01 Jul 2026 00:00:00 GMT".parse() {
+            response.headers_mut().insert(
+                "Sunset",
+                header_value
+            );
+        }
+    }
+
+    response
+}
 
 /// Start the API server on the given address
 /// Returns the actual port number the server is listening on
@@ -16,13 +65,14 @@ pub async fn start_server(
     port_tx: tokio::sync::oneshot::Sender<u16>,
 ) -> Result<()> {
     let state = ApiState::new(tx);
-    let app = create_router(state);
+    let app = create_router(state)
+        .layer(middleware::from_fn(deprecation_middleware));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let actual_addr = listener.local_addr()?;
 
-    eprintln!("REST API server listening on http://{}", actual_addr);
-    eprintln!("API URL: http://{}", actual_addr);
+    // Log to LSP log file instead of stderr to avoid garbling TUI output
+    crate::lsp_info!("API", "REST API server listening on http://{}", actual_addr);
 
     // Send the actual port back
     let _ = port_tx.send(actual_addr.port());

@@ -1,7 +1,7 @@
-use super::theme::HighlightGroup;
 use super::languages::{Language, LanguageRegistry};
-use tree_sitter::{Parser, Tree, Query, QueryCursor};
+use super::theme::HighlightGroup;
 use std::ops::Range;
+use tree_sitter::{Parser, Query, QueryCursor, Tree};
 
 /// Syntax highlighter using tree-sitter
 pub struct SyntaxHighlighter {
@@ -19,13 +19,18 @@ impl SyntaxHighlighter {
         let query_source = LanguageRegistry::get_highlight_query(language);
 
         let mut parser = Parser::new();
-        parser.set_language(&ts_language)
+        parser
+            .set_language(&ts_language)
             .map_err(|e| format!("Failed to set language: {}", e))?;
 
         let query = Query::new(&ts_language, query_source)
             .map_err(|e| format!("Failed to create query: {}", e))?;
 
-        let capture_names = query.capture_names().iter().map(|s| s.to_string()).collect();
+        let capture_names = query
+            .capture_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         Ok(Self {
             language,
@@ -53,13 +58,17 @@ impl SyntaxHighlighter {
 
     /// Gets highlights for all lines at once (more efficient than per-line)
     /// This queries the syntax tree ONCE and distributes highlights to lines
-    pub fn highlights_for_all_lines(&self, source: &str) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+    pub fn highlights_for_all_lines(
+        &self,
+        source: &str,
+    ) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
         let Some(ref tree) = self.tree else {
             return Vec::new();
         };
 
         let lines: Vec<&str> = source.lines().collect();
-        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> = vec![Vec::new(); lines.len()];
+        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> =
+            vec![Vec::new(); lines.len()];
 
         // Calculate line byte offsets once
         let mut line_start_bytes = Vec::with_capacity(lines.len());
@@ -71,11 +80,7 @@ impl SyntaxHighlighter {
 
         // Query the tree ONCE for all matches
         let mut cursor = QueryCursor::new();
-        let matches = cursor.matches(
-            &self.query,
-            tree.root_node(),
-            source.as_bytes(),
-        );
+        let matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
         // Distribute captures to lines in a single pass
         for m in matches {
@@ -99,17 +104,8 @@ impl SyntaxHighlighter {
                     // Check if this capture overlaps with this line
                     if start_byte < line_end_byte && end_byte > line_start_byte {
                         // Convert to column range relative to line start
-                        let col_start = if start_byte >= line_start_byte {
-                            start_byte - line_start_byte
-                        } else {
-                            0
-                        };
-
-                        let col_end = if end_byte <= line_end_byte {
-                            end_byte - line_start_byte
-                        } else {
-                            line_end_byte - line_start_byte
-                        };
+                        let col_start = start_byte.saturating_sub(line_start_byte);
+                        let col_end = end_byte.saturating_sub(line_start_byte);
 
                         line_highlights[line_idx].push((col_start..col_end, group));
                     }
@@ -127,7 +123,11 @@ impl SyntaxHighlighter {
 
     /// Gets highlights for a specific line
     /// Note: For bulk operations, use highlights_for_all_lines() which is much faster
-    pub fn highlights_for_line(&self, line_idx: usize, source: &str) -> Vec<(Range<usize>, HighlightGroup)> {
+    pub fn highlights_for_line(
+        &self,
+        line_idx: usize,
+        source: &str,
+    ) -> Vec<(Range<usize>, HighlightGroup)> {
         let Some(ref tree) = self.tree else {
             return Vec::new();
         };
@@ -145,11 +145,7 @@ impl SyntaxHighlighter {
         let line_end_byte = line_start_byte + lines[line_idx].len();
 
         // Query captures in this line
-        let matches = cursor.matches(
-            &self.query,
-            tree.root_node(),
-            source.as_bytes(),
-        );
+        let matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
         for m in matches {
             for capture in m.captures {
@@ -164,11 +160,7 @@ impl SyntaxHighlighter {
                     let group = Self::capture_to_highlight_group(capture_name);
 
                     // Convert to column range relative to line start
-                    let col_start = if start_byte >= line_start_byte {
-                        start_byte - line_start_byte
-                    } else {
-                        0
-                    };
+                    let col_start = start_byte.saturating_sub(line_start_byte);
 
                     let col_end = if end_byte <= line_end_byte {
                         end_byte - line_start_byte
@@ -188,24 +180,53 @@ impl SyntaxHighlighter {
     }
 
     /// Converts a tree-sitter capture name to a highlight group
+    /// Supports hierarchical names with fallback (e.g., "comment.documentation" -> "comment" -> "Other")
     fn capture_to_highlight_group(name: &str) -> HighlightGroup {
+        // Try exact match first
         match name {
-            "keyword" => HighlightGroup::Keyword,
-            "function" => HighlightGroup::Function,
-            "type" => HighlightGroup::Type,
-            "string" => HighlightGroup::String,
-            "number" => HighlightGroup::Number,
-            "comment" => HighlightGroup::Comment,
-            "operator" => HighlightGroup::Operator,
-            "variable" => HighlightGroup::Variable,
-            "macro" => HighlightGroup::Macro,
-            "constant" => HighlightGroup::Constant,
-            "property" => HighlightGroup::Property,
-            "parameter" => HighlightGroup::Parameter,
-            "label" => HighlightGroup::Label,
-            "punctuation" => HighlightGroup::Punctuation,
-            _ => HighlightGroup::Other,
+            "keyword" => return HighlightGroup::Keyword,
+            "function" => return HighlightGroup::Function,
+            "type" => return HighlightGroup::Type,
+            "string" => return HighlightGroup::String,
+            "number" => return HighlightGroup::Number,
+            "comment" => return HighlightGroup::Comment,
+            "operator" => return HighlightGroup::Operator,
+            "variable" => return HighlightGroup::Variable,
+            "macro" => return HighlightGroup::Macro,
+            "constant" => return HighlightGroup::Constant,
+            "property" => return HighlightGroup::Property,
+            "parameter" => return HighlightGroup::Parameter,
+            "label" => return HighlightGroup::Label,
+            "punctuation" => return HighlightGroup::Punctuation,
+            "tag" => return HighlightGroup::Tag,
+            _ => {}
         }
+
+        // If no exact match, try hierarchical fallback
+        // For "comment.documentation", try "comment"
+        // For "type.builtin", try "type"
+        if let Some(base) = name.split('.').next() {
+            match base {
+                "keyword" => return HighlightGroup::Keyword,
+                "function" => return HighlightGroup::Function,
+                "type" => return HighlightGroup::Type,
+                "string" => return HighlightGroup::String,
+                "number" => return HighlightGroup::Number,
+                "comment" => return HighlightGroup::Comment,
+                "operator" => return HighlightGroup::Operator,
+                "variable" => return HighlightGroup::Variable,
+                "macro" => return HighlightGroup::Macro,
+                "constant" => return HighlightGroup::Constant,
+                "property" => return HighlightGroup::Property,
+                "parameter" => return HighlightGroup::Parameter,
+                "label" => return HighlightGroup::Label,
+                "punctuation" => return HighlightGroup::Punctuation,
+                "tag" => return HighlightGroup::Tag,
+                _ => {}
+            }
+        }
+
+        HighlightGroup::Other
     }
 
     /// Gets the language

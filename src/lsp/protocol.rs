@@ -122,7 +122,12 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
     // Debug log outgoing messages
     if message.is_notification() {
         if let Some(method) = &message.method {
-            crate::lsp_debug!("LSP-OUT", "Sending notification: {} | Body: {}", method, json);
+            crate::lsp_debug!(
+                "LSP-OUT",
+                "Sending notification: {} | Body: {}",
+                method,
+                json
+            );
         }
     } else if message.is_request() {
         if let Some(method) = &message.method {
@@ -143,6 +148,8 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
 }
 
 /// Reads a JSON-RPC message with Content-Length header framing
+/// (Reserved for alternative message reading implementation)
+#[allow(dead_code)]
 pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<JsonRpcMessage> {
     let mut buf_reader = BufReader::new(reader);
     let mut headers = Vec::new();

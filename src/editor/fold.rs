@@ -173,10 +173,7 @@ impl FoldManager {
     /// Checks if a line is hidden by a closed fold
     pub fn is_line_hidden(&self, line: usize) -> bool {
         for fold in &self.folds {
-            if !fold.is_open()
-                && line > fold.start_line()
-                && line <= fold.end_line()
-            {
+            if !fold.is_open() && line > fold.start_line() && line <= fold.end_line() {
                 return true;
             }
         }

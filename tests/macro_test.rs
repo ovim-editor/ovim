@@ -9,10 +9,10 @@ use helpers::EditorTest;
 fn test_q_basic_record() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('q')       // Start recording
-        .press('a')       // To register 'a'
-        .keys("dd")       // Delete line
-        .press('q');      // Stop recording
+    test.press('q') // Start recording
+        .press('a') // To register 'a'
+        .keys("dd") // Delete line
+        .press('q'); // Stop recording
 
     assert_eq!(test.buffer_content(), "line 2\nline 3\n");
     test.assert_cursor(0, 0);
@@ -24,9 +24,9 @@ fn test_q_record_and_playback() {
 
     test.press('q')
         .press('a')
-        .keys("dd")       // Record: delete line
+        .keys("dd") // Record: delete line
         .press('q')
-        .press('@')       // Playback
+        .press('@') // Playback
         .press('a');
 
     assert_eq!(test.buffer_content(), "line 3\n");
@@ -39,15 +39,18 @@ fn test_q_record_multiple_commands() {
 
     test.press('q')
         .press('a')
-        .press('i')       // Enter insert mode
+        .press('i') // Enter insert mode
         .type_text("PREFIX: ")
         .press_esc()
-        .press('j')       // Move down
-        .press('q')       // Stop recording
+        .press('j') // Move down
+        .press('q') // Stop recording
         .press('@')
-        .press('a');      // Replay on second line
+        .press('a'); // Replay on second line
 
-    assert_eq!(test.buffer_content(), "PREFIX: hello world\ntest liPREFIX: ne\n");
+    assert_eq!(
+        test.buffer_content(),
+        "PREFIX: hello world\ntest liPREFIX: ne\n"
+    );
     test.assert_cursor(1, 14);
 }
 
@@ -57,7 +60,7 @@ fn test_q_record_change_operation() {
 
     test.press('q')
         .press('a')
-        .keys("ciw")      // Change word
+        .keys("ciw") // Change word
         .type_text("X")
         .press_esc()
         .press('j')
@@ -65,9 +68,6 @@ fn test_q_record_change_operation() {
         .press('@')
         .press('a');
 
-    // After recording: "X\ntwo\nthree" (ciw replaced "one" with "X", j moved down)
-    // After @a: ciw replaces "two" with "X", j moves down
-    // Result: "X\nX\nthree"
     assert_eq!(test.buffer_content(), "X\nX\nthree\n");
     test.assert_cursor(2, 0);
 }
@@ -82,13 +82,13 @@ fn test_at_playback_simple() {
 
     test.press('q')
         .press('a')
-        .press('x')       // Delete char
-        .press('j')       // Move down
+        .press('x') // Delete char
+        .press('j') // Move down
         .press('q')
         .press('@')
-        .press('a')       // Play once
+        .press('a') // Play once
         .press('@')
-        .press('a');      // Play again
+        .press('a'); // Play again
 
     assert_eq!(test.buffer_content(), "\n\n\nd\n");
     test.assert_cursor(3, 0);
@@ -103,7 +103,7 @@ fn test_at_with_count() {
         .press('x')
         .press('j')
         .press('q')
-        .keys("3@a");     // Play 3 times
+        .keys("3@a"); // Play 3 times
 
     assert_eq!(test.buffer_content(), "\n\nc\nd\ne\n");
     test.assert_cursor(2, 0);
@@ -119,9 +119,9 @@ fn test_at_at_repeat_last() {
         .press('j')
         .press('q')
         .press('@')
-        .press('a')       // Play macro
+        .press('a') // Play macro
         .press('@')
-        .press('@');      // Repeat last macro with @@
+        .press('@'); // Repeat last macro with @@
 
     assert_eq!(test.buffer_content(), "\n\nc\nd\n");
     test.assert_cursor(2, 0);
@@ -138,7 +138,7 @@ fn test_multiple_registers() {
     // Record macro in register 'a'
     test.press('q')
         .press('a')
-        .press('I')       // Insert at beginning
+        .press('I') // Insert at beginning
         .type_text("A: ")
         .press_esc()
         .press('j')
@@ -147,19 +147,19 @@ fn test_multiple_registers() {
     // Record macro in register 'b'
     test.press('q')
         .press('b')
-        .press('A')       // Append at end
+        .press('A') // Append at end
         .type_text(" [END]")
         .press_esc()
         .press('k')
         .press('q');
 
     // Play both
-    test.press('@')
-        .press('a')
-        .press('@')
-        .press('b');
+    test.press('@').press('a').press('@').press('b');
 
-    assert_eq!(test.buffer_content(), "A: A: line 1\nline 2 [END] [END]\nline 3\n");
+    assert_eq!(
+        test.buffer_content(),
+        "A: A: line 1\nline 2 [END] [END]\nline 3\n"
+    );
     test.assert_cursor(0, 11);
 }
 
@@ -168,10 +168,7 @@ fn test_overwrite_macro_register() {
     let mut test = EditorTest::new("test");
 
     // Record first macro
-    test.press('q')
-        .press('a')
-        .press('x')
-        .press('q');
+    test.press('q').press('a').press('x').press('q');
 
     // Overwrite with new macro
     test.press('q')
@@ -182,8 +179,7 @@ fn test_overwrite_macro_register() {
         .press('q');
 
     // Play - should execute new macro
-    test.press('@')
-        .press('a');
+    test.press('@').press('a');
 
     assert_eq!(test.buffer_content(), "NEWNEW  est\n");
     test.assert_cursor(0, 6);
@@ -199,9 +195,9 @@ fn test_recursive_macro() {
 
     test.press('q')
         .press('a')
-        .press('x')       // Delete char
-        .press('j')       // Move down
-        .press('@')       // Call self
+        .press('x') // Delete char
+        .press('j') // Move down
+        .press('@') // Call self
         .press('a')
         .press('q');
 
@@ -221,7 +217,7 @@ fn test_macro_with_text_objects() {
 
     test.press('q')
         .press('a')
-        .keys("diw")      // Delete inner word
+        .keys("diw") // Delete inner word
         .press('j')
         .press('q')
         .press('@')
@@ -229,11 +225,7 @@ fn test_macro_with_text_objects() {
         .press('@')
         .press('a');
 
-    // diw at start of line deletes word + trailing space
-    // After recording: "two\nthree four\nfive six" (cursor moved to line 2)
-    // After first @a: "two\nfour\nfive six" (cursor moved to line 3)
-    // After second @a: "two\nfour\nsix"
-    assert_eq!(test.buffer_content(), "two\nfour\nsix\n");
+    assert_eq!(test.buffer_content(), " two\n four\n six\n");
     test.assert_cursor(2, 0);
 }
 
@@ -243,16 +235,14 @@ fn test_macro_with_search() {
 
     test.press('q')
         .press('a')
-        .press('/')       // Search
+        .press('/') // Search
         .type_text("hello")
         .press_enter()
-        .press('x')       // Delete first char
+        .press('x') // Delete first char
         .press('q')
         .press('@')
-        .press('a');      // Play - should find next and delete
+        .press('a'); // Play - should find next and delete
 
-    // During recording: search finds first "hello", x deletes 'h' -> "ello world hello test"
-    // During playback: search finds remaining "hello", x deletes 'h' -> "ello world ello test"
     assert_eq!(test.buffer_content(), "ello world ello test\n");
     test.assert_cursor(0, 11);
 }
@@ -267,9 +257,9 @@ fn test_macro_with_visual_mode() {
 
     test.press('q')
         .press('a')
-        .press('v')       // Visual mode
-        .keys("e")        // Select to end of word
-        .press('d')       // Delete
+        .press('v') // Visual mode
+        .keys("e") // Select to end of word
+        .press('d') // Delete
         .press('j')
         .press('q')
         .press('@')
@@ -285,8 +275,8 @@ fn test_macro_visual_line() {
 
     test.press('q')
         .press('a')
-        .press('V')       // Visual line
-        .press('d')       // Delete line
+        .press('V') // Visual line
+        .press('d') // Delete line
         .press('q')
         .press('@')
         .press('a')
@@ -307,7 +297,7 @@ fn test_macro_insert_mode() {
 
     test.press('q')
         .press('a')
-        .press('A')       // Append at end
+        .press('A') // Append at end
         .type_text(" - done")
         .press_esc()
         .press('j')
@@ -317,7 +307,10 @@ fn test_macro_insert_mode() {
         .press('@')
         .press('a');
 
-    assert_eq!(test.buffer_content(), "line 1 - done\nline 2 - done\nline 3 - done\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1 - done\nline 2 - done\nline 3 - done\n"
+    );
     test.assert_cursor(2, 12);
 }
 
@@ -335,8 +328,7 @@ fn test_macro_complex_insert() {
         .press_esc()
         .press('q');
 
-    test.press('@')
-        .press('a');
+    test.press('@').press('a');
 
     assert_eq!(test.buffer_content(), "prefix_word_suffiprefix_x_suffix\n");
     test.assert_cursor(0, 31);
@@ -352,17 +344,14 @@ fn test_macro_yank_paste() {
 
     test.press('q')
         .press('a')
-        .keys("yy")       // Yank line
+        .keys("yy") // Yank line
         .press('j')
-        .press('p')       // Paste
+        .press('p') // Paste
         .press('q')
         .press('@')
         .press('a');
 
-    // During recording: yy yanks "copy\n", j moves to line 2, p pastes -> "copy\nline 2\ncopy\nline 3"
-    // During playback: yy yanks current line ("copy\n"), j moves to line 4, p pastes inline
-    // Note: There appears to be a quirk where paste during macro playback behaves differently
-    assert_eq!(test.buffer_content(), "copy\nline 2\ncopy\nline 3copy\n");
+    assert_eq!(test.buffer_content(), "copy\nline 2\ncopy\nline 3\ncopy\n");
     test.assert_cursor(4, 0);
 }
 
@@ -380,8 +369,8 @@ fn test_macro_then_undo() {
         .press('j')
         .press('q')
         .press('@')
-        .press('a')       // Play macro
-        .press('u');      // Undo macro
+        .press('a') // Play macro
+        .press('u'); // Undo macro
 
     assert_eq!(test.buffer_content(), "\nb\nc\n");
     test.assert_cursor(1, 0);
@@ -393,8 +382,8 @@ fn test_macro_with_undo_inside() {
 
     test.press('q')
         .press('a')
-        .press('x')       // Delete
-        .press('u')       // Undo inside macro
+        .press('x') // Delete
+        .press('u') // Undo inside macro
         .press('q')
         .press('@')
         .press('a');
@@ -413,9 +402,9 @@ fn test_empty_macro() {
 
     test.press('q')
         .press('a')
-        .press('q')       // Immediately stop
+        .press('q') // Immediately stop
         .press('@')
-        .press('a');      // Play empty macro
+        .press('a'); // Play empty macro
 
     assert_eq!(test.buffer_content(), "test\n");
     test.assert_cursor(0, 0);
@@ -425,7 +414,7 @@ fn test_empty_macro() {
 fn test_macro_stop_without_start() {
     let mut test = EditorTest::new("test");
 
-    test.press('q');      // Press 'q' but don't record
+    test.press('q'); // Press 'q' but don't record
 
     assert_eq!(test.buffer_content(), "test\n");
     test.assert_cursor(0, 0);
@@ -437,12 +426,12 @@ fn test_macro_at_eof() {
 
     test.press('q')
         .press('a')
-        .press('j')       // Move down
+        .press('j') // Move down
         .press('q')
         .press('@')
-        .press('a')       // Try to play - should hit EOF
+        .press('a') // Try to play - should hit EOF
         .press('@')
-        .press('a');      // Play again
+        .press('a'); // Play again
 
     assert_eq!(test.buffer_content(), "a\nb\n");
     test.assert_cursor(1, 0);
@@ -453,29 +442,19 @@ fn test_macro_uppercase_register() {
     let mut test = EditorTest::new("test");
 
     // Record to 'a'
-    test.press('q')
-        .press('a')
-        .press('x')
-        .press('q');
+    test.press('q').press('a').press('x').press('q');
 
     // Append to 'a' using 'A'
     test.press('q')
-        .press('A')       // Uppercase appends
+        .press('A') // Uppercase appends
         .press('x')
         .press('q');
 
     // Play combined macro
-    test.press('@')
-        .press('a');
+    test.press('@').press('a');
 
-    // Note: Uppercase register (qA to append to macro) is not currently implemented.
-    // Instead, 'A' is treated as "Append at end of line" which enters insert mode.
-    // This test documents the current behavior, not ideal Vim behavior.
-    // After first recording: "est" (x deleted 't')
-    // After qA: 'A' enters insert mode, 'x' is typed, 'q' is typed, then ESC would be needed
-    // But since there's no ESC, we're still in insert mode recording characters
-    assert_eq!(test.buffer_content(), "estxq@a\n");
-    test.assert_cursor(0, 7);
+    assert_eq!(test.buffer_content(), "st\n");
+    test.assert_cursor(0, 1);
 }
 
 // ============================================================================
@@ -488,7 +467,7 @@ fn test_macro_with_count_inside() {
 
     test.press('q')
         .press('a')
-        .keys("3x")       // Delete 3 chars
+        .keys("3x") // Delete 3 chars
         .press('q')
         .press('@')
         .press('a');
@@ -503,11 +482,11 @@ fn test_macro_with_dot_repeat() {
 
     test.press('q')
         .press('a')
-        .keys("dw")       // Delete word
+        .keys("dw") // Delete word
         .press('q')
         .press('@')
         .press('a')
-        .press('.');      // Repeat last change
+        .press('.'); // Repeat last change
 
     assert_eq!(test.buffer_content(), "e\n");
     test.assert_cursor(0, 0);
@@ -524,7 +503,7 @@ fn test_macro_record_during_playback() {
     // Record macro that tries to start recording
     test.press('q')
         .press('a')
-        .press('q')       // This should stop recording, not start nested
+        .press('q') // This should stop recording, not start nested
         .press('a')
         .press('x')
         .press('q');
@@ -543,9 +522,9 @@ fn test_macro_line_operations() {
 
     test.press('q')
         .press('a')
-        .keys("dd")       // Delete line
+        .keys("dd") // Delete line
         .press('q')
-        .keys("3@a");     // Delete 3 more lines
+        .keys("3@a"); // Delete 3 more lines
 
     assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
@@ -557,7 +536,7 @@ fn test_macro_with_o_command() {
 
     test.press('q')
         .press('a')
-        .press('o')       // Open line below
+        .press('o') // Open line below
         .type_text("inserted")
         .press_esc()
         .press('j')
@@ -565,8 +544,9 @@ fn test_macro_with_o_command() {
         .press('@')
         .press('a');
 
-    // During recording: o inserts line, type "inserted", ESC, j moves to line 3
-    // During playback: o inserts after line 3, type "inserted", ESC, j does nothing (at EOF)
-    assert_eq!(test.buffer_content(), "line 1\ninserted\nline 2\ninserted\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\ninserted\nline 2\ninserted\n"
+    );
     test.assert_cursor(3, 7);
 }

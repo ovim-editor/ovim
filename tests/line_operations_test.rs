@@ -240,9 +240,9 @@ fn test_p_paste_below() {
 fn test_p_capital_paste_above() {
     let mut test = EditorTest::new("line1\nline2\n");
 
-    test.keys("j");      // Move to line2 (line index 1)
-    test.keys("yy");     // Yank line2
-    test.keys("P");      // Paste before line2
+    test.keys("j"); // Move to line2 (line index 1)
+    test.keys("yy"); // Yank line2
+    test.keys("P"); // Paste before line2
 
     let content = test.buffer_content();
     let lines: Vec<&str> = content.lines().collect();

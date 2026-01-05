@@ -5,11 +5,10 @@ use ovim::ui::Renderer;
 fn test_expand_tabs_basic() {
     // Test basic tab expansion with tab_width = 4
     let mut editor = Editor::with_content("hello\tworld");
-    let renderer = Renderer::new();
+    let _renderer = Renderer::new();
 
-    // Access the private expand_tabs function through rendering
-    // This will be tested indirectly through rendering
-    assert_eq!(editor.buffer().rope().to_string(), "hello\tworld");
+    // Buffer adds trailing newline (Vim behavior)
+    assert_eq!(editor.buffer().rope().to_string(), "hello\tworld\n");
 }
 
 #[test]
@@ -36,7 +35,8 @@ fn test_expand_tabs_multiple() {
     let mut editor = Editor::with_content(content);
 
     let rope = editor.buffer().rope();
-    assert_eq!(rope.to_string(), content);
+    // Buffer adds trailing newline
+    assert_eq!(rope.to_string(), format!("{}\n", content));
 }
 
 #[test]
@@ -62,8 +62,8 @@ fn test_mixed_width_rendering() {
     let content = "Hello 😀 World";
     let mut editor = Editor::with_content(content);
 
-    // Verify content is preserved
-    assert_eq!(editor.buffer().rope().to_string(), content);
+    // Verify content is preserved (buffer adds trailing newline)
+    assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 
     // Try to render (just make sure it doesn't panic)
     let result = editor.render_to_ansi(80, 24);
@@ -76,7 +76,8 @@ fn test_tabs_with_wide_chars() {
     let content = "你\tworld";
     let mut editor = Editor::with_content(content);
 
-    assert_eq!(editor.buffer().rope().to_string(), content);
+    // Buffer adds trailing newline
+    assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 }
 
 #[test]
@@ -136,7 +137,8 @@ fn test_zero_width_characters() {
     let content = "a\u{200D}b";
     let mut editor = Editor::with_content(content);
 
-    assert_eq!(editor.buffer().rope().to_string(), content);
+    // Buffer adds trailing newline
+    assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 }
 
 #[test]
@@ -144,7 +146,8 @@ fn test_skin_tone_emojis() {
     let content = "👋🏻 👋🏿";
     let mut editor = Editor::with_content(content);
 
-    assert_eq!(editor.buffer().rope().to_string(), content);
+    // Buffer adds trailing newline
+    assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 
     let result = editor.render_to_ansi(80, 24);
     assert!(result.is_ok());
@@ -155,7 +158,8 @@ fn test_flag_emojis() {
     let content = "🇺🇸 🇯🇵 🇬🇧";
     let mut editor = Editor::with_content(content);
 
-    assert_eq!(editor.buffer().rope().to_string(), content);
+    // Buffer adds trailing newline
+    assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 
     let result = editor.render_to_ansi(80, 24);
     assert!(result.is_ok());
@@ -248,7 +252,8 @@ fn test_complex_unicode_graphemes() {
     let content = "🇺🇸";
     let mut editor = Editor::with_content(content);
 
-    assert_eq!(editor.buffer().rope().to_string(), content);
+    // Buffer adds trailing newline
+    assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 }
 
 #[test]

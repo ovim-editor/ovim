@@ -32,7 +32,9 @@ fn test_paragraph_backward() {
 #[test]
 fn test_paragraph_backward_from_end() {
     // This is the test case from the bug report
-    let mut test = EditorTest::new("paragraph 1 line 1\nparagraph 1 line 2\n\nparagraph 2 line 1\nparagraph 2 line 2");
+    let mut test = EditorTest::new(
+        "paragraph 1 line 1\nparagraph 1 line 2\n\nparagraph 2 line 1\nparagraph 2 line 2",
+    );
 
     // Go to last line
     test.keys("G");
@@ -51,7 +53,8 @@ fn test_paragraph_backward_from_end() {
 
 #[test]
 fn test_multiple_paragraphs() {
-    let mut test = EditorTest::new("para1 line1\npara1 line2\n\npara2 line1\npara2 line2\n\npara3 line1");
+    let mut test =
+        EditorTest::new("para1 line1\npara1 line2\n\npara2 line1\npara2 line2\n\npara3 line1");
 
     test.keys("G"); // Last line (para3 line1) - line 6
 

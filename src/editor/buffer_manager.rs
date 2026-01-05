@@ -1,0 +1,338 @@
+//! Multi-buffer management, file loading, and buffer switching
+
+use super::Editor;
+use crate::buffer::Buffer;
+use anyhow::Result;
+
+impl Editor {
+    /// Gets a reference to the current buffer
+    pub fn buffer(&self) -> &Buffer {
+        &self.buffers[self.current_buffer_index]
+    }
+
+    /// Gets a buffer by ID (index)
+    pub fn get_buffer(&self, id: usize) -> Option<&Buffer> {
+        self.buffers.get(id)
+    }
+
+    /// Gets a mutable reference to the current buffer
+    pub fn buffer_mut(&mut self) -> &mut Buffer {
+        &mut self.buffers[self.current_buffer_index]
+    }
+
+    /// Gets the number of open buffers
+    pub fn buffer_count(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// Gets the current buffer index (0-based)
+    pub fn current_buffer_index(&self) -> usize {
+        self.current_buffer_index
+    }
+
+    /// Gets a list of all buffer names (file paths or "[No Name]")
+    pub fn buffer_names(&self) -> Vec<String> {
+        self.buffers
+            .iter()
+            .map(|buf| {
+                buf.file_path()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "[No Name]".to_string())
+            })
+            .collect()
+    }
+
+    /// Lists all buffers with their index and status
+    pub fn list_buffers(&self) -> String {
+        let mut result = String::new();
+        for (i, buf) in self.buffers.iter().enumerate() {
+            let current_marker = if i == self.current_buffer_index {
+                "%"
+            } else {
+                " "
+            };
+            let modified_marker = if buf.is_modified() { "+" } else { " " };
+            let name = buf.file_path().unwrap_or("[No Name]");
+            result.push_str(&format!(
+                "{}{} {}: {}\n",
+                current_marker,
+                modified_marker,
+                i + 1,
+                name
+            ));
+        }
+        result
+    }
+
+    /// Switches to a buffer by index (0-based)
+    pub fn switch_to_buffer(&mut self, index: usize) {
+        if index < self.buffers.len() && index != self.current_buffer_index {
+            // Save current file to alternate file register
+            if let Some(current_path) = self.buffer().file_path() {
+                self.registers.set_alternate_file(current_path.to_string());
+            }
+
+            self.current_buffer_index = index;
+            self.lsp_state.needs_lsp_init = true;
+
+            // Clear buffer-local marks (a-z) when switching files
+            self.marks.clear();
+
+            // Clear LSP UI state (hover, completions, etc.)
+            self.clear_lsp_state();
+
+            // Update current file register
+            if let Some(new_path) = self.buffer().file_path() {
+                self.registers.set_current_file(new_path.to_string());
+            }
+        }
+    }
+
+    /// Switches to the next buffer
+    pub fn next_buffer(&mut self) {
+        if self.buffers.len() > 1 {
+            // BUG FIX #4: Save old file path for didClose before switching
+            let old_file_path = self.buffer().file_path().map(|s| s.to_string());
+
+            // Save current file to alternate file register
+            if let Some(current_path) = old_file_path.as_ref() {
+                self.registers.set_alternate_file(current_path.to_string());
+            }
+
+            self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
+            self.lsp_state.needs_lsp_init = true;
+
+            // Clear buffer-local marks (a-z) when switching files
+            self.marks.clear();
+
+            // Clear LSP UI state (hover, completions, etc.)
+            self.clear_lsp_state();
+
+            // Update current file register
+            if let Some(new_path) = self.buffer().file_path() {
+                self.registers.set_current_file(new_path.to_string());
+            }
+
+            // Mark that we need to send didClose for the old file
+            if old_file_path.is_some() {
+                self.lsp_state.pending_did_close_file = old_file_path;
+            }
+        }
+    }
+
+    /// Switches to the previous buffer
+    pub fn prev_buffer(&mut self) {
+        if self.buffers.len() > 1 {
+            // BUG FIX #4: Save old file path for didClose before switching
+            let old_file_path = self.buffer().file_path().map(|s| s.to_string());
+
+            // Save current file to alternate file register
+            if let Some(current_path) = old_file_path.as_ref() {
+                self.registers.set_alternate_file(current_path.to_string());
+            }
+
+            self.current_buffer_index = if self.current_buffer_index == 0 {
+                self.buffers.len() - 1
+            } else {
+                self.current_buffer_index - 1
+            };
+            self.lsp_state.needs_lsp_init = true;
+
+            // Clear buffer-local marks (a-z) when switching files
+            self.marks.clear();
+
+            // Clear LSP UI state (hover, completions, etc.)
+            self.clear_lsp_state();
+
+            // Update current file register
+            if let Some(new_path) = self.buffer().file_path() {
+                self.registers.set_current_file(new_path.to_string());
+            }
+
+            // Mark that we need to send didClose for the old file
+            if old_file_path.is_some() {
+                self.lsp_state.pending_did_close_file = old_file_path;
+            }
+        }
+    }
+
+    /// Deletes the current buffer and switches to another if available
+    /// Returns true if the editor should quit (no more buffers)
+    pub fn delete_current_buffer(&mut self) -> bool {
+        if self.buffers.len() == 1 {
+            // Last buffer - quit the editor
+            return true;
+        }
+
+        // Remove current buffer (track sync state)
+        if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
+            self.lsp_state.document_sync.remove(&path);
+        }
+
+        // Remove current buffer
+        self.buffers.remove(self.current_buffer_index);
+
+        // Adjust index if we were at the end
+        if self.current_buffer_index >= self.buffers.len() {
+            self.current_buffer_index = self.buffers.len() - 1;
+        }
+
+        self.lsp_state.needs_lsp_init = true;
+        false
+    }
+
+    /// Adds a new buffer and switches to it
+    pub fn add_buffer(&mut self, buffer: Buffer) {
+        self.buffers.push(buffer);
+        self.current_buffer_index = self.buffers.len() - 1;
+        self.lsp_state.needs_lsp_init = true;
+    }
+
+    /// Opens a scratch buffer with the given content and title
+    /// The buffer is read-only and has no file path
+    pub fn open_scratch_buffer(&mut self, title: &str, content: &str) {
+        let mut buffer = Buffer::new_from_str(content);
+        buffer.set_read_only(true);
+        // Use a special naming convention for scratch buffers
+        // This won't be saved to disk since there's no actual file path
+        buffer.set_file_path(format!("[{}]", title));
+        self.add_buffer(buffer);
+        // Don't need LSP for scratch buffers
+        self.lsp_state.needs_lsp_init = false;
+        self.mark_dirty();
+    }
+
+    /// Finds the index of a buffer with the given file path
+    /// Returns None if no buffer has that file path
+    pub(crate) fn find_buffer_by_path(&self, file_path: &str) -> Option<usize> {
+        // Normalize paths for comparison
+        let target_path = std::path::Path::new(file_path).canonicalize().ok()?;
+
+        for (index, buffer) in self.buffers.iter().enumerate() {
+            if let Some(buf_path) = buffer.file_path() {
+                if let Ok(buf_canonical) = std::path::Path::new(buf_path).canonicalize() {
+                    if target_path == buf_canonical {
+                        return Some(index);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Finds or loads a buffer by URI, returning its index
+    /// Does NOT switch to the buffer (unlike open_file)
+    /// Returns None if the URI cannot be converted to a path or loading fails
+    pub(crate) fn find_or_load_buffer_index_by_uri(
+        &mut self,
+        uri: &lsp_types::Uri,
+    ) -> Option<usize> {
+        // Convert URI to file path
+        let file_path = crate::lsp::uri_to_file_path(uri)?;
+        let path_str = file_path.to_str()?;
+
+        // Check if buffer is already open
+        if let Some(index) = self.find_buffer_by_path(path_str) {
+            return Some(index);
+        }
+
+        // Load the file into a new buffer (don't switch to it)
+        let buffer = Buffer::load_file(&file_path).ok()?;
+        self.buffers.push(buffer);
+        // Note: We intentionally don't change current_buffer_index here
+        // to avoid switching away from the user's current file
+
+        Some(self.buffers.len() - 1)
+    }
+
+    /// Applies LSP text edits to a specific buffer by index
+    /// Returns true if successful, false if index is invalid
+    pub(crate) fn apply_lsp_edits_to_buffer_index(
+        &mut self,
+        buffer_index: usize,
+        edits: Vec<lsp_types::TextEdit>,
+    ) -> bool {
+        if buffer_index >= self.buffers.len() {
+            return false;
+        }
+
+        // Sort edits in reverse order (bottom to top) to avoid position invalidation
+        let mut sorted_edits = edits;
+        sorted_edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then(b.range.start.character.cmp(&a.range.start.character))
+        });
+
+        let buffer = &mut self.buffers[buffer_index];
+
+        for edit in sorted_edits {
+            let start_line = edit.range.start.line as usize;
+            // Convert UTF-16 positions to character positions
+            let start_col =
+                Self::utf16_to_col_for_buffer(buffer, start_line, edit.range.start.character);
+            let end_line = edit.range.end.line as usize;
+            let end_col =
+                Self::utf16_to_col_for_buffer(buffer, end_line, edit.range.end.character);
+
+            // Delete the range
+            if start_line != end_line || start_col != end_col {
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+            }
+
+            // Insert new text
+            if !edit.new_text.is_empty() {
+                buffer.insert_text_at(start_line, start_col, &edit.new_text);
+            }
+        }
+
+        true
+    }
+
+    /// Helper to convert UTF-16 offset to column for a specific buffer
+    pub(crate) fn utf16_to_col_for_buffer(
+        buffer: &Buffer,
+        line: usize,
+        utf16_offset: u32,
+    ) -> usize {
+        if let Some(line_text) = buffer.line(line) {
+            let line_str = line_text.to_string();
+            let mut col = 0;
+            let mut utf16_pos = 0u32;
+
+            for ch in line_str.chars() {
+                if utf16_pos >= utf16_offset {
+                    break;
+                }
+                utf16_pos += ch.len_utf16() as u32;
+                col += 1;
+            }
+            col
+        } else {
+            utf16_offset as usize
+        }
+    }
+
+    /// Opens a file, switching to existing buffer if already open
+    /// or creating a new buffer if not
+    pub fn open_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        let path_str = path
+            .as_ref()
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
+
+        // Check if file is already open
+        if let Some(index) = self.find_buffer_by_path(path_str) {
+            // Just switch to existing buffer
+            self.current_buffer_index = index;
+            return Ok(());
+        }
+
+        // File not open, load it
+        let buffer = Buffer::load_file(path)?;
+        self.add_buffer(buffer);
+        Ok(())
+    }
+}
