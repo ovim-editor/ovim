@@ -1,4 +1,6 @@
 //! Subcommand implementations for controlling ovim sessions
+#![allow(clippy::print_stdout)]
+
 use anyhow::{Context, Result};
 use serde_json::Value;
 

@@ -79,12 +79,15 @@ async fn main() -> Result<()> {
     };
 
     // Handle --render flag (render to ANSI and exit)
-    // This path outputs to stdout and never starts the TUI, so eprintln! is safe
+    // This path outputs to stdout and never starts the TUI, so print! is safe
     if args.render {
         let (width, height) = args.dimension.unwrap_or((80, 24));
         match editor.render_to_ansi(width, height) {
             Ok(ansi) => {
-                print!("{}", ansi);
+                #[allow(clippy::print_stdout)]
+                {
+                    print!("{}", ansi);
+                }
                 return Ok(());
             }
             Err(e) => {

@@ -284,7 +284,7 @@ impl Editor {
 
                             // Open file if different from current
                             if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
+                                if self.open_file(path.to_string_lossy().as_ref()).is_err() {
                                     self.set_lsp_status("Failed to open file".to_string());
                                     return false;
                                 }
@@ -359,7 +359,7 @@ impl Editor {
 
                             // Open file if different from current
                             if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
+                                if self.open_file(path.to_string_lossy().as_ref()).is_err() {
                                     self.set_lsp_status("Failed to open file".to_string());
                                     return false;
                                 }
@@ -434,7 +434,7 @@ impl Editor {
 
                             // Open file if different from current
                             if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                                if let Err(_) = self.open_file(path.to_string_lossy().as_ref()) {
+                                if self.open_file(path.to_string_lossy().as_ref()).is_err() {
                                     self.set_lsp_status("Failed to open file".to_string());
                                     return false;
                                 }

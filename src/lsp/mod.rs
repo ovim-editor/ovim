@@ -425,6 +425,7 @@ impl LspManager {
 
     /// Internal method to send textDocument/didChange notification immediately
     /// Supports both full and incremental sync
+    #[allow(clippy::print_stderr)]
     async fn send_did_change_immediate(
         &self,
         uri: Uri,
@@ -453,17 +454,19 @@ impl LspManager {
                     } else {
                         1.0
                     };
-                    eprintln!(
-                        "[LSP-SYNC] Incremental: {} bytes (was {} bytes, {:.1}x reduction) | Range: {}:{}-{}:{} | File: {}",
-                        incremental_size,
-                        full_doc_size,
-                        reduction_ratio,
-                        range.start.line,
-                        range.start.character,
-                        range.end.line,
-                        range.end.character,
-                        uri.path()
-                    );
+                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                        eprintln!(
+                            "[LSP-SYNC] Incremental: {} bytes (was {} bytes, {:.1}x reduction) | Range: {}:{}-{}:{} | File: {}",
+                            incremental_size,
+                            full_doc_size,
+                            reduction_ratio,
+                            range.start.line,
+                            range.start.character,
+                            range.end.line,
+                            range.end.character,
+                            uri.path()
+                        );
+                    }
 
                     // Use incremental change
                     vec![TextDocumentContentChangeEvent {
@@ -473,12 +476,16 @@ impl LspManager {
                     }]
                 } else {
                     // No changes detected or identical content
-                    eprintln!("[LSP-SYNC] No changes detected (identical content) | File: {}", uri.path());
+                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                        eprintln!("[LSP-SYNC] No changes detected (identical content) | File: {}", uri.path());
+                    }
                     return Ok(());
                 }
             } else {
                 // Fallback to full sync
-                eprintln!("[LSP-SYNC] Full sync (no old_text): {} bytes | File: {}", full_doc_size, uri.path());
+                if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                    eprintln!("[LSP-SYNC] Full sync (no old_text): {} bytes | File: {}", full_doc_size, uri.path());
+                }
                 vec![TextDocumentContentChangeEvent {
                     range: None,
                     range_length: None,
@@ -492,7 +499,9 @@ impl LspManager {
             } else {
                 "no old_text provided"
             };
-            eprintln!("[LSP-SYNC] Full sync ({}): {} bytes | File: {}", reason, full_doc_size, uri.path());
+            if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                eprintln!("[LSP-SYNC] Full sync ({}): {} bytes | File: {}", reason, full_doc_size, uri.path());
+            }
             vec![TextDocumentContentChangeEvent {
                 range: None,
                 range_length: None,
