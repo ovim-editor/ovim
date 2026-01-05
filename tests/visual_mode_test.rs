@@ -1,5 +1,7 @@
 mod helpers;
+use crossterm::event::{KeyCode, KeyModifiers};
 use helpers::EditorTest;
+use ovim::mode::Mode;
 
 // ============================================================================
 // 'v' command - Character-wise visual mode
@@ -488,4 +490,191 @@ fn test_v_select_indentation() {
 
     assert_eq!(test.buffer_content(), "    indented line\n");
     test.assert_cursor(0, 3);
+}
+
+// ============================================================================
+// Visual mode search features (* and # in visual mode)
+// ============================================================================
+
+#[test]
+fn test_visual_star_search() {
+    let mut test = EditorTest::new("hello world\nhello test\nhello world");
+
+    // Select "hello" and press * to search forward
+    test.press('v')
+        .keys("llll") // Select "hello"
+        .press('*'); // Search for next occurrence
+
+    // Should exit visual mode and jump to next "hello" on line 1
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    test.assert_cursor(1, 0);
+
+    // Press n to find next match
+    test.press('n');
+    test.assert_cursor(2, 0);
+}
+
+#[test]
+fn test_visual_hash_search() {
+    let mut test = EditorTest::new("hello world\nhello test\nhello world");
+
+    // Move to line 2, select "hello" and press # to search backward
+    test.keys("jj") // Move to line 2
+        .press('v')
+        .keys("llll") // Select "hello"
+        .press('#'); // Search backward
+
+    // Should exit visual mode and jump to previous "hello" on line 1
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    test.assert_cursor(1, 0);
+
+    // Press n to continue searching backward
+    test.press('n');
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_visual_star_multiline_selection() {
+    let mut test = EditorTest::new("hello\nworld\nhello\ntest");
+
+    // Select across lines and press *
+    test.press('v')
+        .keys("jl") // Select "hello\nwo"
+        .press('*'); // Search for this multi-line text
+
+    // Should find the next occurrence (note: multiline search might not match exactly)
+    // The behavior should be that it searches for the literal text
+    assert_eq!(test.editor.mode(), Mode::Normal);
+}
+
+#[test]
+fn test_visual_block_star_search() {
+    let mut test = EditorTest::new("abc\ndef\nghi\nabc");
+
+    // Select block and press *
+    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL) // Visual block mode
+        .keys("l") // Select 2 chars width
+        .press('*'); // Search for "ab"
+
+    // Should exit visual mode and jump to next occurrence of "ab" on line 3
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    test.assert_cursor(3, 0);
+}
+
+#[test]
+fn test_visualline_star_search() {
+    let mut test = EditorTest::new("line one\nline two\nline one");
+
+    // Select full line and press *
+    test.press('V') // Visual line mode
+        .press('*'); // Search for "line one"
+
+    // Should exit visual mode and jump to next occurrence
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    test.assert_cursor(2, 0);
+}
+
+#[test]
+fn test_visual_star_with_special_chars() {
+    let mut test = EditorTest::new("foo.bar\ntest\nfoo.bar");
+
+    // Select "foo.bar" which contains regex special character '.'
+    test.press('v')
+        .keys("llllll") // Select "foo.bar"
+        .press('*'); // Should escape the '.' for literal search
+
+    // Should find exact match, not regex match
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    test.assert_cursor(2, 0);
+}
+
+// ============================================================================
+// Visual mode search extension (/ and ? extend selection)
+// ============================================================================
+
+#[test]
+fn test_visual_search_extends_selection_forward() {
+    let mut test = EditorTest::new("hello world test hello");
+
+    // Start visual selection at beginning
+    test.press('v')
+        .keys("ll") // Select "hel"
+        .press('/') // Enter search mode
+        .type_text("test")
+        .press_enter(); // Execute search
+
+    // Should extend selection from "hello" to "test"
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 12); // At start of "test"
+
+    // Visual anchor should be at original position (0, 0)
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 0)));
+}
+
+#[test]
+fn test_visual_search_extends_selection_backward() {
+    let mut test = EditorTest::new("hello world test hello");
+
+    // Start at end, select backward, then search backward
+    test.keys("$") // Move to end
+        .press('v')
+        .keys("hh") // Select backward
+        .press('?') // Enter backward search
+        .type_text("world")
+        .press_enter(); // Execute search
+
+    // Should extend selection from end to "world"
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 6); // At start of "world"
+}
+
+#[test]
+fn test_visualline_search_extends_selection() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+
+    // Start visual line selection
+    test.press('V') // Visual line mode
+        .press('/') // Enter search mode
+        .type_text("line 3")
+        .press_enter(); // Execute search
+
+    // Should extend selection to include lines up to line 3
+    assert_eq!(test.editor.mode(), Mode::VisualLine);
+    test.assert_cursor(2, 0); // At line 3
+}
+
+#[test]
+fn test_visualblock_search_extends_selection() {
+    let mut test = EditorTest::new("abc def\nghi jkl\nmno pqr");
+
+    // Start visual block selection
+    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL) // Visual block
+        .press('/') // Enter search mode
+        .type_text("jkl")
+        .press_enter(); // Execute search
+
+    // Should extend block selection to search match
+    assert_eq!(test.editor.mode(), Mode::VisualBlock);
+    test.assert_cursor(1, 4); // At "jkl"
+}
+
+#[test]
+fn test_visual_search_escape_cancels() {
+    let mut test = EditorTest::new("hello world test");
+
+    // Start visual selection and cancel search
+    test.press('v')
+        .keys("ll")
+        .press('/') // Enter search mode (saves position at 0, 2)
+        .type_text("test")
+        .press_esc(); // Cancel search
+
+    // Should return to visual mode at position when search was started (0, 2)
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 2); // Cursor restored to position when / was pressed
+
+    // Visual anchor should still be at original position (0, 0)
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 0)));
 }

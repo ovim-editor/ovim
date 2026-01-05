@@ -172,4 +172,14 @@ impl Editor {
             }
         }
     }
+
+    /// Saves the visual search state when entering search from visual mode
+    pub fn set_visual_search_state(&mut self, anchor: (usize, usize), mode: crate::mode::Mode) {
+        self.visual_search_state = Some(crate::editor::VisualSearchState { anchor, mode });
+    }
+
+    /// Takes and clears the visual search state (returns None if not set)
+    pub fn take_visual_search_state(&mut self) -> Option<crate::editor::VisualSearchState> {
+        self.visual_search_state.take()
+    }
 }
