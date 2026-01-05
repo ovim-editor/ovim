@@ -154,6 +154,15 @@ pub enum LspCommand {
 /// Visual selection: (start_position, end_position, mode)
 pub type VisualSelection = ((usize, usize), (usize, usize), Mode);
 
+/// Visual search state: tracks original anchor for visual search extension
+#[derive(Clone, Debug)]
+pub struct VisualSearchState {
+    /// Original visual anchor position (line, col) when search was initiated
+    pub anchor: (usize, usize),
+    /// Original visual mode type (Visual, VisualLine, VisualBlock)
+    pub mode: Mode,
+}
+
 /// Cached preview highlights: line_idx -> Vec<(range, highlight_group)>
 pub type PreviewHighlights =
     HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>;
@@ -201,6 +210,8 @@ pub struct Editor {
     current_search: Option<Search>,
     /// Search start position (line, col) - saved when entering search mode, restored on ESC
     search_start_pos: Option<(usize, usize)>,
+    /// Visual search state - saved when entering search from visual mode
+    visual_search_state: Option<VisualSearchState>,
     /// Mark manager for buffer marks
     marks: MarkManager,
     /// Key mapping manager
@@ -384,6 +395,7 @@ impl Editor {
             search_forward: true,
             current_search: None,
             search_start_pos: None,
+            visual_search_state: None,
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
@@ -462,6 +474,7 @@ impl Editor {
             search_forward: true,
             current_search: None,
             search_start_pos: None,
+            visual_search_state: None,
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),

@@ -25,8 +25,20 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Enter => {
             // Execute the search and accept it
             editor.execute_search();
-            // Return to visual mode if visual_start is set, otherwise normal mode
-            if editor.visual_start().is_some() {
+
+            // Check if we're extending a visual selection
+            if let Some(visual_search_state) = editor.take_visual_search_state() {
+                // Restore visual mode and extend selection to cursor position
+                // Set the visual anchor to the original position
+                editor.set_visual_start(visual_search_state.anchor.0, visual_search_state.anchor.1);
+
+                // Move cursor to match position (already done by execute_search)
+                // The selection now spans from anchor to cursor
+
+                // Restore the original visual mode
+                editor.set_mode(visual_search_state.mode);
+            } else if editor.visual_start().is_some() {
+                // Legacy path: visual mode was active but no search state saved
                 editor.set_mode(Mode::Visual);
             } else {
                 editor.set_mode(Mode::Normal);
@@ -37,8 +49,14 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             // BUG FIX: Restore cursor to position before search started
             editor.restore_search_start_position();
             editor.clear_search_buffer();
-            // Return to visual mode if visual_start is set, otherwise normal mode
-            if editor.visual_start().is_some() {
+
+            // Check if we had a visual search state (restore visual mode)
+            if let Some(visual_search_state) = editor.take_visual_search_state() {
+                // Restore visual mode with original anchor
+                editor.set_visual_start(visual_search_state.anchor.0, visual_search_state.anchor.1);
+                editor.set_mode(visual_search_state.mode);
+            } else if editor.visual_start().is_some() {
+                // Legacy path: visual mode was active but no search state saved
                 editor.set_mode(Mode::Visual);
             } else {
                 editor.set_mode(Mode::Normal);

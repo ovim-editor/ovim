@@ -1125,3 +1125,194 @@ pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
+/// Gets the text content of the current visual selection
+/// Returns the selected text as a String, or None if no selection exists
+/// Handles Visual, VisualLine, and VisualBlock modes appropriately
+pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
+    let mode = editor.mode();
+    let ((start_line, start_col), (end_line, end_col)) = editor.visual_selection()?;
+
+    match mode {
+        Mode::Visual => {
+            // Character-wise selection
+            let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
+            let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
+            Some(editor.buffer().rope().slice(start_char..end_char).to_string())
+        }
+        Mode::VisualLine => {
+            // Line-wise selection (include entire lines)
+            let mut text = String::new();
+            for line_idx in start_line..=end_line {
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    text.push_str(line.trim_end_matches('\n'));
+                    if line_idx < end_line {
+                        text.push('\n');
+                    }
+                }
+            }
+            Some(text)
+        }
+        Mode::VisualBlock => {
+            // Rectangular block selection
+            let mut lines = Vec::new();
+            for line_idx in start_line..=end_line {
+                if let Some(line_text) = editor.buffer().line(line_idx) {
+                    let chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
+                    let line_start = start_col.min(chars.len());
+                    let line_end = (end_col + 1).min(chars.len());
+
+                    if line_start < line_end {
+                        let block_text: String = chars[line_start..line_end].iter().collect();
+                        lines.push(block_text);
+                    } else {
+                        // Line is too short for block selection
+                        lines.push(String::new());
+                    }
+                }
+            }
+            // For block mode, join lines with newlines
+            Some(lines.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+/// Searches forward for the visually selected text
+/// Escapes regex special characters for literal search
+/// Returns true if match found, false otherwise
+pub fn search_visual_selection_forward(editor: &mut Editor) -> bool {
+    let selection_text = match get_visual_selection_text(editor) {
+        Some(text) if !text.is_empty() => text,
+        _ => {
+            // Fall back to word under cursor if selection is empty
+            let cursor = editor.buffer().cursor();
+            let line_idx = cursor.line();
+            let col = cursor.col();
+
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let chars: Vec<char> = line_text.chars().collect();
+
+                if col < chars.len() {
+                    // Extract word under cursor
+                    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+                    let start = chars[..=col].iter().rposition(|&c| !is_word_char(c)).map(|i| i + 1).unwrap_or(0);
+                    let end = chars[col..].iter().position(|&c| !is_word_char(c)).map(|i| col + i).unwrap_or(chars.len());
+
+                    if start < end {
+                        chars[start..end].iter().collect()
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+    };
+
+    // Escape regex special characters for literal search
+    let escaped = regex::escape(&selection_text);
+
+    // Create and execute the search
+    editor.clear_search_buffer();
+    for ch in escaped.chars() {
+        editor.append_to_search_buffer(ch);
+    }
+    editor.set_search_forward(true);
+
+    // Update the / register with the search pattern
+    editor.registers.set_last_search(escaped.clone());
+
+    // Create search and find first match
+    let mut search = crate::editor::Search::new_with_options(
+        escaped,
+        true,
+        editor.options.ignorecase,
+        editor.options.smartcase,
+    );
+
+    // For visual * and #, we want to find the NEXT occurrence, not the current one
+    // So start searching from the next column position
+    let cursor = editor.buffer().cursor();
+    let search_col = cursor.col() + 1;
+
+    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
+        editor.buffer_mut().cursor_mut().set_position(line, col);
+        editor.set_current_search(search);
+        true
+    } else {
+        false
+    }
+}
+
+/// Searches backward for the visually selected text
+/// Escapes regex special characters for literal search
+/// Returns true if match found, false otherwise
+pub fn search_visual_selection_backward(editor: &mut Editor) -> bool {
+    let selection_text = match get_visual_selection_text(editor) {
+        Some(text) if !text.is_empty() => text,
+        _ => {
+            // Fall back to word under cursor if selection is empty
+            let cursor = editor.buffer().cursor();
+            let line_idx = cursor.line();
+            let col = cursor.col();
+
+            if let Some(line) = editor.buffer().line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let chars: Vec<char> = line_text.chars().collect();
+
+                if col < chars.len() {
+                    // Extract word under cursor
+                    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+                    let start = chars[..=col].iter().rposition(|&c| !is_word_char(c)).map(|i| i + 1).unwrap_or(0);
+                    let end = chars[col..].iter().position(|&c| !is_word_char(c)).map(|i| col + i).unwrap_or(chars.len());
+
+                    if start < end {
+                        chars[start..end].iter().collect()
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+    };
+
+    // Escape regex special characters for literal search
+    let escaped = regex::escape(&selection_text);
+
+    // Create and execute the search
+    editor.clear_search_buffer();
+    for ch in escaped.chars() {
+        editor.append_to_search_buffer(ch);
+    }
+    editor.set_search_forward(false);
+
+    // Update the / register with the search pattern
+    editor.registers.set_last_search(escaped.clone());
+
+    // Create search and find first match
+    let mut search = crate::editor::Search::new_with_options(
+        escaped,
+        false,
+        editor.options.ignorecase,
+        editor.options.smartcase,
+    );
+
+    // For backward search, start from current column (will search before cursor)
+    let cursor = editor.buffer().cursor();
+    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), cursor.col()) {
+        editor.buffer_mut().cursor_mut().set_position(line, col);
+        editor.set_current_search(search);
+        true
+    } else {
+        false
+    }
+}
+
