@@ -49,13 +49,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         return Ok(handled);
     }
 
-    // Handle 'g' prefix for gg motion
+    // Handle 'g' prefix for gg motion and gn/gN motions
     // NOTE: dgg and ygg are NOT supported in the original - only cgg, >gg, <gg, zfgg
+    // But dgn, ygn, cgn ARE supported (gn is a search motion)
     if key_event.code == KeyCode::Char('g')
         && editor.pending_command() != Some('g')
         && matches!(
             operator,
-            Operator::Indent | Operator::Dedent | Operator::Fold | Operator::Change
+            Operator::Indent | Operator::Dedent | Operator::Fold | Operator::Change | Operator::Delete | Operator::Yank
         )
     {
         editor.set_pending_command('g');
@@ -66,6 +67,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     // NOTE: dgg and ygg are NOT supported - the 'd' or 'y' is cancelled by the first 'g'
     if editor.pending_command() == Some('g') && key_event.code == KeyCode::Char('g') {
         return handle_gg_motion(editor, operator, count);
+    }
+
+    // Handle gn and gN motions (search next/prev) - delegate to pending_commands
+    if editor.pending_command() == Some('g')
+        && matches!(key_event.code, KeyCode::Char('n') | KeyCode::Char('N'))
+    {
+        // Don't clear the operator - let pending_commands handle it
+        return Ok(false);
     }
 
     // Handle G motion with operators

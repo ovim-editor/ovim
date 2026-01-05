@@ -182,4 +182,147 @@ impl Editor {
     pub fn take_visual_search_state(&mut self) -> Option<crate::editor::VisualSearchState> {
         self.visual_search_state.take()
     }
+
+    /// Finds the next search match and enters/extends visual mode (gn command)
+    /// Returns true if a match was found
+    pub fn search_select_next(&mut self) -> bool {
+        use crate::mode::Mode;
+
+        // Check if we have an active search
+        let search_exists = self.current_search.is_some();
+        if !search_exists {
+            return false;
+        }
+
+        let cursor_line = self.buffer().cursor().line();
+        let cursor_col = self.buffer().cursor().col();
+        let mode = self.mode();
+        let in_visual_mode = mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
+
+        // Clone search to avoid borrow conflicts
+        if let Some(ref search) = self.current_search {
+            let mut search_clone = search.clone();
+
+            // In normal mode, check if cursor is within a match at current position
+            if !in_visual_mode {
+                if let Some(line_text) = self.buffer().line(cursor_line) {
+                    let matches = search_clone.find_all_in_line(&line_text);
+                    let cursor_in_match = matches.iter().any(|(start_col, end_col)| {
+                        cursor_col >= *start_col && cursor_col < *end_col
+                    });
+
+                    if cursor_in_match {
+                        // If cursor is within a match, select the current match
+                        if let Some((start_col, end_col)) = matches.iter().find(|(start, end)| {
+                            cursor_col >= *start && cursor_col < *end
+                        }) {
+                            // In normal mode, enter visual mode and select this match
+                            self.set_visual_start(cursor_line, *start_col);
+                            self.buffer_mut().cursor_mut().set_position(cursor_line, end_col - 1);
+                            self.set_mode(Mode::Visual);
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // Find the next match (always search from cursor + 1 to skip current position)
+            let search_col = cursor_col + 1;
+            if let Some((line, col, match_text)) = search_clone.find_next(self.buffer(), cursor_line, search_col) {
+                let match_len = match_text.chars().count();
+                let match_end = col + match_len - 1;
+
+                if in_visual_mode {
+                    // In visual mode, extend selection to include the next match
+                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                } else {
+                    // In normal mode, enter visual mode and select the next match
+                    self.set_visual_start(line, col);
+                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                    self.set_mode(Mode::Visual);
+                }
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Finds the previous search match and enters/extends visual mode (gN command)
+    /// Returns true if a match was found
+    pub fn search_select_prev(&mut self) -> bool {
+        use crate::mode::Mode;
+
+        // Check if we have an active search
+        let search_exists = self.current_search.is_some();
+        if !search_exists {
+            return false;
+        }
+
+        let cursor_line = self.buffer().cursor().line();
+        let cursor_col = self.buffer().cursor().col();
+        let mode = self.mode();
+        let in_visual_mode = mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
+
+        // Clone search to avoid borrow conflicts
+        if let Some(ref search) = self.current_search {
+            // Create a reversed search
+            let is_forward = search.is_forward();
+            let mut rev_search = Search::new_with_options(
+                search.pattern().to_string(),
+                !is_forward,
+                self.options.ignorecase,
+                self.options.smartcase,
+            );
+
+            // In normal mode, check if cursor is within a match at current position
+            if !in_visual_mode {
+                if let Some(line_text) = self.buffer().line(cursor_line) {
+                    let matches = rev_search.find_all_in_line(&line_text);
+                    let cursor_in_match = matches.iter().any(|(start_col, end_col)| {
+                        cursor_col >= *start_col && cursor_col < *end_col
+                    });
+
+                    if cursor_in_match {
+                        // If cursor is within a match, select the current match
+                        if let Some((start_col, end_col)) = matches.iter().find(|(start, end)| {
+                            cursor_col >= *start && cursor_col < *end
+                        }) {
+                            // In normal mode, enter visual mode and select this match
+                            self.set_visual_start(cursor_line, *start_col);
+                            self.buffer_mut().cursor_mut().set_position(cursor_line, end_col - 1);
+                            self.set_mode(Mode::Visual);
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // Find the previous match
+            let search_col = if in_visual_mode {
+                cursor_col
+            } else if cursor_col > 0 {
+                cursor_col - 1
+            } else {
+                0
+            };
+            if let Some((line, col, match_text)) = rev_search.find_next(self.buffer(), cursor_line, search_col) {
+                let match_len = match_text.chars().count();
+                let match_end = col + match_len - 1;
+
+                if in_visual_mode {
+                    // In visual mode, extend selection to include the previous match
+                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                } else {
+                    // In normal mode, enter visual mode and select the previous match
+                    self.set_visual_start(line, col);
+                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                    self.set_mode(Mode::Visual);
+                }
+                return true;
+            }
+        }
+
+        false
+    }
 }

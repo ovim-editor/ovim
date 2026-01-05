@@ -148,6 +148,72 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.previous_tab();
             editor.clear_count();
         }
+        ('g', KeyCode::Char('n')) => {
+            // gn - select next search match
+            // Save pending operator before search_select_next, as set_mode() clears it
+            let saved_operator = editor.pending_operator();
+
+            if editor.search_select_next() {
+                // If we have a pending operator, apply it to the visual selection
+                if let Some(op) = saved_operator {
+                    use crate::editor::input::helpers;
+                    match op {
+                        crate::editor::Operator::Delete => {
+                            helpers::delete_visual_selection(editor)?;
+                            helpers::exit_visual_mode_to_normal(editor);
+                        }
+                        crate::editor::Operator::Yank => {
+                            helpers::yank_visual_selection(editor)?;
+                            helpers::exit_visual_mode_to_normal(editor);
+                        }
+                        crate::editor::Operator::Change => {
+                            helpers::delete_visual_selection(editor)?;
+                            let cursor = editor.buffer().cursor();
+                            let cursor_before = (cursor.line(), cursor.col());
+                            editor.start_change_building(cursor_before);
+                            helpers::save_and_clear_visual(editor);
+                            editor.set_mode(crate::mode::Mode::Insert);
+                        }
+                        _ => {} // Other operators not supported with gn
+                    }
+                    editor.clear_pending_operator();
+                }
+            }
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('N')) => {
+            // gN - select previous search match
+            // Save pending operator before search_select_prev, as set_mode() clears it
+            let saved_operator = editor.pending_operator();
+
+            if editor.search_select_prev() {
+                // If we have a pending operator, apply it to the visual selection
+                if let Some(op) = saved_operator {
+                    use crate::editor::input::helpers;
+                    match op {
+                        crate::editor::Operator::Delete => {
+                            helpers::delete_visual_selection(editor)?;
+                            helpers::exit_visual_mode_to_normal(editor);
+                        }
+                        crate::editor::Operator::Yank => {
+                            helpers::yank_visual_selection(editor)?;
+                            helpers::exit_visual_mode_to_normal(editor);
+                        }
+                        crate::editor::Operator::Change => {
+                            helpers::delete_visual_selection(editor)?;
+                            let cursor = editor.buffer().cursor();
+                            let cursor_before = (cursor.line(), cursor.col());
+                            editor.start_change_building(cursor_before);
+                            helpers::save_and_clear_visual(editor);
+                            editor.set_mode(crate::mode::Mode::Insert);
+                        }
+                        _ => {} // Other operators not supported with gN
+                    }
+                    editor.clear_pending_operator();
+                }
+            }
+            editor.clear_count();
+        }
 
         // =====================================================================
         // 'R' - LSP gr commands (pending after 'gr')
