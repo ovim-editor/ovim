@@ -2,7 +2,12 @@ use anyhow::Result;
 use ovim::session::{cleanup_stale_sessions, SessionInfo};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
+
+// Global mutex to ensure session cleanup tests don't run in parallel
+// (they all operate on the same session directory)
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Helper to create a fake session file for testing
 fn create_fake_session(name: &str, pid: u32, port: u16, age_secs: u64) -> Result<PathBuf> {
@@ -44,9 +49,15 @@ fn create_corrupted_session(name: &str) -> Result<PathBuf> {
 fn test_cleanup_stale_sessions() -> Result<()> {
     use std::time::SystemTime;
 
+    // Lock to prevent parallel test execution
+    let _lock = TEST_MUTEX.lock().unwrap();
+
     // Create fake stale sessions directly (bypass list_all auto-cleanup)
     let fake_pid = 999999; // Very unlikely to exist
     let session_dir = SessionInfo::session_dir()?;
+
+    // Ensure session directory exists
+    fs::create_dir_all(&session_dir)?;
 
     let session1 = SessionInfo {
         pid: fake_pid,
@@ -76,8 +87,21 @@ fn test_cleanup_stale_sessions() -> Result<()> {
     let path1 = session_dir.join("stale_test1.json");
     let path2 = session_dir.join("stale_test2.json");
 
-    fs::write(&path1, serde_json::to_string_pretty(&session1)?)?;
-    fs::write(&path2, serde_json::to_string_pretty(&session2)?)?;
+    {
+        use std::io::Write;
+        let mut file1 = fs::File::create(&path1)?;
+        file1.write_all(serde_json::to_string_pretty(&session1)?.as_bytes())?;
+        file1.sync_all()?;
+        drop(file1);
+
+        let mut file2 = fs::File::create(&path2)?;
+        file2.write_all(serde_json::to_string_pretty(&session2)?.as_bytes())?;
+        file2.sync_all()?;
+        drop(file2);
+    }
+
+    // Allow filesystem to stabilize before assertions (needed on slow CI systems)
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
     // Verify files exist
     assert!(path1.exists(), "Session 1 should exist before cleanup");
@@ -104,6 +128,9 @@ fn test_cleanup_stale_sessions() -> Result<()> {
 fn test_cleanup_expired_sessions() -> Result<()> {
     use std::process;
     use std::time::SystemTime;
+
+    // Lock to prevent parallel test execution
+    let _lock = TEST_MUTEX.lock().unwrap();
 
     // Use current process PID and start time so it passes the "alive" check
     let our_pid = process::id();
@@ -177,6 +204,9 @@ impl SystemInfo {
 
 #[test]
 fn test_cleanup_corrupted_sessions() -> Result<()> {
+    // Lock to prevent parallel test execution
+    let _lock = TEST_MUTEX.lock().unwrap();
+
     // Create corrupted session file
     let path = create_corrupted_session("corrupted_test")?;
 
@@ -203,6 +233,9 @@ fn test_cleanup_corrupted_sessions() -> Result<()> {
 
 #[test]
 fn test_cleanup_dry_run() -> Result<()> {
+    // Lock to prevent parallel test execution
+    let _lock = TEST_MUTEX.lock().unwrap();
+
     // Create a fake stale session with unique name
     let fake_pid = 999997;
     let session_name = format!("dry_run_test_{}", std::time::SystemTime::now()
@@ -245,6 +278,9 @@ fn test_cleanup_dry_run() -> Result<()> {
 
 #[test]
 fn test_cleanup_no_stale_sessions() -> Result<()> {
+    // Lock to prevent parallel test execution
+    let _lock = TEST_MUTEX.lock().unwrap();
+
     // First, clean up any existing stale sessions
     cleanup_stale_sessions(None, false)?;
 

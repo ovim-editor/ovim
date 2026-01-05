@@ -35,6 +35,7 @@ pub enum InstallResult {
     PrerequisitesMissing(String),
 
     /// User declined installation
+    #[allow(dead_code)]
     Declined,
 }
 
@@ -343,6 +344,7 @@ async fn install_via_shell(_language_name: &str, command: &str) -> InstallResult
 }
 
 #[cfg(test)]
+#[allow(clippy::print_stderr)]
 mod tests {
     use super::*;
 
