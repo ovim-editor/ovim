@@ -335,7 +335,8 @@ fn test_dgg_from_end() {
     test.press('G') // Go to last line
         .keys("dgg"); // Delete from last to first
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    // dgg now works - should delete all lines
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 
@@ -346,7 +347,8 @@ fn test_dgg_from_middle() {
     test.keys("jj") // Move to line 3
         .keys("dgg"); // Delete from line 3 to beginning
 
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    // dgg now works - should delete lines 1-3, leaving line 4
+    assert_eq!(test.buffer_content(), "line 4\n");
     test.assert_cursor(0, 0);
 }
 

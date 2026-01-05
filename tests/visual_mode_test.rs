@@ -153,7 +153,7 @@ fn test_V_yank_paste_lines() {
 
     assert_eq!(
         test.buffer_content(),
-        "line 1\nline 2\nline 3line 1\nline 2\n \n"
+        "line 1\nline 2\nline 3\nline 1\nline 2\n"
     );
     test.assert_cursor(4, 0);
 }

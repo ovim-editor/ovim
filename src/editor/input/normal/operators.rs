@@ -2,7 +2,7 @@
 //!
 //! Handles pending operators combined with motions:
 //! - `dd`, `dw`, `d$`, `dj`, `dk`, `d{`, `d}`, `d%`, `dG`, `dgg`
-//! - `yy`, `yw`, `y$`, `yj`, `yk`, `y{`, `y}`
+//! - `yy`, `yw`, `y$`, `yj`, `yk`, `y{`, `y}`, `yG`, `ygg`
 //! - `cc`, `cw`, `c$`, `cj`, `ck`, `c{`, `c}`, `cG`, `cgg`
 //! - `>>`, `>j`, `>k`, `>G`, `>gg`
 //! - `<<`, `<j`, `<k`, `<G`, `<gg`
@@ -50,8 +50,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     }
 
     // Handle 'g' prefix for gg motion and gn/gN motions
-    // NOTE: dgg and ygg are NOT supported in the original - only cgg, >gg, <gg, zfgg
-    // But dgn, ygn, cgn ARE supported (gn is a search motion)
+    // All linewise operators support gg: dgg, ygg, cgg, >gg, <gg, zfgg
+    // dgn, ygn, cgn ARE also supported (gn is a search motion)
     if key_event.code == KeyCode::Char('g')
         && editor.pending_command() != Some('g')
         && matches!(
@@ -63,8 +63,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         return Ok(true);
     }
 
-    // Handle gg motion with operators (cgg, >gg, <gg, zfgg)
-    // NOTE: dgg and ygg are NOT supported - the 'd' or 'y' is cancelled by the first 'g'
+    // Handle gg motion with operators (dgg, ygg, cgg, >gg, <gg, zfgg)
     if editor.pending_command() == Some('g') && key_event.code == KeyCode::Char('g') {
         return handle_gg_motion(editor, operator, count);
     }
@@ -483,6 +482,17 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             editor.delete_to_register_with_type(deleted, RegisterType::Line);
             helpers::clamp_cursor_to_buffer(editor);
         }
+        Operator::Yank => {
+            // Yank from start_line to end_line (inclusive, line-wise)
+            let mut yanked = String::new();
+            for line_idx in start_line..=end_line {
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    yanked.push_str(&line);
+                }
+            }
+            editor.yank_to_register_with_type(yanked, RegisterType::Line);
+            // Cursor stays at original position for yank
+        }
         Operator::Fold => {
             editor
                 .buffer_mut()
@@ -516,8 +526,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
     Ok(true)
 }
 
-/// Handle gg motion with operator (cgg, >gg, <gg, zfgg)
-/// NOTE: dgg and ygg are NOT supported in the original implementation
+/// Handle gg motion with operator (dgg, ygg, cgg, >gg, <gg, zfgg)
 fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Result<bool> {
     editor.clear_pending_operator();
     editor.clear_pending_command();
@@ -531,6 +540,34 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
     };
 
     match operator {
+        Operator::Delete => {
+            // Delete from start_line to end_line (inclusive, line-wise)
+            let start_pos = (start_line, 0);
+            let end_pos = (end_line + 1, 0);
+            let deleted = editor
+                .buffer_mut()
+                .delete_range(start_line, 0, end_line + 1, 0);
+            let range = Range::new(start_pos, end_pos);
+            let change = Change::delete(range, deleted.clone(), cursor_before);
+            editor.add_change(change);
+            editor.delete_to_register_with_type(deleted, RegisterType::Line);
+
+            // Move cursor to first non-blank of remaining line
+            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+            helpers::clamp_cursor_to_buffer(editor);
+            Motions::first_non_blank(editor.buffer_mut());
+        }
+        Operator::Yank => {
+            // Yank from start_line to end_line (inclusive, line-wise)
+            let mut yanked = String::new();
+            for line_idx in start_line..=end_line {
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    yanked.push_str(&line);
+                }
+            }
+            editor.yank_to_register_with_type(yanked, RegisterType::Line);
+            // Cursor stays at original position for yank
+        }
         Operator::Indent => {
             let tab_width = editor.options.tab_width;
             helpers::indent_lines_with_tracking(
@@ -567,8 +604,29 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             editor.delete_to_register(deleted);
             editor.add_change(change);
 
-            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-            helpers::clamp_cursor_to_buffer(editor);
+            // After deletion, we need to insert a blank line where start_line was
+            // Don't clamp cursor yet - we need to insert at the exact position
+            let actual_line = start_line.min(editor.buffer().line_count());
+
+            // Insert blank line at the correct position
+            if actual_line >= editor.buffer().line_count() {
+                // Need to add a line at the end
+                let last_line = editor.buffer().line_count().saturating_sub(1);
+                if let Some(last_line_text) = editor.buffer().line(last_line) {
+                    if !last_line_text.ends_with('\n') {
+                        // Add newline to last line first
+                        let line_len = last_line_text.chars().count();
+                        editor.buffer_mut().insert_text_at(last_line, line_len, "\n");
+                    }
+                }
+                // Now insert the blank line
+                editor.buffer_mut().insert_text_at(actual_line, 0, "\n");
+                editor.buffer_mut().cursor_mut().set_position(actual_line, 0);
+            } else {
+                // Insert at existing line position
+                editor.buffer_mut().cursor_mut().set_position(actual_line, 0);
+                helpers::insert_line_above(editor)?;
+            }
 
             let insert_cursor = (
                 editor.buffer().cursor().line(),
@@ -577,8 +635,6 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             editor.start_change_building(insert_cursor);
             editor.set_mode(Mode::Insert);
         }
-        // dgg and ygg fall through - they're not supported
-        // The first 'g' cancels the operator
         _ => {}
     }
 
