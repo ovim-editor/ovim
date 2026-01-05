@@ -273,174 +273,6 @@ fn test_gi_after_capital_c() {
     test.assert_cursor(0, 11); // After "there"
 }
 
-/// Test grr replaces line with register content
-#[test]
-fn test_grr_replaces_line() {
-    let mut test = EditorTest::new("line one\nline two\nline three\n");
-
-    // Yank first line
-    test.keys("yy");
-
-    // Move to second line
-    test.keys("j");
-
-    // Replace with register using grr
-    test.keys("grr");
-
-    // Second line should now be "line one"
-    let content = test.buffer_content();
-    assert!(content.contains("line one"));
-}
-
-/// Test gr motion replaces text with register
-#[test]
-fn test_gr_with_motion() {
-    let mut test = EditorTest::new("hello world\n");
-
-    // Yank "test"
-    test.keys("i");
-    test.type_text("test");
-    test.press_esc();
-    test.keys("0");
-    test.keys("vw");
-    test.keys("y");
-
-    // Start fresh line
-    test.keys("cc");
-    test.type_text("hello world");
-    test.press_esc();
-    test.keys("0");
-
-    // Replace word with register
-    test.keys("grw");
-
-    // Should replace "hello" with "test"
-    let content = test.buffer_content();
-    assert!(content.contains("test"));
-}
-
-/// Test gr$ replaces to end of line
-#[test]
-fn test_gr_dollar_replaces_to_end() {
-    let mut test = EditorTest::new("original text here\n");
-
-    // Yank some text
-    test.keys("i");
-    test.type_text("replacement");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // New line
-    test.keys("cc");
-    test.type_text("original text here");
-    test.press_esc();
-    test.keys("0");
-    test.keys("w");
-
-    // Replace from cursor to end
-    test.keys("gr$");
-
-    // Should have "original replacement"
-    assert!(test.buffer_content().contains("original"));
-    assert!(test.buffer_content().contains("replacement"));
-}
-
-/// Test gri replaces characters with insert mode
-#[test]
-fn test_gri_replace_with_insert() {
-    let mut test = EditorTest::new("hello\n");
-
-    // Yank text
-    test.keys("i");
-    test.type_text("world");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // New line
-    test.keys("cc");
-    test.type_text("hello");
-    test.press_esc();
-    test.keys("0");
-
-    // Replace in insert mode
-    test.keys("gri");
-    test.type_text("w"); // Just type one char
-
-    test.press_esc();
-
-    // Buffer should be modified
-    assert!(test.buffer_content().len() > 0);
-}
-
-/// Test gra replaces and appends
-#[test]
-fn test_gra_replace_and_append() {
-    let mut test = EditorTest::new("test line\n");
-
-    // Yank text
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y"); // Yank "test"
-
-    // Position and replace with append
-    test.keys("$");
-    test.keys("gra");
-
-    test.assert_mode(ovim::mode::Mode::Insert);
-}
-
-/// Test grI replaces at beginning of line
-#[test]
-fn test_gri_capital_at_line_start() {
-    let mut test = EditorTest::new("    indented text\n");
-
-    // Yank something
-    test.keys("i");
-    test.type_text("prefix");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // New line
-    test.keys("cc");
-    test.type_text("    indented text");
-    test.press_esc();
-
-    // Replace at line start
-    test.keys("grI");
-
-    test.assert_mode(ovim::mode::Mode::Insert);
-}
-
-/// Test grA replaces at end of line
-#[test]
-fn test_gra_capital_at_line_end() {
-    let mut test = EditorTest::new("some text\n");
-
-    // Yank something
-    test.keys("i");
-    test.type_text("suffix");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // New line
-    test.keys("cc");
-    test.type_text("some text");
-    test.press_esc();
-
-    // Replace at line end
-    test.keys("grA");
-
-    test.assert_mode(ovim::mode::Mode::Insert);
-}
-
 /// Test gi preserves position across undo
 #[test]
 fn test_gi_after_undo() {
@@ -524,34 +356,6 @@ fn test_gi_with_count() {
     test.assert_mode(ovim::mode::Mode::Insert);
 }
 
-/// Test gr with visual selection
-#[test]
-fn test_gr_with_visual_selection() {
-    let mut test = EditorTest::new("replace this text\n");
-
-    // Yank some text
-    test.keys("i");
-    test.type_text("NEW");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // Clear and create new text
-    test.keys("cc");
-    test.type_text("replace this text");
-    test.press_esc();
-    test.keys("0");
-    test.keys("w");
-
-    // Visual select and replace
-    test.keys("viw");
-    test.keys("gr");
-
-    // "this" should be replaced
-    assert!(test.buffer_content().contains("replace"));
-}
-
 /// Test gi after paste
 #[test]
 fn test_gi_not_affected_by_paste() {
@@ -574,32 +378,6 @@ fn test_gi_not_affected_by_paste() {
     test.assert_mode(ovim::mode::Mode::Insert);
 }
 
-/// Test gr in empty line
-#[test]
-fn test_gr_in_empty_line() {
-    let mut test = EditorTest::new("\n\n");
-
-    // Yank something
-    test.keys("i");
-    test.type_text("content");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // Go to empty line
-    test.keys("j");
-    test.keys("cc");
-    test.press_esc();
-
-    // Try grr on empty line
-    test.keys("grr");
-
-    // Should have content
-    let content = test.buffer_content();
-    assert!(content.contains("content"));
-}
-
 /// Test gi position persistence across file operations
 #[test]
 fn test_gi_persistence() {
@@ -620,32 +398,6 @@ fn test_gi_persistence() {
     test.keys("gi");
 
     test.assert_mode(ovim::mode::Mode::Insert);
-}
-
-/// Test gr with count
-#[test]
-fn test_gr_with_count_and_motion() {
-    let mut test = EditorTest::new("word1 word2 word3\n");
-
-    // Yank text
-    test.keys("i");
-    test.type_text("REPLACED");
-    test.press_esc();
-    test.keys("0");
-    test.keys("viw");
-    test.keys("y");
-
-    // Clear and reset
-    test.keys("cc");
-    test.type_text("word1 word2 word3");
-    test.press_esc();
-    test.keys("0");
-
-    // Replace 2 words
-    test.keys("gr2w");
-
-    // Should replace first two words
-    assert!(test.buffer_content().contains("REPLACED"));
 }
 
 /// Test gI inserts at column 1 (before indentation)

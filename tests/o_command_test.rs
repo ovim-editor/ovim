@@ -1,5 +1,5 @@
-use ovim::editor::{Editor, InputHandler};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -30,6 +30,9 @@ fn buffer_content(editor: &Editor) -> String {
 #[test]
 fn test_o_middle_of_file() {
     // Test: 'o' on a line in the middle of file
+    // with_content adds trailing newline, so "line 1\nline 2\nline 3" becomes
+    // "line 1\nline 2\nline 3\n" which is 3 lines in Vim-style counting
+    // (Ropey counts 4 including phantom empty line, but line_count() adjusts)
     let mut editor = Editor::with_content("line 1\nline 2\nline 3");
 
     // Press 'o' on line 0
@@ -38,7 +41,7 @@ fn test_o_middle_of_file() {
     // Should be in insert mode
     assert_eq!(editor.mode(), ovim::mode::Mode::Insert);
 
-    // Should have 4 lines now
+    // Should have 4 lines now (3 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 4);
 
     // Cursor should be on line 1 (the new line)
@@ -49,15 +52,17 @@ fn test_o_middle_of_file() {
     assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
     assert_eq!(editor.buffer().line(1).unwrap(), "\n");
     assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(3).unwrap(), "line 3");
+    assert_eq!(editor.buffer().line(3).unwrap(), "line 3\n");
 }
 
 #[test]
 fn test_o_last_line_no_newline() {
-    // Test: 'o' on the last line without trailing newline
+    // Test: 'o' on the last line
+    // with_content adds trailing newline, so "line 1\nline 2" becomes
+    // "line 1\nline 2\n" which is 2 lines in Vim-style counting
     let mut editor = Editor::with_content("line 1\nline 2");
 
-    // Move to last line
+    // Move to line 1 (the last actual line)
     press_char(&mut editor, 'j');
     assert_eq!(editor.buffer().cursor().line(), 1);
 
@@ -67,10 +72,10 @@ fn test_o_last_line_no_newline() {
     // Should be in insert mode
     assert_eq!(editor.mode(), ovim::mode::Mode::Insert);
 
-    // Should have 3 lines
+    // Should have 3 lines (2 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 3);
 
-    // Cursor should be on line 2
+    // Cursor should be on line 2 (the new line)
     assert_eq!(editor.buffer().cursor().line(), 2);
     assert_eq!(editor.buffer().cursor().col(), 0);
 
@@ -106,6 +111,8 @@ fn test_o_with_indentation() {
 #[test]
 fn test_o_type_text() {
     // Test: 'o' followed by typing text
+    // with_content adds trailing newline, so "line 1\nline 2" becomes
+    // "line 1\nline 2\n" which is 2 lines in Vim-style counting
     let mut editor = Editor::with_content("line 1\nline 2");
 
     // Press 'o'
@@ -121,18 +128,24 @@ fn test_o_type_text() {
 
     // Check content
     let content = buffer_content(&editor);
-    assert!(content.contains("new"), "Content should contain 'new': {}", content);
+    assert!(
+        content.contains("new"),
+        "Content should contain 'new': {}",
+        content
+    );
 
-    // Should have 3 lines
+    // Should have 3 lines (2 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 3);
     assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
     assert_eq!(editor.buffer().line(1).unwrap(), "new\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
 }
 
 #[test]
 fn test_o_and_undo() {
     // Test: 'o' followed by typing and undo
+    // with_content adds a trailing newline, so "line 1\nline 2\nline 3" becomes
+    // "line 1\nline 2\nline 3\n" which is 3 lines in Vim-style counting
     let mut editor = Editor::with_content("line 1\nline 2\nline 3");
 
     // Press 'o'
@@ -147,7 +160,7 @@ fn test_o_and_undo() {
     // Exit insert mode
     press(&mut editor, KeyCode::Esc);
 
-    // Should have 4 lines with new content
+    // Should have 4 lines (3 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 4);
     assert_eq!(editor.buffer().line(1).unwrap(), "test\n");
 
@@ -158,12 +171,14 @@ fn test_o_and_undo() {
     assert_eq!(editor.buffer().line_count(), 3);
     assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
     assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 3");
+    assert_eq!(editor.buffer().line(2).unwrap(), "line 3\n");
 }
 
 #[test]
 fn test_o_on_empty_file() {
     // Test: 'o' on an empty file
+    // Empty content ("") becomes "\n" (1 line with just newline in Vim-style counting)
+    // After 'o', we add a new line, making it 2 lines
     let mut editor = Editor::with_content("");
 
     // Press 'o'
@@ -172,16 +187,17 @@ fn test_o_on_empty_file() {
     // Should be in insert mode
     assert_eq!(editor.mode(), ovim::mode::Mode::Insert);
 
-    // Should have 2 lines (empty first line + new line)
+    // Should have 2 lines (1 original empty line + 1 new)
     assert_eq!(editor.buffer().line_count(), 2);
 
-    // Cursor should be on line 1
+    // Cursor should be on line 1 (the new line)
     assert_eq!(editor.buffer().cursor().line(), 1);
 }
 
 #[test]
 fn test_o_single_line_no_newline() {
-    // Test: 'o' on a single line without newline
+    // Test: 'o' on a single line
+    // with_content("hello") -> "hello\n" which is 1 line in Vim-style counting
     let mut editor = Editor::with_content("hello");
 
     // Press 'o'
@@ -190,14 +206,14 @@ fn test_o_single_line_no_newline() {
     // Should be in insert mode
     assert_eq!(editor.mode(), ovim::mode::Mode::Insert);
 
-    // Should have 2 lines
+    // Should have 2 lines (1 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 2);
 
-    // Cursor should be on line 1
+    // Cursor should be on line 1 (the new line)
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), 0);
 
-    // First line should have newline now
+    // Line content
     assert_eq!(editor.buffer().line(0).unwrap(), "hello\n");
     assert_eq!(editor.buffer().line(1).unwrap(), "\n");
 }
@@ -205,6 +221,7 @@ fn test_o_single_line_no_newline() {
 #[test]
 fn test_o_multiple_times() {
     // Test: pressing 'o' multiple times
+    // with_content("start") -> "start\n" which is 1 line in Vim-style counting
     let mut editor = Editor::with_content("start");
 
     // Press 'o' and add text
@@ -219,7 +236,7 @@ fn test_o_multiple_times() {
     press_char(&mut editor, '2');
     press(&mut editor, KeyCode::Esc);
 
-    // Should have 3 lines
+    // Should have 3 lines (1 original + 2 new)
     assert_eq!(editor.buffer().line_count(), 3);
     assert_eq!(editor.buffer().line(0).unwrap(), "start\n");
     assert_eq!(editor.buffer().line(1).unwrap(), "l1\n");
@@ -255,5 +272,9 @@ fn test_o_mixed_indentation() {
 
     // New line should have the mixed indentation
     let new_line = editor.buffer().line(2).unwrap();
-    assert!(new_line.starts_with("  \t"), "Line should start with '  \\t': {:?}", new_line);
+    assert!(
+        new_line.starts_with("  \t"),
+        "Line should start with '  \\t': {:?}",
+        new_line
+    );
 }

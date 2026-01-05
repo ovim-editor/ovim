@@ -14,7 +14,11 @@ fn test_lowercase_inner_word() {
     // Should convert "HELLO" to "hello"
     let line = test.line(0).unwrap();
     println!("After guiw: '{}'", line);
-    assert!(line.contains("hello"), "Should convert HELLO to hello, got: {}", line);
+    assert!(
+        line.contains("hello"),
+        "Should convert HELLO to hello, got: {}",
+        line
+    );
 }
 
 #[test]
@@ -28,7 +32,11 @@ fn test_uppercase_inner_word() {
     // Should convert "hello" to "HELLO"
     let line = test.line(0).unwrap();
     println!("After gUiw: '{}'", line);
-    assert!(line.contains("HELLO WORLD"), "Should convert hello to HELLO, got: {}", line);
+    assert!(
+        line.contains("HELLO WORLD"),
+        "Should convert hello to HELLO, got: {}",
+        line
+    );
 }
 
 #[test]
@@ -41,7 +49,11 @@ fn test_lowercase_with_motion() {
 
     let line = test.line(0).unwrap();
     println!("After guw: '{}'", line);
-    assert!(line.starts_with("hello"), "Should convert first word to lowercase, got: {}", line);
+    assert!(
+        line.starts_with("hello"),
+        "Should convert first word to lowercase, got: {}",
+        line
+    );
 }
 
 #[test]
@@ -54,7 +66,11 @@ fn test_uppercase_line() {
 
     let line = test.line(0).unwrap();
     println!("After gU$: '{}'", line);
-    assert!(line.contains("HELLO WORLD"), "Should convert line to uppercase, got: {}", line);
+    assert!(
+        line.contains("HELLO WORLD"),
+        "Should convert line to uppercase, got: {}",
+        line
+    );
 }
 
 #[test]

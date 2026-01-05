@@ -8,6 +8,9 @@
 //! - **Daemon**: Background process that manages LSP server
 //! - **Protocol**: Request/response over Unix domain socket
 //!
+//! Daemon processes use stderr for debugging output.
+#![allow(clippy::print_stderr)]
+
 //! ## Safety Features
 //!
 //! - **PID Verification**: Prevents PID reuse attacks (start time + cmdline hash)

@@ -1,0 +1,337 @@
+//! Markdown parser for hover window rendering
+//!
+//! Parses LSP hover markdown and converts it to styled text spans for ratatui.
+//! Supports: **bold**, `inline code`, ```code blocks```, and basic structure.
+
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+/// Colors for markdown rendering (Catppuccin-inspired)
+pub mod colors {
+    use ratatui::style::Color;
+
+    pub const BG: Color = Color::Rgb(30, 30, 46);
+    pub const TEXT: Color = Color::Rgb(205, 214, 244);
+    pub const BORDER: Color = Color::Rgb(137, 180, 250);
+    pub const BOLD: Color = Color::Rgb(245, 194, 231);
+    pub const CODE_SPAN_BG: Color = Color::Rgb(49, 50, 68);
+    pub const CODE_SPAN_FG: Color = Color::Rgb(148, 226, 213);
+    pub const CODE_BLOCK_BG: Color = Color::Rgb(24, 24, 37);
+    pub const CODE_BLOCK_FG: Color = Color::Rgb(166, 227, 161);
+    pub const HEADING: Color = Color::Rgb(245, 194, 231);
+    pub const PARAM: Color = Color::Rgb(250, 179, 135);
+    pub const RETURN: Color = Color::Rgb(166, 227, 161);
+}
+
+/// Parsed markdown element
+#[derive(Debug, Clone)]
+pub enum MarkdownElement {
+    /// Plain text
+    Text(String),
+    /// Bold text (**text**)
+    Bold(String),
+    /// Inline code (`code`)
+    InlineCode(String),
+    /// Code block with optional language
+    CodeBlock {
+        #[allow(dead_code)]
+        language: Option<String>,
+        code: String,
+    },
+    /// Heading (# Title)
+    Heading(#[allow(dead_code)] u8, String),
+    /// Horizontal rule (---)
+    HorizontalRule,
+    /// Line break
+    LineBreak,
+}
+
+/// Parse markdown text into elements
+pub fn parse_markdown(text: &str) -> Vec<MarkdownElement> {
+    let mut elements = Vec::new();
+    let lines = text.lines().peekable();
+    let mut in_code_block = false;
+    let mut code_block_lang: Option<String> = None;
+    let mut code_block_content = String::new();
+
+    for line in lines {
+        // Handle code blocks
+        if line.starts_with("```") {
+            if in_code_block {
+                // End of code block
+                elements.push(MarkdownElement::CodeBlock {
+                    language: code_block_lang.take(),
+                    code: code_block_content.trim_end().to_string(),
+                });
+                code_block_content.clear();
+                in_code_block = false;
+            } else {
+                // Start of code block
+                in_code_block = true;
+                let lang = line.trim_start_matches('`').trim();
+                code_block_lang = if lang.is_empty() {
+                    None
+                } else {
+                    Some(lang.to_string())
+                };
+            }
+            continue;
+        }
+
+        if in_code_block {
+            if !code_block_content.is_empty() {
+                code_block_content.push('\n');
+            }
+            code_block_content.push_str(line);
+            continue;
+        }
+
+        // Handle headings
+        if line.starts_with('#') {
+            let level = line.chars().take_while(|c| *c == '#').count() as u8;
+            let text = line.trim_start_matches('#').trim();
+            elements.push(MarkdownElement::Heading(level, text.to_string()));
+            continue;
+        }
+
+        // Handle horizontal rules
+        if line.trim() == "---" || line.trim() == "***" || line.trim() == "___" {
+            elements.push(MarkdownElement::HorizontalRule);
+            continue;
+        }
+
+        // Handle empty lines
+        if line.trim().is_empty() {
+            elements.push(MarkdownElement::LineBreak);
+            continue;
+        }
+
+        // Parse inline elements
+        parse_inline_elements(line, &mut elements);
+        elements.push(MarkdownElement::LineBreak);
+    }
+
+    // Handle unclosed code block
+    if in_code_block && !code_block_content.is_empty() {
+        elements.push(MarkdownElement::CodeBlock {
+            language: code_block_lang,
+            code: code_block_content,
+        });
+    }
+
+    elements
+}
+
+/// Parse inline markdown elements (bold, inline code) from a line
+fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
+    let mut current_text = String::new();
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '*' if chars.peek() == Some(&'*') => {
+                // Bold text
+                chars.next(); // consume second *
+                if !current_text.is_empty() {
+                    elements.push(MarkdownElement::Text(current_text.clone()));
+                    current_text.clear();
+                }
+                let mut bold_text = String::new();
+                while let Some(bc) = chars.next() {
+                    if bc == '*' && chars.peek() == Some(&'*') {
+                        chars.next();
+                        break;
+                    }
+                    bold_text.push(bc);
+                }
+                if !bold_text.is_empty() {
+                    elements.push(MarkdownElement::Bold(bold_text));
+                }
+            }
+            '`' => {
+                // Inline code
+                if !current_text.is_empty() {
+                    elements.push(MarkdownElement::Text(current_text.clone()));
+                    current_text.clear();
+                }
+                let mut code_text = String::new();
+                for cc in chars.by_ref() {
+                    if cc == '`' {
+                        break;
+                    }
+                    code_text.push(cc);
+                }
+                if !code_text.is_empty() {
+                    elements.push(MarkdownElement::InlineCode(code_text));
+                }
+            }
+            _ => {
+                current_text.push(c);
+            }
+        }
+    }
+
+    if !current_text.is_empty() {
+        elements.push(MarkdownElement::Text(current_text));
+    }
+}
+
+/// Convert parsed markdown elements to styled ratatui Lines
+pub fn render_markdown(elements: &[MarkdownElement], max_width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0;
+
+    let text_style = Style::default().fg(colors::TEXT);
+    let bold_style = Style::default()
+        .fg(colors::BOLD)
+        .add_modifier(Modifier::BOLD);
+    let code_style = Style::default()
+        .fg(colors::CODE_SPAN_FG)
+        .bg(colors::CODE_SPAN_BG);
+    let heading_style = Style::default()
+        .fg(colors::HEADING)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let code_block_style = Style::default()
+        .fg(colors::CODE_BLOCK_FG)
+        .bg(colors::CODE_BLOCK_BG);
+
+    for element in elements {
+        match element {
+            MarkdownElement::Text(text) => {
+                // Check for @param and @return annotations
+                let styled_text = if text.contains("@param") || text.starts_with("@param") {
+                    Span::styled(
+                        text.clone(),
+                        Style::default().fg(colors::PARAM),
+                    )
+                } else if text.contains("@return") || text.starts_with("@return") {
+                    Span::styled(
+                        text.clone(),
+                        Style::default().fg(colors::RETURN),
+                    )
+                } else {
+                    Span::styled(text.clone(), text_style)
+                };
+                current_width += text.len();
+                current_spans.push(styled_text);
+            }
+            MarkdownElement::Bold(text) => {
+                current_spans.push(Span::styled(text.clone(), bold_style));
+                current_width += text.len();
+            }
+            MarkdownElement::InlineCode(code) => {
+                current_spans.push(Span::styled(format!(" {} ", code), code_style));
+                current_width += code.len() + 2;
+            }
+            MarkdownElement::CodeBlock { code, .. } => {
+                // Flush current line
+                if !current_spans.is_empty() {
+                    lines.push(Line::from(current_spans.clone()));
+                    current_spans.clear();
+                    current_width = 0;
+                }
+                // Add code block lines
+                for code_line in code.lines() {
+                    let truncated = if code_line.len() > max_width.saturating_sub(2) {
+                        format!(" {}... ", &code_line[..max_width.saturating_sub(5)])
+                    } else {
+                        format!(" {} ", code_line)
+                    };
+                    lines.push(Line::from(Span::styled(truncated, code_block_style)));
+                }
+            }
+            MarkdownElement::Heading(_, text) => {
+                // Flush current line
+                if !current_spans.is_empty() {
+                    lines.push(Line::from(current_spans.clone()));
+                    current_spans.clear();
+                    current_width = 0;
+                }
+                lines.push(Line::from(Span::styled(text.clone(), heading_style)));
+            }
+            MarkdownElement::HorizontalRule => {
+                // Flush current line
+                if !current_spans.is_empty() {
+                    lines.push(Line::from(current_spans.clone()));
+                    current_spans.clear();
+                    current_width = 0;
+                }
+                lines.push(Line::from(Span::styled(
+                    "─".repeat(max_width.saturating_sub(2)),
+                    Style::default().fg(colors::BORDER),
+                )));
+            }
+            MarkdownElement::LineBreak => {
+                if !current_spans.is_empty() {
+                    lines.push(Line::from(current_spans.clone()));
+                    current_spans.clear();
+                    current_width = 0;
+                } else {
+                    lines.push(Line::from("")); // Empty line
+                }
+            }
+        }
+
+        // Wrap long lines
+        if current_width > max_width.saturating_sub(2) {
+            lines.push(Line::from(current_spans.clone()));
+            current_spans.clear();
+            current_width = 0;
+        }
+    }
+
+    // Flush remaining spans
+    if !current_spans.is_empty() {
+        lines.push(Line::from(current_spans));
+    }
+
+    lines
+}
+
+/// Calculate the dimensions needed for the hover content
+#[allow(dead_code)]
+pub fn measure_content(elements: &[MarkdownElement], max_width: usize) -> (usize, usize) {
+    let rendered = render_markdown(elements, max_width);
+    let height = rendered.len();
+    let width = rendered
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.len())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0)
+        .min(max_width);
+    (width, height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_bold() {
+        let elements = parse_markdown("Hello **world**!");
+        assert!(elements.iter().any(|e| matches!(e, MarkdownElement::Bold(s) if s == "world")));
+    }
+
+    #[test]
+    fn test_parse_inline_code() {
+        let elements = parse_markdown("Use `println!` for output");
+        assert!(elements
+            .iter()
+            .any(|e| matches!(e, MarkdownElement::InlineCode(s) if s == "println!")));
+    }
+
+    #[test]
+    fn test_parse_code_block() {
+        let elements = parse_markdown("```rust\nfn main() {}\n```");
+        assert!(elements.iter().any(|e| matches!(e,
+            MarkdownElement::CodeBlock { language: Some(lang), code }
+            if lang == "rust" && code.contains("fn main")
+        )));
+    }
+}

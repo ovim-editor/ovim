@@ -65,7 +65,10 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
     }
 
     // Still alive - escalate to SIGKILL
-    eprintln!("[daemon] Warning: Process {} did not respond to SIGTERM, sending SIGKILL", pid);
+    eprintln!(
+        "[daemon] Warning: Process {} did not respond to SIGTERM, sending SIGKILL",
+        pid
+    );
     if let Err(e) = kill(Pid::from_raw(pid), Signal::SIGKILL) {
         eprintln!("[daemon] Error: SIGKILL failed: {}", e);
     }
@@ -80,12 +83,18 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
         }
 
         if i == 2 {
-            eprintln!("[daemon] Warning: Process {} still alive after SIGKILL", pid);
+            eprintln!(
+                "[daemon] Warning: Process {} still alive after SIGKILL",
+                pid
+            );
         }
     }
 
     // Still alive after SIGKILL - check state
-    eprintln!("[daemon] Error: Process {} survived SIGKILL - checking state", pid);
+    eprintln!(
+        "[daemon] Error: Process {} survived SIGKILL - checking state",
+        pid
+    );
 
     match get_process_state(pid)? {
         'Z' => {
@@ -93,17 +102,19 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
             Ok(ProcessKillStatus::Zombie)
         }
         'D' => {
-            eprintln!("[daemon] Error: Process {} is in uninterruptible sleep (state D)", pid);
+            eprintln!(
+                "[daemon] Error: Process {} is in uninterruptible sleep (state D)",
+                pid
+            );
             eprintln!("[daemon] Error: This process cannot be killed! Likely waiting on disk I/O");
             Ok(ProcessKillStatus::Stuck)
         }
         state => {
-            eprintln!("[daemon] Error: Process {} in unexpected state: {}", pid, state);
-            anyhow::bail!(
-                "Process {} survived SIGKILL and is in state {}",
-                pid,
-                state
-            )
+            eprintln!(
+                "[daemon] Error: Process {} in unexpected state: {}",
+                pid, state
+            );
+            anyhow::bail!("Process {} survived SIGKILL and is in state {}", pid, state)
         }
     }
 }
@@ -121,8 +132,8 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
 pub fn get_process_state(pid: i32) -> Result<char> {
     use std::fs;
 
-    let stat = fs::read_to_string(format!("/proc/{}/stat", pid))
-        .context("Failed to read /proc/stat")?;
+    let stat =
+        fs::read_to_string(format!("/proc/{}/stat", pid)).context("Failed to read /proc/stat")?;
 
     // Format: pid (comm) state ...
     // Find state after the comm field (which may contain spaces/parens)
@@ -203,7 +214,10 @@ impl RogueProcessTracker {
 
     /// Mark a process as rogue
     pub async fn mark_rogue(&self, pid: i32, reason: String) {
-        eprintln!("[daemon] Error: Marking process {} as rogue: {}", pid, reason);
+        eprintln!(
+            "[daemon] Error: Marking process {} as rogue: {}",
+            pid, reason
+        );
 
         let mut rogues = self.rogue_pids.lock().await;
         rogues.push(RogueProcess {
@@ -249,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn test_kill_current_process_fails() {
         // Trying to kill ourselves should fail (or we wouldn't be here!)
-        let pid = std::process::id() as i32;
+        let _pid = std::process::id() as i32;
 
         // Don't actually kill ourselves, just test the logic path
         // We can't actually test successful kill without spawning a process
@@ -261,11 +275,7 @@ mod tests {
         let state = get_process_state(pid).unwrap();
 
         // We should be in Running or Sleeping state
-        assert!(
-            state == 'R' || state == 'S',
-            "Unexpected state: {}",
-            state
-        );
+        assert!(state == 'R' || state == 'S', "Unexpected state: {}", state);
     }
 
     #[tokio::test]

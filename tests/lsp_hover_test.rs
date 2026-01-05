@@ -1,9 +1,15 @@
 //! LSP Hover Integration Tests
 //!
-//! Tests for LSP hover functionality
+//! These tests require external infrastructure to run:
+//! - The release binary must be built (`cargo build --release`)
+//! - rust-analyzer must be installed and working
+//! - Tests spawn actual headless ovim processes
+//!
+//! Run these tests with: `cargo test --test lsp_hover_test -- --ignored`
 
 mod lsp_test_utils;
 
+#[allow(unused_imports)]
 use anyhow::Result;
 
 /// BUG REPRODUCTION: Hover returns None instead of type info
@@ -18,7 +24,7 @@ use anyhow::Result;
 /// Expected: hover_info contains "u32" type information
 /// Actual: hover_info is None
 #[tokio::test]
-#[ignore] // Remove this when bug is fixed
+#[ignore = "Bug reproduction: requires release binary and rust-analyzer"]
 async fn test_hover_on_struct_field_bug_reproduction() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 
@@ -47,10 +53,11 @@ async fn test_hover_on_struct_field_bug_reproduction() -> Result<()> {
 
 /// Test that documents current behavior (for comparison when fixed)
 #[tokio::test]
+#[ignore = "Requires release binary and rust-analyzer"]
 async fn test_hover_current_behavior() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 
-    send!(session, "20Gww");  // Go to "pid"
+    send!(session, "20Gww"); // Go to "pid"
     send!(session, "K");
     wait!(500);
 
@@ -58,7 +65,10 @@ async fn test_hover_current_behavior() -> Result<()> {
     println!("Current hover result: {:?}", hover);
 
     // Document that it currently returns None
-    assert!(hover.is_none(), "Hover currently returns None (this is the bug)");
+    assert!(
+        hover.is_none(),
+        "Hover currently returns None (this is the bug)"
+    );
 
     session.cleanup().await?;
     Ok(())
@@ -66,6 +76,7 @@ async fn test_hover_current_behavior() -> Result<()> {
 
 /// Test hover on use statement
 #[tokio::test]
+#[ignore = "Requires release binary and rust-analyzer"]
 async fn test_hover_on_use_statement() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 
@@ -88,6 +99,7 @@ async fn test_hover_on_use_statement() -> Result<()> {
 
 /// Test hover on function parameter
 #[tokio::test]
+#[ignore = "Requires release binary and rust-analyzer"]
 async fn test_hover_on_function_parameter() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 
@@ -96,8 +108,8 @@ async fn test_hover_on_function_parameter() -> Result<()> {
     send!(session, "gg");
     send!(session, "/impl SessionInfo<CR>");
     send!(session, "n"); // Find first match
-    send!(session, "j");  // Go to next line
-    send!(session, "w");  // Move to parameter
+    send!(session, "j"); // Go to next line
+    send!(session, "w"); // Move to parameter
 
     // Trigger hover
     send!(session, "K");
@@ -115,6 +127,7 @@ async fn test_hover_on_function_parameter() -> Result<()> {
 
 /// Test that hover returns None on whitespace
 #[tokio::test]
+#[ignore = "Requires release binary and rust-analyzer"]
 async fn test_hover_on_whitespace_returns_none() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 
@@ -135,6 +148,7 @@ async fn test_hover_on_whitespace_returns_none() -> Result<()> {
 
 /// Debug test - just check LSP is working
 #[tokio::test]
+#[ignore = "Requires release binary and rust-analyzer"]
 async fn test_lsp_initializes_correctly() -> Result<()> {
     let session = ovim_session!("src/session.rs");
 

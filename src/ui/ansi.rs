@@ -65,8 +65,20 @@ fn style_to_ansi(style: &Style) -> String {
     if style.add_modifier.contains(Modifier::UNDERLINED) {
         codes.push("4".to_string());
     }
+    if style.add_modifier.contains(Modifier::SLOW_BLINK) {
+        codes.push("5".to_string());
+    }
+    if style.add_modifier.contains(Modifier::RAPID_BLINK) {
+        codes.push("6".to_string());
+    }
     if style.add_modifier.contains(Modifier::REVERSED) {
         codes.push("7".to_string());
+    }
+    if style.add_modifier.contains(Modifier::HIDDEN) {
+        codes.push("8".to_string());
+    }
+    if style.add_modifier.contains(Modifier::CROSSED_OUT) {
+        codes.push("9".to_string());
     }
 
     format!("\x1b[{}m", codes.join(";"))

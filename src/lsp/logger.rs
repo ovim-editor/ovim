@@ -25,18 +25,25 @@ pub fn init_lsp_logging() -> std::io::Result<()> {
         .append(true)
         .open(&log_path)?;
 
-    let mut log_file = LSP_LOG_FILE.lock().unwrap();
+    // Handle mutex poisoning gracefully by recovering the guard
+    let mut log_file = match LSP_LOG_FILE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     *log_file = Some(file);
 
     Ok(())
 }
 
 /// Get the path to the LSP log file
-fn get_log_path() -> PathBuf {
+pub fn get_log_path() -> PathBuf {
     if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
         PathBuf::from(cache_dir).join("ovim").join("lsp.log")
     } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".cache").join("ovim").join("lsp.log")
+        PathBuf::from(home)
+            .join(".cache")
+            .join("ovim")
+            .join("lsp.log")
     } else {
         PathBuf::from("/tmp").join("ovim-lsp.log")
     }
@@ -70,7 +77,13 @@ pub fn log_message(level: LogLevel, context: &str, message: &str) {
     }
 
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let log_line = format!("[{}] [{}] [{}] {}\n", timestamp, level.as_str(), context, message);
+    let log_line = format!(
+        "[{}] [{}] [{}] {}\n",
+        timestamp,
+        level.as_str(),
+        context,
+        message
+    );
 
     if let Ok(mut log_file) = LSP_LOG_FILE.lock() {
         if let Some(ref mut file) = *log_file {

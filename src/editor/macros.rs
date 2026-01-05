@@ -12,6 +12,12 @@ pub struct MacroManager {
     current_recording: Vec<KeyEvent>,
 }
 
+impl Default for MacroManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MacroManager {
     /// Creates a new macro manager
     pub fn new() -> Self {

@@ -10,9 +10,7 @@ use ovim::mode::Mode;
 fn test_i_basic() {
     let mut test = EditorTest::new("hello");
 
-    test.press('i')
-        .type_text("start ")
-        .press_esc();
+    test.press('i').type_text("start ").press_esc();
 
     assert_eq!(test.buffer_content(), "start hello\n");
     test.assert_cursor(0, 5);
@@ -35,9 +33,7 @@ fn test_i_middle_of_line() {
 fn test_i_empty_line() {
     let mut test = EditorTest::new("\n");
 
-    test.press('i')
-        .type_text("new text")
-        .press_esc();
+    test.press('i').type_text("new text").press_esc();
 
     assert_eq!(test.buffer_content(), "new text\n");
     test.assert_cursor(0, 7);
@@ -120,9 +116,7 @@ fn test_a_end_of_line() {
 fn test_a_empty_line() {
     let mut test = EditorTest::new("");
 
-    test.press('a')
-        .type_text("text")
-        .press_esc();
+    test.press('a').type_text("text").press_esc();
 
     assert_eq!(test.buffer_content(), "text\n");
     test.assert_cursor(0, 4);
@@ -136,9 +130,7 @@ fn test_a_empty_line() {
 fn test_A_basic() {
     let mut test = EditorTest::new("hello");
 
-    test.press('A')
-        .type_text(" world")
-        .press_esc();
+    test.press('A').type_text(" world").press_esc();
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 10);
@@ -161,9 +153,7 @@ fn test_A_from_middle() {
 fn test_A_empty_line() {
     let mut test = EditorTest::new("");
 
-    test.press('A')
-        .type_text("text")
-        .press_esc();
+    test.press('A').type_text("text").press_esc();
 
     assert_eq!(test.buffer_content(), "text\n");
     test.assert_cursor(0, 3);
@@ -177,9 +167,7 @@ fn test_A_empty_line() {
 fn test_o_basic() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('o')
-        .type_text("new line")
-        .press_esc();
+    test.press('o').type_text("new line").press_esc();
 
     assert_eq!(test.buffer_content(), "line 1\nnew line\nline 2\n");
     test.assert_cursor(1, 7);
@@ -207,7 +195,10 @@ fn test_o_with_spaces_indentation() {
         .type_text("same indent")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "start\n    indented\n    same indent\nend\n");
+    assert_eq!(
+        test.buffer_content(),
+        "start\n    indented\n    same indent\nend\n"
+    );
     test.assert_cursor(2, 14);
 }
 
@@ -220,7 +211,10 @@ fn test_o_with_tabs_indentation() {
         .type_text("same indent")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "start\n\t\tindented\n\t\tsame indent\nend\n");
+    assert_eq!(
+        test.buffer_content(),
+        "start\n\t\tindented\n\t\tsame indent\nend\n"
+    );
     test.assert_cursor(2, 12);
 }
 
@@ -228,9 +222,7 @@ fn test_o_with_tabs_indentation() {
 fn test_o_empty_file() {
     let mut test = EditorTest::empty();
 
-    test.press('o')
-        .type_text("first line")
-        .press_esc();
+    test.press('o').type_text("first line").press_esc();
 
     assert_eq!(test.buffer_content(), "\nfirst line\n");
     test.assert_cursor(1, 9);
@@ -240,9 +232,7 @@ fn test_o_empty_file() {
 fn test_o_single_line_no_newline() {
     let mut test = EditorTest::new("hello");
 
-    test.press('o')
-        .type_text("world")
-        .press_esc();
+    test.press('o').type_text("world").press_esc();
 
     assert_eq!(test.buffer_content(), "hello\nworld\n");
     test.assert_cursor(1, 4);
@@ -283,11 +273,12 @@ fn test_O_basic() {
 fn test_O_first_line() {
     let mut test = EditorTest::new("first line\nsecond line");
 
-    test.press('O')
-        .type_text("new first")
-        .press_esc();
+    test.press('O').type_text("new first").press_esc();
 
-    assert_eq!(test.buffer_content(), "new first\nfirst line\nsecond line\n");
+    assert_eq!(
+        test.buffer_content(),
+        "new first\nfirst line\nsecond line\n"
+    );
     test.assert_cursor(0, 8);
 }
 
@@ -300,7 +291,10 @@ fn test_O_with_indentation() {
         .type_text("same indent")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "start\n    same indent\n    indented\nend\n");
+    assert_eq!(
+        test.buffer_content(),
+        "start\n    same indent\n    indented\nend\n"
+    );
     test.assert_cursor(1, 14);
 }
 
@@ -308,9 +302,7 @@ fn test_O_with_indentation() {
 fn test_O_empty_file() {
     let mut test = EditorTest::empty();
 
-    test.press('O')
-        .type_text("first line")
-        .press_esc();
+    test.press('O').type_text("first line").press_esc();
 
     assert_eq!(test.buffer_content(), "first line\n");
     test.assert_cursor(0, 9);
@@ -320,9 +312,7 @@ fn test_O_empty_file() {
 fn test_O_single_line() {
     let mut test = EditorTest::new("only line");
 
-    test.press('O')
-        .type_text("new first")
-        .press_esc();
+    test.press('O').type_text("new first").press_esc();
 
     assert_eq!(test.buffer_content(), "new first\nonly line\n");
     test.assert_cursor(0, 8);
@@ -398,12 +388,10 @@ fn test_A_then_enter() {
 fn test_o_and_undo() {
     let mut test = EditorTest::new("line 1\nline 2");
 
-    test.press('o')
-        .type_text("inserted")
-        .press_esc()
-        .press('u'); // Undo
+    test.press('o').type_text("inserted").press_esc().press('u'); // Undo
 
-    assert_eq!(test.buffer_content(), "line 1\n\nline 2\n");
+    // Undo should restore original content (no blank line)
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
     test.assert_cursor(0, 0);
 }
 
@@ -425,10 +413,7 @@ fn test_i_and_undo() {
 fn test_A_and_undo() {
     let mut test = EditorTest::new("hello");
 
-    test.press('A')
-        .type_text(" world")
-        .press_esc()
-        .press('u'); // Undo
+    test.press('A').type_text(" world").press_esc().press('u'); // Undo
 
     assert_eq!(test.buffer_content(), "hello\n");
     test.assert_cursor(0, 0);

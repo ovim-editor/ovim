@@ -57,12 +57,10 @@ impl TreeNode {
         }
 
         // Sort: directories first, then alphabetically
-        children.sort_by(|a, b| {
-            match (a.is_dir, b.is_dir) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            }
+        children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
         });
 
         self.children = children;
@@ -227,7 +225,7 @@ impl FileTree {
             .map(|n| n.path().to_path_buf())
         {
             if let Some(ref mut root) = self.root {
-                Self::toggle_node_at_path(root, &selected_path);
+                Self::toggle_node_at_path(root, selected_path);
                 self.rebuild_flattened();
             }
         }

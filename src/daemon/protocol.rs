@@ -47,49 +47,28 @@ pub enum DaemonRequest {
     },
 
     /// Document saved
-    DidSave {
-        uri: String,
-        text: Option<String>,
-    },
+    DidSave { uri: String, text: Option<String> },
 
     /// Close document
-    DidClose {
-        uri: String,
-    },
+    DidClose { uri: String },
 
     /// Get hover information
-    Hover {
-        uri: String,
-        position: LspPosition,
-    },
+    Hover { uri: String, position: LspPosition },
 
     /// Go to definition
-    GotoDefinition {
-        uri: String,
-        position: LspPosition,
-    },
+    GotoDefinition { uri: String, position: LspPosition },
 
     /// Request completion
-    Completion {
-        uri: String,
-        position: LspPosition,
-    },
+    Completion { uri: String, position: LspPosition },
 
     /// Format document
-    FormatDocument {
-        uri: String,
-    },
+    FormatDocument { uri: String },
 
     /// Get code actions
-    CodeActions {
-        uri: String,
-        range: LspRange,
-    },
+    CodeActions { uri: String, range: LspRange },
 
     /// Get diagnostics for document
-    GetDiagnostics {
-        uri: String,
-    },
+    GetDiagnostics { uri: String },
 
     /// Shutdown daemon gracefully
     Shutdown,
@@ -105,9 +84,7 @@ pub enum DaemonResponse {
     Ok,
 
     /// Hover information
-    Hover {
-        content: String,
-    },
+    Hover { content: String },
 
     /// Definition location
     Definition {
@@ -117,29 +94,19 @@ pub enum DaemonResponse {
     },
 
     /// Completion items
-    Completion {
-        items: Vec<CompletionItem>,
-    },
+    Completion { items: Vec<CompletionItem> },
 
     /// Text edits for formatting
-    FormatEdits {
-        edits: Vec<TextEdit>,
-    },
+    FormatEdits { edits: Vec<TextEdit> },
 
     /// Code action options
-    CodeActions {
-        actions: Vec<CodeAction>,
-    },
+    CodeActions { actions: Vec<CodeAction> },
 
     /// Diagnostics for document
-    Diagnostics {
-        diagnostics: Vec<Diagnostic>,
-    },
+    Diagnostics { diagnostics: Vec<Diagnostic> },
 
     /// Request failed with error
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Completion item from LSP
@@ -302,7 +269,10 @@ mod tests {
     fn test_hover_request() {
         let request = DaemonRequest::Hover {
             uri: "file:///test.java".to_string(),
-            position: LspPosition { line: 10, character: 5 },
+            position: LspPosition {
+                line: 10,
+                character: 5,
+            },
         };
 
         let bytes = request.to_bytes().unwrap();

@@ -10,6 +10,8 @@ pub struct Window {
     cursor: Cursor,
     /// Scroll offset (top line visible in window)
     scroll_offset: usize,
+    /// Horizontal scroll offset (leftmost visible column)
+    horizontal_offset: usize,
     /// Window width (columns)
     width: u16,
     /// Window height (rows)
@@ -23,6 +25,7 @@ impl Window {
             buffer_id,
             cursor: Cursor::new(0, 0),
             scroll_offset: 0,
+            horizontal_offset: 0,
             width,
             height,
         }
@@ -53,6 +56,16 @@ impl Window {
         self.scroll_offset = offset;
     }
 
+    /// Gets the horizontal scroll offset
+    pub fn horizontal_offset(&self) -> usize {
+        self.horizontal_offset
+    }
+
+    /// Sets the horizontal scroll offset
+    pub fn set_horizontal_offset(&mut self, offset: usize) {
+        self.horizontal_offset = offset;
+    }
+
     /// Gets the window width
     pub fn width(&self) -> u16 {
         self.width
@@ -70,7 +83,8 @@ impl Window {
     }
 
     /// Ensures the cursor is visible in the window, adjusting scroll if needed
-    pub fn ensure_cursor_visible(&mut self, buffer: &Buffer) {
+    /// scrolloff: minimum number of lines to keep above/below cursor
+    pub fn ensure_cursor_visible(&mut self, buffer: &Buffer, scrolloff: usize) {
         let cursor_line = self.cursor.line();
         let visible_lines = self.height as usize;
 
@@ -80,19 +94,77 @@ impl Window {
             self.cursor.set_position(max_line, 0);
         }
 
-        // Adjust scroll to keep cursor visible
-        if cursor_line < self.scroll_offset {
-            self.scroll_offset = cursor_line;
-        } else if cursor_line >= self.scroll_offset + visible_lines {
-            self.scroll_offset = cursor_line.saturating_sub(visible_lines - 1);
+        // Adjust scroll to maintain scrolloff distance from top/bottom
+        // Scroll up if cursor is too close to top
+        if cursor_line < self.scroll_offset + scrolloff {
+            self.scroll_offset = cursor_line.saturating_sub(scrolloff);
+        }
+        // Scroll down if cursor is too close to bottom
+        else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
+            self.scroll_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
         }
     }
 
+    /// Ensures the cursor column is visible horizontally, adjusting horizontal offset if needed
+    /// Returns true if horizontal offset changed
+    pub fn ensure_cursor_visible_horizontal(
+        &mut self,
+        cursor_col: usize,
+        wrap: bool,
+        sidescroll: usize,
+        sidescrolloff: usize,
+    ) -> bool {
+        // If wrap enabled, no horizontal scrolling needed
+        if wrap {
+            if self.horizontal_offset != 0 {
+                self.horizontal_offset = 0;
+                return true;
+            }
+            return false;
+        }
+
+        let visible_width = self.width as usize;
+        let old_offset = self.horizontal_offset;
+
+        // Calculate bounds with sidescrolloff
+        let left_bound = self.horizontal_offset + sidescrolloff;
+        let right_bound = self.horizontal_offset + visible_width.saturating_sub(sidescrolloff + 1);
+
+        // Cursor is too far left
+        if cursor_col < left_bound {
+            if sidescroll == 0 {
+                // Jump to center cursor horizontally
+                self.horizontal_offset = cursor_col.saturating_sub(visible_width / 2);
+            } else {
+                // Scroll left by sidescroll amount
+                let scroll_amount = left_bound - cursor_col;
+                let scroll_step = scroll_amount.div_ceil(sidescroll) * sidescroll;
+                self.horizontal_offset = self.horizontal_offset.saturating_sub(scroll_step);
+            }
+        }
+        // Cursor is too far right
+        else if cursor_col > right_bound {
+            if sidescroll == 0 {
+                // Jump to center cursor horizontally
+                self.horizontal_offset = cursor_col.saturating_sub(visible_width / 2);
+            } else {
+                // Scroll right by sidescroll amount
+                let scroll_amount = cursor_col - right_bound;
+                let scroll_step = scroll_amount.div_ceil(sidescroll) * sidescroll;
+                self.horizontal_offset += scroll_step;
+            }
+        }
+
+        old_offset != self.horizontal_offset
+    }
+
     /// Centers the cursor in the window
+    /// Note: Centering doesn't need scrolloff adjustment since cursor is already far from edges
     pub fn center_cursor(&mut self) {
         let cursor_line = self.cursor.line();
         let visible_lines = self.height as usize;
-        self.scroll_offset = cursor_line.saturating_sub(visible_lines / 2);
+        let center_offset = visible_lines / 2;
+        self.scroll_offset = cursor_line.saturating_sub(center_offset);
     }
 
     /// Scrolls viewport down N lines
@@ -138,16 +210,22 @@ impl Window {
     }
 
     /// Moves cursor line to top of viewport
-    pub fn move_cursor_to_top(&mut self) {
+    /// Respects scrolloff by positioning cursor scrolloff lines from the actual top
+    pub fn move_cursor_to_top(&mut self, scrolloff: usize) {
         let cursor_line = self.cursor.line();
-        self.scroll_offset = cursor_line;
+        // Position cursor scrolloff lines from top to respect scrolloff setting
+        self.scroll_offset = cursor_line.saturating_sub(scrolloff);
     }
 
     /// Moves cursor line to bottom of viewport
-    pub fn move_cursor_to_bottom(&mut self) {
+    /// Respects scrolloff by positioning cursor scrolloff lines from the actual bottom
+    pub fn move_cursor_to_bottom(&mut self, scrolloff: usize) {
         let cursor_line = self.cursor.line();
         let visible_lines = self.height as usize;
-        self.scroll_offset = cursor_line.saturating_sub(visible_lines.saturating_sub(1));
+        // Position cursor scrolloff lines from bottom
+        // Formula: cursor_line - (viewport_height - 1 - scrolloff)
+        let bottom_position = visible_lines.saturating_sub(1).saturating_sub(scrolloff);
+        self.scroll_offset = cursor_line.saturating_sub(bottom_position);
     }
 }
 
@@ -179,11 +257,7 @@ impl WindowNode {
     }
 
     /// Creates a new split node
-    pub fn new_split(
-        direction: SplitDirection,
-        first: WindowNode,
-        second: WindowNode,
-    ) -> Self {
+    pub fn new_split(direction: SplitDirection, first: WindowNode, second: WindowNode) -> Self {
         WindowNode::Split {
             direction,
             ratio: 0.5, // Equal split by default
@@ -210,8 +284,13 @@ impl WindowNode {
 
     /// Updates dimensions for all windows in the tree
     pub fn update_dimensions(&mut self, x: u16, y: u16, width: u16, height: u16) {
+        // Note: x and y are currently only used in recursive calls to properly position
+        // child windows in splits. The leaf case ignores them as Window only stores
+        // width/height. This is intentional - the parameters maintain correct offsets
+        // through the tree traversal even though they're unused at the leaves.
         match self {
             WindowNode::Leaf(window) => {
+                let _ = (x, y); // Explicitly ignore - position tracked by parent
                 window.set_dimensions(width, height);
             }
             WindowNode::Split {
@@ -301,8 +380,7 @@ impl WindowManager {
 
     /// Gets a window by index mutably
     pub fn get_window_mut(&mut self, index: usize) -> Option<&mut Window> {
-        Self::get_window_recursive_mut_static(&mut self.root, index)
-            .map(|(w, _)| w)
+        Self::get_window_recursive_mut_static(&mut self.root, index).map(|(w, _)| w)
     }
 
     /// Helper for recursive window lookup
@@ -334,10 +412,10 @@ impl WindowManager {
     }
 
     /// Static helper to avoid borrowing issues
-    fn get_window_recursive_mut_static<'a>(
-        node: &'a mut WindowNode,
+    fn get_window_recursive_mut_static(
+        node: &mut WindowNode,
         target_index: usize,
-    ) -> Option<(&'a mut Window, usize)> {
+    ) -> Option<(&mut Window, usize)> {
         match node {
             WindowNode::Leaf(window) => {
                 if target_index == 0 {
@@ -401,7 +479,13 @@ impl WindowManager {
                 if found {
                     (true, next_index)
                 } else {
-                    Self::split_window_by_index_static(second, target_index, direction, buffer_id, next_index)
+                    Self::split_window_by_index_static(
+                        second,
+                        target_index,
+                        direction,
+                        buffer_id,
+                        next_index,
+                    )
                 }
             }
         }

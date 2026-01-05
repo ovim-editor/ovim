@@ -1,4 +1,3 @@
-use crate::buffer::Buffer;
 use crate::editor::WindowManager;
 
 /// Represents a single tab page
@@ -108,6 +107,13 @@ impl TabPageManager {
         self.tabs.get_mut(index)
     }
 
+    /// Sets the title of the current tab
+    pub fn set_current_tab_title(&mut self, title: String) {
+        if !self.tabs.is_empty() {
+            self.tabs[self.current_tab_index].set_title(title);
+        }
+    }
+
     /// Creates a new tab page
     pub fn new_tab(&mut self, title: Option<String>) {
         let tab_number = self.tabs.len() + 1;
@@ -185,6 +191,18 @@ impl TabPageManager {
     /// Whether only one tab exists
     pub fn is_single_tab(&self) -> bool {
         self.tabs.len() == 1
+    }
+
+    /// Close all tabs except the current one (:tabonly)
+    pub fn close_other_tabs(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let current_tab = self.tabs.remove(self.current_tab_index);
+        self.tabs.clear();
+        self.tabs.push(current_tab);
+        self.current_tab_index = 0;
     }
 }
 

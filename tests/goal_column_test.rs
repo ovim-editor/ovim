@@ -1,5 +1,5 @@
-use ovim::editor::{Editor, InputHandler};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -42,8 +42,11 @@ fn test_goal_column_preserved_through_short_line() {
 
     assert_eq!(editor.buffer().cursor().line(), 2);
     // Should return to original goal column 8 (the 'B')
-    assert_eq!(editor.buffer().cursor().col(), 8,
-        "Cursor should return to goal column 8 when line is long enough");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        8,
+        "Cursor should return to goal column 8 when line is long enough"
+    );
 }
 
 #[test]
@@ -81,8 +84,11 @@ fn test_goal_column_preserved_through_multiple_short_lines() {
 
     press(&mut editor, KeyCode::Char('j')); // Line 4: "aaaaaaaaaaaB"
     assert_eq!(editor.buffer().cursor().line(), 4);
-    assert_eq!(editor.buffer().cursor().col(), 10,
-        "Cursor should return to goal column 10 after passing through multiple short lines");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        10,
+        "Cursor should return to goal column 10 after passing through multiple short lines"
+    );
 }
 
 #[test]
@@ -118,8 +124,11 @@ fn test_goal_column_up_movement() {
     press(&mut editor, KeyCode::Char('k'));
 
     assert_eq!(editor.buffer().cursor().line(), 0);
-    assert_eq!(editor.buffer().cursor().col(), 8,
-        "Cursor should return to goal column 8 when moving up");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        8,
+        "Cursor should return to goal column 8 when moving up"
+    );
 }
 
 #[test]
@@ -153,8 +162,11 @@ fn test_goal_column_reset_on_horizontal_movement() {
     // Move down to long line - should use column 1, not original column 8
     press(&mut editor, KeyCode::Char('j'));
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 1,
-        "Cursor should be at column 1 (new goal column), not column 8 (old goal column)");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        1,
+        "Cursor should be at column 1 (new goal column), not column 8 (old goal column)"
+    );
 }
 
 #[test]
@@ -177,15 +189,21 @@ fn test_goal_column_with_dollar_motion() {
     press(&mut editor, KeyCode::Char('j'));
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 1,
-        "Should be at end of line (last char of 'hi')");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        1,
+        "Should be at end of line (last char of 'hi')"
+    );
 
     // Move down to longer line
     press(&mut editor, KeyCode::Char('j'));
 
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 10,
-        "Should be at end of line (last char of 'hello again')");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        10,
+        "Should be at end of line (last char of 'hello again')"
+    );
 }
 
 #[test]
@@ -214,8 +232,11 @@ fn test_goal_column_with_zero_motion() {
     press(&mut editor, KeyCode::Char('j'));
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 0,
-        "Should remain at column 0 after 0 motion");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        0,
+        "Should remain at column 0 after 0 motion"
+    );
 }
 
 #[test]
@@ -246,6 +267,9 @@ fn test_goal_column_empty_line() {
     press(&mut editor, KeyCode::Char('j'));
 
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 8,
-        "Should return to goal column 8");
+    assert_eq!(
+        editor.buffer().cursor().col(),
+        8,
+        "Should return to goal column 8"
+    );
 }

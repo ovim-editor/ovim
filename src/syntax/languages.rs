@@ -6,6 +6,7 @@ pub enum Language {
     Rust,
     JavaScript,
     TypeScript,
+    Tsx,
     Python,
     Java,
     Go,
@@ -13,6 +14,7 @@ pub enum Language {
     Cpp,
     Ruby,
     Bash,
+    Dockerfile,
     Json,
     Yaml,
     Html,
@@ -54,13 +56,15 @@ impl LanguageRegistry {
             // JavaScript
             "js" | "jsx" | "mjs" | "cjs" | "es" | "es6" | "es7" => Some(Language::JavaScript),
 
-            // TypeScript
-            "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
+            // TypeScript (without JSX)
+            "ts" | "mts" | "cts" => Some(Language::TypeScript),
+
+            // TSX (TypeScript with JSX)
+            "tsx" => Some(Language::Tsx),
 
             // Python
-            "py" | "pyw" | "pyi" | "pyx" | "pxd" | "pxi" |
-            "pyc" | "pyd" | "pyo" | "pyz" | "pywz" |
-            "py3" | "pyde" | "pyt" | "snakefile" | "smk" => Some(Language::Python),
+            "py" | "pyw" | "pyi" | "pyx" | "pxd" | "pxi" | "pyc" | "pyd" | "pyo" | "pyz"
+            | "pywz" | "py3" | "pyde" | "pyt" | "snakefile" | "smk" => Some(Language::Python),
 
             // Java
             "java" => Some(Language::Java),
@@ -96,7 +100,7 @@ impl LanguageRegistry {
             "toml" => Some(Language::Toml),
 
             // Markdown
-            "md" | "markdown" | "mdown" | "mkd" | "mkdn" => Some(Language::Markdown),
+            "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdx" => Some(Language::Markdown),
 
             _ => None,
         }
@@ -108,36 +112,43 @@ impl LanguageRegistry {
 
         match lower.as_str() {
             // Python special files
-            "pipfile" | "pipfile.lock" |
-            "snakefile" | "wscript" | "sconstruct" |
-            ".pythonstartup" | ".pythonrc" => Some(Language::Python),
+            "pipfile" | "pipfile.lock" | "snakefile" | "wscript" | "sconstruct"
+            | ".pythonstartup" | ".pythonrc" => Some(Language::Python),
 
             // JavaScript/Node special files
-            "jakefile" | "gulpfile.js" | "gruntfile.js" |
-            "webpack.config.js" | "rollup.config.js" => Some(Language::JavaScript),
+            "jakefile" | "gulpfile.js" | "gruntfile.js" | "webpack.config.js"
+            | "rollup.config.js" => Some(Language::JavaScript),
 
             // TypeScript special files
             ".eslintrc.ts" | ".prettierrc.ts" => Some(Language::TypeScript),
 
+            // TSX special files (React component configs)
+            ".eslintrc.tsx" | ".prettierrc.tsx" => Some(Language::Tsx),
+
             // Bash special files
-            ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" |
-            ".zshrc" | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" |
-            "bashrc" | "zshrc" => Some(Language::Bash),
+            ".bashrc" | ".bash_profile" | ".bash_login" | ".bash_logout" | ".zshrc"
+            | ".zprofile" | ".zshenv" | ".zlogin" | ".zlogout" | "bashrc" | "zshrc" => {
+                Some(Language::Bash)
+            }
+
+            // Dockerfile special files
+            "dockerfile" | "dockerfile.prod" | "dockerfile.dev" => Some(Language::Dockerfile),
 
             // Ruby special files
-            "rakefile" | "gemfile" | "gemfile.lock" | "guardfile" |
-            "capfile" | "vagrantfile" => Some(Language::Ruby),
+            "rakefile" | "gemfile" | "gemfile.lock" | "guardfile" | "capfile" | "vagrantfile" => {
+                Some(Language::Ruby)
+            }
 
             // Go special files
             "go.mod" | "go.sum" => Some(Language::Go),
 
             // JSON special files
-            ".eslintrc" | ".prettierrc" | ".babelrc" |
-            "package.json" | "tsconfig.json" | "composer.json" => Some(Language::Json),
+            ".eslintrc" | ".prettierrc" | ".babelrc" | "package.json" | "tsconfig.json"
+            | "composer.json" => Some(Language::Json),
 
             // YAML special files
-            ".travis.yml" | ".gitlab-ci.yml" | "docker-compose.yml" |
-            ".clang-format" | ".clang-tidy" => Some(Language::Yaml),
+            ".travis.yml" | ".gitlab-ci.yml" | "docker-compose.yml" | ".clang-format"
+            | ".clang-tidy" => Some(Language::Yaml),
 
             // Markdown special files
             "readme" | "changelog" | "contributing" | "license" => Some(Language::Markdown),
@@ -151,12 +162,15 @@ impl LanguageRegistry {
                     Some(Language::Python)
                 } else if lower.ends_with(".js") {
                     Some(Language::JavaScript)
+                } else if lower.ends_with(".tsx") {
+                    Some(Language::Tsx)
                 } else if lower.ends_with(".ts") {
                     Some(Language::TypeScript)
                 } else if lower.starts_with(".bash") || lower.starts_with(".zsh") {
                     Some(Language::Bash)
                 } else if lower.contains("dockerfile") {
-                    Some(Language::Bash)
+                    // Resolved: Added tree-sitter-dockerfile dependency
+                    Some(Language::Dockerfile)
                 } else if lower.ends_with("makefile") {
                     Some(Language::Bash)
                 } else {
@@ -172,6 +186,7 @@ impl LanguageRegistry {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
@@ -179,60 +194,72 @@ impl LanguageRegistry {
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
             Language::Bash => tree_sitter_bash::LANGUAGE.into(),
+            // Dockerfile uses Bash syntax highlighting to avoid tree-sitter version conflicts
+            // tree-sitter-dockerfile depends on tree-sitter ^0.20, incompatible with our 0.23
+            Language::Dockerfile => tree_sitter_bash::LANGUAGE.into(),
             Language::Json => tree_sitter_json::LANGUAGE.into(),
             Language::Yaml => tree_sitter_yaml::language(),
             Language::Html => tree_sitter_html::LANGUAGE.into(),
             Language::Css => tree_sitter_css::LANGUAGE.into(),
-            // TOML and Markdown don't have compatible tree-sitter versions yet
-            // Return a dummy language (use Rust as fallback to avoid panics)
-            Language::Toml => tree_sitter_rust::LANGUAGE.into(),
-            Language::Markdown => tree_sitter_rust::LANGUAGE.into(),
+            // TOML: tree-sitter-toml depends on tree-sitter 0.20, incompatible with our 0.23
+            // Use JSON for highlighting fallback (similar key-value structure)
+            Language::Toml => tree_sitter_json::LANGUAGE.into(),
+            Language::Markdown => tree_sitter_md::LANGUAGE.into(),
         }
     }
 
     /// Gets the highlight query for a language
+    /// Uses official tree-sitter queries when available, falls back to custom queries
     pub fn get_highlight_query(lang: Language) -> &'static str {
         match lang {
-            Language::Rust => include_str!("queries/rust.scm"),
-            Language::JavaScript => include_str!("queries/javascript.scm"),
-            Language::TypeScript => include_str!("queries/typescript.scm"),
-            Language::Python => include_str!("queries/python.scm"),
-            Language::Java => include_str!("queries/java.scm"),
-            Language::Go => include_str!("queries/go.scm"),
-            Language::C => include_str!("queries/c.scm"),
-            Language::Cpp => include_str!("queries/cpp.scm"),
-            Language::Ruby => include_str!("queries/ruby.scm"),
-            Language::Bash => include_str!("queries/bash.scm"),
-            Language::Json => include_str!("queries/json.scm"),
+            // Use official tree-sitter highlight queries
+            // Note: Some crates use HIGHLIGHTS_QUERY (plural), others use HIGHLIGHT_QUERY (singular)
+            Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
+            Language::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY,
+            Language::TypeScript => tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            // TSX uses the same highlight query as TypeScript (shared across both grammars)
+            Language::Tsx => tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
+            Language::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
+            Language::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
+            Language::C => tree_sitter_c::HIGHLIGHT_QUERY,
+            Language::Cpp => tree_sitter_cpp::HIGHLIGHT_QUERY,
+            Language::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY,
+            Language::Bash => tree_sitter_bash::HIGHLIGHT_QUERY,
+            Language::Dockerfile => tree_sitter_bash::HIGHLIGHT_QUERY, // Use Bash syntax for now
+            Language::Json => tree_sitter_json::HIGHLIGHTS_QUERY,
+            Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY,
+            Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
+            // TOML uses JSON highlighting as fallback (similar key-value structure)
+            Language::Toml => tree_sitter_json::HIGHLIGHTS_QUERY,
+            // For languages without official queries, use custom fallback
             Language::Yaml => include_str!("queries/yaml.scm"),
-            Language::Html => include_str!("queries/html.scm"),
-            Language::Css => include_str!("queries/css.scm"),
-            // TOML and Markdown use fallback (empty query, no highlighting)
-            Language::Toml => "",
-            Language::Markdown => "",
+            Language::Markdown => include_str!("queries/markdown.scm"),
         }
     }
 
     /// Get LSP language identifier from file path
     /// Returns None if language is not supported by LSP
     pub fn get_lsp_language_id(file_path: &str) -> Option<&'static str> {
-        Self::detect_from_path(file_path).and_then(|lang| match lang {
-            Language::Rust => Some("rust"),
-            Language::JavaScript => Some("javascript"),
-            Language::TypeScript => Some("typescript"),
-            Language::Python => Some("python"),
-            Language::Java => Some("java"),
-            Language::Go => Some("go"),
-            Language::C => Some("c"),
-            Language::Cpp => Some("cpp"),
-            Language::Ruby => Some("ruby"),
-            Language::Bash => Some("bash"),
-            Language::Json => Some("json"),
-            Language::Yaml => Some("yaml"),
-            Language::Html => Some("html"),
-            Language::Css => Some("css"),
-            Language::Toml => Some("toml"),
-            Language::Markdown => Some("markdown"),
+        Self::detect_from_path(file_path).map(|lang| match lang {
+            Language::Rust => "rust",
+            Language::JavaScript => "javascript",
+            Language::TypeScript => "typescript",
+            Language::Tsx => "typescriptreact",
+            Language::Python => "python",
+            Language::Java => "java",
+            Language::Go => "go",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Ruby => "ruby",
+            Language::Bash => "bash",
+            Language::Dockerfile => "dockerfile",
+            Language::Json => "json",
+            Language::Yaml => "yaml",
+            Language::Html => "html",
+            Language::Css => "css",
+            Language::Toml => "toml",
+            Language::Markdown => "markdown",
         })
     }
 

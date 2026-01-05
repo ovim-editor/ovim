@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use ignore::WalkBuilder;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerMode {
@@ -154,46 +153,26 @@ impl Picker {
         }
     }
 
+    /// Creates a new LSP locations picker with pre-built PickerResult items
+    /// This preserves the actual file paths in location field for preview loading
+    pub fn new_with_results(base_dir: PathBuf, results: Vec<PickerResult>) -> Self {
+        Self {
+            mode: PickerMode::LspLocations,
+            query: String::new(),
+            query_cursor: 0,
+            all_results: results.clone(),
+            filtered_results: results,
+            selected_index: 0,
+            base_dir,
+            loading: false,
+            loading_spawned: false,
+        }
+    }
+
     /// Sets the prompt for the picker
     pub fn set_prompt(&mut self, _prompt: String) {
         // Prompt display is handled by the UI layer
         // This is a placeholder for API compatibility
-    }
-
-    /// Recursively finds all files in a directory, respecting .gitignore
-    fn find_files_recursive(dir: &Path) -> Vec<PickerResult> {
-        let mut results = Vec::new();
-
-        // Check if directory exists first
-        if !dir.exists() || !dir.is_dir() {
-            return results;
-        }
-
-        // Use ignore crate's WalkBuilder which respects .gitignore, .ignore, and other ignore files
-        let walker = WalkBuilder::new(dir)
-            .hidden(false)  // Don't automatically skip hidden files (let gitignore handle it)
-            .git_ignore(true)  // Respect .gitignore files
-            .git_global(true)  // Respect global gitignore
-            .git_exclude(true)  // Respect .git/info/exclude
-            .build();
-
-        for entry in walker.filter_map(|e| e.ok()) {
-            let path = entry.path();
-
-            if path.is_file() {
-                if let Ok(relative_path) = path.strip_prefix(dir) {
-                    let display_path = relative_path.to_string_lossy().to_string();
-                    results.push(PickerResult {
-                        display: display_path,
-                        location: path.to_string_lossy().to_string(),
-                        line: 0,
-                        col: 0,
-                    });
-                }
-            }
-        }
-
-        results
     }
 
     /// Performs live grep using ripgrep or grep
@@ -206,7 +185,7 @@ impl Picker {
 
         // Try ripgrep first, fall back to grep
         let output = Command::new("rg")
-            .args(&[
+            .args([
                 "--line-number",
                 "--column",
                 "--no-heading",
@@ -307,7 +286,8 @@ impl Picker {
                 // Bonus for matching after path separator or start of word
                 if target_idx > 0 {
                     let prev_char = target_chars[target_idx - 1];
-                    if prev_char == '/' || prev_char == '_' || prev_char == '-' || prev_char == ' ' {
+                    if prev_char == '/' || prev_char == '_' || prev_char == '-' || prev_char == ' '
+                    {
                         score += 8;
                     }
                 }
@@ -344,8 +324,7 @@ impl Picker {
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        Self::fuzzy_match(&self.query, &r.display)
-                            .map(|score| (r.clone(), score))
+                        Self::fuzzy_match(&self.query, &r.display).map(|score| (r.clone(), score))
                     })
                     .collect();
 
@@ -371,8 +350,7 @@ impl Picker {
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        Self::fuzzy_match(&self.query, &r.display)
-                            .map(|score| (r.clone(), score))
+                        Self::fuzzy_match(&self.query, &r.display).map(|score| (r.clone(), score))
                     })
                     .collect();
 
@@ -521,7 +499,8 @@ impl Picker {
                 // Insert in sorted order
                 let mut insert_idx = self.filtered_results.len();
                 for (idx, existing) in self.filtered_results.iter().enumerate() {
-                    if let Some(existing_score) = Self::fuzzy_match(&self.query, &existing.display) {
+                    if let Some(existing_score) = Self::fuzzy_match(&self.query, &existing.display)
+                    {
                         if score > existing_score {
                             insert_idx = idx;
                             break;
@@ -580,7 +559,10 @@ impl Picker {
             let start_len = (max_len - 3) / 2;
             let end_len = max_len - 3 - start_len;
             let start: String = chars.iter().take(start_len).collect();
-            let end: String = chars.iter().skip(chars.len().saturating_sub(end_len)).collect();
+            let end: String = chars
+                .iter()
+                .skip(chars.len().saturating_sub(end_len))
+                .collect();
             return format!("{}...{}", start, end);
         }
 
@@ -620,7 +602,8 @@ impl Picker {
                 // Can't fit this part, but check if we can fit it without the leading parts
                 if i > 0 && current_len + needed + 4 <= max_len {
                     included_parts.insert(0, part);
-                    current_len += needed;
+                    let current_len = current_len + needed;
+                    let _ = current_len; // Suppress warning for now
                 }
                 break;
             }

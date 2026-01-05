@@ -18,6 +18,7 @@ pub enum HighlightGroup {
     Parameter,
     Label,
     Punctuation,
+    Tag,
     Other,
 }
 
@@ -88,7 +89,10 @@ impl ColorScheme {
 
     /// Gets the color for a syntax highlight group
     pub fn get_syntax_color(&self, group: HighlightGroup) -> Color {
-        self.syntax_colors.get(&group).copied().unwrap_or(Color::White)
+        self.syntax_colors
+            .get(&group)
+            .copied()
+            .unwrap_or(Color::White)
     }
 
     /// Gets the color for a UI element group
@@ -115,6 +119,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, Color::White);
         scheme.set_syntax(HighlightGroup::Label, Color::Yellow);
         scheme.set_syntax(HighlightGroup::Punctuation, Color::White);
+        scheme.set_syntax(HighlightGroup::Tag, Color::Blue);
         scheme.set_syntax(HighlightGroup::Other, Color::White);
 
         // UI colors
@@ -169,6 +174,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, blue);
         scheme.set_syntax(HighlightGroup::Label, orange);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, aqua);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -223,6 +229,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, blue);
         scheme.set_syntax(HighlightGroup::Label, orange);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, aqua);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -279,6 +286,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, violet);
         scheme.set_syntax(HighlightGroup::Punctuation, base0);
+        scheme.set_syntax(HighlightGroup::Tag, cyan);
         scheme.set_syntax(HighlightGroup::Other, base0);
 
         // UI colors
@@ -335,6 +343,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, violet);
         scheme.set_syntax(HighlightGroup::Punctuation, base00);
+        scheme.set_syntax(HighlightGroup::Tag, cyan);
         scheme.set_syntax(HighlightGroup::Other, base00);
 
         // UI colors
@@ -388,6 +397,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, yellow);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, blue);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -443,6 +453,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, cyan);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::Tag, pink);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -471,23 +482,23 @@ impl ColorScheme {
         let mut scheme = Self::new("tokyonight");
 
         // Tokyonight night palette
-        let bg = Color::Rgb(26, 27, 38);           // #1a1b26
-        let bg_dark = Color::Rgb(22, 22, 30);      // #16161e
+        let bg = Color::Rgb(26, 27, 38); // #1a1b26
+        let bg_dark = Color::Rgb(22, 22, 30); // #16161e
         let bg_highlight = Color::Rgb(41, 46, 66); // #292e42
-        let fg = Color::Rgb(192, 202, 245);        // #c0caf5
-        let fg_dark = Color::Rgb(169, 177, 214);   // #a9b1d6
-        let comment = Color::Rgb(86, 95, 137);     // #565f89
+        let fg = Color::Rgb(192, 202, 245); // #c0caf5
+        let _fg_dark = Color::Rgb(169, 177, 214); // #a9b1d6
+        let comment = Color::Rgb(86, 95, 137); // #565f89
 
         // Accent colors
-        let blue = Color::Rgb(122, 162, 247);      // #7aa2f7
-        let cyan = Color::Rgb(42, 195, 222);       // #2ac3de
-        let green = Color::Rgb(158, 206, 106);     // #9ece6a
-        let yellow = Color::Rgb(224, 175, 104);    // #e0af68
-        let orange = Color::Rgb(255, 158, 100);    // #ff9e64
-        let red = Color::Rgb(247, 118, 142);       // #f7768e
-        let purple = Color::Rgb(187, 154, 247);    // #bb9af7
-        let magenta = Color::Rgb(187, 154, 247);   // #bb9af7
-        let teal = Color::Rgb(26, 188, 156);       // #1abc9c
+        let blue = Color::Rgb(122, 162, 247); // #7aa2f7
+        let cyan = Color::Rgb(42, 195, 222); // #2ac3de
+        let green = Color::Rgb(158, 206, 106); // #9ece6a
+        let yellow = Color::Rgb(224, 175, 104); // #e0af68
+        let orange = Color::Rgb(255, 158, 100); // #ff9e64
+        let red = Color::Rgb(247, 118, 142); // #f7768e
+        let purple = Color::Rgb(187, 154, 247); // #bb9af7
+        let magenta = Color::Rgb(187, 154, 247); // #bb9af7
+        let teal = Color::Rgb(26, 188, 156); // #1abc9c
 
         // Syntax colors - following Tokyonight's style
         scheme.set_syntax(HighlightGroup::Keyword, purple);
@@ -504,6 +515,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Parameter, yellow);
         scheme.set_syntax(HighlightGroup::Label, blue);
         scheme.set_syntax(HighlightGroup::Punctuation, cyan);
+        scheme.set_syntax(HighlightGroup::Tag, teal);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -576,7 +588,10 @@ impl ColorSchemeRegistry {
         schemes.insert("gruvbox-dark".to_string(), ColorScheme::gruvbox_dark());
         schemes.insert("gruvbox-light".to_string(), ColorScheme::gruvbox_light());
         schemes.insert("solarized-dark".to_string(), ColorScheme::solarized_dark());
-        schemes.insert("solarized-light".to_string(), ColorScheme::solarized_light());
+        schemes.insert(
+            "solarized-light".to_string(),
+            ColorScheme::solarized_light(),
+        );
         schemes.insert("monokai".to_string(), ColorScheme::monokai());
         schemes.insert("dracula".to_string(), ColorScheme::dracula());
 

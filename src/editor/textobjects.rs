@@ -38,9 +38,40 @@ impl TextObjects {
         // Find word boundaries
         let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
 
-        // If cursor is on whitespace, return None (iw doesn't select whitespace)
+        // If cursor is on whitespace, select the whitespace sequence
+        if chars[col].is_whitespace() {
+            let mut start_col = col;
+            while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col < chars.len() && chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            return Some(TextObjectRange {
+                start_line: line_idx,
+                start_col,
+                end_line: line_idx,
+                end_col,
+            });
+        }
+
+        // If cursor is on punctuation (not word char, not whitespace), select punctuation sequence
         if !is_word_char(chars[col]) {
-            return None;
+            let mut start_col = col;
+            while start_col > 0 && !is_word_char(chars[start_col - 1]) && !chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col < chars.len() && !is_word_char(chars[end_col]) && !chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            return Some(TextObjectRange {
+                start_line: line_idx,
+                start_col,
+                end_line: line_idx,
+                end_col,
+            });
         }
 
         // Find start of word
@@ -55,12 +86,7 @@ impl TextObjects {
             end_col += 1;
         }
 
-        // Include trailing whitespace (but not all of it if at end of line)
-        // Vim's iw includes "white space between words"
-        while end_col < chars.len() && chars[end_col].is_whitespace() && chars[end_col] != '\n' {
-            end_col += 1;
-        }
-
+        // Note: iw does NOT include trailing whitespace - that's aw (around word)
         Some(TextObjectRange {
             start_line: line_idx,
             start_col,
@@ -121,13 +147,27 @@ impl TextObjects {
             end_col += 1;
         }
 
-        // Include trailing whitespace
-        while end_col < chars.len() && chars[end_col].is_whitespace() {
+        // Include trailing whitespace, but only if there's non-whitespace after it
+        // (i.e., don't include trailing space if it's the last word on the line)
+        let word_end = end_col;
+        while end_col < chars.len() && chars[end_col].is_whitespace() && chars[end_col] != '\n' {
             end_col += 1;
         }
 
-        // If no trailing whitespace, include leading whitespace
-        if end_col == col + 1 || (end_col < chars.len() && is_word_char(chars[end_col - 1])) {
+        // Check if we found trailing whitespace followed by more content
+        let has_trailing_space = end_col > word_end;
+        let has_content_after = end_col < chars.len();
+
+        // Vim's aw behavior:
+        // - If there's trailing whitespace before more content, include it
+        // - If this is the last word (no trailing whitespace or no content after), include leading whitespace
+        if has_trailing_space && has_content_after {
+            // Keep end_col with trailing whitespace included
+        } else {
+            // Reset end_col to just after the word
+            end_col = word_end;
+
+            // Include leading whitespace instead
             while start_col > 0 && chars[start_col - 1].is_whitespace() {
                 start_col -= 1;
             }
@@ -165,26 +205,59 @@ impl TextObjects {
             return None;
         }
 
-        // Find the opening quote before or at cursor
+        // Fix Bug 2: Handle escaped quotes by tracking preceding backslashes
+        // Helper to check if a character at position is escaped
+        let is_escaped = |pos: usize| -> bool {
+            if pos == 0 {
+                return false;
+            }
+            // Count consecutive backslashes before this position
+            let mut backslash_count = 0;
+            let mut check_pos = pos;
+            while check_pos > 0 && chars[check_pos - 1] == '\\' {
+                backslash_count += 1;
+                check_pos -= 1;
+            }
+            // Character is escaped if odd number of backslashes precede it
+            backslash_count % 2 == 1
+        };
+
+        // Find all quote positions on this line (non-escaped)
+        let quote_positions: Vec<usize> = chars
+            .iter()
+            .enumerate()
+            .filter(|(i, &c)| c == quote_char && !is_escaped(*i))
+            .map(|(i, _)| i)
+            .collect();
+
+        if quote_positions.len() < 2 {
+            return None; // Need at least 2 quotes to form a pair
+        }
+
+        // Find which quote pair contains the cursor
+        // Quotes are paired: 0-1, 2-3, 4-5, etc.
+        let col = col.min(chars.len().saturating_sub(1));
+
+        // Find the pair that contains the cursor
         let mut start_col = None;
-        for i in (0..=col.min(chars.len().saturating_sub(1))).rev() {
-            if chars[i] == quote_char {
-                start_col = Some(i);
+        let mut end_col = None;
+
+        for i in (0..quote_positions.len()).step_by(2) {
+            if i + 1 >= quote_positions.len() {
+                break; // Odd number of quotes, last one is unpaired
+            }
+            let open_pos = quote_positions[i];
+            let close_pos = quote_positions[i + 1];
+
+            // Cursor is inside or on this pair
+            if col >= open_pos && col <= close_pos {
+                start_col = Some(open_pos);
+                end_col = Some(close_pos);
                 break;
             }
         }
 
         let start_col = start_col?;
-
-        // Find the closing quote after the opening quote
-        let mut end_col = None;
-        for i in (start_col + 1)..chars.len() {
-            if chars[i] == quote_char {
-                end_col = Some(i);
-                break;
-            }
-        }
-
         let end_col = end_col?;
 
         if include_quotes {
@@ -204,7 +277,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col: start_col + 1,
                 end_line: line_idx,
-                end_col: end_col,
+                end_col,
             })
         }
     }
@@ -255,10 +328,10 @@ impl TextObjects {
         // Find closing delimiter (search forward from opening delimiter)
         let mut end_col = None;
         let mut depth = 0;
-        for i in (start_col + 1)..chars.len() {
-            if chars[i] == open_char {
+        for (i, &ch) in chars.iter().enumerate().skip(start_col + 1) {
+            if ch == open_char {
                 depth += 1;
-            } else if chars[i] == close_char {
+            } else if ch == close_char {
                 if depth == 0 {
                     end_col = Some(i);
                     break;
@@ -286,7 +359,7 @@ impl TextObjects {
                 start_line: line_idx,
                 start_col: start_col + 1,
                 end_line: line_idx,
-                end_col: end_col,
+                end_col,
             })
         }
     }
@@ -301,7 +374,9 @@ impl TextObjects {
         buffer.rope_mut().remove(start_char..end_char);
 
         // Position cursor at start of deleted range
-        buffer.cursor_mut().set_position(range.start_line, range.start_col);
+        buffer
+            .cursor_mut()
+            .set_position(range.start_line, range.start_col);
 
         Ok(deleted)
     }
@@ -341,12 +416,19 @@ impl TextObjects {
             if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] != '/' {
                 // Found potential opening tag
                 let mut name_end = i + 1;
-                while name_end < chars.len() && chars[name_end] != '>' && !chars[name_end].is_whitespace() {
+                while name_end < chars.len()
+                    && chars[name_end] != '>'
+                    && !chars[name_end].is_whitespace()
+                {
                     name_end += 1;
                 }
                 if name_end < chars.len() {
                     let name: String = chars[(i + 1)..name_end].iter().collect();
-                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':') {
+                    if !name.is_empty()
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ':')
+                    {
                         tag_start = Some(i);
                         tag_name = Some(name);
                         break;
@@ -375,7 +457,7 @@ impl TextObjects {
         }
 
         // Find the closing tag
-        let closing_tag_pattern = format!("</{}>", tag_name);
+        let _closing_tag_pattern = format!("</{}>", tag_name);
         let mut depth = 1;
         let mut search_pos = opening_tag_end + 1;
 
@@ -417,10 +499,16 @@ impl TextObjects {
                             });
                         }
                     }
-                } else if search_pos + 1 < chars.len() && chars[search_pos + 1] != '!' && chars[search_pos + 1] != '?' {
+                } else if search_pos + 1 < chars.len()
+                    && chars[search_pos + 1] != '!'
+                    && chars[search_pos + 1] != '?'
+                {
                     // Potential opening tag (not a comment or processing instruction)
                     let mut name_end = search_pos + 1;
-                    while name_end < chars.len() && chars[name_end] != '>' && !chars[name_end].is_whitespace() {
+                    while name_end < chars.len()
+                        && chars[name_end] != '>'
+                        && !chars[name_end].is_whitespace()
+                    {
                         name_end += 1;
                     }
                     let found_name: String = chars[(search_pos + 1)..name_end].iter().collect();
@@ -443,7 +531,11 @@ impl TextObjects {
     }
 
     /// Helper to convert character offsets to line/col positions
-    fn char_offset_to_position(buffer: &Buffer, start_offset: usize, end_offset: usize) -> (usize, usize, usize, usize) {
+    fn char_offset_to_position(
+        buffer: &Buffer,
+        start_offset: usize,
+        end_offset: usize,
+    ) -> (usize, usize, usize, usize) {
         let rope = buffer.rope();
 
         let start_line = rope.char_to_line(start_offset);
@@ -494,16 +586,26 @@ impl TextObjects {
             end_line += 1;
         }
 
-        // Get the end column of the last line (exclusive - one past the last char)
-        let end_line_text = buffer.rope().line(end_line).to_string();
-        let end_col = end_line_text.chars().count();
-
-        Some(TextObjectRange {
-            start_line,
-            start_col: 0,
-            end_line,
-            end_col,
-        })
+        // Paragraph operations are linewise - include the trailing newline
+        // by pointing to start of next line (or end of file if last line)
+        if end_line + 1 < line_count {
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line: end_line + 1,
+                end_col: 0,
+            })
+        } else {
+            // Last line of file - use the actual end
+            let end_line_text = buffer.rope().line(end_line).to_string();
+            let end_col = end_line_text.chars().count();
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line,
+                end_col,
+            })
+        }
     }
 
     /// Gets the range for "around paragraph" (ap)
@@ -562,16 +664,26 @@ impl TextObjects {
             }
         }
 
-        // Get the end column of the last line (exclusive - one past the last char)
-        let end_line_text = buffer.rope().line(end_line).to_string();
-        let end_col = end_line_text.chars().count();
-
-        Some(TextObjectRange {
-            start_line,
-            start_col: 0,
-            end_line,
-            end_col,
-        })
+        // Paragraph operations are linewise - include the trailing newline
+        // by pointing to start of next line (or end of file if last line)
+        if end_line + 1 < line_count {
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line: end_line + 1,
+                end_col: 0,
+            })
+        } else {
+            // Last line of file - use the actual end
+            let end_line_text = buffer.rope().line(end_line).to_string();
+            let end_col = end_line_text.chars().count();
+            Some(TextObjectRange {
+                start_line,
+                start_col: 0,
+                end_line,
+                end_col,
+            })
+        }
     }
 
     /// Gets the range for "inner sentence" (is)
@@ -683,5 +795,316 @@ impl TextObjects {
             end_line: line_idx,
             end_col,
         })
+    }
+
+    /// Gets the indentation level (number of leading spaces/tabs) of a line
+    fn get_indent_level(line: &str, tab_width: usize) -> usize {
+        let mut indent = 0;
+        for c in line.chars() {
+            match c {
+                ' ' => indent += 1,
+                '\t' => indent += tab_width,
+                _ => break,
+            }
+        }
+        indent
+    }
+
+    /// Gets the range for "inner indent" (ii) - lines with same or greater indentation
+    pub fn inner_indent(buffer: &Buffer, tab_width: usize) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let line_count = buffer.line_count();
+
+        if line_idx >= line_count {
+            return None;
+        }
+
+        let current_line = buffer.line(line_idx)?;
+        let current_line_trimmed = current_line.trim_end_matches('\n');
+
+        // Skip blank lines for indent calculation
+        if current_line_trimmed.trim().is_empty() {
+            return None;
+        }
+
+        let base_indent = Self::get_indent_level(current_line_trimmed, tab_width);
+
+        // Find start of indent block (going up)
+        let mut start_line = line_idx;
+        while start_line > 0 {
+            let prev_line = buffer.line(start_line - 1)?;
+            let prev_trimmed = prev_line.trim_end_matches('\n');
+
+            // Stop at blank lines or lines with less indentation
+            if prev_trimmed.trim().is_empty()
+                || Self::get_indent_level(prev_trimmed, tab_width) < base_indent
+            {
+                break;
+            }
+            start_line -= 1;
+        }
+
+        // Find end of indent block (going down)
+        let mut end_line = line_idx;
+        while end_line < line_count - 1 {
+            let next_line = buffer.line(end_line + 1)?;
+            let next_trimmed = next_line.trim_end_matches('\n');
+
+            // Stop at blank lines or lines with less indentation
+            if next_trimmed.trim().is_empty()
+                || Self::get_indent_level(next_trimmed, tab_width) < base_indent
+            {
+                break;
+            }
+            end_line += 1;
+        }
+
+        // Get the length of the last line for end_col
+        let last_line = buffer.line(end_line)?;
+        let end_col = last_line.trim_end_matches('\n').chars().count();
+
+        Some(TextObjectRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around indent" (ai) - includes surrounding blank lines
+    pub fn around_indent(buffer: &Buffer, tab_width: usize) -> Option<TextObjectRange> {
+        let mut range = Self::inner_indent(buffer, tab_width)?;
+        let line_count = buffer.line_count();
+
+        // Extend upward to include blank lines
+        while range.start_line > 0 {
+            let prev_line = buffer.line(range.start_line - 1)?;
+            if prev_line.trim().is_empty() {
+                range.start_line -= 1;
+            } else {
+                break;
+            }
+        }
+
+        // Extend downward to include blank lines
+        while range.end_line < line_count - 1 {
+            let next_line = buffer.line(range.end_line + 1)?;
+            if next_line.trim().is_empty() {
+                range.end_line += 1;
+                // Update end_col for the new last line
+                let last_line = buffer.line(range.end_line)?;
+                range.end_col = last_line.trim_end_matches('\n').chars().count();
+            } else {
+                break;
+            }
+        }
+
+        Some(range)
+    }
+
+    /// Gets the range for "inner function" (if) text object
+    /// Selects the body of the function (between { and }) without the signature
+    pub fn inner_function(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor_line = buffer.cursor().line();
+
+        // Find the opening brace of the function containing the cursor
+        let (open_line, open_col) = Self::find_function_open_brace(buffer, cursor_line)?;
+
+        // Find the matching closing brace
+        let (close_line, close_col) = Self::find_matching_close_brace(buffer, open_line, open_col)?;
+
+        // For "inner function", we want the content between { and }
+        // If { is at end of line, start from next line col 0
+        // If } is at start of line, end at previous line end
+        let (start_line, start_col) = if open_col + 1
+            < buffer
+                .line(open_line)?
+                .trim_end_matches('\n')
+                .chars()
+                .count()
+        {
+            (open_line, open_col + 1)
+        } else {
+            (open_line + 1, 0)
+        };
+
+        let (end_line, end_col) = if close_col > 0 {
+            (close_line, close_col)
+        } else if close_line > 0 {
+            let prev_line = buffer.line(close_line - 1)?;
+            (
+                close_line - 1,
+                prev_line.trim_end_matches('\n').chars().count(),
+            )
+        } else {
+            (close_line, close_col)
+        };
+
+        // Validate range
+        if start_line > end_line || (start_line == end_line && start_col >= end_col) {
+            return None;
+        }
+
+        Some(TextObjectRange {
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around function" (af) text object
+    /// Selects the entire function including signature and braces
+    pub fn around_function(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor_line = buffer.cursor().line();
+
+        // Find the opening brace of the function containing the cursor
+        let (open_line, open_col) = Self::find_function_open_brace(buffer, cursor_line)?;
+
+        // Find the function signature start
+        let start_line = Self::find_function_signature_start(buffer, open_line)?;
+
+        // Find the matching closing brace
+        let (close_line, close_col) = Self::find_matching_close_brace(buffer, open_line, open_col)?;
+
+        // End position includes the closing brace
+        let end_line = close_line;
+        let end_col = close_col + 1;
+
+        // Include trailing newline if present
+        let line = buffer.line(end_line)?;
+        let end_col = if end_col >= line.trim_end_matches('\n').chars().count() {
+            line.chars().count()
+        } else {
+            end_col
+        };
+
+        Some(TextObjectRange {
+            start_line,
+            start_col: 0,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// Finds the opening brace { of a function containing the given line
+    fn find_function_open_brace(buffer: &Buffer, cursor_line: usize) -> Option<(usize, usize)> {
+        // First check if we're inside a function body
+        // Search backward for unmatched {
+        let mut depth = 0;
+        let mut search_line = cursor_line;
+
+        loop {
+            let line = buffer.line(search_line)?;
+            let chars: Vec<char> = line.chars().collect();
+
+            // Search from end of line (or cursor col if on cursor line)
+            let end_pos = if search_line == cursor_line {
+                buffer.cursor().col().min(chars.len())
+            } else {
+                chars.len()
+            };
+
+            for (col, &ch) in chars.iter().enumerate().take(end_pos).rev() {
+                if ch == '}' {
+                    depth += 1;
+                } else if ch == '{' {
+                    if depth == 0 {
+                        // Found unmatched opening brace
+                        return Some((search_line, col));
+                    }
+                    depth -= 1;
+                }
+            }
+
+            if search_line == 0 {
+                break;
+            }
+            search_line -= 1;
+        }
+
+        None
+    }
+
+    /// Finds the start of function signature (first non-blank line before opening brace)
+    fn find_function_signature_start(buffer: &Buffer, open_brace_line: usize) -> Option<usize> {
+        let mut start = open_brace_line;
+
+        // Go backward to find where the function definition starts
+        // Look for common function keywords or the start of attributes/decorators
+        while start > 0 {
+            let prev_line = buffer.line(start - 1)?;
+            let trimmed = prev_line.trim();
+
+            // Stop if we hit a blank line or a closing brace
+            if trimmed.is_empty() || trimmed == "}" || trimmed == "};" {
+                break;
+            }
+
+            // Continue if line is part of signature (fn, pub, async, #[attr], @decorator, def, etc.)
+            if trimmed.starts_with("fn ")
+                || trimmed.starts_with("pub ")
+                || trimmed.starts_with("async ")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with('@')
+                || trimmed.starts_with("def ")
+                || trimmed.starts_with("function ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("impl ")
+                || trimmed.contains('(')
+                || trimmed.ends_with(',')
+                || trimmed.ends_with('>')
+            {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+
+        Some(start)
+    }
+
+    /// Finds the matching closing brace for an opening brace
+    fn find_matching_close_brace(
+        buffer: &Buffer,
+        open_line: usize,
+        open_col: usize,
+    ) -> Option<(usize, usize)> {
+        let line_count = buffer.line_count();
+        let mut depth = 1;
+        let mut search_line = open_line;
+
+        // Start searching after the opening brace
+        let first_line = buffer.line(open_line)?;
+        let chars: Vec<char> = first_line.chars().collect();
+        for (col, &ch) in chars.iter().enumerate().skip(open_col + 1) {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((search_line, col));
+                }
+            }
+        }
+
+        search_line += 1;
+        while search_line < line_count {
+            let line = buffer.line(search_line)?;
+            for (col, ch) in line.chars().enumerate() {
+                if ch == '{' {
+                    depth += 1;
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((search_line, col));
+                    }
+                }
+            }
+            search_line += 1;
+        }
+
+        None
     }
 }

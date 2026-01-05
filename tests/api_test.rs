@@ -23,7 +23,10 @@ mod api_tests {
 
     async fn set_buffer(port: u16, content: &str) -> Result<String, Box<dyn std::error::Error>> {
         let client = reqwest::Client::new();
-        let escaped_content = content.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        let escaped_content = content
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
         let resp = client
             .put(format!("{API_BASE}:{port}/buffer"))
             .header("Content-Type", "application/json")
@@ -53,7 +56,9 @@ mod api_tests {
         let port = 59028; // Update this with actual port from server output
 
         // Set initial content
-        set_buffer(port, "Line 1\nLine 2\nLine 3\nLine 4").await.unwrap();
+        set_buffer(port, "Line 1\nLine 2\nLine 3\nLine 4")
+            .await
+            .unwrap();
 
         // Navigate to top
         send_keys(port, "gg").await.unwrap();
@@ -113,6 +118,9 @@ mod api_tests {
         sleep(Duration::from_millis(50)).await;
 
         let buffer = get_buffer(port).await.unwrap();
-        assert!(buffer.contains("Line 1"), "Line 1 should be back after undo");
+        assert!(
+            buffer.contains("Line 1"),
+            "Line 1 should be back after undo"
+        );
     }
 }
