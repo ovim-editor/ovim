@@ -702,7 +702,15 @@ impl Editor {
         // When cursor goes below viewport bottom - scrolloff margin
         else if cursor_line + scrolloff >= current_offset + visible_lines {
             // Scroll down to position cursor at scrolloff distance from bottom
-            new_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
+            // Fix: Don't let scroll offset go negative for short files
+            // Formula: new_offset = cursor_line - (visible_lines - scrolloff - 1)
+            // But ensure we don't go below 0
+            if visible_lines > scrolloff + 1 {
+                new_offset = cursor_line.saturating_sub(visible_lines - scrolloff - 1);
+            } else {
+                // viewport smaller than scrolloff margins - just center cursor
+                new_offset = cursor_line.saturating_sub(visible_lines / 2);
+            }
         }
 
         // Ensure scroll_offset doesn't go beyond buffer
@@ -918,6 +926,10 @@ impl Editor {
         // This is FAST because tree-sitter already updated the tree via InputEdit.
         // We're just querying the tree for highlights, not re-parsing!
         let _ = self.buffer_mut().rebuild_highlight_cache();
+
+        // Fix Bug 2: Mark dirty after highlighting update so the UI re-renders
+        // Without this, highlighting updates after debounce but screen doesn't refresh
+        self.mark_dirty();
     }
 
     /// Apply modeline options to editor settings
