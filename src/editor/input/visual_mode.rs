@@ -51,6 +51,18 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 helpers::exit_visual_mode_to_normal(editor);
                 return Ok(());
             }
+            ('g', KeyCode::Char('n')) => {
+                // gn - extend selection to next search match
+                editor.search_select_next();
+                editor.clear_count();
+                return Ok(());
+            }
+            ('g', KeyCode::Char('N')) => {
+                // gN - extend selection to previous search match
+                editor.search_select_prev();
+                editor.clear_count();
+                return Ok(());
+            }
             ('r', KeyCode::Char(ch)) => {
                 // r{char} in visual block - replace all characters in selection with ch
                 if editor.mode() == Mode::VisualBlock {

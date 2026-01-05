@@ -678,3 +678,299 @@ fn test_visual_search_escape_cancels() {
     let visual_start = test.editor.visual_start();
     assert_eq!(visual_start, Some((0, 0)));
 }
+
+// ============================================================================
+// 'gn' and 'gN' commands - Search motion with visual selection
+// ============================================================================
+
+#[test]
+fn test_gn_normal_mode_selects_next_match() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo" and then use gn to select first match
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("gn"); // Should select first "foo"
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 2); // End of "foo" (inclusive)
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 0))); // Start of "foo"
+}
+
+#[test]
+fn test_gn_selects_current_match_if_cursor_on_it() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search and move to second "foo", then gn should select it
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .press('n') // Move to second "foo"
+        .keys("gn"); // Should select second "foo"
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 10); // End of second "foo"
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 8))); // Start of second "foo"
+}
+
+#[test]
+fn test_gn_selects_next_when_not_on_match() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo", move to "bar", then gn should select next "foo"
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("w") // Move to "bar"
+        .keys("gn"); // Should select next "foo"
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 10); // End of second "foo"
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 8))); // Start of second "foo"
+}
+
+#[test]
+fn test_gN_selects_previous_match() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo", move to end, then gN should select previous "foo"
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .press('$') // Move to end
+        .keys("gN"); // Should select second "foo" (previous from end)
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 10); // End of second "foo"
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 8))); // Start of second "foo"
+}
+
+#[test]
+fn test_gn_visual_mode_extends_selection() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo", select first one, then extend to next
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .press('v') // Enter visual mode
+        .keys("gn"); // Should extend to next "foo"
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 10); // End of second "foo"
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 0))); // Original anchor at first character
+}
+
+#[test]
+fn test_gN_visual_mode_extends_selection_backward() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search backward from end, select last "foo", then extend to previous
+    test.press('$') // Go to end
+        .press('?') // Backward search
+        .type_text("foo")
+        .press_enter()
+        .press('v') // Enter visual mode
+        .keys("gN"); // Should extend to previous "foo"
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    // Should extend from current position backward to first "foo"
+}
+
+#[test]
+fn test_gn_multiline_search() {
+    let mut test = EditorTest::new("foo\nbar\nfoo\nbaz");
+
+    // Search for "foo" across lines
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("gn"); // Select first "foo"
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 2); // End of "foo" on line 0
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 0)));
+}
+
+#[test]
+fn test_gn_wraps_around_buffer() {
+    let mut test = EditorTest::new("foo bar baz");
+
+    // Search for "baz", then gn should select current match (baz)
+    // After executing the search, cursor is at start of "baz" (within the match)
+    test.press('/')
+        .type_text("baz")
+        .press_enter()
+        .keys("gn"); // Should select current "baz" since cursor is within it
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 10); // End of "baz"
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 8))); // Start of "baz"
+}
+
+#[test]
+fn test_gn_wraps_to_beginning_multiline() {
+    let mut test = EditorTest::new("foo bar baz\nmore text\nfoo again");
+
+    // Search for "foo", move to second line, then gn should wrap back to first "foo"
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .press('j') // Move to second line
+        .keys("gn"); // Should find third "foo" on line 3
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(2, 2); // End of "foo" on line 3
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((2, 0))); // Start of "foo" on line 3
+}
+
+#[test]
+fn test_gn_no_search_does_nothing() {
+    let mut test = EditorTest::new("foo bar baz");
+
+    // Try gn without active search
+    test.keys("gn");
+
+    // Should stay in normal mode
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    test.assert_cursor(0, 0); // Cursor unchanged
+}
+
+#[test]
+fn test_cgn_change_next_match() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo" and change next match
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("cgn") // Change next match
+        .type_text("FOO")
+        .press_esc();
+
+    assert_eq!(test.buffer_content(), "FOO bar foo baz\n");
+    test.assert_cursor(0, 2); // At end of "FOO"
+}
+
+#[test]
+fn test_dgn_delete_next_match() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo" and delete next match
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("dgn"); // Delete next match
+
+    assert_eq!(test.buffer_content(), " bar foo baz\n");
+    test.assert_cursor(0, 0); // At start where "foo" was
+}
+
+#[test]
+fn test_ygn_yank_next_match() {
+    let mut test = EditorTest::new("foo bar foo baz");
+
+    // Search for "foo" and yank next match
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("ygn") // Yank next match
+        .press('$') // Move to end
+        .press('p'); // Paste
+
+    assert_eq!(test.buffer_content(), "foo bar foo bazfoo\n");
+}
+
+#[test]
+fn test_cgn_dot_repeat() {
+    let mut test = EditorTest::new("foo bar foo baz foo end");
+
+    // Change first "foo", then repeat with dot
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("cgn")
+        .type_text("FOO")
+        .press_esc()
+        .press('n') // Move to next match
+        .press('.'); // Repeat change
+
+    assert_eq!(test.buffer_content(), "FOO bar FOO baz foo end\n");
+    test.assert_cursor(0, 10); // At end of second "FOO"
+}
+
+#[test]
+fn test_gn_with_regex_pattern() {
+    let mut test = EditorTest::new("test123 word test456 end");
+
+    // Search for pattern matching "test" followed by digits
+    test.press('/')
+        .type_text(r"test\d+")
+        .press_enter()
+        .keys("gn");
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 6); // End of "test123"
+}
+
+#[test]
+fn test_gN_from_middle_selects_previous() {
+    let mut test = EditorTest::new("foo bar foo baz foo end");
+
+    // Search for "foo", move to middle, gN should select previous match
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("nn") // Move to third "foo"
+        .keys("gN"); // Select previous (second "foo")
+
+    assert_eq!(test.editor.mode(), Mode::Visual);
+    test.assert_cursor(0, 10); // End of second "foo"
+
+    let visual_start = test.editor.visual_start();
+    assert_eq!(visual_start, Some((0, 8))); // Start of second "foo"
+}
+
+#[test]
+fn test_gn_respects_smartcase() {
+    let mut test = EditorTest::new("Foo bar foo baz");
+
+    // Search for lowercase "foo" (should match both with smartcase)
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("gn");
+
+    // Should select first match (smartcase makes it case-insensitive for lowercase pattern)
+    assert_eq!(test.editor.mode(), Mode::Visual);
+}
+
+#[test]
+fn test_gn_empty_buffer_does_nothing() {
+    let mut test = EditorTest::new("");
+
+    test.press('/')
+        .type_text("foo")
+        .press_enter()
+        .keys("gn");
+
+    // Should stay in normal mode
+    assert_eq!(test.editor.mode(), Mode::Normal);
+}
