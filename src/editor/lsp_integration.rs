@@ -277,7 +277,7 @@ impl Editor {
 
                         if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
                             let target_line = location.range.start.line as usize;
-                            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+                            let target_character = location.range.start.character;
 
                             // Save current position to tag stack for Ctrl-T navigation
                             self.push_tag();
@@ -290,15 +290,20 @@ impl Editor {
                                 }
                             }
 
-                            // Move cursor to location
+                            // Convert UTF-16 character offset to column position AFTER loading the target file
+                            let target_col = self.utf16_to_col(target_line, target_character);
+
+                            // Move cursor to location and validate bounds
                             self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            self.buffer_mut().validate_cursor_position();
                             // Center cursor after jump (Vim behavior)
                             self.center_cursor_in_viewport();
+                            let actual_col = self.buffer().cursor().col();
                             self.set_lsp_status(format!(
                                 "Definition: {}:{}:{}",
                                 path.file_name().unwrap_or_default().to_string_lossy(),
                                 target_line + 1,
-                                target_col + 1
+                                actual_col + 1
                             ));
                             self.mark_dirty();
 
@@ -352,7 +357,7 @@ impl Editor {
 
                         if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
                             let target_line = location.range.start.line as usize;
-                            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+                            let target_character = location.range.start.character;
 
                             // Save current position to tag stack for Ctrl-T navigation
                             self.push_tag();
@@ -365,15 +370,20 @@ impl Editor {
                                 }
                             }
 
-                            // Move cursor to location
+                            // Convert UTF-16 character offset to column position AFTER loading the target file
+                            let target_col = self.utf16_to_col(target_line, target_character);
+
+                            // Move cursor to location and validate bounds
                             self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            self.buffer_mut().validate_cursor_position();
                             // Center cursor after jump (Vim behavior)
                             self.center_cursor_in_viewport();
+                            let actual_col = self.buffer().cursor().col();
                             self.set_lsp_status(format!(
                                 "Implementation: {}:{}:{}",
                                 path.file_name().unwrap_or_default().to_string_lossy(),
                                 target_line + 1,
-                                target_col + 1
+                                actual_col + 1
                             ));
                             self.mark_dirty();
 
@@ -427,7 +437,7 @@ impl Editor {
 
                         if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
                             let target_line = location.range.start.line as usize;
-                            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+                            let target_character = location.range.start.character;
 
                             // Save current position to tag stack for Ctrl-T navigation
                             self.push_tag();
@@ -440,15 +450,20 @@ impl Editor {
                                 }
                             }
 
-                            // Move cursor to location
+                            // Convert UTF-16 character offset to column position AFTER loading the target file
+                            let target_col = self.utf16_to_col(target_line, target_character);
+
+                            // Move cursor to location and validate bounds
                             self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            self.buffer_mut().validate_cursor_position();
                             // Center cursor after jump (Vim behavior)
                             self.center_cursor_in_viewport();
+                            let actual_col = self.buffer().cursor().col();
                             self.set_lsp_status(format!(
                                 "Type: {}:{}:{}",
                                 path.file_name().unwrap_or_default().to_string_lossy(),
                                 target_line + 1,
-                                target_col + 1
+                                actual_col + 1
                             ));
                             self.mark_dirty();
 
@@ -2505,7 +2520,7 @@ impl Editor {
         // Navigate to the location
         if let Some(path) = uri_to_file_path(&location.uri) {
             let target_line = location.range.start.line as usize;
-            let target_col = self.utf16_to_col(target_line, location.range.start.character);
+            let target_character = location.range.start.character;
 
             // Save current position to tag stack for Ctrl-T navigation
             self.push_tag();
@@ -2518,15 +2533,20 @@ impl Editor {
                 return;
             }
 
-            // Move cursor to location
+            // Convert UTF-16 character offset to column position AFTER loading the target file
+            let target_col = self.utf16_to_col(target_line, target_character);
+
+            // Move cursor to location and validate bounds
             self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+            self.buffer_mut().validate_cursor_position();
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
+            let actual_col = self.buffer().cursor().col();
             self.set_lsp_status(format!(
                 "Navigated to {}:{}:{}",
                 path.file_name().unwrap_or_default().to_string_lossy(),
                 target_line + 1,
-                target_col + 1
+                actual_col + 1
             ));
         } else {
             self.set_lsp_status("Invalid file path in LSP response".to_string());

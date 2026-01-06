@@ -209,11 +209,12 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     let buffer = editor.buffer();
     let rope = buffer.rope();
     let cursor = buffer.cursor();
+    let line_count = buffer.line_count(); // Vim-compatible count (excludes phantom empty line)
 
     // Calculate visible range using scroll offset (not centering)
     let visible_lines = area.height as usize;
     let start_line = editor.scroll_offset();
-    let end_line = (start_line + visible_lines).min(rope.len_lines());
+    let end_line = (start_line + visible_lines).min(line_count);
 
     // Get horizontal viewport settings
     let h_offset = editor.horizontal_offset();
@@ -221,7 +222,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
 
     // Calculate gutter width
     let show_numbers = editor.options.number || editor.options.relative_number;
-    let max_line_num = rope.len_lines();
+    let max_line_num = line_count;
     let line_num_width = if show_numbers {
         max_line_num.to_string().len().max(3) // At least 3 chars for line numbers
     } else {

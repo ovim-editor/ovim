@@ -9,7 +9,7 @@
 //! - Visual block insert state handling
 //! - Tab/auto-indent
 
-use crate::editor::{Change, Editor};
+use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,6 +27,35 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
                 let cursor = editor.buffer().cursor();
                 editor.last_insert_position = Some((cursor.line(), cursor.col()));
+
+                // Vim behavior: if current line is only whitespace when exiting insert mode,
+                // remove the whitespace (e.g., o<Esc> should leave an empty line, not an indented one)
+                // This must happen BEFORE finalize_change_building so it's part of the undo group
+                let current_line_idx = editor.buffer().cursor().line();
+                if let Some(line) = editor.buffer().line(current_line_idx) {
+                    let line_without_newline = line.trim_end_matches('\n');
+                    // Check if line is non-empty but only whitespace
+                    if !line_without_newline.is_empty()
+                        && line_without_newline.chars().all(|c| c.is_whitespace())
+                    {
+                        // Delete the whitespace, leaving just the newline
+                        let whitespace_len = line_without_newline.chars().count();
+                        let cursor_before = (current_line_idx, whitespace_len);
+                        let deleted_text = line_without_newline.to_string();
+                        let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
+
+                        // Create and apply the delete change (records for undo)
+                        let change = Change::delete(range, deleted_text, cursor_before);
+                        change.apply(editor.buffer_mut());
+                        editor.add_change(change);
+
+                        // Move cursor to column 0 since we removed the whitespace
+                        editor
+                            .buffer_mut()
+                            .cursor_mut()
+                            .set_position(current_line_idx, 0);
+                    }
+                }
 
                 editor.finalize_change_building();
 
@@ -175,31 +204,6 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 editor.set_mode(Mode::Normal);
 
-                // Vim behavior: if current line is only whitespace when exiting insert mode,
-                // remove the whitespace (e.g., o<Esc> should leave an empty line, not an indented one)
-                let current_line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(current_line_idx) {
-                    let line_without_newline = line.trim_end_matches('\n');
-                    // Check if line is non-empty but only whitespace
-                    if !line_without_newline.is_empty()
-                        && line_without_newline.chars().all(|c| c.is_whitespace())
-                    {
-                        // Delete the whitespace, leaving just the newline
-                        let whitespace_len = line_without_newline.chars().count();
-                        editor.buffer_mut().delete_range(
-                            current_line_idx,
-                            0,
-                            current_line_idx,
-                            whitespace_len,
-                        );
-                        // Move cursor to column 0 since we removed the whitespace
-                        editor
-                            .buffer_mut()
-                            .cursor_mut()
-                            .set_position(current_line_idx, 0);
-                    }
-                }
-
                 // Move cursor left when exiting insert mode (unless at column 0)
 
                 // If we were in visual block mode, move cursor to appropriate line
@@ -246,36 +250,42 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // Same logic as Esc - exit insert mode
                 let cursor = editor.buffer().cursor();
                 editor.last_insert_position = Some((cursor.line(), cursor.col()));
-                editor.finalize_change_building();
-                editor.update_last_inserted_register();
-                editor.mark_buffer_modified();
-                editor.set_mode(Mode::Normal);
 
                 // Vim behavior: if current line is only whitespace, remove it
+                // This must happen BEFORE finalize_change_building so it's part of the undo group
                 let current_line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(current_line_idx) {
+                let did_cleanup = if let Some(line) = editor.buffer().line(current_line_idx) {
                     let line_without_newline = line.trim_end_matches('\n');
                     if !line_without_newline.is_empty()
                         && line_without_newline.chars().all(|c| c.is_whitespace())
                     {
                         let whitespace_len = line_without_newline.chars().count();
-                        editor.buffer_mut().delete_range(
-                            current_line_idx,
-                            0,
-                            current_line_idx,
-                            whitespace_len,
-                        );
+                        let cursor_before = (current_line_idx, whitespace_len);
+                        let deleted_text = line_without_newline.to_string();
+                        let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
+
+                        let change = Change::delete(range, deleted_text, cursor_before);
+                        change.apply(editor.buffer_mut());
+                        editor.add_change(change);
+
                         editor
                             .buffer_mut()
                             .cursor_mut()
                             .set_position(current_line_idx, 0);
+                        true
                     } else {
-                        let cursor = editor.buffer_mut().cursor_mut();
-                        if cursor.col() > 0 {
-                            cursor.move_left(1);
-                        }
+                        false
                     }
                 } else {
+                    false
+                };
+
+                editor.finalize_change_building();
+                editor.update_last_inserted_register();
+                editor.mark_buffer_modified();
+                editor.set_mode(Mode::Normal);
+
+                if !did_cleanup {
                     let cursor = editor.buffer_mut().cursor_mut();
                     if cursor.col() > 0 {
                         cursor.move_left(1);
@@ -291,36 +301,42 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // Same logic as Esc - exit insert mode
                 let cursor = editor.buffer().cursor();
                 editor.last_insert_position = Some((cursor.line(), cursor.col()));
-                editor.finalize_change_building();
-                editor.update_last_inserted_register();
-                editor.mark_buffer_modified();
-                editor.set_mode(Mode::Normal);
 
                 // Vim behavior: if current line is only whitespace, remove it
+                // This must happen BEFORE finalize_change_building so it's part of the undo group
                 let current_line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(current_line_idx) {
+                let did_cleanup = if let Some(line) = editor.buffer().line(current_line_idx) {
                     let line_without_newline = line.trim_end_matches('\n');
                     if !line_without_newline.is_empty()
                         && line_without_newline.chars().all(|c| c.is_whitespace())
                     {
                         let whitespace_len = line_without_newline.chars().count();
-                        editor.buffer_mut().delete_range(
-                            current_line_idx,
-                            0,
-                            current_line_idx,
-                            whitespace_len,
-                        );
+                        let cursor_before = (current_line_idx, whitespace_len);
+                        let deleted_text = line_without_newline.to_string();
+                        let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
+
+                        let change = Change::delete(range, deleted_text, cursor_before);
+                        change.apply(editor.buffer_mut());
+                        editor.add_change(change);
+
                         editor
                             .buffer_mut()
                             .cursor_mut()
                             .set_position(current_line_idx, 0);
+                        true
                     } else {
-                        let cursor = editor.buffer_mut().cursor_mut();
-                        if cursor.col() > 0 {
-                            cursor.move_left(1);
-                        }
+                        false
                     }
                 } else {
+                    false
+                };
+
+                editor.finalize_change_building();
+                editor.update_last_inserted_register();
+                editor.mark_buffer_modified();
+                editor.set_mode(Mode::Normal);
+
+                if !did_cleanup {
                     let cursor = editor.buffer_mut().cursor_mut();
                     if cursor.col() > 0 {
                         cursor.move_left(1);
@@ -371,6 +387,9 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Tab - Accept completion if menu is visible, otherwise insert tab
         KeyCode::Tab if editor.completion_menu().is_visible() => {
             editor.accept_completion();
+        }
+        KeyCode::Tab => {
+            helpers::insert_char(editor, '\t')?;
         }
         KeyCode::Char(c) => {
             helpers::insert_char(editor, c)?;

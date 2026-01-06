@@ -273,3 +273,44 @@ fn test_cc_esc_behavior() {
     // Note: Vim's cc keeps indent and Esc keeps it - this is intentional
     // cc is different from o in that the line existed before
 }
+
+// ============================================================================
+// Bug 4: o<Esc>u on indented lines deletes too much
+// ============================================================================
+
+#[test]
+fn test_o_esc_undo_on_indented_line() {
+    // Bug report: "Undo after `o` is broken. Deletes too much."
+    // Specifically on lines with indentation
+    let mut test = EditorTest::new("    indented line\nnext line");
+
+    // Verify initial state
+    assert_eq!(test.buffer_content(), "    indented line\nnext line\n");
+    test.assert_cursor(0, 0);
+
+    // Press o<Esc>u
+    test.keys("o");      // Opens new line with indent
+    test.keys("<Esc>");  // Exit without typing
+
+    // After o<Esc>, we should have 3 lines (original 2 + 1 new empty line)
+    eprintln!("After o<Esc>:");
+    eprintln!("  Line 0: {:?}", test.line(0));
+    eprintln!("  Line 1: {:?}", test.line(1));
+    eprintln!("  Line 2: {:?}", test.line(2));
+    eprintln!("  Buffer: {:?}", test.buffer_content());
+
+    test.keys("u");      // Undo
+
+    // After undo, should be back to original 2 lines
+    eprintln!("After undo:");
+    eprintln!("  Line 0: {:?}", test.line(0));
+    eprintln!("  Line 1: {:?}", test.line(1));
+    eprintln!("  Buffer: {:?}", test.buffer_content());
+
+    // The bug: undo deletes too much - should only remove the new line
+    assert_eq!(
+        test.buffer_content(),
+        "    indented line\nnext line\n",
+        "Undo should restore original content exactly"
+    );
+}

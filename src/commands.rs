@@ -4,6 +4,20 @@ use crate::api::{ApiResponse, ErrorResponse, SuccessResponse};
 use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
 
+/// Expands ~ to home directory in file paths
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    } else if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home.to_string_lossy().to_string();
+        }
+    }
+    path.to_string()
+}
+
 /// Helper function to jump to a quickfix entry
 pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> ApiResponse {
     if let Some(ref path) = entry.filename {
@@ -19,6 +33,7 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Api
         let line = entry.lnum.saturating_sub(1);
         let col = entry.col.saturating_sub(1);
         editor.buffer_mut().cursor_mut().set_position(line, col);
+        editor.buffer_mut().validate_cursor_position();
 
         ApiResponse::Success(SuccessResponse {
             success: true,
@@ -807,16 +822,19 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
         }
         _ => {
             // Handle :tabnew <filename>, :tabe <filename>, :tabedit <filename>
-            if let Some(filename) = command
+            if let Some(raw_filename) = command
                 .strip_prefix("tabnew ")
                 .or_else(|| command.strip_prefix("tabe "))
                 .or_else(|| command.strip_prefix("tabedit "))
             {
+                // Expand ~ to home directory
+                let filename = expand_tilde(raw_filename);
+
                 // Create new tab and load file (or create if doesn't exist)
                 editor.new_tab(None);
 
                 // Try to load the file, if it doesn't exist create an empty buffer
-                match editor.load_file(filename) {
+                match editor.load_file(&filename) {
                     Ok(_) => {
                         let tab_index = editor.current_tab_index() + 1;
                         ApiResponse::Success(SuccessResponse {
@@ -832,8 +850,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             use crate::buffer::Buffer;
                             let mut new_buffer = Buffer::new();
                             // Normalize the path
-                            let absolute_path = std::path::absolute(filename)
-                                .unwrap_or_else(|_| std::path::PathBuf::from(filename));
+                            let absolute_path = std::path::absolute(&filename)
+                                .unwrap_or_else(|_| std::path::PathBuf::from(&filename));
                             let path_str = absolute_path.to_string_lossy().to_string();
                             new_buffer.set_file_path(path_str.clone());
                             editor.add_buffer(new_buffer);
@@ -1112,12 +1130,13 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     message: Some(buf_list.join("\n")),
                     line_count: None,
                 })
-            } else if let Some(filename) = command
+            } else if let Some(raw_filename) = command
                 .strip_prefix("e ")
                 .or_else(|| command.strip_prefix("edit "))
             {
-                // :e <filename> - edit file
-                match editor.load_file(filename) {
+                // :e <filename> - edit file (expand ~ to home directory)
+                let filename = expand_tilde(raw_filename);
+                match editor.load_file(&filename) {
                     Ok(_) => {
                         let buf_name = editor
                             .buffer()
