@@ -31,7 +31,7 @@ const LOGO: &[&str] = &[
 ];
 
 /// Tagline under the logo
-const TAGLINE: &str = "A Neovim clone in Rust";
+const TAGLINE: &str = "It's.. oxidized";
 
 /// Colors for the dashboard (Catppuccin-inspired)
 mod colors {

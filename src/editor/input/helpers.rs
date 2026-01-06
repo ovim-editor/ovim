@@ -32,12 +32,16 @@ pub fn move_right(editor: &mut Editor) {
         let cursor = editor.buffer_mut().cursor_mut();
 
         // In VisualBlock mode, allow cursor beyond line end for rectangular selection
-        let new_col = if mode == Mode::VisualBlock {
-            cursor.col() + count
+        // In Insert mode, allow cursor one past end (for appending)
+        let max_col = if mode == Mode::VisualBlock {
+            usize::MAX // No limit in visual block
+        } else if mode == Mode::Insert {
+            line_len // Can be at position after last char
         } else {
-            (cursor.col() + count).min(line_len.saturating_sub(1).max(0))
+            line_len.saturating_sub(1).max(0) // Normal mode: on last char
         };
 
+        let new_col = (cursor.col() + count).min(max_col);
         cursor.set_col(new_col);
     }
     editor.clear_count();

@@ -415,7 +415,8 @@ impl Renderer {
 
             // Get the line text and convert character column to display column
             let rope = editor.buffer().rope();
-            let line_text = if cursor_line < rope.len_lines() {
+            let line_count = editor.buffer().line_count();
+            let line_text = if cursor_line < line_count {
                 rope.line(cursor_line).to_string()
             } else {
                 String::new()
@@ -429,7 +430,7 @@ impl Renderer {
 
             // Calculate gutter width for cursor offset
             let show_numbers = editor.options.number || editor.options.relative_number;
-            let max_line_num = editor.buffer().rope().len_lines();
+            let max_line_num = line_count;
             let line_num_width = if show_numbers {
                 max_line_num.to_string().len().max(3)
             } else {

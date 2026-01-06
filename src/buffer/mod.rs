@@ -1349,8 +1349,9 @@ impl Buffer {
             let source = self.rope.to_string();
             syntax.update(edit, &source);
 
-            // Invalidate cache - will be rebuilt in background
-            self.cached_highlights = None;
+            // Keep stale highlights until new ones are calculated
+            // This prevents flashing (no highlights) during typing
+            // The pending_rehighlight flag ensures fresh highlights will be computed
         }
     }
 

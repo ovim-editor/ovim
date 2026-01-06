@@ -389,7 +389,7 @@ pub fn render_hover_window(
 
     // Calculate gutter width
     let show_numbers = editor.options.number || editor.options.relative_number;
-    let max_line_num = editor.buffer().rope().len_lines();
+    let max_line_num = editor.buffer().line_count();
     let line_num_width = if show_numbers {
         max_line_num.to_string().len().max(3)
     } else {
@@ -405,7 +405,7 @@ pub fn render_hover_window(
     // Convert cursor to screen coordinates
     let screen_line = cursor_line.saturating_sub(viewport_start);
     let rope = editor.buffer().rope();
-    let line_text = if cursor_line < rope.len_lines() {
+    let line_text = if cursor_line < editor.buffer().line_count() {
         rope.line(cursor_line).to_string()
     } else {
         String::new()
@@ -543,7 +543,8 @@ pub fn render_completion_menu(
 
     // Get the line text and convert character column to display column
     let rope = editor.buffer().rope();
-    let line_text = if cursor_line < rope.len_lines() {
+    let line_count = editor.buffer().line_count();
+    let line_text = if cursor_line < line_count {
         rope.line(cursor_line).to_string()
     } else {
         String::new()
@@ -556,7 +557,7 @@ pub fn render_completion_menu(
 
     // Calculate gutter width
     let show_numbers = editor.options.number || editor.options.relative_number;
-    let max_line_num = editor.buffer().rope().len_lines();
+    let max_line_num = line_count;
     let line_num_width = if show_numbers {
         max_line_num.to_string().len().max(3)
     } else {

@@ -53,6 +53,7 @@ impl Motions {
             // At end of line, move to next line
             if line_idx + 1 < rope.len_lines() {
                 let mut next_line_idx = line_idx + 1;
+                let mut found_non_empty = false;
 
                 // Skip over consecutive empty lines
                 loop {
@@ -64,18 +65,25 @@ impl Motions {
                         if next_line_idx + 1 < rope.len_lines() {
                             next_line_idx += 1;
                         } else {
-                            // Reached end of file on empty line
+                            // Reached end of file on empty line - don't move to it
                             break;
                         }
                     } else {
                         // Found non-empty line
+                        found_non_empty = true;
                         break;
                     }
                 }
 
-                buffer.cursor_mut().set_position(next_line_idx, 0);
-                // Skip leading whitespace on the line we landed on
-                Self::skip_whitespace_forward(buffer);
+                if found_non_empty {
+                    buffer.cursor_mut().set_position(next_line_idx, 0);
+                    // Skip leading whitespace on the line we landed on
+                    Self::skip_whitespace_forward(buffer);
+                } else {
+                    // No non-empty line found - stay on current line's last char
+                    let max_col = chars.len().saturating_sub(1).max(0);
+                    buffer.cursor_mut().set_col(max_col);
+                }
             } else {
                 // At end of last line - clamp cursor to valid position
                 let max_col = chars.len().saturating_sub(1).max(0);
@@ -123,6 +131,7 @@ impl Motions {
         if new_col >= chars.len() && line_idx + 1 < rope.len_lines() {
             // Fix Bug 4: Skip consecutive empty lines when moving to next line
             let mut next_line_idx = line_idx + 1;
+            let mut found_non_empty = false;
 
             // Skip over consecutive empty lines
             loop {
@@ -134,17 +143,25 @@ impl Motions {
                     if next_line_idx + 1 < rope.len_lines() {
                         next_line_idx += 1;
                     } else {
-                        // Reached end of file on empty line
+                        // Reached end of file on empty line - don't move to it
                         break;
                     }
                 } else {
                     // Found non-empty line
+                    found_non_empty = true;
                     break;
                 }
             }
 
-            buffer.cursor_mut().set_position(next_line_idx, 0);
-            Self::skip_whitespace_forward(buffer);
+            if found_non_empty {
+                buffer.cursor_mut().set_position(next_line_idx, 0);
+                Self::skip_whitespace_forward(buffer);
+            } else {
+                // No non-empty line found - stay on current line's last char
+                buffer
+                    .cursor_mut()
+                    .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
+            }
         } else {
             buffer
                 .cursor_mut()
