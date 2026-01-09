@@ -16,6 +16,44 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::helpers;
 
+/// Cleans up whitespace-only lines before exiting insert mode.
+///
+/// Vim behavior: if the current line contains only whitespace when exiting insert mode,
+/// remove the whitespace (e.g., o<Esc> should leave an empty line, not an indented one).
+///
+/// This must be called BEFORE finalize_change_building() so it's part of the undo group.
+///
+/// Returns true if cleanup was performed (which means cursor shouldn't move left).
+fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
+    let current_line_idx = editor.buffer().cursor().line();
+    if let Some(line) = editor.buffer().line(current_line_idx) {
+        let line_without_newline = line.trim_end_matches('\n');
+        // Check if line is non-empty but only whitespace
+        if !line_without_newline.is_empty()
+            && line_without_newline.chars().all(|c| c.is_whitespace())
+        {
+            // Delete the whitespace, leaving just the newline
+            let whitespace_len = line_without_newline.chars().count();
+            let cursor_before = (current_line_idx, whitespace_len);
+            let deleted_text = line_without_newline.to_string();
+            let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
+
+            // Create and apply the delete change (records for undo)
+            let change = Change::delete(range, deleted_text, cursor_before);
+            change.apply(editor.buffer_mut());
+            editor.add_change(change);
+
+            // Move cursor to column 0 since we removed the whitespace
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(current_line_idx, 0);
+            return true;
+        }
+    }
+    false
+}
+
 /// Handles input in Insert mode
 pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
@@ -28,34 +66,8 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let cursor = editor.buffer().cursor();
                 editor.last_insert_position = Some((cursor.line(), cursor.col()));
 
-                // Vim behavior: if current line is only whitespace when exiting insert mode,
-                // remove the whitespace (e.g., o<Esc> should leave an empty line, not an indented one)
-                // This must happen BEFORE finalize_change_building so it's part of the undo group
-                let current_line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(current_line_idx) {
-                    let line_without_newline = line.trim_end_matches('\n');
-                    // Check if line is non-empty but only whitespace
-                    if !line_without_newline.is_empty()
-                        && line_without_newline.chars().all(|c| c.is_whitespace())
-                    {
-                        // Delete the whitespace, leaving just the newline
-                        let whitespace_len = line_without_newline.chars().count();
-                        let cursor_before = (current_line_idx, whitespace_len);
-                        let deleted_text = line_without_newline.to_string();
-                        let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
-
-                        // Create and apply the delete change (records for undo)
-                        let change = Change::delete(range, deleted_text, cursor_before);
-                        change.apply(editor.buffer_mut());
-                        editor.add_change(change);
-
-                        // Move cursor to column 0 since we removed the whitespace
-                        editor
-                            .buffer_mut()
-                            .cursor_mut()
-                            .set_position(current_line_idx, 0);
-                    }
-                }
+                // Cleanup whitespace-only lines before finalizing changes
+                cleanup_whitespace_only_line(editor);
 
                 editor.finalize_change_building();
 
@@ -251,34 +263,8 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let cursor = editor.buffer().cursor();
                 editor.last_insert_position = Some((cursor.line(), cursor.col()));
 
-                // Vim behavior: if current line is only whitespace, remove it
-                // This must happen BEFORE finalize_change_building so it's part of the undo group
-                let current_line_idx = editor.buffer().cursor().line();
-                let did_cleanup = if let Some(line) = editor.buffer().line(current_line_idx) {
-                    let line_without_newline = line.trim_end_matches('\n');
-                    if !line_without_newline.is_empty()
-                        && line_without_newline.chars().all(|c| c.is_whitespace())
-                    {
-                        let whitespace_len = line_without_newline.chars().count();
-                        let cursor_before = (current_line_idx, whitespace_len);
-                        let deleted_text = line_without_newline.to_string();
-                        let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
-
-                        let change = Change::delete(range, deleted_text, cursor_before);
-                        change.apply(editor.buffer_mut());
-                        editor.add_change(change);
-
-                        editor
-                            .buffer_mut()
-                            .cursor_mut()
-                            .set_position(current_line_idx, 0);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+                // Cleanup whitespace-only lines before finalizing changes
+                let did_cleanup = cleanup_whitespace_only_line(editor);
 
                 editor.finalize_change_building();
                 editor.update_last_inserted_register();
@@ -302,34 +288,8 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let cursor = editor.buffer().cursor();
                 editor.last_insert_position = Some((cursor.line(), cursor.col()));
 
-                // Vim behavior: if current line is only whitespace, remove it
-                // This must happen BEFORE finalize_change_building so it's part of the undo group
-                let current_line_idx = editor.buffer().cursor().line();
-                let did_cleanup = if let Some(line) = editor.buffer().line(current_line_idx) {
-                    let line_without_newline = line.trim_end_matches('\n');
-                    if !line_without_newline.is_empty()
-                        && line_without_newline.chars().all(|c| c.is_whitespace())
-                    {
-                        let whitespace_len = line_without_newline.chars().count();
-                        let cursor_before = (current_line_idx, whitespace_len);
-                        let deleted_text = line_without_newline.to_string();
-                        let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
-
-                        let change = Change::delete(range, deleted_text, cursor_before);
-                        change.apply(editor.buffer_mut());
-                        editor.add_change(change);
-
-                        editor
-                            .buffer_mut()
-                            .cursor_mut()
-                            .set_position(current_line_idx, 0);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
+                // Cleanup whitespace-only lines before finalizing changes
+                let did_cleanup = cleanup_whitespace_only_line(editor);
 
                 editor.finalize_change_building();
                 editor.update_last_inserted_register();
