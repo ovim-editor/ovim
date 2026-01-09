@@ -120,6 +120,16 @@ impl Editor {
         }
     }
 
+    /// Closes all windows except the current one (like Vim's :only)
+    /// Returns true if windows were closed, false if already only one window or no window manager
+    pub fn close_other_windows(&mut self) -> bool {
+        if let Some(wm) = &mut self.window_manager {
+            wm.close_other_windows().is_ok()
+        } else {
+            false
+        }
+    }
+
     // === Viewport Scrolling ===
 
     /// Scrolls viewport down N lines
