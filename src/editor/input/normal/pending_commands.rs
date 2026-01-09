@@ -470,6 +470,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('W', KeyCode::Char('o')) => {
             // TODO: Implement close_other_windows()
         }
+        ('W', KeyCode::Char('c')) => {
+            // <C-w>c - close current window (silently fails if last window)
+            let _ = editor.close_current_window();
+        }
+        ('W', KeyCode::Char('q')) => {
+            // <C-w>q - close current window, quit if last window
+            editor.close_or_quit_window();
+        }
         ('W', KeyCode::Char('h')) => {
             editor.focus_window_left();
         }
