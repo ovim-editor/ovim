@@ -51,7 +51,7 @@ pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
 pub use operators::{Operator, Operators};
-pub use performance::MAX_LATENCY_SAMPLES;
+pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
 pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::{RegisterManager, RegisterType};
@@ -252,29 +252,13 @@ pub struct Editor {
     loading_preview: Option<String>,
     /// Last successfully shown preview path (to show while new one loads)
     pub last_shown_preview: Option<String>,
-    /// Performance metrics: render count
-    render_count: u64,
-    /// Performance metrics: last render duration in microseconds
-    last_render_duration_micros: Option<u64>,
-    /// Performance metrics: last syntax highlighting duration in microseconds
-    last_syntax_duration_micros: Option<u64>,
-    /// Render dirty flag - set when UI needs redraw
-    render_dirty: bool,
+    /// Performance metrics
+    metrics: PerformanceMetrics,
     /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
     skip_scroll_update: bool,
     /// Viewport command active - tracks if a viewport command was recently used
     /// When true, scrolloff is only applied if cursor moves outside current viewport
     viewport_command_active: bool,
-    /// Input latency samples in microseconds (circular buffer, max 1000 samples)
-    input_latency_samples: Vec<u64>,
-    /// Last LSP serialize (rope->string) duration in microseconds
-    last_lsp_serialize_micros: Option<u64>,
-    /// Last git status refresh duration in microseconds
-    last_git_status_micros: Option<u64>,
-    /// Last fold calculation duration in microseconds
-    last_fold_calc_micros: Option<u64>,
-    /// Last diagnostic query duration in microseconds
-    last_diagnostic_query_micros: Option<u64>,
     /// Dashboard menu selected index (0-5)
     dashboard_selected: usize,
     /// Pending semantic change operation (for ci", cw, etc.)
@@ -384,17 +368,9 @@ impl Editor {
             last_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
-            render_count: 0,
-            last_render_duration_micros: None,
-            last_syntax_duration_micros: None,
-            render_dirty: true, // Start dirty to force initial render
+            metrics: PerformanceMetrics::new(),
             skip_scroll_update: false,
             viewport_command_active: false,
-            input_latency_samples: Vec::new(),
-            last_lsp_serialize_micros: None,
-            last_git_status_micros: None,
-            last_fold_calc_micros: None,
-            last_diagnostic_query_micros: None,
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
@@ -449,17 +425,9 @@ impl Editor {
             last_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
-            render_count: 0,
-            last_render_duration_micros: None,
-            last_syntax_duration_micros: None,
-            render_dirty: true, // Start dirty to force initial render
+            metrics: PerformanceMetrics::new(),
             skip_scroll_update: false,
             viewport_command_active: false,
-            input_latency_samples: Vec::new(),
-            last_lsp_serialize_micros: None,
-            last_git_status_micros: None,
-            last_fold_calc_micros: None,
-            last_diagnostic_query_micros: None,
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
