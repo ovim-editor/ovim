@@ -1,6 +1,7 @@
 mod buffer_manager;
 mod change;
 mod change_tracking;
+mod command_context;
 mod command_history;
 mod completion;
 mod filetree;
@@ -35,6 +36,7 @@ mod window;
 mod window_viewport;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range, TextObjectType};
+pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
@@ -189,12 +191,8 @@ pub struct Editor {
     visual_block_insert_state: Option<(usize, usize, usize, bool, bool)>,
     /// Last visual selection (start, end, mode) for gv command
     last_visual_selection: Option<VisualSelection>,
-    /// Command line buffer (for : commands)
-    command_line: String,
-    /// Command history for command line mode
-    command_history: Vec<String>,
-    /// Current position in command history (for up/down navigation)
-    command_history_index: Option<usize>,
+    /// Command-line mode context (buffer, history, navigation)
+    command: CommandContext,
     /// Search-related state
     pub search: SearchContext,
     /// Mark manager for buffer marks
@@ -373,9 +371,7 @@ impl Editor {
             visual_start: None,
             visual_block_insert_state: None,
             last_visual_selection: None,
-            command_line: String::new(),
-            command_history: Vec::new(),
-            command_history_index: None,
+            command: CommandContext::new(),
             search: SearchContext::new(),
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
@@ -448,9 +444,7 @@ impl Editor {
             visual_start: None,
             visual_block_insert_state: None,
             last_visual_selection: None,
-            command_line: String::new(),
-            command_history: Vec::new(),
-            command_history_index: None,
+            command: CommandContext::new(),
             search: SearchContext::new(),
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
