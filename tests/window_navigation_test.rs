@@ -717,7 +717,7 @@ fn test_equal_window_splits() {
     assert_eq!(test.editor.window_count(), 4);
 
     // Should be able to navigate through all
-    for i in 0..4 {
+    for _i in 0..4 {
         test.keys("<C-w>w");
         let idx = test.editor.window_manager().unwrap().focused_window_index();
         assert!(idx < 4, "Window index {} should be valid", idx);
