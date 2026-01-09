@@ -97,6 +97,29 @@ impl Editor {
             .unwrap_or(1)
     }
 
+    /// Closes the current window
+    /// Returns false if it's the last window (can't close)
+    pub fn close_current_window(&mut self) -> bool {
+        if let Some(wm) = &mut self.window_manager {
+            wm.close_focused().is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Closes the current window, or quits if it's the last window
+    pub fn close_or_quit_window(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            if wm.close_focused().is_err() {
+                // Last window - quit instead
+                self.quit();
+            }
+        } else {
+            // No window manager - just quit
+            self.quit();
+        }
+    }
+
     // === Viewport Scrolling ===
 
     /// Scrolls viewport down N lines

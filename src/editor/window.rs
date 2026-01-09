@@ -754,4 +754,78 @@ impl WindowManager {
             current.horizontal_overlap(candidate) > 0 || true // Accept any window below
         })
     }
+
+    /// Closes the focused window
+    /// Returns Ok(()) if window was closed, Err(msg) if it's the last window
+    pub fn close_focused(&mut self) -> Result<(), String> {
+        let total_windows = self.root.count_windows();
+        if total_windows == 1 {
+            return Err("Cannot close last window".to_string());
+        }
+
+        let target_index = self.focused_window;
+        let removed = Self::remove_window_by_index(&mut self.root, target_index, 0);
+
+        if removed {
+            // Adjust focused window index
+            // If we closed the last window, move focus back
+            let new_total = self.root.count_windows();
+            if self.focused_window >= new_total {
+                self.focused_window = new_total.saturating_sub(1);
+            }
+            Ok(())
+        } else {
+            Err("Failed to close window".to_string())
+        }
+    }
+
+    /// Recursively removes a window by index, simplifying the tree
+    /// Returns true if the window was removed
+    fn remove_window_by_index(
+        node: &mut WindowNode,
+        target_index: usize,
+        current_index: usize,
+    ) -> bool {
+        match node {
+            WindowNode::Leaf(_) => {
+                // Can't remove a leaf directly - must be handled by parent
+                false
+            }
+            WindowNode::Split { first, second, .. } => {
+                let first_count = first.count_windows();
+
+                // Check if target is in first child
+                if target_index < current_index + first_count {
+                    // Check if first child is the exact target (and is a leaf)
+                    if current_index == target_index && matches!(first.as_ref(), WindowNode::Leaf(_)) {
+                        // Replace this Split with the second child
+                        *node = (**second).clone();
+                        return true;
+                    }
+
+                    // Otherwise recurse into first child
+                    if Self::remove_window_by_index(first, target_index, current_index) {
+                        return true;
+                    }
+                } else {
+                    // Target is in second child
+                    let second_start_index = current_index + first_count;
+
+                    // Check if second child is the exact target (and is a leaf)
+                    if second_start_index == target_index && matches!(second.as_ref(), WindowNode::Leaf(_)) {
+                        // Replace this Split with the first child
+                        *node = (**first).clone();
+                        return true;
+                    }
+
+                    // Otherwise recurse into second child
+                    if Self::remove_window_by_index(second, target_index, second_start_index) {
+                        return true;
+                    }
+                }
+
+                false
+            }
+        }
+    }
 }
