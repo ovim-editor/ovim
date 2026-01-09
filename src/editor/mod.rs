@@ -32,6 +32,7 @@ mod textobjects;
 mod theme;
 mod ui_features;
 mod undo;
+mod visual_context;
 mod visual_mode;
 mod window;
 mod window_viewport;
@@ -59,6 +60,7 @@ pub use search_context::{SearchContext, VisualSearchState};
 pub use tabpage::{TabPage, TabPageManager};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
+pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 
 /// Editor options and settings
@@ -157,9 +159,6 @@ pub enum LspCommand {
     StartNotificationListener { language_id: String },
 }
 
-/// Visual selection: (start_position, end_position, mode)
-pub type VisualSelection = ((usize, usize), (usize, usize), Mode);
-
 /// Cached preview highlights: line_idx -> Vec<(range, highlight_group)>
 pub type PreviewHighlights =
     HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>;
@@ -180,13 +179,8 @@ pub struct Editor {
     input: InputContext,
     /// Register manager for yank/delete operations
     registers: RegisterManager,
-    /// Visual mode selection start (line, col)
-    visual_start: Option<(usize, usize)>,
-    /// Visual block insert/append state: (start_line, end_line, col, is_append, move_to_end)
-    /// move_to_end: true for I/A (cursor at end_line), false for c (cursor at start_line)
-    visual_block_insert_state: Option<(usize, usize, usize, bool, bool)>,
-    /// Last visual selection (start, end, mode) for gv command
-    last_visual_selection: Option<VisualSelection>,
+    /// Visual mode context (selection start, block insert state, last selection)
+    visual: VisualContext,
     /// Command-line mode context (buffer, history, navigation)
     command: CommandContext,
     /// Search-related state
@@ -354,9 +348,7 @@ impl Editor {
             should_quit: false,
             input: InputContext::new(),
             registers: RegisterManager::new(),
-            visual_start: None,
-            visual_block_insert_state: None,
-            last_visual_selection: None,
+            visual: VisualContext::new(),
             command: CommandContext::new(),
             search: SearchContext::new(),
             marks: MarkManager::new(),
@@ -421,9 +413,7 @@ impl Editor {
             should_quit: false,
             input: InputContext::new(),
             registers: RegisterManager::new(),
-            visual_start: None,
-            visual_block_insert_state: None,
-            last_visual_selection: None,
+            visual: VisualContext::new(),
             command: CommandContext::new(),
             search: SearchContext::new(),
             marks: MarkManager::new(),
@@ -544,7 +534,7 @@ impl Editor {
 
         // Clear visual selection when leaving visual modes
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
-            self.visual_start = None;
+            self.visual.visual_start = None;
         }
     }
 
