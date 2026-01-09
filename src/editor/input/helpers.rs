@@ -1129,6 +1129,80 @@ pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
+/// Extracts the word under the cursor
+/// A "word" consists of alphanumeric characters and underscores
+/// Returns None if cursor is not on a word character
+fn extract_word_at_cursor(editor: &Editor) -> Option<String> {
+    let cursor = editor.buffer().cursor();
+    let line_idx = cursor.line();
+    let col = cursor.col();
+
+    let line = editor.buffer().line(line_idx)?;
+    let line_text = line.trim_end_matches('\n');
+    let chars: Vec<char> = line_text.chars().collect();
+
+    if col >= chars.len() {
+        return None;
+    }
+
+    // Extract word under cursor
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    let start = chars[..=col]
+        .iter()
+        .rposition(|&c| !is_word_char(c))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let end = chars[col..]
+        .iter()
+        .position(|&c| !is_word_char(c))
+        .map(|i| col + i)
+        .unwrap_or(chars.len());
+
+    if start < end {
+        Some(chars[start..end].iter().collect())
+    } else {
+        None
+    }
+}
+
+/// Sets up and executes a search for the given text
+/// Returns true if a match was found, false otherwise
+fn setup_and_execute_search(editor: &mut Editor, text: &str, forward: bool) -> bool {
+    // Escape regex special characters for literal search
+    let escaped = regex::escape(text);
+
+    // Create and execute the search
+    editor.clear_search_buffer();
+    for ch in escaped.chars() {
+        editor.append_to_search_buffer(ch);
+    }
+    editor.set_search_forward(forward);
+
+    // Update the / register with the search pattern
+    editor.registers.set_last_search(escaped.clone());
+
+    // Create search and find first match
+    let mut search = crate::editor::Search::new_with_options(
+        escaped,
+        forward,
+        editor.options.ignorecase,
+        editor.options.smartcase,
+    );
+
+    // For visual * and #, we want to find the NEXT occurrence, not the current one
+    // So start searching from the next column position (forward) or current position (backward)
+    let cursor = editor.buffer().cursor();
+    let search_col = if forward { cursor.col() + 1 } else { cursor.col() };
+
+    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
+        editor.buffer_mut().cursor_mut().set_position(line, col);
+        editor.set_current_search(search);
+        true
+    } else {
+        false
+    }
+}
+
 /// Gets the text content of the current visual selection
 /// Returns the selected text as a String, or None if no selection exists
 /// Handles Visual, VisualLine, and VisualBlock modes appropriately
@@ -1184,139 +1258,38 @@ pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
 /// Searches forward for the visually selected text
 /// Escapes regex special characters for literal search
 /// Returns true if match found, false otherwise
+#[must_use = "ignoring the return value means you won't know if the search succeeded"]
 pub fn search_visual_selection_forward(editor: &mut Editor) -> bool {
     let selection_text = match get_visual_selection_text(editor) {
         Some(text) if !text.is_empty() => text,
         _ => {
             // Fall back to word under cursor if selection is empty
-            let cursor = editor.buffer().cursor();
-            let line_idx = cursor.line();
-            let col = cursor.col();
-
-            if let Some(line) = editor.buffer().line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
-                let chars: Vec<char> = line_text.chars().collect();
-
-                if col < chars.len() {
-                    // Extract word under cursor
-                    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-                    let start = chars[..=col].iter().rposition(|&c| !is_word_char(c)).map(|i| i + 1).unwrap_or(0);
-                    let end = chars[col..].iter().position(|&c| !is_word_char(c)).map(|i| col + i).unwrap_or(chars.len());
-
-                    if start < end {
-                        chars[start..end].iter().collect()
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
+            match extract_word_at_cursor(editor) {
+                Some(word) => word,
+                None => return false,
             }
         }
     };
 
-    // Escape regex special characters for literal search
-    let escaped = regex::escape(&selection_text);
-
-    // Create and execute the search
-    editor.clear_search_buffer();
-    for ch in escaped.chars() {
-        editor.append_to_search_buffer(ch);
-    }
-    editor.set_search_forward(true);
-
-    // Update the / register with the search pattern
-    editor.registers.set_last_search(escaped.clone());
-
-    // Create search and find first match
-    let mut search = crate::editor::Search::new_with_options(
-        escaped,
-        true,
-        editor.options.ignorecase,
-        editor.options.smartcase,
-    );
-
-    // For visual * and #, we want to find the NEXT occurrence, not the current one
-    // So start searching from the next column position
-    let cursor = editor.buffer().cursor();
-    let search_col = cursor.col() + 1;
-
-    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
-        editor.buffer_mut().cursor_mut().set_position(line, col);
-        editor.set_current_search(search);
-        true
-    } else {
-        false
-    }
+    setup_and_execute_search(editor, &selection_text, true)
 }
 
 /// Searches backward for the visually selected text
 /// Escapes regex special characters for literal search
 /// Returns true if match found, false otherwise
+#[must_use = "ignoring the return value means you won't know if the search succeeded"]
 pub fn search_visual_selection_backward(editor: &mut Editor) -> bool {
     let selection_text = match get_visual_selection_text(editor) {
         Some(text) if !text.is_empty() => text,
         _ => {
             // Fall back to word under cursor if selection is empty
-            let cursor = editor.buffer().cursor();
-            let line_idx = cursor.line();
-            let col = cursor.col();
-
-            if let Some(line) = editor.buffer().line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
-                let chars: Vec<char> = line_text.chars().collect();
-
-                if col < chars.len() {
-                    // Extract word under cursor
-                    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-                    let start = chars[..=col].iter().rposition(|&c| !is_word_char(c)).map(|i| i + 1).unwrap_or(0);
-                    let end = chars[col..].iter().position(|&c| !is_word_char(c)).map(|i| col + i).unwrap_or(chars.len());
-
-                    if start < end {
-                        chars[start..end].iter().collect()
-                    } else {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            } else {
-                return false;
+            match extract_word_at_cursor(editor) {
+                Some(word) => word,
+                None => return false,
             }
         }
     };
 
-    // Escape regex special characters for literal search
-    let escaped = regex::escape(&selection_text);
-
-    // Create and execute the search
-    editor.clear_search_buffer();
-    for ch in escaped.chars() {
-        editor.append_to_search_buffer(ch);
-    }
-    editor.set_search_forward(false);
-
-    // Update the / register with the search pattern
-    editor.registers.set_last_search(escaped.clone());
-
-    // Create search and find first match
-    let mut search = crate::editor::Search::new_with_options(
-        escaped,
-        false,
-        editor.options.ignorecase,
-        editor.options.smartcase,
-    );
-
-    // For backward search, start from current column (will search before cursor)
-    let cursor = editor.buffer().cursor();
-    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), cursor.col()) {
-        editor.buffer_mut().cursor_mut().set_position(line, col);
-        editor.set_current_search(search);
-        true
-    } else {
-        false
-    }
+    setup_and_execute_search(editor, &selection_text, false)
 }
 

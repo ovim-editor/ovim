@@ -5,17 +5,24 @@ use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
 
 /// Expands ~ to home directory in file paths
-fn expand_tilde(path: &str) -> String {
+///
+/// Returns an error if the path starts with ~ but the home directory cannot be determined.
+fn expand_tilde(path: &str) -> Result<std::path::PathBuf, String> {
     if path.starts_with("~/") {
         if let Some(home) = dirs::home_dir() {
-            return format!("{}{}", home.display(), &path[1..]);
+            let expanded = format!("{}{}", home.display(), &path[1..]);
+            return Ok(std::path::PathBuf::from(expanded));
+        } else {
+            return Err("Could not determine home directory".to_string());
         }
     } else if path == "~" {
         if let Some(home) = dirs::home_dir() {
-            return home.to_string_lossy().to_string();
+            return Ok(home);
+        } else {
+            return Err("Could not determine home directory".to_string());
         }
     }
-    path.to_string()
+    Ok(std::path::PathBuf::from(path))
 }
 
 /// Helper function to jump to a quickfix entry
@@ -828,7 +835,14 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 .or_else(|| command.strip_prefix("tabedit "))
             {
                 // Expand ~ to home directory
-                let filename = expand_tilde(raw_filename);
+                let filename = match expand_tilde(raw_filename) {
+                    Ok(path) => path.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return ApiResponse::Error(ErrorResponse {
+                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
+                        });
+                    }
+                };
 
                 // Create new tab and load file (or create if doesn't exist)
                 editor.new_tab(None);
@@ -1135,7 +1149,14 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 .or_else(|| command.strip_prefix("edit "))
             {
                 // :e <filename> - edit file (expand ~ to home directory)
-                let filename = expand_tilde(raw_filename);
+                let filename = match expand_tilde(raw_filename) {
+                    Ok(path) => path.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return ApiResponse::Error(ErrorResponse {
+                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
+                        });
+                    }
+                };
                 match editor.load_file(&filename) {
                     Ok(_) => {
                         let buf_name = editor
