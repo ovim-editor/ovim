@@ -4,29 +4,29 @@ use crate::mode::Mode;
 impl Editor {
     /// Gets the visual selection start position
     pub fn visual_start(&self) -> Option<(usize, usize)> {
-        self.visual_start
+        self.visual.visual_start
     }
 
     /// Sets the visual selection start position
     pub fn set_visual_start(&mut self, line: usize, col: usize) {
-        self.visual_start = Some((line, col));
+        self.visual.visual_start = Some((line, col));
     }
 
     /// Clears the visual selection
     pub fn clear_visual_start(&mut self) {
-        self.visual_start = None;
+        self.visual.visual_start = None;
     }
 
     /// Saves the current visual selection for gv command
     pub fn save_last_visual_selection(&mut self) {
         if let Some(selection) = self.visual_selection() {
-            self.last_visual_selection = Some((selection.0, selection.1, self.mode));
+            self.visual.last_visual_selection = Some((selection.0, selection.1, self.mode));
         }
     }
 
     /// Restores the last visual selection (gv command)
     pub fn restore_last_visual_selection(&mut self) {
-        if let Some((start, end, mode)) = self.last_visual_selection {
+        if let Some((start, end, mode)) = self.visual.last_visual_selection {
             // Set the mode first
             self.mode = mode;
 
@@ -56,7 +56,7 @@ impl Editor {
             };
 
             // Set visual start
-            self.visual_start = Some((clamped_start_line, clamped_start_col));
+            self.visual.visual_start = Some((clamped_start_line, clamped_start_col));
             // Move cursor to end position
             self.buffer_mut().cursor_mut().set_position(clamped_end_line, clamped_end_col);
         }
@@ -67,19 +67,19 @@ impl Editor {
         &mut self,
         state: Option<(usize, usize, usize, bool, bool)>,
     ) {
-        self.visual_block_insert_state = state;
+        self.visual.visual_block_insert_state = state;
     }
 
     /// Gets visual block insert/append state
     pub fn visual_block_insert_state(&self) -> Option<(usize, usize, usize, bool, bool)> {
-        self.visual_block_insert_state
+        self.visual.visual_block_insert_state
     }
 
     /// Gets the visual selection range (start and end positions)
     /// Returns ((start_line, start_col), (end_line, end_col))
     /// Note: For VisualBlock, this returns the corners of the rectangle
     pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        self.visual_start.map(|start| {
+        self.visual.visual_start.map(|start| {
             let cursor = self.buffer().cursor();
             let mut end = (cursor.line(), cursor.col());
 
