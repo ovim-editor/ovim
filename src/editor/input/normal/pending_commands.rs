@@ -156,26 +156,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if editor.search_select_next() {
                 // If we have a pending operator, apply it to the visual selection
                 if let Some(op) = saved_operator {
-                    use crate::editor::input::helpers;
-                    match op {
-                        crate::editor::Operator::Delete => {
-                            helpers::delete_visual_selection(editor)?;
-                            helpers::exit_visual_mode_to_normal(editor);
-                        }
-                        crate::editor::Operator::Yank => {
-                            helpers::yank_visual_selection(editor)?;
-                            helpers::exit_visual_mode_to_normal(editor);
-                        }
-                        crate::editor::Operator::Change => {
-                            helpers::delete_visual_selection(editor)?;
-                            let cursor = editor.buffer().cursor();
-                            let cursor_before = (cursor.line(), cursor.col());
-                            editor.start_change_building(cursor_before);
-                            helpers::save_and_clear_visual(editor);
-                            editor.set_mode(crate::mode::Mode::Insert);
-                        }
-                        _ => {} // Other operators not supported with gn
-                    }
+                    apply_operator_to_visual_selection(editor, op)?;
                     editor.clear_pending_operator();
                 }
             }
@@ -189,26 +170,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if editor.search_select_prev() {
                 // If we have a pending operator, apply it to the visual selection
                 if let Some(op) = saved_operator {
-                    use crate::editor::input::helpers;
-                    match op {
-                        crate::editor::Operator::Delete => {
-                            helpers::delete_visual_selection(editor)?;
-                            helpers::exit_visual_mode_to_normal(editor);
-                        }
-                        crate::editor::Operator::Yank => {
-                            helpers::yank_visual_selection(editor)?;
-                            helpers::exit_visual_mode_to_normal(editor);
-                        }
-                        crate::editor::Operator::Change => {
-                            helpers::delete_visual_selection(editor)?;
-                            let cursor = editor.buffer().cursor();
-                            let cursor_before = (cursor.line(), cursor.col());
-                            editor.start_change_building(cursor_before);
-                            helpers::save_and_clear_visual(editor);
-                            editor.set_mode(crate::mode::Mode::Insert);
-                        }
-                        _ => {} // Other operators not supported with gN
-                    }
+                    apply_operator_to_visual_selection(editor, op)?;
                     editor.clear_pending_operator();
                 }
             }
@@ -516,6 +478,36 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     }
 
     Ok(true)
+}
+
+/// Apply a pending operator to a visual selection created by gn/gN.
+///
+/// After `gn` or `gN` selects a search match and enters visual mode, this function
+/// applies the pending operator (if any) to that selection. Supports:
+/// - Delete operator (d)
+/// - Yank operator (y)
+/// - Change operator (c)
+fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -> Result<()> {
+    match operator {
+        Operator::Delete => {
+            helpers::delete_visual_selection(editor)?;
+            helpers::exit_visual_mode_to_normal(editor);
+        }
+        Operator::Yank => {
+            helpers::yank_visual_selection(editor)?;
+            helpers::exit_visual_mode_to_normal(editor);
+        }
+        Operator::Change => {
+            helpers::delete_visual_selection(editor)?;
+            let cursor = editor.buffer().cursor();
+            let cursor_before = (cursor.line(), cursor.col());
+            editor.start_change_building(cursor_before);
+            helpers::save_and_clear_visual(editor);
+            editor.set_mode(Mode::Insert);
+        }
+        _ => {} // Other operators not supported with gn/gN
+    }
+    Ok(())
 }
 
 /// Handle r{char} - replace character under cursor

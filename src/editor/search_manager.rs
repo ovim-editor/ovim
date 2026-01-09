@@ -185,6 +185,7 @@ impl Editor {
 
     /// Finds the next search match and enters/extends visual mode (gn command)
     /// Returns true if a match was found
+    #[must_use = "ignoring the return value means you won't know if the search succeeded"]
     pub fn search_select_next(&mut self) -> bool {
         use crate::mode::Mode;
 
@@ -250,6 +251,7 @@ impl Editor {
 
     /// Finds the previous search match and enters/extends visual mode (gN command)
     /// Returns true if a match was found
+    #[must_use = "ignoring the return value means you won't know if the search succeeded"]
     pub fn search_select_prev(&mut self) -> bool {
         use crate::mode::Mode;
 
