@@ -4,68 +4,68 @@ use crate::editor::Search;
 impl Editor {
     /// Gets the search buffer
     pub fn search_buffer(&self) -> &str {
-        &self.search_buffer
+        &self.search.search_buffer
     }
 
     /// Clears the search buffer
     pub fn clear_search_buffer(&mut self) {
-        self.search_buffer.clear();
+        self.search.search_buffer.clear();
     }
 
     /// Appends a character to the search buffer
     pub fn append_to_search_buffer(&mut self, ch: char) {
-        self.search_buffer.push(ch);
+        self.search.search_buffer.push(ch);
     }
 
     /// Removes the last character from the search buffer
     pub fn backspace_search_buffer(&mut self) {
-        self.search_buffer.pop();
+        self.search.search_buffer.pop();
     }
 
     /// Sets the search direction
     pub fn set_search_forward(&mut self, forward: bool) {
-        self.search_forward = forward;
+        self.search.search_forward = forward;
     }
 
     /// Gets the search direction
     pub fn search_forward(&self) -> bool {
-        self.search_forward
+        self.search.search_forward
     }
 
     /// Saves the current cursor position when entering search mode
     /// This allows restoring the position if search is canceled with ESC
     pub fn save_search_start_position(&mut self) {
         let cursor = self.buffer().cursor();
-        self.search_start_pos = Some((cursor.line(), cursor.col()));
+        self.search.search_start_pos = Some((cursor.line(), cursor.col()));
     }
 
     /// Restores the cursor to the position saved when search mode was entered
     /// Used when canceling search with ESC
     pub fn restore_search_start_position(&mut self) {
-        if let Some((line, col)) = self.search_start_pos {
+        if let Some((line, col)) = self.search.search_start_pos {
             self.buffer_mut().cursor_mut().set_position(line, col);
-            self.search_start_pos = None;
+            self.search.search_start_pos = None;
         }
     }
 
     /// Gets the current search
     pub fn current_search(&self) -> Option<&Search> {
-        self.current_search.as_ref()
+        self.search.current_search.as_ref()
     }
 
     /// Sets the current search
     pub fn set_current_search(&mut self, search: Search) {
-        self.current_search = Some(search);
+        self.search.current_search = Some(search);
     }
 
     /// Clears the current search (stops highlighting)
     pub fn clear_search_highlight(&mut self) {
-        self.current_search = None;
+        self.search.current_search = None;
     }
 
     /// Executes the current search and moves cursor to first match
     pub fn execute_search(&mut self) {
-        if self.search_buffer.is_empty() {
+        if self.search.search_buffer.is_empty() {
             // Clear search highlight and restore cursor position on empty search
             self.clear_search_highlight();
             self.restore_search_start_position();
@@ -73,11 +73,11 @@ impl Editor {
         }
 
         // Update the / register with the search pattern
-        self.registers.set_last_search(self.search_buffer.clone());
+        self.registers.set_last_search(self.search.search_buffer.clone());
 
         let mut search = Search::new_with_options(
-            self.search_buffer.clone(),
-            self.search_forward,
+            self.search.search_buffer.clone(),
+            self.search.search_forward,
             self.options.ignorecase,
             self.options.smartcase,
         );
@@ -86,7 +86,7 @@ impl Editor {
         // Start search from current cursor position (inclusive)
         if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
             self.buffer_mut().cursor_mut().set_position(line, col);
-            self.current_search = Some(search);
+            self.search.current_search = Some(search);
         }
     }
 
@@ -97,7 +97,7 @@ impl Editor {
         let cursor_col = self.buffer().cursor().col();
 
         // Clone search to avoid borrow conflicts
-        if let Some(ref search) = self.current_search {
+        if let Some(ref search) = self.search.current_search {
             let is_forward = search.is_forward();
             let mut search_clone = search.clone();
 
@@ -130,7 +130,7 @@ impl Editor {
 
     /// Finds the previous search match (N command)
     pub fn search_prev(&mut self) {
-        if let Some(ref search) = self.current_search {
+        if let Some(ref search) = self.search.current_search {
             // Create a reversed search
             let is_forward = search.is_forward();
             let mut rev_search = Search::new_with_options(
@@ -175,12 +175,12 @@ impl Editor {
 
     /// Saves the visual search state when entering search from visual mode
     pub fn set_visual_search_state(&mut self, anchor: (usize, usize), mode: crate::mode::Mode) {
-        self.visual_search_state = Some(crate::editor::VisualSearchState { anchor, mode });
+        self.search.visual_search_state = Some(crate::editor::VisualSearchState { anchor, mode });
     }
 
     /// Takes and clears the visual search state (returns None if not set)
     pub fn take_visual_search_state(&mut self) -> Option<crate::editor::VisualSearchState> {
-        self.visual_search_state.take()
+        self.search.visual_search_state.take()
     }
 
     /// Finds the next search match and enters/extends visual mode (gn command)
@@ -190,7 +190,7 @@ impl Editor {
         use crate::mode::Mode;
 
         // Check if we have an active search
-        let search_exists = self.current_search.is_some();
+        let search_exists = self.search.current_search.is_some();
         if !search_exists {
             return false;
         }
@@ -201,7 +201,7 @@ impl Editor {
         let in_visual_mode = mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
 
         // Clone search to avoid borrow conflicts
-        if let Some(ref search) = self.current_search {
+        if let Some(ref search) = self.search.current_search {
             let mut search_clone = search.clone();
 
             // In normal mode, check if cursor is within a match at current position
@@ -256,7 +256,7 @@ impl Editor {
         use crate::mode::Mode;
 
         // Check if we have an active search
-        let search_exists = self.current_search.is_some();
+        let search_exists = self.search.current_search.is_some();
         if !search_exists {
             return false;
         }
@@ -267,7 +267,7 @@ impl Editor {
         let in_visual_mode = mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
 
         // Clone search to avoid borrow conflicts
-        if let Some(ref search) = self.current_search {
+        if let Some(ref search) = self.search.current_search {
             // Create a reversed search
             let is_forward = search.is_forward();
             let mut rev_search = Search::new_with_options(
