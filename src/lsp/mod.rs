@@ -33,7 +33,7 @@ pub use supervisor::{RestartPolicy, TaskSupervisor};
 pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
 pub use utils::compute_simple_diff;
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use dashmap::DashMap;
 use lsp_types::{Diagnostic, Uri};
 use std::collections::HashMap;
