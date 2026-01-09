@@ -828,4 +828,26 @@ impl WindowManager {
             }
         }
     }
+
+    /// Closes all windows except the currently focused one
+    /// Returns Ok(()) if successful, Err(msg) if operation failed
+    pub fn close_other_windows(&mut self) -> Result<(), String> {
+        let total_windows = self.root.count_windows();
+        if total_windows == 1 {
+            // Already only one window - nothing to do (idempotent)
+            return Ok(());
+        }
+
+        // Get the focused window (clone it since we'll be replacing the tree)
+        let focused_window = match self.get_window(self.focused_window) {
+            Some(window) => window.clone(),
+            None => return Err("No focused window found".to_string()),
+        };
+
+        // Replace the entire tree with just the focused window
+        self.root = WindowNode::new_leaf(focused_window);
+        self.focused_window = 0; // Reset focus to index 0
+
+        Ok(())
+    }
 }

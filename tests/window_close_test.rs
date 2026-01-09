@@ -94,3 +94,119 @@ fn test_close_multiple_windows_sequence() {
     test.keys("<C-w>c");
     assert_eq!(test.editor.window_count(), 1);
 }
+
+/// Test <C-w>o - close other windows (single window)
+#[test]
+fn test_window_only_single_window() {
+    let mut test = EditorTest::new("line1\nline2\n");
+
+    // Initialize window manager
+    test.editor.init_window_manager(80, 24);
+
+    // Try to close other windows when only one exists (should be idempotent)
+    test.keys("<C-w>o");
+
+    // Should still have 1 window
+    assert_eq!(test.editor.window_count(), 1);
+}
+
+/// Test <C-w>o - close other windows after split
+#[test]
+fn test_window_only_after_split() {
+    let mut test = EditorTest::new("line1\nline2\nline3\n");
+
+    // Initialize window manager
+    test.editor.init_window_manager(80, 24);
+
+    // Split horizontally
+    test.keys("<C-w>s");
+    assert_eq!(test.editor.window_count(), 2);
+
+    // Close other windows
+    test.keys("<C-w>o");
+
+    // Should have only 1 window
+    assert_eq!(test.editor.window_count(), 1);
+}
+
+/// Test <C-w>o - close other windows with multiple splits
+#[test]
+fn test_window_only_multiple_splits() {
+    let mut test = EditorTest::new("line1\nline2\nline3\nline4\n");
+
+    // Initialize window manager
+    test.editor.init_window_manager(80, 24);
+
+    // Create 4 windows
+    test.keys("<C-w>s");
+    test.keys("<C-w>s");
+    test.keys("<C-w>s");
+    assert_eq!(test.editor.window_count(), 4);
+
+    // Move cursor to line 2 in the focused window
+    test.keys("2G");
+    assert_eq!(test.cursor(), (1, 0));
+
+    // Close all other windows
+    test.keys("<C-w>o");
+
+    // Should have only 1 window
+    assert_eq!(test.editor.window_count(), 1);
+
+    // Cursor position should be preserved
+    assert_eq!(test.cursor(), (1, 0));
+}
+
+/// Test :only command (single window)
+#[test]
+fn test_only_command_single_window() {
+    let mut test = EditorTest::new("line1\nline2\n");
+
+    // Initialize window manager
+    test.editor.init_window_manager(80, 24);
+
+    // Execute :only command
+    test.keys(":only<Enter>");
+
+    // Should still have 1 window
+    assert_eq!(test.editor.window_count(), 1);
+}
+
+/// Test :only command after split
+#[test]
+fn test_only_command_after_split() {
+    let mut test = EditorTest::new("line1\nline2\nline3\n");
+
+    // Initialize window manager
+    test.editor.init_window_manager(80, 24);
+
+    // Split vertically
+    test.keys("<C-w>v");
+    assert_eq!(test.editor.window_count(), 2);
+
+    // Execute :only command
+    test.keys(":only<Enter>");
+
+    // Should have only 1 window
+    assert_eq!(test.editor.window_count(), 1);
+}
+
+/// Test :on abbreviation
+#[test]
+fn test_on_abbreviation() {
+    let mut test = EditorTest::new("line1\nline2\n");
+
+    // Initialize window manager
+    test.editor.init_window_manager(80, 24);
+
+    // Split horizontally twice
+    test.keys("<C-w>s");
+    test.keys("<C-w>s");
+    assert_eq!(test.editor.window_count(), 3);
+
+    // Execute :on command (abbreviation of :only)
+    test.keys(":on<Enter>");
+
+    // Should have only 1 window
+    assert_eq!(test.editor.window_count(), 1);
+}

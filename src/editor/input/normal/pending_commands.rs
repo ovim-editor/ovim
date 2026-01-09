@@ -468,7 +468,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.split_window_vertical();
         }
         ('W', KeyCode::Char('o')) => {
-            // TODO: Implement close_other_windows()
+            // <C-w>o - close all other windows (like :only)
+            editor.close_other_windows();
         }
         ('W', KeyCode::Char('c')) => {
             // <C-w>c - close current window (silently fails if last window)

@@ -993,6 +993,22 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     )),
                     line_count: None,
                 })
+            } else if command == "only" || command == "on" {
+                // :only - close all other windows
+                if editor.window_count() == 1 {
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("Already only one window".to_string()),
+                        line_count: None,
+                    })
+                } else {
+                    editor.close_other_windows();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("All other windows closed".to_string()),
+                        line_count: None,
+                    })
+                }
             // Handle config reload
             } else if command == "ConfigReload" || command == "reload" {
                 match editor.reload_lua_config() {
