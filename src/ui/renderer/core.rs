@@ -405,7 +405,7 @@ impl Renderer {
             frame.set_cursor_position((status_chunk.x + cmd_cursor_x as u16, status_chunk.y));
         } else if editor.mode() == crate::mode::Mode::Search {
             // Position cursor in search line
-            let search_cursor_x = (editor.search_buffer().len() + 1)
+            let search_cursor_x = (editor.search.search_buffer.len() + 1)
                 .min(status_chunk.width.saturating_sub(1) as usize);
             frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
         } else {

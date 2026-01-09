@@ -254,7 +254,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     };
 
     // Get current search if active
-    let current_search = editor.current_search();
+    let current_search = editor.search.current_search.as_ref();
 
     // Find matching bracket position if showmatch is enabled
     let bracket_positions: Option<((usize, usize), (usize, usize))> = if editor.options.showmatch {

@@ -718,8 +718,8 @@ pub fn render_command_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
 /// Renders the search line
 pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let search_prefix = if editor.search_forward() { "/" } else { "?" };
-    let search_text = format!("{}{}", search_prefix, editor.search_buffer());
+    let search_prefix = if editor.search.search_forward { "/" } else { "?" };
+    let search_text = format!("{}{}", search_prefix, &editor.search.search_buffer);
 
     let search_line = Line::from(vec![Span::styled(
         search_text,

@@ -22,6 +22,7 @@ mod picker_manager;
 mod quickfix;
 mod register;
 mod search;
+mod search_context;
 mod search_manager;
 mod tabpage;
 mod tab_manager;
@@ -50,6 +51,7 @@ pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::{RegisterManager, RegisterType};
 pub use search::Search;
+pub use search_context::{SearchContext, VisualSearchState};
 pub use tabpage::{TabPage, TabPageManager};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
@@ -154,15 +156,6 @@ pub enum LspCommand {
 /// Visual selection: (start_position, end_position, mode)
 pub type VisualSelection = ((usize, usize), (usize, usize), Mode);
 
-/// Visual search state: tracks original anchor for visual search extension
-#[derive(Clone, Debug)]
-pub struct VisualSearchState {
-    /// Original visual anchor position (line, col) when search was initiated
-    pub anchor: (usize, usize),
-    /// Original visual mode type (Visual, VisualLine, VisualBlock)
-    pub mode: Mode,
-}
-
 /// Cached preview highlights: line_idx -> Vec<(range, highlight_group)>
 pub type PreviewHighlights =
     HashMap<usize, Vec<(std::ops::Range<usize>, crate::syntax::HighlightGroup)>>;
@@ -202,16 +195,8 @@ pub struct Editor {
     command_history: Vec<String>,
     /// Current position in command history (for up/down navigation)
     command_history_index: Option<usize>,
-    /// Search buffer (for / and ? commands)
-    search_buffer: String,
-    /// Search direction: true for forward (/), false for backward (?)
-    search_forward: bool,
-    /// Current search state
-    current_search: Option<Search>,
-    /// Search start position (line, col) - saved when entering search mode, restored on ESC
-    search_start_pos: Option<(usize, usize)>,
-    /// Visual search state - saved when entering search from visual mode
-    visual_search_state: Option<VisualSearchState>,
+    /// Search-related state
+    pub search: SearchContext,
     /// Mark manager for buffer marks
     marks: MarkManager,
     /// Key mapping manager
@@ -391,11 +376,7 @@ impl Editor {
             command_line: String::new(),
             command_history: Vec::new(),
             command_history_index: None,
-            search_buffer: String::new(),
-            search_forward: true,
-            current_search: None,
-            search_start_pos: None,
-            visual_search_state: None,
+            search: SearchContext::new(),
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
@@ -470,11 +451,7 @@ impl Editor {
             command_line: String::new(),
             command_history: Vec::new(),
             command_history_index: None,
-            search_buffer: String::new(),
-            search_forward: true,
-            current_search: None,
-            search_start_pos: None,
-            visual_search_state: None,
+            search: SearchContext::new(),
             marks: MarkManager::new(),
             keymaps: KeyMapManager::new(),
             jump_list: JumpList::new(),
