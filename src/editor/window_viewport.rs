@@ -61,6 +61,34 @@ impl Editor {
         }
     }
 
+    /// Moves focus to the window to the left
+    pub fn focus_window_left(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            wm.focus_left();
+        }
+    }
+
+    /// Moves focus to the window to the right
+    pub fn focus_window_right(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            wm.focus_right();
+        }
+    }
+
+    /// Moves focus to the window above
+    pub fn focus_window_up(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            wm.focus_up();
+        }
+    }
+
+    /// Moves focus to the window below
+    pub fn focus_window_down(&mut self) {
+        if let Some(wm) = &mut self.window_manager {
+            wm.focus_down();
+        }
+    }
+
     /// Gets the current number of windows
     pub fn window_count(&self) -> usize {
         self.window_manager

@@ -470,6 +470,18 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('W', KeyCode::Char('o')) => {
             // TODO: Implement close_other_windows()
         }
+        ('W', KeyCode::Char('h')) => {
+            editor.focus_window_left();
+        }
+        ('W', KeyCode::Char('j')) => {
+            editor.focus_window_down();
+        }
+        ('W', KeyCode::Char('k')) => {
+            editor.focus_window_up();
+        }
+        ('W', KeyCode::Char('l')) => {
+            editor.focus_window_right();
+        }
 
         _ => {
             // Unknown command sequence
