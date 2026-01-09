@@ -7,6 +7,7 @@ mod completion;
 mod filetree;
 mod fold;
 mod input;
+mod input_context;
 mod input_state;
 mod keymap;
 mod lsp_state;
@@ -41,6 +42,7 @@ pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
+pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
 pub use lsp_state::{LspAction, LspResultType, LspState};
 pub use macros::MacroManager;
@@ -174,14 +176,8 @@ pub struct Editor {
     mode: Mode,
     /// Whether the editor should quit
     should_quit: bool,
-    /// Count prefix for commands (e.g., 5j means move down 5 lines)
-    count: Option<usize>,
-    /// Pending operator (e.g., d for delete, waiting for motion)
-    pending_operator: Option<Operator>,
-    /// Pending command character (e.g., 'g' waiting for second character)
-    pending_command: Option<char>,
-    /// Pending register selection (e.g., 'a' from "a for next operation)
-    pending_register: Option<char>,
+    /// Input context (counts, operators, pending commands, registers, input state machine)
+    input: InputContext,
     /// Register manager for yank/delete operations
     registers: RegisterManager,
     /// Visual mode selection start (line, col)
@@ -210,13 +206,6 @@ pub struct Editor {
     last_find: Option<(char, FindType, FindDirection)>,
     /// Picker for fuzzy finding files/grep
     picker: Option<Picker>,
-    /// Leader key (default: space)
-    leader_key: char,
-    /// Waiting for leader sequence (e.g., after pressing space)
-    pending_leader: bool,
-    /// Input state machine for Normal mode (new architecture)
-    /// This will eventually replace pending_command, pending_leader, etc.
-    input_state: InputState,
     /// LSP-related state
     lsp_state: LspState,
     /// Channel sender for LSP commands from background tasks
@@ -363,10 +352,7 @@ impl Editor {
             window_manager: None, // Will be initialized when viewport size is known
             mode: Mode::Dashboard,
             should_quit: false,
-            count: None,
-            pending_operator: None,
-            pending_command: None,
-            pending_register: None,
+            input: InputContext::new(),
             registers: RegisterManager::new(),
             visual_start: None,
             visual_block_insert_state: None,
@@ -380,9 +366,6 @@ impl Editor {
             macro_manager: MacroManager::new(),
             last_find: None,
             picker: None,
-            leader_key: ' ',
-            pending_leader: false,
-            input_state: InputState::default(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
@@ -436,10 +419,7 @@ impl Editor {
             window_manager: None, // Will be initialized when viewport size is known
             mode: Mode::default(),
             should_quit: false,
-            count: None,
-            pending_operator: None,
-            pending_command: None,
-            pending_register: None,
+            input: InputContext::new(),
             registers: RegisterManager::new(),
             visual_start: None,
             visual_block_insert_state: None,
@@ -453,9 +433,6 @@ impl Editor {
             macro_manager: MacroManager::new(),
             last_find: None,
             picker: None,
-            leader_key: ' ',
-            pending_leader: false,
-            input_state: InputState::default(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
@@ -560,10 +537,10 @@ impl Editor {
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
         // Clear count and pending operator when changing modes
-        self.count = None;
-        self.pending_operator = None;
-        self.pending_command = None;
-        self.pending_register = None;
+        self.input.count = None;
+        self.input.pending_operator = None;
+        self.input.pending_command = None;
+        self.input.pending_register = None;
 
         // Clear visual selection when leaving visual modes
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
@@ -589,27 +566,27 @@ impl Editor {
 
     /// Gets the pending command
     pub fn pending_command(&self) -> Option<char> {
-        self.pending_command
+        self.input.pending_command
     }
 
     /// Sets the pending command
     pub fn set_pending_command(&mut self, cmd: char) {
-        self.pending_command = Some(cmd);
+        self.input.pending_command = Some(cmd);
     }
 
     /// Gets the current input state (new state machine)
     pub fn input_state(&self) -> &InputState {
-        &self.input_state
+        &self.input.input_state
     }
 
     /// Sets the input state (new state machine)
     pub fn set_input_state(&mut self, state: InputState) {
-        self.input_state = state;
+        self.input.input_state = state;
     }
 
     /// Resets input state to Normal
     pub fn reset_input_state(&mut self) {
-        self.input_state = InputState::Normal;
+        self.input.input_state = InputState::Normal;
     }
 
     /// Sets the viewport height (called from UI layer)
@@ -727,7 +704,7 @@ impl Editor {
 
     /// Clears the pending command
     pub fn clear_pending_command(&mut self) {
-        self.pending_command = None;
+        self.input.pending_command = None;
     }
 
     /// Returns whether the editor should quit
@@ -742,43 +719,43 @@ impl Editor {
 
     /// Gets the current count
     pub fn count(&self) -> Option<usize> {
-        self.count
+        self.input.count
     }
 
     /// Sets the count
     pub fn set_count(&mut self, count: usize) {
-        self.count = Some(count);
+        self.input.count = Some(count);
     }
 
     /// Appends a digit to the count
     pub fn append_count(&mut self, digit: usize) {
-        let current = self.count.unwrap_or(0);
-        self.count = Some(current * 10 + digit);
+        let current = self.input.count.unwrap_or(0);
+        self.input.count = Some(current * 10 + digit);
     }
 
     /// Clears the count
     pub fn clear_count(&mut self) {
-        self.count = None;
+        self.input.count = None;
     }
 
     /// Gets the effective count (count or 1)
     pub fn effective_count(&self) -> usize {
-        self.count.unwrap_or(1)
+        self.input.count.unwrap_or(1)
     }
 
     /// Gets the pending operator
     pub fn pending_operator(&self) -> Option<Operator> {
-        self.pending_operator
+        self.input.pending_operator
     }
 
     /// Sets the pending operator
     pub fn set_pending_operator(&mut self, op: Operator) {
-        self.pending_operator = Some(op);
+        self.input.pending_operator = Some(op);
     }
 
     /// Clears the pending operator
     pub fn clear_pending_operator(&mut self) {
-        self.pending_operator = None;
+        self.input.pending_operator = None;
     }
 
     /// Gets a reference to the registers
@@ -803,17 +780,17 @@ impl Editor {
 
     /// Gets the pending register for next operation
     pub fn pending_register(&self) -> Option<char> {
-        self.pending_register
+        self.input.pending_register
     }
 
     /// Sets the pending register for next operation
     pub fn set_pending_register(&mut self, reg: char) {
-        self.pending_register = Some(reg);
+        self.input.pending_register = Some(reg);
     }
 
     /// Clears the pending register
     pub fn clear_pending_register(&mut self) {
-        self.pending_register = None;
+        self.input.pending_register = None;
     }
 
     /// Loads a file into the editor (async version)
@@ -951,9 +928,9 @@ impl Editor {
 
     /// Yanks text to the appropriate register with explicit type
     pub fn yank_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
-        if let Some(reg) = self.pending_register {
+        if let Some(reg) = self.input.pending_register {
             self.registers.set_with_type(Some(reg), text, reg_type);
-            self.pending_register = None;
+            self.input.pending_register = None;
         } else {
             self.registers.yank_with_type(text, reg_type);
         }
@@ -966,9 +943,9 @@ impl Editor {
 
     /// Deletes text and stores in the appropriate register with explicit type
     pub fn delete_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
-        if let Some(reg) = self.pending_register {
+        if let Some(reg) = self.input.pending_register {
             self.registers.set_with_type(Some(reg), text, reg_type);
-            self.pending_register = None;
+            self.input.pending_register = None;
         } else {
             self.registers.delete_with_type(text, reg_type);
         }
@@ -976,24 +953,24 @@ impl Editor {
 
     /// Gets text from the appropriate register (pending_register or default)
     pub fn get_from_register(&mut self) -> String {
-        let text = if let Some(reg) = self.pending_register {
+        let text = if let Some(reg) = self.input.pending_register {
             self.registers.get(Some(reg))
         } else {
             self.registers.get_default().to_string()
         };
-        self.pending_register = None;
+        self.input.pending_register = None;
         text
     }
 
     /// Gets text and type from the appropriate register (pending_register or default)
     pub fn get_from_register_with_type(&mut self) -> (String, RegisterType) {
-        let (text, reg_type) = if let Some(reg) = self.pending_register {
+        let (text, reg_type) = if let Some(reg) = self.input.pending_register {
             self.registers.get_with_type(Some(reg))
         } else {
             let (t, rt) = self.registers.get_default_with_type();
             (t.to_string(), rt)
         };
-        self.pending_register = None;
+        self.input.pending_register = None;
         (text, reg_type)
     }
 
@@ -1029,17 +1006,17 @@ impl Editor {
 
     /// Gets the leader key
     pub fn leader_key(&self) -> char {
-        self.leader_key
+        self.input.leader_key
     }
 
     /// Sets pending leader state
     pub fn set_pending_leader(&mut self, pending: bool) {
-        self.pending_leader = pending;
+        self.input.pending_leader = pending;
     }
 
     /// Gets pending leader state
     pub fn pending_leader(&self) -> bool {
-        self.pending_leader
+        self.input.pending_leader
     }
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
