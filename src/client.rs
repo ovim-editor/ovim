@@ -64,6 +64,12 @@ impl OvimClient {
         }
 
         let result: Value = response.json()?;
+
+        // Check for error response first
+        if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("{}", error);
+        }
+
         Ok(result
             .get("message")
             .and_then(|v| v.as_str())
