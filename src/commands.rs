@@ -1261,6 +1261,17 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 } else {
                     execute_shell_command(shell_cmd.trim())
                 }
+            // Handle line number command (e.g., :48 to go to line 48)
+            } else if let Ok(line_num) = command.parse::<usize>() {
+                let target_line = line_num.saturating_sub(1); // 1-indexed to 0-indexed
+                let max_line = editor.buffer().line_count().saturating_sub(1);
+                let final_line = target_line.min(max_line);
+                editor.buffer_mut().cursor_mut().set_position(final_line, 0);
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Line {}", line_num)),
+                    line_count: None,
+                })
             } else {
                 ApiResponse::Error(ErrorResponse {
                     error: format!("Not an editor command: {}", command),
