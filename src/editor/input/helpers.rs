@@ -6,7 +6,7 @@
 // Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
 // into separate characters. Should use a grapheme cluster library for proper Unicode handling.
 
-use crate::editor::{Change, Editor, Operators, Range, RegisterType};
+use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
 use anyhow::Result;
 
@@ -758,7 +758,7 @@ pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
     let old_range = Range::new(cursor_before, (end_line.saturating_sub(1), 0));
 
     // Perform the join operation
-    Operators::join_lines(editor.buffer_mut(), count)?;
+    editor.buffer_mut().join_lines(count)?;
 
     // Track the change for dot-repeat and undo
     let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -785,7 +785,7 @@ pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
     let old_range = Range::new(cursor_before, (end_line.saturating_sub(1), 0));
 
     // Perform the join operation
-    Operators::join_lines_no_space(editor.buffer_mut(), count)?;
+    editor.buffer_mut().join_lines_no_space(count)?;
 
     // Track the change for dot-repeat and undo
     let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
@@ -1291,5 +1291,183 @@ pub fn search_visual_selection_backward(editor: &mut Editor) -> bool {
     };
 
     setup_and_execute_search(editor, &selection_text, false)
+}
+
+// ===================================================================
+// Yank operations (moved from Operators struct for consolidation)
+// ===================================================================
+
+/// Yanks (copies) from current position to end of line
+pub fn yank_to_end_of_line(buffer: &crate::buffer::Buffer) -> anyhow::Result<String> {
+    let cursor = buffer.cursor();
+    let line_idx = cursor.line();
+    let col = cursor.col();
+
+    if line_idx >= buffer.line_count() {
+        return Ok(String::new());
+    }
+
+    let line_start = buffer.rope().line_to_char(line_idx);
+    let line = buffer.rope().line(line_idx);
+    let line_end_char = line_start + line.len_chars();
+
+    let yank_from = line_start + col;
+    let line_text = line.to_string();
+    let ends_with_newline = line_text.ends_with('\n');
+    let yank_to = if ends_with_newline {
+        line_end_char - 1
+    } else {
+        line_end_char
+    };
+
+    if yank_from >= yank_to {
+        return Ok(String::new());
+    }
+
+    Ok(buffer.rope().slice(yank_from..yank_to).to_string())
+}
+
+/// Yanks (copies) entire line(s)
+pub fn yank_line(buffer: &crate::buffer::Buffer, count: usize) -> anyhow::Result<String> {
+    let cursor = buffer.cursor();
+    let start_line = cursor.line();
+    let end_line = (start_line + count).min(buffer.line_count());
+
+    if start_line >= buffer.line_count() {
+        return Ok(String::new());
+    }
+
+    let start_char = buffer.rope().line_to_char(start_line);
+    let end_char = if end_line < buffer.line_count() {
+        buffer.rope().line_to_char(end_line)
+    } else {
+        buffer.rope().len_chars()
+    };
+
+    let mut yanked = buffer.rope().slice(start_char..end_char).to_string();
+
+    // Ensure line yanks always end with newline (for line-wise paste behavior)
+    if !yanked.ends_with('\n') {
+        yanked.push('\n');
+    }
+
+    Ok(yanked)
+}
+
+/// Yanks a word forward from cursor
+pub fn yank_word(buffer: &mut crate::buffer::Buffer, count: usize) -> anyhow::Result<String> {
+    let start_cursor = *buffer.cursor();
+    let start_line = start_cursor.line();
+    let start_col = start_cursor.col();
+    let start_char = buffer.rope().line_to_char(start_line) + start_col;
+
+    // Move cursor forward by word
+    crate::editor::Motions::word_forward(buffer, count);
+
+    let end_cursor = buffer.cursor();
+    let end_line = end_cursor.line();
+    let end_col = end_cursor.col();
+    let end_char = buffer.rope().line_to_char(end_line) + end_col;
+
+    // Get yanked text
+    let yanked = buffer.rope().slice(start_char..end_char).to_string();
+
+    // Reset cursor to start position
+    buffer.cursor_mut().set_position(start_line, start_col);
+
+    Ok(yanked)
+}
+
+// ===================================================================
+// Auto-indent (moved from Operators struct for consolidation)
+// ===================================================================
+
+/// Auto-indents lines based on bracket context (= operator)
+/// Returns the number of lines auto-indented
+pub fn auto_indent_lines(
+    buffer: &mut crate::buffer::Buffer,
+    start_line: usize,
+    end_line: usize,
+    tab_width: usize,
+) -> anyhow::Result<usize> {
+    let end_line = end_line.min(buffer.line_count());
+    if start_line >= end_line {
+        return Ok(0);
+    }
+
+    // Determine base indent from the line before start_line (or 0 if first line)
+    let mut current_indent = if start_line > 0 {
+        if let Some(prev_line) = buffer.line(start_line - 1) {
+            let prev_text = prev_line.trim_end_matches('\n');
+            count_leading_spaces(prev_text, tab_width)
+                + if prev_text.trim_end().ends_with('{')
+                    || prev_text.trim_end().ends_with('(')
+                    || prev_text.trim_end().ends_with('[')
+                {
+                    tab_width
+                } else {
+                    0
+                }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let mut lines_indented = 0;
+
+    for line_idx in start_line..end_line {
+        if let Some(line) = buffer.line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            let trimmed = line_text.trim_start();
+
+            // Decrease indent if line starts with closing bracket
+            if trimmed.starts_with('}')
+                || trimmed.starts_with(')')
+                || trimmed.starts_with(']')
+            {
+                current_indent = current_indent.saturating_sub(tab_width);
+            }
+
+            // Calculate current leading spaces
+            let current_spaces = count_leading_spaces(line_text, tab_width);
+
+            // Apply new indentation if different
+            if current_spaces != current_indent && !trimmed.is_empty() {
+                // Remove existing indent
+                let leading_len = line_text.len() - trimmed.len();
+                if leading_len > 0 {
+                    buffer.delete_range(line_idx, 0, line_idx, leading_len);
+                }
+                // Add new indent
+                if current_indent > 0 {
+                    let indent_str = " ".repeat(current_indent);
+                    buffer.insert_text_at(line_idx, 0, &indent_str);
+                }
+                lines_indented += 1;
+            }
+
+            // Increase indent if line ends with opening bracket
+            if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+                current_indent += tab_width;
+            }
+        }
+    }
+
+    Ok(lines_indented)
+}
+
+/// Count leading spaces (tabs count as tab_width spaces)
+fn count_leading_spaces(line: &str, tab_width: usize) -> usize {
+    let mut count = 0;
+    for ch in line.chars() {
+        match ch {
+            ' ' => count += 1,
+            '\t' => count += tab_width,
+            _ => break,
+        }
+    }
+    count
 }
 

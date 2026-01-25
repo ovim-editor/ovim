@@ -4,7 +4,7 @@
 //! Includes: x, X, D, C, s, S, p, P, Y, J, ~, u, Ctrl-R, .
 
 use crate::editor::input::helpers;
-use crate::editor::{Change, Editor, Operators, Range, RegisterType};
+use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -309,7 +309,7 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
 /// Y - yank line
 fn yank_line(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
-    let yanked = Operators::yank_line(editor.buffer(), count)?;
+    let yanked = helpers::yank_line(editor.buffer(), count)?;
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
     editor.clear_count();
     Ok(())

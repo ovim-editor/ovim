@@ -51,7 +51,7 @@ pub use macros::MacroManager;
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
-pub use operators::{Operator, Operators};
+pub use operators::Operator;
 pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
 pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};

@@ -11,7 +11,7 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Change, CharMotion, Editor, InputState, Motions, Operator, Operators, PendingSemanticChange,
+    Change, CharMotion, Editor, InputState, Motions, Operator, PendingSemanticChange,
     Range, RegisterType,
 };
 use crate::mode::Mode;
@@ -129,19 +129,19 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Yank operations
         // =====================================================================
         (Operator::Yank, KeyCode::Char('y')) => {
-            let yanked = Operators::yank_line(editor.buffer(), count)?;
+            let yanked = helpers::yank_line(editor.buffer(), count)?;
             editor.yank_to_register_with_type(yanked, RegisterType::Line);
             editor.clear_count();
             true
         }
         (Operator::Yank, KeyCode::Char('w')) => {
-            let yanked = Operators::yank_word(editor.buffer_mut(), count)?;
+            let yanked = helpers::yank_word(editor.buffer_mut(), count)?;
             editor.yank_to_register(yanked);
             editor.clear_count();
             true
         }
         (Operator::Yank, KeyCode::Char('$')) => {
-            let yanked = Operators::yank_to_end_of_line(editor.buffer())?;
+            let yanked = helpers::yank_to_end_of_line(editor.buffer())?;
             editor.yank_to_register(yanked);
             editor.clear_count();
             true
@@ -737,6 +737,21 @@ fn handle_dw(editor: &mut Editor, count: usize) -> Result<()> {
             let line_text = line.trim_end_matches('\n');
             end_line = start_line;
             end_col = line_text.chars().count();
+        }
+    } else if end_line == start_line {
+        // Handle end-of-line clamping: when word_forward lands at the last character
+        // of the line (clamped from past-end), extend to include the last character
+        if let Some(line) = editor.buffer().line(end_line) {
+            let line_text = line.trim_end_matches('\n');
+            let line_len = line_text.chars().count();
+            // Check if cursor was clamped (at last char position)
+            if line_len > 0 && end_col == line_len.saturating_sub(1) && end_col >= start_col {
+                // At EOF or end of last line - include the last character
+                let at_end_of_file = end_line + 1 >= editor.buffer().line_count();
+                if at_end_of_file {
+                    end_col = line_len;
+                }
+            }
         }
     }
 

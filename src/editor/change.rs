@@ -327,11 +327,10 @@ impl Change {
                 ..
             } => {
                 // For apply (redo), we need to re-execute the join operation
-                use crate::editor::operators::Operators;
                 let _ = if *add_space {
-                    Operators::join_lines(buffer, *count)
+                    buffer.join_lines(*count)
                 } else {
-                    Operators::join_lines_no_space(buffer, *count)
+                    buffer.join_lines_no_space(*count)
                 };
                 // Position cursor at the final position
                 buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
@@ -712,11 +711,10 @@ impl Change {
             }
             Self::JoinLines { count, add_space, .. } => {
                 // For dot-repeat, execute the join operation at current cursor
-                use crate::editor::operators::Operators;
                 let _ = if *add_space {
-                    Operators::join_lines(buffer, *count)
+                    buffer.join_lines(*count)
                 } else {
-                    Operators::join_lines_no_space(buffer, *count)
+                    buffer.join_lines_no_space(*count)
                 };
             }
             Self::ChangeTextObject { object_type, replacement, .. } => {

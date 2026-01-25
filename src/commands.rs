@@ -707,8 +707,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
         }
         "j" | "join" => {
             // Join current line with the next line
-            use crate::editor::Operators;
-            if let Err(e) = Operators::join_lines(editor.buffer_mut(), 1) {
+            if let Err(e) = editor.buffer_mut().join_lines(1) {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Failed to join lines: {}", e),
                 });
