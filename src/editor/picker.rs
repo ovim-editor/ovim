@@ -308,10 +308,9 @@ impl Picker {
                     }
                 }
 
-                // Bonus for case match
-                if query.chars().nth(query_idx) == target.chars().nth(target_idx) {
-                    score += 2;
-                }
+                // Note: Case match bonus removed - the original implementation used
+                // chars().nth() which is O(n) per call, causing O(n²) per fuzzy_match.
+                // The scoring improvement wasn't worth the performance cost.
 
                 last_match_idx = Some(target_idx);
                 query_idx += 1;
@@ -543,20 +542,13 @@ impl Picker {
         if self.query.is_empty() {
             self.filtered_results.push(result);
         } else {
-            // Re-filter with the new result
-            if let Some(score) = Self::fuzzy_match(&self.query, &result.display) {
-                // Insert in sorted order
-                let mut insert_idx = self.filtered_results.len();
-                for (idx, existing) in self.filtered_results.iter().enumerate() {
-                    if let Some(existing_score) = Self::fuzzy_match(&self.query, &existing.display)
-                    {
-                        if score > existing_score {
-                            insert_idx = idx;
-                            break;
-                        }
-                    }
-                }
-                self.filtered_results.insert(insert_idx, result);
+            // Just check if it matches and append - don't try to maintain sort order
+            // The filter will be re-applied with proper sorting when the user stops typing
+            // This avoids O(n²) re-scoring of all existing results on each file addition
+            if Self::fuzzy_match(&self.query, &result.display).is_some() {
+                self.filtered_results.push(result);
+                // Mark that results need re-sorting (will happen on next filter apply)
+                self.pending_filter = true;
             }
         }
     }
