@@ -120,3 +120,52 @@ fn test_highlights_for_all_lines_performance() {
     // Verify results still match
     assert_eq!(all_highlights.len(), per_line_highlights.len());
 }
+
+/// Validates that all language queries can be parsed by tree-sitter.
+/// This test fails the build if any .scm query file has invalid syntax.
+#[test]
+fn test_all_language_queries_are_valid() {
+    let languages = [
+        Language::Rust,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Tsx,
+        Language::Python,
+        Language::Java,
+        Language::Go,
+        Language::C,
+        Language::Cpp,
+        Language::Ruby,
+        Language::Bash,
+        Language::Dockerfile,
+        Language::Json,
+        Language::Yaml,
+        Language::Html,
+        Language::Css,
+        Language::Toml,
+        Language::Markdown,
+    ];
+
+    let mut failures = Vec::new();
+
+    for lang in languages {
+        match SyntaxHighlighter::new(lang) {
+            Ok(_) => println!("✓ {:?} query is valid", lang),
+            Err(e) => {
+                println!("✗ {:?} query FAILED: {}", lang, e);
+                failures.push((lang, e));
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "The following language queries are invalid:\n{}",
+            failures
+                .iter()
+                .map(|(lang, e)| format!("  - {:?}: {}", lang, e))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
