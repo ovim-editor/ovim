@@ -27,3 +27,13 @@
 (image
   (link_text)? @string.special
   (link_destination)? @string.special)
+
+; Emphasis (italic) - *text* or _text_
+; Note: These require tree-sitter-md's inline grammar for full support
+(emphasis) @markup.italic
+
+; Strong emphasis (bold) - **text** or __text__
+(strong_emphasis) @markup.bold
+
+; Strikethrough - ~~text~~
+(strikethrough) @markup.strikethrough
