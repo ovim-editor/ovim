@@ -1160,6 +1160,28 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     message: Some(buf_list.join("\n")),
                     line_count: None,
                 })
+            // Handle :e! and :edit! - reload current file discarding changes
+            } else if command == "e!" || command == "edit!" {
+                if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                    match editor.buffer_mut().reload_from_disk() {
+                        Ok(_) => {
+                            editor.mark_saved();
+                            let line_count = editor.buffer().rope().len_lines();
+                            ApiResponse::Success(SuccessResponse {
+                                success: true,
+                                message: Some(format!("\"{}\" {}L reloaded", path, line_count)),
+                                line_count: None,
+                            })
+                        }
+                        Err(e) => ApiResponse::Error(ErrorResponse {
+                            error: format!("Failed to reload: {}", e),
+                        }),
+                    }
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "No file to reload".to_string(),
+                    })
+                }
             } else if let Some(raw_filename) = command
                 .strip_prefix("e ")
                 .or_else(|| command.strip_prefix("edit "))
@@ -1259,7 +1281,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         error: "No shell command specified".to_string(),
                     })
                 } else {
-                    execute_shell_command(shell_cmd.trim())
+                    execute_shell_command_with_expansion(editor, shell_cmd.trim())
                 }
             // Handle line number command (e.g., :48 to go to line 48)
             } else if let Ok(line_num) = command.parse::<usize>() {
@@ -1455,6 +1477,20 @@ fn handle_mapclear_command(editor: &mut Editor, command: &str) -> ApiResponse {
         message: None,
         line_count: None,
     })
+}
+
+/// Execute a shell command with % and # expansion, and return the output
+fn execute_shell_command_with_expansion(editor: &Editor, cmd: &str) -> ApiResponse {
+    use crate::editor::shell_expansion::expand_shell_command;
+
+    // Get current and alternate file for expansion
+    let current_file = editor.buffer().file_path().unwrap_or("").to_string();
+    let alternate_file = editor.registers().get(Some('#'));
+
+    // Expand % and # in the command
+    let expanded_cmd = expand_shell_command(cmd, &current_file, &alternate_file);
+
+    execute_shell_command(&expanded_cmd)
 }
 
 /// Execute a shell command and return the output

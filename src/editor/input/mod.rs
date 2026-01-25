@@ -6,6 +6,9 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 /// Command handling submodule
 mod commands;
 
+/// Shell command expansion (%, #, modifiers)
+pub mod shell_expansion;
+
 /// Number operations (Ctrl-A, Ctrl-X, g Ctrl-A, g Ctrl-X)
 mod numbers;
 

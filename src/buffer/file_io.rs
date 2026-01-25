@@ -449,4 +449,45 @@ impl Buffer {
             tokio::runtime::Handle::current().block_on(self.reload_if_changed())
         })
     }
+
+    /// Unconditionally reloads the buffer from disk, discarding any changes.
+    /// Used by :e! command to force reload.
+    pub fn reload_from_disk(&mut self) -> Result<()> {
+        let file_path = self.file_path.clone()
+            .context("No file path set")?;
+
+        // Read file content synchronously
+        let bytes = std::fs::read(&file_path)
+            .context(format!("Failed to read file: {}", file_path))?;
+
+        // Update mtime
+        self.file_mtime = std::fs::metadata(&file_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+
+        // Detect line ending
+        self.line_ending = LineEnding::detect(&bytes);
+
+        // Validate UTF-8
+        let content = String::from_utf8(bytes).map_err(|e| {
+            anyhow::anyhow!("File contains invalid UTF-8 at byte {}", e.utf8_error().valid_up_to())
+        })?;
+
+        // Normalize CRLF
+        let content = if self.line_ending == LineEnding::Crlf {
+            content.replace("\r\n", "\n")
+        } else {
+            content
+        };
+
+        // Update rope
+        self.rope = Rope::from_str(&content);
+        self.modified = false;
+        self.pending_rehighlight = true;
+
+        // Reset cursor to top-left
+        self.cursor.set_position(0, 0);
+
+        Ok(())
+    }
 }
