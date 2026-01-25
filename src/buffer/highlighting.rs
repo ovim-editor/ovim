@@ -1,5 +1,5 @@
 use super::Buffer;
-use crate::syntax::{HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter};
+use crate::syntax::{CodeBlockCache, HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter};
 use std::ops::Range;
 
 /// Per-line syntax highlights: maps character ranges to highlight groups
@@ -80,6 +80,15 @@ impl Buffer {
     pub(super) fn build_highlight_cache(&mut self, highlighter: &SyntaxHighlighter, source: &str) {
         // Use the efficient single-pass method that queries the tree once
         self.cached_highlights = Some(highlighter.highlights_for_all_lines(source));
+
+        // For markdown files, also build code block cache for language-specific highlighting
+        if highlighter.language() == Language::Markdown {
+            if let Some(tree) = highlighter.tree() {
+                let mut cache = CodeBlockCache::new();
+                cache.update_from_tree(tree, source, self.highlight_version);
+                self.code_block_cache = Some(cache);
+            }
+        }
     }
 
     /// Shifts highlights after an insertion
@@ -353,8 +362,19 @@ impl Buffer {
 
     /// Gets syntax highlights for a specific line
     /// Returns a list of (column_range, highlight_group) tuples
-    /// Prefers semantic highlights (from LSP) over tree-sitter highlights
+    ///
+    /// Priority order:
+    /// 1. Code block cache (for markdown code fences with known languages)
+    /// 2. Semantic highlights (from LSP)
+    /// 3. Tree-sitter cached highlights
     pub fn highlights_for_line(&self, line_idx: usize) -> Vec<(Range<usize>, HighlightGroup)> {
+        // For markdown: check code block cache first (language-specific highlighting)
+        if let Some(ref code_cache) = self.code_block_cache {
+            if let Some(highlights) = code_cache.highlights_for_line(line_idx) {
+                return highlights.clone();
+            }
+        }
+
         // Prefer semantic highlights from LSP if available
         if let Some(ref semantic) = self.semantic_highlights {
             if line_idx < semantic.len() && !semantic[line_idx].is_empty() {
@@ -496,6 +516,16 @@ impl Buffer {
         let highlights = syntax.highlights_for_all_lines(&content);
 
         self.cached_highlights = Some(highlights);
+
+        // For markdown files, also rebuild code block cache
+        if syntax.language() == Language::Markdown {
+            if let Some(tree) = syntax.tree() {
+                let mut cache = CodeBlockCache::new();
+                cache.update_from_tree(tree, &content, version);
+                self.code_block_cache = Some(cache);
+            }
+        }
+
         self.pending_rehighlight = false;
 
         Some(version)
