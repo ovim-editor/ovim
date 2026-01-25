@@ -43,6 +43,7 @@ pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
+pub use input::shell_expansion;
 pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
 pub use lsp_state::{LspAction, LspResultType, LspState};

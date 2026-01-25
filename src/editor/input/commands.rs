@@ -539,7 +539,13 @@ fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
 /// - `:%!cmd` - pipes entire buffer through command
 /// - `:range!cmd` - pipes specified range through command
 fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -> Result<()> {
+    use super::shell_expansion::expand_shell_command;
     use std::process::{Command, Stdio};
+
+    // Expand % and # in the shell command
+    let current_file = editor.buffer().file_path().unwrap_or("").to_string();
+    let alternate_file = editor.registers().get(Some('#'));
+    let shell_cmd = expand_shell_command(shell_cmd, &current_file, &alternate_file);
 
     // Determine the shell to use
     let shell = if cfg!(windows) { "cmd" } else { "sh" };
@@ -707,6 +713,196 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
     Ok(())
 }
 
+/// Handles :r !cmd - read output from shell command and insert below cursor
+/// - `:r !cmd` - insert output below current line
+/// - `:0r !cmd` - insert at start of buffer
+/// - `:'<,'>r !cmd` - insert after selection
+fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -> Result<()> {
+    use super::shell_expansion::expand_shell_command;
+    use std::process::{Command, Stdio};
+
+    // Expand % and # in the shell command
+    let current_file = editor.buffer().file_path().unwrap_or("").to_string();
+    let alternate_file = editor.registers().get(Some('#'));
+    let shell_cmd = expand_shell_command(shell_cmd, &current_file, &alternate_file);
+
+    // Determine the shell to use
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let shell_arg = if cfg!(windows) { "/C" } else { "-c" };
+
+    // Run the command
+    let output = Command::new(shell)
+        .arg(shell_arg)
+        .arg(&shell_cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+
+    match output {
+        Ok(output) => {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let output_text = stdout.to_string();
+
+                if output_text.is_empty() {
+                    editor.set_lsp_status("Command produced no output".to_string());
+                    return Ok(());
+                }
+
+                // Determine insertion point
+                let insert_line = if range_str.is_empty() {
+                    // Insert after current line
+                    editor.buffer().cursor().line() + 1
+                } else if let Some((_, end_line)) = parse_range(editor, range_str) {
+                    // Insert after the range end line
+                    end_line + 1
+                } else {
+                    editor.set_lsp_status("Invalid range".to_string());
+                    return Ok(());
+                };
+
+                // Record change for undo
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
+
+                // Calculate insertion point
+                let insert_char = if insert_line < editor.buffer().line_count() {
+                    editor.buffer().rope().line_to_char(insert_line)
+                } else {
+                    editor.buffer().rope().len_chars()
+                };
+
+                // Ensure text ends with newline
+                let text = if output_text.ends_with('\n') {
+                    output_text
+                } else {
+                    format!("{}\n", output_text)
+                };
+
+                // Add newline prefix if inserting at end of file
+                let text = if insert_line >= editor.buffer().line_count() && insert_char > 0 {
+                    format!("\n{}", text.trim_end_matches('\n'))
+                } else {
+                    text
+                };
+
+                // Insert the text
+                editor.buffer_mut().rope_mut().insert(insert_char, &text);
+
+                // Record change for undo
+                let change = Change::insert((insert_line, 0), text.clone(), cursor_before);
+                editor.add_change(change);
+
+                // Position cursor at start of inserted text
+                editor.buffer_mut().cursor_mut().set_position(insert_line, 0);
+
+                let line_count = text.lines().count();
+                editor.set_lsp_status(format!("{} line{} inserted", line_count, if line_count == 1 { "" } else { "s" }));
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+            }
+        }
+        Err(e) => {
+            editor.set_lsp_status(format!("Failed to run command: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+/// Handles :w !cmd - write buffer/range to command stdin
+/// - `:w !cmd` - send entire buffer to command stdin
+/// - `:'<,'>w !cmd` - send selection to command stdin
+fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -> Result<()> {
+    use super::shell_expansion::expand_shell_command;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Expand % and # in the shell command
+    let current_file = editor.buffer().file_path().unwrap_or("").to_string();
+    let alternate_file = editor.registers().get(Some('#'));
+    let shell_cmd = expand_shell_command(shell_cmd, &current_file, &alternate_file);
+
+    // Determine the shell to use
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let shell_arg = if cfg!(windows) { "/C" } else { "-c" };
+
+    // Get the content to write
+    let content = if range_str.is_empty() {
+        // Write entire buffer
+        editor.buffer().rope().to_string()
+    } else if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+        // Write specified range
+        let mut text = String::new();
+        for line_idx in start_line..=end_line {
+            if let Some(line) = editor.buffer().line(line_idx) {
+                text.push_str(&line);
+            }
+        }
+        text
+    } else {
+        editor.set_lsp_status("Invalid range".to_string());
+        return Ok(());
+    };
+
+    // Run the command with content piped to stdin
+    let mut child = match Command::new(shell)
+        .arg(shell_arg)
+        .arg(&shell_cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            editor.set_lsp_status(format!("Failed to run command: {}", e));
+            return Ok(());
+        }
+    };
+
+    // Write content to stdin
+    if let Some(ref mut stdin) = child.stdin {
+        if let Err(e) = stdin.write_all(content.as_bytes()) {
+            editor.set_lsp_status(format!("Failed to write to command: {}", e));
+            return Ok(());
+        }
+    }
+
+    // Wait for command to complete
+    match child.wait_with_output() {
+        Ok(output) => {
+            if output.status.success() {
+                let line_count = content.lines().count();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let msg = if stdout.trim().is_empty() {
+                    format!("{} line{} written", line_count, if line_count == 1 { "" } else { "s" })
+                } else {
+                    // Show command output if any
+                    let trimmed = stdout.trim();
+                    if trimmed.len() > 100 {
+                        format!("{} lines written: {}...", line_count, &trimmed[..100])
+                    } else {
+                        format!("{} lines written: {}", line_count, trimmed)
+                    }
+                };
+                editor.set_lsp_status(msg);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+            }
+        }
+        Err(e) => {
+            editor.set_lsp_status(format!("Failed to wait for command: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
 /// Executes a command string directly (used for API/Lua commands)
 pub fn execute_command_string(editor: &mut Editor, command: &str) -> Result<()> {
     execute_command_impl(editor, command)
@@ -790,6 +986,53 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     // If we reach here, it's an unknown command - try custom input-specific handling
+
+    // Handle :w !cmd (write to command stdin) - must be checked before range parsing
+    // Note: :w! is force write (handled above), :w !cmd (with space) writes to command stdin
+    if let Some(write_cmd) = command
+        .strip_prefix("w !")
+        .or_else(|| command.strip_prefix("write !"))
+    {
+        return handle_write_to_command(editor, "", write_cmd.trim());
+    }
+
+    // Handle range + w !cmd (e.g., :'<,'>w !pbcopy)
+    // This requires checking if the command ends with "w !..." pattern after a range
+    if command.contains("w !") || command.contains("write !") {
+        // Find where 'w !' or 'write !' starts
+        if let Some(pos) = command.find("w !").or_else(|| command.find("write !")) {
+            let range_str = &command[..pos];
+            let shell_cmd = if command[pos..].starts_with("write !") {
+                &command[pos + 7..]
+            } else {
+                &command[pos + 3..]
+            };
+            return handle_write_to_command(editor, range_str.trim(), shell_cmd.trim());
+        }
+    }
+
+    // Handle :r !cmd (read from command) - must be checked before range parsing
+    // Note: This is different from file reading :r filename
+    if let Some(read_cmd) = command
+        .strip_prefix("r !")
+        .or_else(|| command.strip_prefix("read !"))
+    {
+        return handle_read_shell_command(editor, "", read_cmd.trim());
+    }
+
+    // Handle range + r !cmd (e.g., :0r !cmd)
+    if command.contains("r !") || command.contains("read !") {
+        if let Some(pos) = command.find("r !").or_else(|| command.find("read !")) {
+            let range_str = &command[..pos];
+            let shell_cmd = if command[pos..].starts_with("read !") {
+                &command[pos + 6..]
+            } else {
+                &command[pos + 3..]
+            };
+            return handle_read_shell_command(editor, range_str.trim(), shell_cmd.trim());
+        }
+    }
+
     // First, try to parse range from command
     // Format: :[range]command
     // BUG FIX: Handle ! specially - it marks the start of a shell command, not the end of range
@@ -1148,28 +1391,33 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Standard commands are now delegated to the top-level commands module.
     {
         // Check if it's a :r or :read command
-        if let Some(filename) = command
+        if let Some(target) = command
             .strip_prefix("r ")
             .or_else(|| command.strip_prefix("read "))
         {
-            let filename = filename.trim();
-            if !filename.is_empty() {
-                // Read file contents
-                match std::fs::read_to_string(filename) {
-                    Ok(contents) => {
-                        // Insert contents at current cursor position
-                        let cursor = editor.buffer().cursor();
-                        let line = cursor.line() + 1; // Insert after current line
-                        let col = 0;
-                        editor.buffer_mut().insert_text_at(line, col, &contents);
-                        editor.set_lsp_status(format!(
-                            "Read {} lines from {}",
-                            contents.lines().count(),
-                            filename
-                        ));
-                    }
-                    Err(e) => {
-                        editor.set_lsp_status(format!("Error reading file: {}", e));
+            let target = target.trim();
+            if !target.is_empty() {
+                if let Some(shell_cmd) = target.strip_prefix('!') {
+                    // :r !cmd - read output from shell command
+                    handle_read_shell_command(editor, range_str, shell_cmd.trim())?;
+                } else {
+                    // :r filename - read file contents
+                    match std::fs::read_to_string(target) {
+                        Ok(contents) => {
+                            // Insert contents at current cursor position
+                            let cursor = editor.buffer().cursor();
+                            let line = cursor.line() + 1; // Insert after current line
+                            let col = 0;
+                            editor.buffer_mut().insert_text_at(line, col, &contents);
+                            editor.set_lsp_status(format!(
+                                "Read {} lines from {}",
+                                contents.lines().count(),
+                                target
+                            ));
+                        }
+                        Err(e) => {
+                            editor.set_lsp_status(format!("Error reading file: {}", e));
+                        }
                     }
                 }
             }
