@@ -241,4 +241,10 @@ impl SyntaxHighlighter {
     pub fn language(&self) -> Language {
         self.language
     }
+
+    /// Gets the parse tree (if parsed)
+    /// Used for extracting code blocks from markdown
+    pub fn tree(&self) -> Option<&Tree> {
+        self.tree.as_ref()
+    }
 }

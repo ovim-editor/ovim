@@ -267,4 +267,66 @@ impl LanguageRegistry {
     pub fn has_lsp_support(file_path: &str) -> bool {
         Self::get_lsp_language_id(file_path).is_some()
     }
+
+    /// Maps markdown code fence info strings to Language enum
+    /// Supports common language names and aliases used in markdown code blocks
+    pub fn from_info_string(info: &str) -> Option<Language> {
+        match info.trim().to_lowercase().as_str() {
+            // Rust
+            "rust" | "rs" => Some(Language::Rust),
+
+            // JavaScript
+            "javascript" | "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
+
+            // TypeScript
+            "typescript" | "ts" => Some(Language::TypeScript),
+
+            // TSX
+            "tsx" => Some(Language::Tsx),
+
+            // Python
+            "python" | "py" | "python3" | "py3" => Some(Language::Python),
+
+            // Java
+            "java" => Some(Language::Java),
+
+            // Go
+            "go" | "golang" => Some(Language::Go),
+
+            // C
+            "c" => Some(Language::C),
+
+            // C++
+            "cpp" | "c++" | "cxx" | "cc" => Some(Language::Cpp),
+
+            // Ruby
+            "ruby" | "rb" => Some(Language::Ruby),
+
+            // Bash/Shell
+            "bash" | "sh" | "shell" | "zsh" | "fish" | "ksh" => Some(Language::Bash),
+
+            // Dockerfile
+            "dockerfile" | "docker" => Some(Language::Dockerfile),
+
+            // JSON
+            "json" | "jsonc" => Some(Language::Json),
+
+            // YAML
+            "yaml" | "yml" => Some(Language::Yaml),
+
+            // HTML
+            "html" | "htm" | "xhtml" => Some(Language::Html),
+
+            // CSS
+            "css" | "scss" | "sass" | "less" => Some(Language::Css),
+
+            // TOML
+            "toml" => Some(Language::Toml),
+
+            // Markdown (nested markdown in code blocks)
+            "markdown" | "md" => Some(Language::Markdown),
+
+            _ => None,
+        }
+    }
 }

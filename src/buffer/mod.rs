@@ -11,7 +11,7 @@ pub use line_ending::LineEnding;
 pub use highlighting::LineHighlights;
 
 use crate::editor::ChangeManager;
-use crate::syntax::SyntaxHighlighter;
+use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
 use crate::GitStatus;
 use ropey::Rope;
 use std::path::PathBuf;
@@ -54,6 +54,8 @@ pub struct Buffer {
     /// Monotonically increasing version number, incremented on every edit
     /// Used for cache invalidation in LSP hover, completion, etc.
     pub(super) version: usize,
+    /// Code block cache for markdown files (language-specific highlighting inside fenced code blocks)
+    pub(super) code_block_cache: Option<CodeBlockCache>,
 }
 
 impl Buffer {
@@ -77,6 +79,7 @@ impl Buffer {
             read_only: false,
             semantic_highlights: None,
             version: 0,
+            code_block_cache: None,
         }
     }
 
@@ -165,6 +168,7 @@ impl Buffer {
             read_only: false,
             semantic_highlights: None,
             version: 0,
+            code_block_cache: None,
         }
     }
 
