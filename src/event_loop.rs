@@ -133,7 +133,7 @@ pub async fn run_headless_loop(
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
-    let mut lsp_interval = interval(Duration::from_millis(100));
+    let mut lsp_interval = interval(Duration::from_millis(50));
     lsp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -219,6 +219,12 @@ pub async fn run_event_loop(
 
             // Mark dirty ONCE after all events processed
             editor.mark_dirty();
+
+            // Immediately process any LSP actions triggered by input (don't wait for tick)
+            // This makes hover/goto/completion feel much snappier
+            if !editor.has_pending_lsp_response() {
+                editor.process_pending_lsp_actions().await;
+            }
         }
 
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {

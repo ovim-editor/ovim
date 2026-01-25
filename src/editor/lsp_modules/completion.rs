@@ -95,7 +95,6 @@ impl Editor {
         if did_flush {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
         let result = lsp.completion(&uri, line, character, language_id).await;
 
