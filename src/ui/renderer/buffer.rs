@@ -638,7 +638,22 @@ pub fn render_line_with_highlights(
             Style::default().bg(Color::Yellow).fg(Color::Black)
         } else if let Some(group) = syntax_group {
             let color = theme.get_color(group);
-            Style::default().fg(color)
+            let mut style = Style::default().fg(color);
+
+            // Add modifiers for markup elements
+            match group {
+                HighlightGroup::MarkupHeading => {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                HighlightGroup::MarkupBold => {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                HighlightGroup::MarkupItalic => {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                _ => {}
+            }
+            style
         } else {
             Style::default()
         };
