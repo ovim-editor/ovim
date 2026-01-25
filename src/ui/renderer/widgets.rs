@@ -1346,6 +1346,13 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
+    // Clear the entire inner area to prevent bleed-through from the editor buffer.
+    // Terminal UIs don't automatically clear - old content persists unless overwritten.
+    let blank_lines = vec![" ".repeat(inner_area.width as usize); inner_area.height as usize];
+    let clear_widget = Paragraph::new(blank_lines.join("\n"))
+        .style(Style::default().bg(Color::Rgb(25, 29, 40)));
+    frame.render_widget(clear_widget, inner_area);
+
     // Show centered empty state message
     let empty_msg = " 󰈈  No file selected";
     let paragraph = Paragraph::new(empty_msg)
