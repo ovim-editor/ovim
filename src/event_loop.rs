@@ -90,6 +90,10 @@ async fn process_editor_tick(
     let _ = editor.process_lua_commands();
 
     if editor.mode() == Mode::Picker {
+        // Apply debounced filter (50ms debounce for responsive typing)
+        if editor.apply_pending_picker_filter(50) {
+            editor.mark_dirty();
+        }
         spawn_picker_preview_loading(editor, preview_tx);
         spawn_file_finder_loading(editor, file_tx);
     }

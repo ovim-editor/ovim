@@ -19,11 +19,36 @@ impl Editor {
         self.picker.as_mut()
     }
 
-    /// Marks that picker query was just changed (for debouncing preview loading)
+    /// Marks that picker query was just changed (for debouncing preview loading and filtering)
     pub fn mark_picker_query_changed(&mut self) {
         self.last_picker_query_change = Some(std::time::Instant::now());
         // Clear loading flag since query changed
         self.loading_preview = None;
+    }
+
+    /// Checks if enough time has elapsed since picker query changed (for debouncing filtering)
+    /// Returns true if we should apply the pending filter now
+    pub fn should_apply_picker_filter(&self, debounce_ms: u64) -> bool {
+        match self.last_picker_query_change {
+            None => true, // No recent change, apply immediately
+            Some(last_change) => last_change.elapsed().as_millis() >= debounce_ms as u128,
+        }
+    }
+
+    /// Applies pending filter if debounce period has elapsed
+    /// Returns true if filter was applied
+    pub fn apply_pending_picker_filter(&mut self, debounce_ms: u64) -> bool {
+        if !self.should_apply_picker_filter(debounce_ms) {
+            return false;
+        }
+
+        if let Some(picker) = self.picker.as_mut() {
+            if picker.has_pending_filter() {
+                picker.apply_pending_filter();
+                return true;
+            }
+        }
+        false
     }
 
     /// Marks that the picker selection moved (for debouncing preview loading)

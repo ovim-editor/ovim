@@ -199,6 +199,11 @@ impl SyntaxHighlighter {
             "label" => return HighlightGroup::Label,
             "punctuation" => return HighlightGroup::Punctuation,
             "tag" => return HighlightGroup::Tag,
+            // Markup-specific captures for markdown
+            "markup.italic" => return HighlightGroup::MarkupItalic,
+            "markup.bold" => return HighlightGroup::MarkupBold,
+            "markup.heading" => return HighlightGroup::MarkupHeading,
+            "markup.raw" => return HighlightGroup::MarkupRaw,
             _ => {}
         }
 
@@ -222,6 +227,8 @@ impl SyntaxHighlighter {
                 "label" => return HighlightGroup::Label,
                 "punctuation" => return HighlightGroup::Punctuation,
                 "tag" => return HighlightGroup::Tag,
+                // Markup fallback - e.g., "markup.emphasis" -> markup
+                "markup" => return HighlightGroup::MarkupItalic,
                 _ => {}
             }
         }

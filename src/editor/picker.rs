@@ -40,6 +40,10 @@ pub struct Picker {
     loading: bool,
     /// Whether file loading task has been spawned
     loading_spawned: bool,
+    /// Whether filtering is pending (for debouncing)
+    pending_filter: bool,
+    /// The last query that was actually filtered
+    last_filtered_query: String,
 }
 
 impl Picker {
@@ -56,6 +60,8 @@ impl Picker {
             base_dir,
             loading: true,
             loading_spawned: false,
+            pending_filter: false,
+            last_filtered_query: String::new(),
         }
     }
 
@@ -71,6 +77,8 @@ impl Picker {
             base_dir,
             loading: false,
             loading_spawned: false,
+            pending_filter: false,
+            last_filtered_query: String::new(),
         }
     }
 
@@ -97,6 +105,8 @@ impl Picker {
             base_dir,
             loading: false,
             loading_spawned: false,
+            pending_filter: false,
+            last_filtered_query: String::new(),
         }
     }
 
@@ -123,6 +133,8 @@ impl Picker {
             base_dir,
             loading: false,
             loading_spawned: false,
+            pending_filter: false,
+            last_filtered_query: String::new(),
         }
     }
 
@@ -150,6 +162,8 @@ impl Picker {
             base_dir,
             loading: false,
             loading_spawned: false,
+            pending_filter: false,
+            last_filtered_query: String::new(),
         }
     }
 
@@ -166,6 +180,8 @@ impl Picker {
             base_dir,
             loading: false,
             loading_spawned: false,
+            pending_filter: false,
+            last_filtered_query: String::new(),
         }
     }
 
@@ -314,9 +330,15 @@ impl Picker {
     }
 
     /// Updates the query and refreshes filtered results
+    /// Note: For incremental typing, use mark_filter_pending() and apply_pending_filter()
+    /// to debounce the expensive filtering operation
     pub fn set_query(&mut self, query: String) {
         self.query = query;
+        self.apply_filter_internal();
+    }
 
+    /// Internal filter logic - called by both set_query and apply_pending_filter
+    fn apply_filter_internal(&mut self) {
         match self.mode {
             PickerMode::FindFiles => {
                 // Fuzzy matching with scoring
@@ -366,16 +388,39 @@ impl Picker {
 
         // Reset selection to first result
         self.selected_index = 0;
+        // Track what query was filtered
+        self.last_filtered_query = self.query.clone();
+        self.pending_filter = false;
+    }
+
+    /// Marks that filtering is pending (query changed but not yet filtered)
+    pub fn mark_filter_pending(&mut self) {
+        self.pending_filter = true;
+    }
+
+    /// Returns true if there's a pending filter operation
+    pub fn has_pending_filter(&self) -> bool {
+        self.pending_filter
+    }
+
+    /// Applies the pending filter if query has changed since last filter
+    /// Call this from the event loop after debounce period
+    pub fn apply_pending_filter(&mut self) {
+        if self.pending_filter {
+            self.apply_filter_internal();
+        }
     }
 
     /// Inserts a character at the cursor position
+    /// Note: Does NOT immediately filter - call apply_pending_filter() after debounce
     pub fn insert_char(&mut self, ch: char) {
         // Insert character at cursor position
         let byte_pos = self.char_pos_to_byte_pos(self.query_cursor);
         self.query.insert(byte_pos, ch);
         // Move cursor forward
         self.query_cursor += 1;
-        self.set_query(self.query.clone());
+        // Mark filter pending instead of immediate filtering
+        self.mark_filter_pending();
     }
 
     /// Appends a character to the query (legacy method, inserts at cursor)
@@ -384,22 +429,26 @@ impl Picker {
     }
 
     /// Removes the character before the cursor
+    /// Note: Does NOT immediately filter - call apply_pending_filter() after debounce
     pub fn backspace_query(&mut self) {
         if self.query_cursor > 0 {
             let byte_pos = self.char_pos_to_byte_pos(self.query_cursor - 1);
             self.query.remove(byte_pos);
             self.query_cursor -= 1;
-            self.set_query(self.query.clone());
+            // Mark filter pending instead of immediate filtering
+            self.mark_filter_pending();
         }
     }
 
     /// Removes the character at the cursor (delete key)
+    /// Note: Does NOT immediately filter - call apply_pending_filter() after debounce
     pub fn delete_char(&mut self) {
         let char_len = self.query.chars().count();
         if self.query_cursor < char_len {
             let byte_pos = self.char_pos_to_byte_pos(self.query_cursor);
             self.query.remove(byte_pos);
-            self.set_query(self.query.clone());
+            // Mark filter pending instead of immediate filtering
+            self.mark_filter_pending();
         }
     }
 
