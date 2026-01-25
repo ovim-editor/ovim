@@ -55,8 +55,17 @@ mod normal;
 pub struct InputHandler;
 
 impl InputHandler {
-    /// Processes a keyboard event
+    /// Processes a keyboard event and marks the editor dirty.
+    /// Use this for single-event callers that want automatic dirty marking.
     pub fn handle_key_event(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        Self::handle_key_event_no_dirty(editor, key_event)?;
+        editor.mark_dirty();
+        Ok(())
+    }
+
+    /// Processes a keyboard event without marking the editor dirty.
+    /// Use this for batch processing where dirty should be marked once at the end.
+    pub fn handle_key_event_no_dirty(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         // Record the event if we're recording a macro
         // (but don't record the 'q' that stops recording)
         let should_record_macro = editor.is_recording_macro()
@@ -88,10 +97,6 @@ impl InputHandler {
             Mode::SubstituteConfirm => substitute_mode::handle_substitute_confirm_mode(editor, key_event),
             Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
         };
-
-        // Mark the editor as dirty after processing any key event
-        // This ensures UI is redrawn on next render cycle
-        editor.mark_dirty();
 
         // Update scroll offset to keep cursor visible with scrolloff margin
         // Skip if:
@@ -288,6 +293,25 @@ impl InputHandler {
         } else {
             Ok(None)
         }
+    }
+
+    /// Polls and returns all available events.
+    /// First poll with 16ms timeout, then drain remaining with 0ms (non-blocking).
+    /// This batches multiple rapid events (e.g., paste) into a single render cycle.
+    pub fn poll_all_events() -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+
+        // First poll with timeout (matches poll_event behavior)
+        if event::poll(std::time::Duration::from_millis(16))? {
+            events.push(event::read()?);
+
+            // Drain remaining events with 0ms timeout (non-blocking)
+            while event::poll(std::time::Duration::from_millis(0))? {
+                events.push(event::read()?);
+            }
+        }
+
+        Ok(events)
     }
 
     /// Wrapper to call commands module's execute_command_string

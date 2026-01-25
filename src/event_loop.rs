@@ -196,21 +196,29 @@ pub async fn run_event_loop(
             }
         }
 
-        if let Some(event) = InputHandler::poll_event()? {
-            match event {
-                Event::Key(key_event) => {
-                    last_input_time = Some(Instant::now());
-                    InputHandler::handle_key_event(editor, key_event)?;
-                    last_edit = Instant::now();
-                }
-                Event::Resize(_, _) => {
-                    // Terminal was resized - mark editor dirty to force re-render
-                    editor.mark_dirty();
-                }
-                _ => {
-                    // Ignore other events (mouse, focus, etc.)
+        // Batch all pending events before rendering (improves paste performance)
+        let events = InputHandler::poll_all_events()?;
+
+        if !events.is_empty() {
+            last_input_time = Some(Instant::now());
+
+            for event in events {
+                match event {
+                    Event::Key(key_event) => {
+                        InputHandler::handle_key_event_no_dirty(editor, key_event)?;
+                        last_edit = Instant::now();
+                    }
+                    Event::Resize(_, _) => {
+                        // Terminal was resized - handled by dirty flag below
+                    }
+                    _ => {
+                        // Ignore other events (mouse, focus, etc.)
+                    }
                 }
             }
+
+            // Mark dirty ONCE after all events processed
+            editor.mark_dirty();
         }
 
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
