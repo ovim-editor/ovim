@@ -8,7 +8,7 @@
 //! - Visual mode commands (o to swap cursor, gv to reselect)
 //! - Visual mode search (/ and ?)
 
-use crate::editor::{Change, Editor, Motions, Operators, Range, TextObjects};
+use crate::editor::{Change, Editor, Motions, Range, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -912,7 +912,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('=') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let tab_width = editor.options.tab_width;
-                Operators::auto_indent_lines(
+                helpers::auto_indent_lines(
                     editor.buffer_mut(),
                     start_line,
                     end_line + 1,

@@ -132,6 +132,79 @@ impl Buffer {
         self.version += 1;
     }
 
+    /// Joins the current line with the next line (J command)
+    /// Adds a space between the lines unless the current line already ends with whitespace
+    pub fn join_lines(&mut self, count: usize) -> anyhow::Result<()> {
+        self.join_lines_impl(count, true)
+    }
+
+    /// Joins lines without adding a space (gJ command)
+    pub fn join_lines_no_space(&mut self, count: usize) -> anyhow::Result<()> {
+        self.join_lines_impl(count, false)
+    }
+
+    /// Internal implementation for joining lines
+    fn join_lines_impl(&mut self, count: usize, add_space: bool) -> anyhow::Result<()> {
+        let start_line = self.cursor.line();
+
+        // Join 'count' times (count = 1 means join current with next)
+        let lines_to_join = count.max(1);
+
+        for _ in 0..lines_to_join {
+            if start_line >= self.line_count().saturating_sub(1) {
+                // Already at the last line, nothing to join
+                break;
+            }
+
+            // Get the current line and next line
+            let current_line_text = match self.line(start_line) {
+                Some(text) => text.trim_end_matches('\n').to_string(),
+                None => break,
+            };
+
+            let next_line_text = match self.line(start_line + 1) {
+                Some(text) => text.trim_end_matches('\n').to_string(),
+                None => break,
+            };
+
+            // Determine if we need to add a space
+            let separator = if add_space {
+                // Add space unless current line ends with whitespace
+                if current_line_text.ends_with(|c: char| c.is_whitespace()) {
+                    ""
+                } else {
+                    " "
+                }
+            } else {
+                ""
+            };
+
+            // Trim leading whitespace from next line
+            let next_trimmed = next_line_text.trim_start();
+
+            // Build the joined line
+            let joined = if next_trimmed.is_empty() {
+                // Next line is all whitespace, just use current line
+                current_line_text.clone()
+            } else {
+                format!("{}{}{}", current_line_text, separator, next_trimmed)
+            };
+
+            // Delete both lines (from start_line to start_line+2)
+            self.delete_range(start_line, 0, start_line + 2, 0);
+
+            // Insert the joined line with newline
+            self.insert_text_at(start_line, 0, &format!("{}\n", joined));
+
+            // Fix: Position cursor at the junction point (end of original first line)
+            // This is where the separator (space) was inserted
+            let junction_col = current_line_text.len();
+            self.cursor.set_position(start_line, junction_col);
+        }
+
+        Ok(())
+    }
+
     /// Gets the word under the cursor
     /// Returns the word and its (start_col, end_col) on the current line
     pub fn word_under_cursor(&self) -> Option<(String, usize, usize)> {
