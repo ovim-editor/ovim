@@ -105,8 +105,16 @@ impl SyntaxHighlighter {
                     // Check if this capture overlaps with this line
                     if start_byte < line_end_byte && end_byte > line_start_byte {
                         // Convert to column range relative to line start
+                        // Cap col_start at 0 (can't be before line start)
                         let col_start = start_byte.saturating_sub(line_start_byte);
-                        let col_end = end_byte.saturating_sub(line_start_byte);
+
+                        // Cap col_end at line length (can't extend past line end)
+                        let line_len = lines[line_idx].len();
+                        let col_end = if end_byte <= line_end_byte {
+                            end_byte - line_start_byte
+                        } else {
+                            line_len
+                        };
 
                         line_highlights[line_idx].push((col_start..col_end, group));
                     }
