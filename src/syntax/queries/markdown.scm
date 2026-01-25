@@ -2,9 +2,9 @@
 ; Note: This uses the block grammar which parses block-level structure.
 ; Inline elements (emphasis, bold, links) are NOT parsed as separate nodes.
 
-; Headings
-(atx_heading) @markup.heading
-(setext_heading) @markup.heading
+; Headings - capture the inline text content specifically
+(atx_heading (inline) @markup.heading)
+(setext_heading (paragraph) @markup.heading)
 
 ; Heading markers (# ## ### etc)
 (atx_h1_marker) @punctuation.special
@@ -36,6 +36,9 @@
 
 ; Indented code blocks
 (indented_code_block) @markup.raw
+
+; Note: Tables (pipe_table) are NOT supported by tree-sitter-md's block grammar.
+; The block grammar only parses block-level structure, not GFM extensions.
 
 ; Links and images (block-level link definitions)
 (link_title) @string
