@@ -663,45 +663,22 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
             }
         }
     } else {
-        // Simple command execution - just display output
-        let output = Command::new(shell)
+        // Simple command execution - let shell handle I/O so pipelines work
+        // (e.g., `:!echo % | pbcopy` needs echo's output to go to pbcopy, not us)
+        let status = Command::new(shell)
             .arg(shell_arg)
             .arg(shell_cmd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .stdin(Stdio::inherit())
+            .status();
 
-        match output {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-
-                if output.status.success() {
-                    let msg = if stdout.is_empty() {
-                        "Command completed".to_string()
-                    } else {
-                        // Truncate long output for status line
-                        let trimmed = stdout.trim();
-                        if trimmed.len() > 200 || trimmed.lines().count() > 3 {
-                            format!(
-                                "{}... ({} lines)",
-                                trimmed
-                                    .lines()
-                                    .take(3)
-                                    .collect::<Vec<_>>()
-                                    .join(" | ")
-                                    .chars()
-                                    .take(100)
-                                    .collect::<String>(),
-                                trimmed.lines().count()
-                            )
-                        } else {
-                            trimmed.lines().collect::<Vec<_>>().join(" | ")
-                        }
-                    };
-                    editor.set_lsp_status(msg);
+        match status {
+            Ok(status) => {
+                if status.success() {
+                    editor.set_lsp_status("Command completed".to_string());
                 } else {
-                    editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+                    editor.set_lsp_status(format!("Command exited with {}", status));
                 }
             }
             Err(e) => {
