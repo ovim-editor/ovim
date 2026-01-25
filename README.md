@@ -1,4 +1,4 @@
-u ovim
+# ovim
 
 A Vim clone in Rust with LSP support and seamless headless mode for testing and automation.
 
