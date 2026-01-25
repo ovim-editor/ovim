@@ -1,39 +1,42 @@
+; tree-sitter-md (block grammar) highlighting queries
+; Note: This uses the block grammar which parses block-level structure.
+; Inline elements (emphasis, bold, links) are NOT parsed as separate nodes.
+
 ; Headings
 (atx_heading) @markup.heading
 (setext_heading) @markup.heading
 
+; Heading markers (# ## ### etc)
+(atx_h1_marker) @punctuation.special
+(atx_h2_marker) @punctuation.special
+(atx_h3_marker) @punctuation.special
+(atx_h4_marker) @punctuation.special
+(atx_h5_marker) @punctuation.special
+(atx_h6_marker) @punctuation.special
+
 ; Horizontal rules
 (thematic_break) @punctuation.special
 
-; Lists and blockquotes
+; Lists
 (list_marker_plus) @punctuation.special
 (list_marker_minus) @punctuation.special
 (list_marker_star) @punctuation.special
+
+; Blockquotes
 (block_quote_marker) @punctuation.special
 
-; Code
+; Fenced code blocks
 (fenced_code_block
-  (info_string) @keyword)
+  (fenced_code_block_delimiter) @punctuation.special)
+(fenced_code_block
+  (info_string
+    (language) @keyword))
 (fenced_code_block
   (code_fence_content) @markup.raw)
-(indented_code_block) @markup.raw
-(code_span) @markup.raw
 
-; Links and images
+; Indented code blocks
+(indented_code_block) @markup.raw
+
+; Links and images (block-level link definitions)
 (link_title) @string
 (link_destination) @string.special
-(link_text) @string.special
-(autolink) @string.special
-(image
-  (link_text)? @string.special
-  (link_destination)? @string.special)
-
-; Emphasis (italic) - *text* or _text_
-; Note: These require tree-sitter-md's inline grammar for full support
-(emphasis) @markup.italic
-
-; Strong emphasis (bold) - **text** or __text__
-(strong_emphasis) @markup.bold
-
-; Strikethrough - ~~text~~
-(strikethrough) @markup.strikethrough

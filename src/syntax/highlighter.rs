@@ -1,6 +1,7 @@
 use super::languages::{Language, LanguageRegistry};
 use super::theme::HighlightGroup;
 use std::ops::Range;
+use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor, Tree};
 
 /// Syntax highlighter using tree-sitter
@@ -80,10 +81,10 @@ impl SyntaxHighlighter {
 
         // Query the tree ONCE for all matches
         let mut cursor = QueryCursor::new();
-        let matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+        let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
         // Distribute captures to lines in a single pass
-        for m in matches {
+        while let Some(m) = matches.next() {
             for capture in m.captures {
                 let node = capture.node;
                 let start_byte = node.start_byte();
@@ -145,9 +146,9 @@ impl SyntaxHighlighter {
         let line_end_byte = line_start_byte + lines[line_idx].len();
 
         // Query captures in this line
-        let matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+        let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
-        for m in matches {
+        while let Some(m) = matches.next() {
             for capture in m.captures {
                 let node = capture.node;
                 let start_byte = node.start_byte();
