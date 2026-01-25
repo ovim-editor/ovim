@@ -340,8 +340,9 @@ pub fn render_hover_window(
     viewport_start: usize,
     hover_position: Option<(usize, usize)>,
     is_preview: bool,
+    theme: &crate::syntax::Theme,
 ) {
-    use super::markdown::{parse_markdown, render_markdown, colors};
+    use super::markdown::{colors, parse_markdown, render_markdown};
 
     const MIN_WIDTH: u16 = 30;
     const MAX_WIDTH: u16 = 80;
@@ -350,7 +351,7 @@ pub fn render_hover_window(
 
     // Parse markdown for preview mode
     let elements = parse_markdown(hover_text);
-    let rendered_lines = render_markdown(&elements, MAX_WIDTH as usize);
+    let rendered_lines = render_markdown(&elements, MAX_WIDTH as usize, Some(theme));
     let total_lines = if is_preview {
         rendered_lines.len()
     } else {
