@@ -3,8 +3,10 @@
 //! Parses LSP hover markdown and converts it to styled text spans for ratatui.
 //! Supports: **bold**, `inline code`, ```code blocks```, and basic structure.
 
+use crate::syntax::{HighlightGroup, LanguageRegistry, SyntaxHighlighter, Theme};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
 /// Colors for markdown rendering (Catppuccin-inspired)
 pub mod colors {
@@ -176,8 +178,84 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
     }
 }
 
+/// Highlights a code block using tree-sitter syntax highlighting
+/// Returns None if language is unknown or highlighting fails
+fn highlight_code_block(
+    language: &str,
+    code: &str,
+) -> Option<Vec<Vec<(Range<usize>, HighlightGroup)>>> {
+    let lang = LanguageRegistry::from_info_string(language)?;
+    let mut highlighter = SyntaxHighlighter::new(lang).ok()?;
+    highlighter.parse(code);
+    Some(highlighter.highlights_for_all_lines(code))
+}
+
+/// Renders a single code line with syntax highlights
+fn render_code_line_with_highlights(
+    line: &str,
+    highlights: &[(Range<usize>, HighlightGroup)],
+    theme: &Theme,
+    max_width: usize,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    spans.push(Span::raw(" ")); // Leading padding
+
+    let chars: Vec<char> = line.chars().collect();
+    let display_width = max_width.saturating_sub(2);
+
+    let mut col = 0;
+    while col < chars.len() && col < display_width {
+        // Find highlight group for current position
+        let group = highlights
+            .iter()
+            .find(|(range, _)| range.contains(&col))
+            .map(|(_, g)| *g);
+
+        // Find consecutive chars with same highlight
+        let mut end_col = col + 1;
+        while end_col < chars.len() && end_col < display_width {
+            let next_group = highlights
+                .iter()
+                .find(|(range, _)| range.contains(&end_col))
+                .map(|(_, g)| *g);
+            if next_group != group {
+                break;
+            }
+            end_col += 1;
+        }
+
+        // Build styled span
+        let text: String = chars[col..end_col].iter().collect();
+        let style = if let Some(g) = group {
+            Style::default()
+                .fg(theme.get_color(g))
+                .bg(colors::CODE_BLOCK_BG)
+        } else {
+            Style::default()
+                .fg(colors::CODE_BLOCK_FG)
+                .bg(colors::CODE_BLOCK_BG)
+        };
+        spans.push(Span::styled(text, style));
+        col = end_col;
+    }
+
+    if chars.len() > display_width {
+        spans.push(Span::styled(
+            "...",
+            Style::default().fg(colors::CODE_BLOCK_FG),
+        ));
+    }
+    spans.push(Span::raw(" ")); // Trailing padding
+
+    Line::from(spans)
+}
+
 /// Convert parsed markdown elements to styled ratatui Lines
-pub fn render_markdown(elements: &[MarkdownElement], max_width: usize) -> Vec<Line<'static>> {
+pub fn render_markdown(
+    elements: &[MarkdownElement],
+    max_width: usize,
+    theme: Option<&Theme>,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
     let mut current_width = 0;
@@ -224,15 +302,32 @@ pub fn render_markdown(elements: &[MarkdownElement], max_width: usize) -> Vec<Li
                 current_spans.push(Span::styled(format!(" {} ", code), code_style));
                 current_width += code.len() + 2;
             }
-            MarkdownElement::CodeBlock { code, .. } => {
+            MarkdownElement::CodeBlock { language, code } => {
                 // Flush current line
                 if !current_spans.is_empty() {
                     lines.push(Line::from(current_spans.clone()));
                     current_spans.clear();
                     current_width = 0;
                 }
+
+                // Try to get syntax highlights if we have a language and theme
+                let highlights = language
+                    .as_ref()
+                    .and_then(|lang| highlight_code_block(lang, code));
+
                 // Add code block lines
-                for code_line in code.lines() {
+                for (line_idx, code_line) in code.lines().enumerate() {
+                    // Try to render with syntax highlighting
+                    if let (Some(ref hl), Some(theme)) = (&highlights, theme) {
+                        if let Some(line_hl) = hl.get(line_idx) {
+                            lines.push(render_code_line_with_highlights(
+                                code_line, line_hl, theme, max_width,
+                            ));
+                            continue;
+                        }
+                    }
+
+                    // Fallback: plain green style
                     let truncated = if code_line.len() > max_width.saturating_sub(2) {
                         format!(" {}... ", &code_line[..max_width.saturating_sub(5)])
                     } else {
@@ -292,7 +387,7 @@ pub fn render_markdown(elements: &[MarkdownElement], max_width: usize) -> Vec<Li
 /// Calculate the dimensions needed for the hover content
 #[allow(dead_code)]
 pub fn measure_content(elements: &[MarkdownElement], max_width: usize) -> (usize, usize) {
-    let rendered = render_markdown(elements, max_width);
+    let rendered = render_markdown(elements, max_width, None);
     let height = rendered.len();
     let width = rendered
         .iter()
@@ -333,5 +428,41 @@ mod tests {
             MarkdownElement::CodeBlock { language: Some(lang), code }
             if lang == "rust" && code.contains("fn main")
         )));
+    }
+
+    #[test]
+    fn test_highlight_code_block_rust() {
+        // Should successfully highlight Rust code
+        let highlights = highlight_code_block("rust", "let x = 42;");
+        assert!(highlights.is_some());
+        let hl = highlights.unwrap();
+        assert_eq!(hl.len(), 1); // One line
+        assert!(!hl[0].is_empty()); // Has some highlights
+    }
+
+    #[test]
+    fn test_highlight_code_block_unknown_language() {
+        // Should return None for unknown language
+        let highlights = highlight_code_block("unknownlang12345", "some code");
+        assert!(highlights.is_none());
+    }
+
+    #[test]
+    fn test_render_markdown_with_theme() {
+        let elements = parse_markdown("```rust\nlet x = 42;\n```");
+        let theme = crate::syntax::Theme::default();
+        let lines = render_markdown(&elements, 80, Some(&theme));
+        // Should have rendered the code block with syntax highlighting
+        assert!(!lines.is_empty());
+        // The line should have multiple spans (syntax-highlighted segments)
+        assert!(lines[0].spans.len() > 1);
+    }
+
+    #[test]
+    fn test_render_markdown_without_theme_falls_back() {
+        let elements = parse_markdown("```rust\nlet x = 42;\n```");
+        let lines = render_markdown(&elements, 80, None);
+        // Should still render the code block, just without syntax colors
+        assert!(!lines.is_empty());
     }
 }

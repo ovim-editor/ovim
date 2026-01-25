@@ -362,6 +362,7 @@ impl Renderer {
                     viewport_start,
                     hover_pos,
                     is_preview,
+                    &theme,
                 );
             }
         }
