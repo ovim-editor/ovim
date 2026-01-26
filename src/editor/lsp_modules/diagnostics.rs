@@ -100,4 +100,61 @@ impl Editor {
     pub fn all_diagnostics(&self) -> &[lsp_types::Diagnostic] {
         &self.lsp_state.current_file_diagnostics
     }
+
+    /// Show diagnostic at cursor in hover popup (like vim.diagnostic.open_float())
+    pub fn show_diagnostic_at_cursor(&mut self) {
+        use crate::mode::Mode;
+
+        let line = self.buffer().cursor().line();
+        let col = self.buffer().cursor().col();
+        let diagnostics = self.diagnostics_for_line(line);
+
+        if diagnostics.is_empty() {
+            self.set_lsp_status("No diagnostics at cursor".to_string());
+            return;
+        }
+
+        // Find diagnostic covering cursor column, or first on line
+        let diagnostic = diagnostics
+            .iter()
+            .find(|d| {
+                let start = d.range.start.character as usize;
+                let end = d.range.end.character as usize;
+                col >= start && col <= end
+            })
+            .or_else(|| diagnostics.first())
+            .unwrap();
+
+        // Format severity with markdown for nice rendering
+        let severity_label = match diagnostic.severity {
+            Some(lsp_types::DiagnosticSeverity::ERROR) => "Error",
+            Some(lsp_types::DiagnosticSeverity::WARNING) => "Warning",
+            Some(lsp_types::DiagnosticSeverity::INFORMATION) => "Info",
+            Some(lsp_types::DiagnosticSeverity::HINT) => "Hint",
+            _ => "Diagnostic",
+        };
+
+        // Build markdown-formatted message
+        // **Severity**: Message
+        // Source: source (if available)
+        let mut message = format!("**{}**: {}", severity_label, diagnostic.message);
+
+        // Add source if available (e.g., "rustc", "clippy")
+        if let Some(ref source) = diagnostic.source {
+            message.push_str(&format!("\n\n`{}`", source));
+        }
+
+        // Add diagnostic code if available
+        if let Some(ref code) = diagnostic.code {
+            let code_str = match code {
+                lsp_types::NumberOrString::Number(n) => n.to_string(),
+                lsp_types::NumberOrString::String(s) => s.clone(),
+            };
+            message.push_str(&format!(" `{}`", code_str));
+        }
+        self.lsp_state.hover_info = Some(message);
+        self.lsp_state.hover_position = Some((line, col));
+        self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::Diagnostic;
+        self.set_mode(Mode::HoverPreview);
+    }
 }

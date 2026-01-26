@@ -20,6 +20,11 @@ impl Editor {
         self.lsp_state.hover_info.as_deref()
     }
 
+    /// Get current hover content type (LSP hover or diagnostic)
+    pub fn hover_content_type(&self) -> crate::editor::lsp_state::HoverContentType {
+        self.lsp_state.hover_content_type
+    }
+
     /// Clear hover info
     pub fn clear_hover(&mut self) {
         self.lsp_state.hover_info = None;
@@ -31,6 +36,7 @@ impl Editor {
     pub fn set_hover_info(&mut self, info: String) {
         self.lsp_state.hover_info = Some(info);
         self.lsp_state.hover_scroll = 0;
+        self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
         self.mode = crate::mode::Mode::HoverPreview;
         self.mark_dirty();
     }
@@ -90,6 +96,7 @@ impl Editor {
                 self.lsp_state.hover_info = Some(cache.hover_text.clone());
                 self.lsp_state.hover_scroll = 0;
                 self.lsp_state.hover_position = Some((cursor_line, cursor_col));
+                self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
                 self.mode = crate::mode::Mode::HoverPreview;
                 self.mark_dirty();
                 self.set_lsp_status(String::new());

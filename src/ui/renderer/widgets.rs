@@ -341,6 +341,7 @@ pub fn render_hover_window(
     hover_position: Option<(usize, usize)>,
     is_preview: bool,
     theme: &crate::syntax::Theme,
+    content_type: crate::editor::HoverContentType,
 ) {
     use super::markdown::{colors, parse_markdown, render_markdown};
 
@@ -449,13 +450,14 @@ pub fn render_hover_window(
     let max_scroll = total_lines.saturating_sub(content_height);
     let clamped_scroll = scroll_offset.min(max_scroll);
 
-    // Create title
-    let title = if is_preview {
-        " K: navigate ".to_string()
-    } else if total_lines > content_height {
-        format!(" {}/{} j/k:scroll q:close ", clamped_scroll + 1, total_lines)
-    } else {
-        " q to close ".to_string()
+    // Create title based on content type
+    let title = match (is_preview, content_type) {
+        (true, crate::editor::HoverContentType::Diagnostic) => " Diagnostic ".to_string(),
+        (true, crate::editor::HoverContentType::LspHover) => " K: navigate ".to_string(),
+        (false, _) if total_lines > content_height => {
+            format!(" {}/{} j/k:scroll q:close ", clamped_scroll + 1, total_lines)
+        }
+        _ => " q to close ".to_string(),
     };
 
     // Render content based on mode
@@ -472,6 +474,7 @@ pub fn render_hover_window(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
                     .border_style(Style::default().fg(colors::BORDER))
                     .title(title)
                     .title_style(
@@ -504,6 +507,7 @@ pub fn render_hover_window(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Rgb(137, 180, 250)))
                     .title(title)
                     .title_style(

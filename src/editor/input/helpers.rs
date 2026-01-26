@@ -802,11 +802,16 @@ pub fn indent_lines_with_tracking(
     tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
+    let mut modified = false;
     for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
         let indent_str = " ".repeat(tab_width);
         let change = Change::insert((line_idx, 0), indent_str.clone(), cursor_before);
         change.apply(editor.buffer_mut());
         editor.add_change(change);
+        modified = true;
+    }
+    if modified {
+        editor.mark_buffer_modified();
     }
     Ok(())
 }
@@ -818,6 +823,7 @@ pub fn dedent_lines_with_tracking(
     tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
+    let mut modified = false;
     for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
         if let Some(line) = editor.buffer().line(line_idx) {
             let line_text = line.trim_end_matches('\n');
@@ -843,8 +849,12 @@ pub fn dedent_lines_with_tracking(
                 let range = Range::new((line_idx, 0), (line_idx, spaces_to_remove));
                 let change = Change::delete(range, deleted, cursor_before);
                 editor.add_change(change);
+                modified = true;
             }
         }
+    }
+    if modified {
+        editor.mark_buffer_modified();
     }
     Ok(())
 }

@@ -46,7 +46,7 @@ pub use input::InputHandler;
 pub use input::shell_expansion;
 pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
-pub use lsp_state::{LspAction, LspResultType, LspState};
+pub use lsp_state::{HoverContentType, LspAction, LspResultType, LspState};
 pub use macros::MacroManager;
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};

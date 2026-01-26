@@ -2,6 +2,14 @@ use crate::lsp::LspManager;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Content type for hover window - distinguishes LSP hover from diagnostic popups
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HoverContentType {
+    #[default]
+    LspHover,
+    Diagnostic,
+}
+
 /// Per-document synchronisation state, keyed by canonical file path
 #[derive(Debug, Clone, Default)]
 pub struct DocumentSyncState {
@@ -179,6 +187,8 @@ pub struct LspState {
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP response that we're waiting for (non-blocking infrastructure)
     pub pending_lsp_response: Option<PendingLspResponse>,
+    /// Content type for hover window (LSP hover vs diagnostic)
+    pub hover_content_type: HoverContentType,
 }
 
 impl LspState {
@@ -209,6 +219,7 @@ impl LspState {
             current_file_diagnostics: Vec::new(),
             hover_cache: None,
             pending_lsp_response: None,
+            hover_content_type: HoverContentType::default(),
         }
     }
 }
