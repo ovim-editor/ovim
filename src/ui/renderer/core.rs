@@ -353,6 +353,7 @@ impl Renderer {
             if let Some(hover_text) = editor.hover_info() {
                 let is_preview = editor.mode() == crate::mode::Mode::HoverPreview;
                 let hover_pos = editor.hover_position();
+                let content_type = editor.hover_content_type();
                 render_hover_window(
                     frame,
                     editor,
@@ -363,6 +364,7 @@ impl Renderer {
                     hover_pos,
                     is_preview,
                     &theme,
+                    content_type,
                 );
             }
         }

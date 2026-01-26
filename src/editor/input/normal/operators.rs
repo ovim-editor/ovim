@@ -479,6 +479,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             let range = Range::new(start_pos, end_pos);
             let change = Change::delete(range, deleted.clone(), cursor_before);
             editor.add_change(change);
+            editor.mark_buffer_modified();
             editor.delete_to_register_with_type(deleted, RegisterType::Line);
             helpers::clamp_cursor_to_buffer(editor);
         }
@@ -508,6 +509,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             let range = Range::new(start_pos, end_pos);
             let change = Change::delete(range, deleted.clone(), cursor_before);
             editor.add_change(change);
+            editor.mark_buffer_modified();
             editor.delete_to_register(deleted);
             helpers::clamp_cursor_to_buffer(editor);
 
@@ -550,6 +552,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             let range = Range::new(start_pos, end_pos);
             let change = Change::delete(range, deleted.clone(), cursor_before);
             editor.add_change(change);
+            editor.mark_buffer_modified();
             editor.delete_to_register_with_type(deleted, RegisterType::Line);
 
             // Move cursor to first non-blank of remaining line
@@ -603,6 +606,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
 
             editor.delete_to_register(deleted);
             editor.add_change(change);
+            editor.mark_buffer_modified();
 
             // After deletion, we need to insert a blank line where start_line was
             // Don't clamp cursor yet - we need to insert at the exact position
@@ -679,6 +683,7 @@ fn handle_dd(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
 
     let current_line = editor.buffer().cursor().line();
@@ -711,6 +716,7 @@ fn handle_dl(editor: &mut Editor, count: usize) -> Result<()> {
 
             editor.delete_to_register(deleted);
             editor.add_change(change);
+            editor.mark_buffer_modified();
             editor.buffer_mut().cursor_mut().set_position(line_idx, start_col);
             helpers::clamp_cursor_to_buffer(editor);
         }
@@ -767,6 +773,7 @@ fn handle_dw(editor: &mut Editor, count: usize) -> Result<()> {
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
     editor.clear_count();
 
@@ -795,6 +802,7 @@ fn handle_d_dollar(editor: &mut Editor) -> Result<()> {
 
             editor.delete_to_register(deleted);
             editor.add_change(change);
+            editor.mark_buffer_modified();
             helpers::clamp_cursor_to_buffer(editor);
         }
     }
@@ -814,6 +822,7 @@ fn handle_dj(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
     editor.clear_count();
     Ok(())
@@ -831,6 +840,7 @@ fn handle_dk(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
     editor.clear_count();
     Ok(())
@@ -855,6 +865,7 @@ fn handle_d_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
     editor.clear_count();
     Ok(())
@@ -878,6 +889,7 @@ fn handle_d_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
     editor.clear_count();
     Ok(())
@@ -948,6 +960,7 @@ fn handle_d_percent(editor: &mut Editor) -> Result<()> {
         editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
         editor.delete_to_register(deleted);
         editor.add_change(change);
+        editor.mark_buffer_modified();
         helpers::clamp_cursor_to_buffer(editor);
     }
 
@@ -1063,6 +1076,7 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     editor.clear_count();
     editor.set_mode(Mode::Insert);
     helpers::insert_line_above(editor)?;
@@ -1107,6 +1121,7 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
     });
 
     editor.start_change_building((start_line, start_col));
+    editor.mark_buffer_modified();
     editor.clear_count();
     editor.set_mode(Mode::Insert);
     Ok(())
@@ -1134,6 +1149,7 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
 
             editor.delete_to_register(deleted);
             editor.add_change(change);
+            editor.mark_buffer_modified();
 
             editor.clear_count();
             let insert_cursor = (
@@ -1180,6 +1196,7 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
 
             editor.delete_to_register(deleted);
             editor.add_change(change);
+            editor.mark_buffer_modified();
             editor.buffer_mut().cursor_mut().set_position(line_idx, start_col);
 
             editor.clear_count();
@@ -1203,6 +1220,7 @@ fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
 
     editor.buffer_mut().cursor_mut().set_position(start_line, 0);
     helpers::clamp_cursor_to_buffer(editor);
@@ -1230,6 +1248,7 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
 
     editor.buffer_mut().cursor_mut().set_position(start_line, 0);
     helpers::clamp_cursor_to_buffer(editor);
@@ -1264,6 +1283,7 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     editor.set_mode(Mode::Insert);
     editor.clear_count();
     Ok(())
@@ -1286,6 +1306,7 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 
     editor.delete_to_register(deleted);
     editor.add_change(change);
+    editor.mark_buffer_modified();
     editor.set_mode(Mode::Insert);
     editor.clear_count();
     Ok(())
