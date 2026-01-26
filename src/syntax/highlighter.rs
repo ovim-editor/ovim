@@ -256,3 +256,65 @@ impl SyntaxHighlighter {
         self.tree.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tsx_highlighter() {
+        let mut h = SyntaxHighlighter::new(Language::Tsx)
+            .expect("TSX highlighter should be created");
+
+        let tsx_code = r#"const Button = ({ onClick }: Props) => {
+  return (
+    <button className="btn" onClick={onClick}>
+      Click me
+    </button>
+  );
+};"#;
+
+        h.parse(tsx_code);
+        let highlights = h.highlights_for_all_lines(tsx_code);
+
+        assert!(!highlights.is_empty(), "Should have highlights");
+        // Check that we have highlights on multiple lines
+        let non_empty_lines = highlights.iter().filter(|h| !h.is_empty()).count();
+        assert!(non_empty_lines >= 3, "Should highlight multiple lines");
+    }
+
+    #[test]
+    fn test_typescript_highlighter() {
+        let mut h = SyntaxHighlighter::new(Language::TypeScript)
+            .expect("TypeScript highlighter should be created");
+
+        let ts_code = r#"interface User {
+  name: string;
+  age: number;
+}
+
+const user: User = { name: "Alice", age: 30 };"#;
+
+        h.parse(ts_code);
+        let highlights = h.highlights_for_all_lines(ts_code);
+
+        assert!(!highlights.is_empty(), "Should have highlights");
+    }
+
+    #[test]
+    fn test_javascript_highlighter() {
+        let mut h = SyntaxHighlighter::new(Language::JavaScript)
+            .expect("JavaScript highlighter should be created");
+
+        let js_code = r#"function greet(name) {
+  return `Hello, ${name}!`;
+}
+
+const result = greet("World");"#;
+
+        h.parse(js_code);
+        let highlights = h.highlights_for_all_lines(js_code);
+
+        assert!(!highlights.is_empty(), "Should have highlights");
+    }
+}

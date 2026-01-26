@@ -209,16 +209,17 @@ impl LanguageRegistry {
     }
 
     /// Gets the highlight query for a language
-    /// Uses official tree-sitter queries when available, falls back to custom queries
+    /// Uses custom queries for better control, falls back to official queries
     pub fn get_highlight_query(lang: Language) -> &'static str {
         match lang {
-            // Use official tree-sitter highlight queries
+            // Use custom queries for JS/TS family for better JSX/TSX support
+            Language::JavaScript => include_str!("queries/javascript.scm"),
+            Language::TypeScript => include_str!("queries/typescript.scm"),
+            Language::Tsx => include_str!("queries/tsx.scm"),
+
+            // Use official tree-sitter highlight queries for other languages
             // Note: Some crates use HIGHLIGHTS_QUERY (plural), others use HIGHLIGHT_QUERY (singular)
             Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
-            Language::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY,
-            Language::TypeScript => tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            // TSX uses the same highlight query as TypeScript (shared across both grammars)
-            Language::Tsx => tree_sitter_typescript::HIGHLIGHTS_QUERY,
             Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
             Language::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
             Language::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
@@ -232,7 +233,7 @@ impl LanguageRegistry {
             Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
             // TOML uses JSON highlighting as fallback (similar key-value structure)
             Language::Toml => tree_sitter_json::HIGHLIGHTS_QUERY,
-            // For languages without official queries, use custom fallback
+            // Custom queries for languages without good official ones
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
         }
