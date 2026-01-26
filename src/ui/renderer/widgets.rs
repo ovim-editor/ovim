@@ -1,10 +1,11 @@
 use crate::editor::Editor;
 use crate::syntax::HighlightGroup;
 use ratatui::{
+    buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Widget},
     Frame,
 };
 use std::ops::Range;
@@ -12,6 +13,33 @@ use unicode_width::UnicodeWidthStr;
 
 use super::helpers::{expand_tabs, expand_tabs_with_mapping, truncate_to_width};
 use super::styles::remap_highlights;
+
+/// A widget that fills every cell in an area with a styled space.
+/// This is the proper way to create a solid background - unlike Block which
+/// only renders borders, Fill writes to every cell, preventing bleed-through.
+struct Fill {
+    style: Style,
+}
+
+impl Fill {
+    fn new(style: Style) -> Self {
+        Self { style }
+    }
+
+    fn bg(color: Color) -> Self {
+        Self::new(Style::default().bg(color))
+    }
+}
+
+impl Widget for Fill {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                buf[(x, y)].set_char(' ').set_style(self.style);
+            }
+        }
+    }
+}
 
 /// Binary search for the highlight group at a given byte index.
 /// Highlights must be sorted by range.start (ascending).
@@ -802,9 +830,9 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor, _full_area: Rect) {
     let picker_area = get_picker_area(frame.area());
     let show_preview = should_show_preview(picker_area);
 
-    // Clear entire picker area to prevent bleed-through from editor buffer underneath.
-    // This is essential - terminal UIs don't auto-clear, old content persists.
-    frame.render_widget(ratatui::widgets::Clear, picker_area);
+    // Fill entire picker area to prevent bleed-through from editor buffer underneath.
+    // Fill writes styled spaces to every cell - unlike Clear+Block which is fragile.
+    frame.render_widget(Fill::bg(Color::Rgb(20, 24, 35)), picker_area);
 
     // Create block with rounded border and styled colors
     let mode_name = match picker.mode() {
@@ -1099,13 +1127,8 @@ fn render_picker_preview(
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
-    // Clear the preview area to prevent text bleeding from previous frames.
-    // Clear resets cells, then block fills with background color.
-    frame.render_widget(ratatui::widgets::Clear, inner_area);
-    frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(25, 29, 40))),
-        inner_area,
-    );
+    // Fill the preview area to prevent text bleeding from previous frames.
+    frame.render_widget(Fill::bg(Color::Rgb(25, 29, 40)), inner_area);
 
     // Try to get preview (only show exact match, no fallback to avoid scroll artifacts)
     let file_path = &result.location;
@@ -1391,12 +1414,8 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
-    // Clear the inner area to prevent bleed-through from the editor buffer.
-    frame.render_widget(ratatui::widgets::Clear, inner_area);
-    frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(25, 29, 40))),
-        inner_area,
-    );
+    // Fill the inner area to prevent bleed-through from the editor buffer.
+    frame.render_widget(Fill::bg(Color::Rgb(25, 29, 40)), inner_area);
 
     // Show centered empty state message
     let empty_msg = " 󰈈  No file selected";
