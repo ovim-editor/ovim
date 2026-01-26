@@ -3,7 +3,7 @@
 //! This module handles the Leader input state, processing commands like:
 //! - `<Space>th` - Type hierarchy (LSP)
 //! - `<Space>ca` - Code actions (LSP)
-//! - `<Space>e` - Toggle file tree
+//! - `<Space>e` - Show diagnostic at cursor
 //! - `<Space>o` - Document outline
 //! - etc.
 
@@ -45,8 +45,8 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
     match key {
         // Single-key commands
         'e' => {
-            // <Space>e - Toggle file tree explorer
-            editor.toggle_file_tree();
+            // <Space>e - Show diagnostic at cursor (like vim.diagnostic.open_float())
+            editor.show_diagnostic_at_cursor();
             editor.reset_input_state();
         }
         'o' => {

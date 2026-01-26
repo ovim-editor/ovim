@@ -300,11 +300,21 @@ mod leader_sequences {
     }
 
     #[test]
-    fn test_space_e_toggles_file_tree() {
+    fn test_space_e_shows_diagnostic_at_cursor() {
         let mut test = EditorTest::new("hello world");
 
         test.keys(" e");
-        // <Space>e enters FileTree mode
+        // <Space>e shows diagnostic at cursor
+        // Without diagnostics, stays in Normal mode
+        test.assert_mode(Mode::Normal);
+    }
+
+    #[test]
+    fn test_minus_toggles_file_tree() {
+        let mut test = EditorTest::new("hello world");
+
+        test.keys("-");
+        // - enters FileTree mode
         test.assert_mode(Mode::FileTree);
     }
 }
