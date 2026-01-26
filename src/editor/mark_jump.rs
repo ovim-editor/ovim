@@ -208,6 +208,12 @@ impl Editor {
                 .cursor_mut()
                 .set_position(clamped_line, clamped_col);
 
+            // Center cursor in viewport (like jump_back does)
+            self.center_cursor_in_viewport();
+
+            // Trigger re-render
+            self.mark_dirty();
+
             // Show status
             let remaining = self.tag_stack.len();
             let file_name = std::path::Path::new(&entry.file_path)
