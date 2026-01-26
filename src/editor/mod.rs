@@ -267,6 +267,9 @@ pub struct Editor {
     pending_semantic_change: Option<PendingSemanticChange>,
     /// Replace mode tracking for dot-repeat
     replace_mode_state: Option<ReplaceModeState>,
+    /// Cached file list for picker: (root_path, files, timestamp)
+    /// Speeds up repeated picker opens by reusing file discovery results
+    file_list_cache: Option<(std::path::PathBuf, Vec<PickerResult>, std::time::Instant)>,
 }
 
 /// State for tracking Replace mode for dot-repeat
@@ -375,6 +378,7 @@ impl Editor {
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
+            file_list_cache: None,
         }
     }
 
@@ -432,6 +436,7 @@ impl Editor {
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
+            file_list_cache: None,
         }
     }
 

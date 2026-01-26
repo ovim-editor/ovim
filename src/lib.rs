@@ -27,5 +27,6 @@ pub mod session;
 pub mod subcommands;
 pub mod syntax;
 pub mod ui;
+pub mod unicode;
 
 pub use git::{GitStatus, LineStatus};

@@ -1130,12 +1130,13 @@ fn render_picker_preview(
     // Fill the preview area to prevent text bleeding from previous frames.
     frame.render_widget(Fill::bg(Color::Rgb(25, 29, 40)), inner_area);
 
-    // Try to get preview (only show exact match, no fallback to avoid scroll artifacts)
+    // Try to get preview with fallback - show stale preview while new one loads
+    // This eliminates the jarring "Loading..." flash when navigating quickly
     let file_path = &result.location;
-    let preview = match editor.get_preview_cache(file_path) {
-        Some(p) => p,
+    let (preview, _is_stale) = match editor.get_preview_with_fallback(file_path) {
+        Some((p, is_stale)) => (p, is_stale),
         None => {
-            // Not cached yet - show loading message
+            // No preview available at all (first time opening picker)
             let loading_msg = " 󰦖  Loading preview...";
             let paragraph = Paragraph::new(loading_msg)
                 .style(

@@ -120,6 +120,8 @@ fn process_picker_results(
             editor.mark_dirty();
         }
     }
+    // Update file list cache from background task (if completed)
+    update_file_list_cache_from_background(editor);
 }
 
 /// Headless (API-only) event loop.
@@ -555,6 +557,7 @@ fn spawn_picker_preview_loading(
 
 /// Spawns a background task to load files for file finder picker
 /// Returns immediately without blocking - files are sent via channel as they're discovered
+/// Uses cache when available to speed up repeated picker opens
 fn spawn_file_finder_loading(
     editor: &mut Editor,
     file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
@@ -568,19 +571,45 @@ fn spawn_file_finder_loading(
         // Get the base directory for file search
         let base_dir = picker.base_dir().to_path_buf();
 
+        // Check for cached file list (5-minute TTL)
+        if let Some(cached_files) = editor.get_cached_file_list(&base_dir) {
+            // Use cache! Send all files via channel immediately
+            let cached_files: Vec<editor::PickerResult> = cached_files.to_vec();
+            let tx = file_tx.clone();
+
+            // Mark as spawned to avoid spawning multiple tasks
+            if let Some(picker_mut) = editor.picker_mut() {
+                picker_mut.mark_loading_spawned();
+            }
+
+            // Spawn quick task to send cached results
+            tokio::spawn(async move {
+                for result in cached_files {
+                    if tx.send(result).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            return;
+        }
+
         // Mark as spawned to avoid spawning multiple tasks
         if let Some(picker_mut) = editor.picker_mut() {
             picker_mut.mark_loading_spawned();
         }
 
         let tx = file_tx.clone();
+        let base_dir_clone = base_dir.clone();
 
         // Spawn background task - doesn't block!
+        // Also collects results for cache update
         tokio::spawn(async move {
             use ignore::WalkBuilder;
 
+            let mut collected_files = Vec::new();
+
             // Use ignore crate's WalkBuilder which respects .gitignore
-            let walker = WalkBuilder::new(&base_dir)
+            let walker = WalkBuilder::new(&base_dir_clone)
                 .hidden(false) // Don't automatically skip hidden files (keep .env, .eslintrc, etc.)
                 .git_ignore(true) // Respect .gitignore files
                 .git_global(true) // Respect global gitignore
@@ -596,7 +625,7 @@ fn spawn_file_finder_loading(
                 let path = entry.path();
 
                 if path.is_file() {
-                    if let Ok(relative_path) = path.strip_prefix(&base_dir) {
+                    if let Ok(relative_path) = path.strip_prefix(&base_dir_clone) {
                         let display_path = relative_path.to_string_lossy().to_string();
                         let result = editor::PickerResult {
                             display: display_path,
@@ -604,6 +633,9 @@ fn spawn_file_finder_loading(
                             line: 0,
                             col: 0,
                         };
+
+                        // Collect for cache
+                        collected_files.push(result.clone());
 
                         // Send result back (non-blocking)
                         // If channel is closed (picker was closed), task will exit
@@ -613,7 +645,26 @@ fn spawn_file_finder_loading(
                     }
                 }
             }
+
+            // Store collected files in a static to be picked up by cache update
+            // This is a workaround since we can't update Editor state from within a spawned task
+            FILE_LIST_CACHE_RESULTS.lock().await.replace((base_dir_clone, collected_files));
         });
+    }
+}
+
+/// Temporary storage for file list results from background task
+/// The main event loop will pick these up and update the Editor cache
+static FILE_LIST_CACHE_RESULTS: tokio::sync::Mutex<Option<(std::path::PathBuf, Vec<editor::PickerResult>)>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Picks up cached file list results from the background task and updates Editor cache
+pub fn update_file_list_cache_from_background(editor: &mut Editor) {
+    // Non-blocking try_lock to avoid any contention with background task
+    if let Ok(mut guard) = FILE_LIST_CACHE_RESULTS.try_lock() {
+        if let Some((root, files)) = guard.take() {
+            editor.update_file_list_cache(root, files);
+        }
     }
 }
 
