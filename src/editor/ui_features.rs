@@ -84,22 +84,40 @@ impl Editor {
         &mut self.file_tree
     }
 
-    /// Opens the file tree explorer at the current file's directory
+    /// Opens the file tree explorer at the project root
     pub fn open_file_tree(&mut self) {
-        // Extract file path first to avoid borrowing issues
+        use crate::language_config::find_project_root;
+        use git2::Repository;
+
         let file_path = self.buffer().file_path().map(|s| s.to_string());
 
-        if let Some(file_path) = file_path {
-            if let Some(parent) = std::path::Path::new(&file_path).parent() {
-                self.file_tree.open(parent);
-                return;
-            }
-        }
+        let root = if let Some(ref file_path) = file_path {
+            let path = std::path::Path::new(file_path);
 
-        // Fallback to current directory if no file path
-        if let Ok(cwd) = std::env::current_dir() {
-            self.file_tree.open(&cwd);
-        }
+            // Try git root first (most reliable for project boundary)
+            if let Ok(repo) = Repository::discover(path) {
+                if let Some(workdir) = repo.workdir() {
+                    workdir.to_path_buf()
+                } else {
+                    // Fallback: use language-specific markers
+                    find_project_root(
+                        path,
+                        &[
+                            "Cargo.toml".into(),
+                            "package.json".into(),
+                            ".git".into(),
+                        ],
+                    )
+                }
+            } else {
+                // Not in git repo - use language markers or parent
+                find_project_root(path, &["Cargo.toml".into(), "package.json".into()])
+            }
+        } else {
+            std::env::current_dir().unwrap_or_default()
+        };
+
+        self.file_tree.open(&root);
     }
 
     /// Toggles the file tree visibility
