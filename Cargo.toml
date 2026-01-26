@@ -9,6 +9,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 anyhow = "1.0"
 unicode-width = "0.1"
+unicode-segmentation = "1.10"
 regex = "1.10"
 axum = "0.7"
 tokio = { version = "1.35", features = ["full"] }

@@ -2,12 +2,9 @@
 //!
 //! These functions are used by various input handlers.
 
-// TODO: Grapheme cluster support needed throughout this file
-// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
-// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
-
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
+use crate::unicode::grapheme_count;
 use anyhow::Result;
 
 // Helper methods for cursor movement and editing
@@ -28,7 +25,7 @@ pub fn move_right(editor: &mut Editor) {
     let line_idx = editor.buffer().cursor().line();
     let mode = editor.mode();
     if let Some(line) = editor.buffer().line(line_idx) {
-        let line_len = line.trim_end_matches('\n').chars().count();
+        let line_len = grapheme_count(line.trim_end_matches('\n'));
         let cursor = editor.buffer_mut().cursor_mut();
 
         // In VisualBlock mode, allow cursor beyond line end for rectangular selection
@@ -80,7 +77,7 @@ pub fn move_down(editor: &mut Editor) {
 pub fn clamp_cursor_to_line(editor: &mut Editor) {
     let line_idx = editor.buffer().cursor().line();
     if let Some(line) = editor.buffer().line(line_idx) {
-        let line_len = line.trim_end_matches('\n').chars().count();
+        let line_len = grapheme_count(line.trim_end_matches('\n'));
         let cursor = editor.buffer_mut().cursor_mut();
         if cursor.col() >= line_len {
             let new_col = if line_len > 0 { line_len - 1 } else { 0 };
@@ -93,7 +90,7 @@ pub fn clamp_cursor_with_goal_column(editor: &mut Editor) {
     let line_idx = editor.buffer().cursor().line();
     let mode = editor.mode();
     if let Some(line) = editor.buffer().line(line_idx) {
-        let line_len = line.trim_end_matches('\n').chars().count();
+        let line_len = grapheme_count(line.trim_end_matches('\n'));
         let max_col = if line_len > 0 { line_len - 1 } else { 0 };
         let cursor = editor.buffer_mut().cursor_mut();
         let desired = cursor.desired_col();

@@ -1,4 +1,5 @@
 use ovim::editor::Editor;
+use ovim::lsp::uri_from_file_path;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
@@ -168,6 +169,16 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
                 lsp_manager
                     .start_notification_listener("java".to_string())
                     .await;
+
+                // PRE-WARM: Send didOpen immediately for faster first request
+                if let Some(file_path_str) = editor.buffer().file_path().map(|s| s.to_string()) {
+                    let content = editor.buffer().rope().to_string();
+                    if let Some(uri) = uri_from_file_path(&file_path_str) {
+                        let _ = lsp_manager.did_open(uri, "java", 1, content).await;
+                        editor.mark_document_opened(&file_path_str);
+                        ovim::lsp_debug!("Java", "Pre-warmed didOpen for {}", file_path_str);
+                    }
+                }
 
                 editor.set_lsp_status("Java: Ready".to_string());
             }

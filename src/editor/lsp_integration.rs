@@ -77,6 +77,13 @@ impl Editor {
         self.lsp_state.needs_lsp_init = false;
     }
 
+    /// Marks a document as having sent didOpen notification
+    /// Used by LSP pre-warming to prevent duplicate didOpen
+    pub fn mark_document_opened(&mut self, file_path: &str) {
+        let state = self.lsp_state.document_sync.entry(file_path.to_string()).or_default();
+        state.did_open_sent = true;
+    }
+
     /// Request LSP initialization for the current file
     pub fn request_lsp_init(&mut self) {
         self.lsp_state.needs_lsp_init = true;

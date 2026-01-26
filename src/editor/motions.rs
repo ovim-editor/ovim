@@ -1,8 +1,5 @@
 use crate::buffer::Buffer;
-
-// TODO: Grapheme cluster support needed throughout this file
-// Currently using chars().count() which splits multi-codepoint emojis (e.g., 👨‍👩‍👧‍👦)
-// into separate characters. Should use a grapheme cluster library for proper Unicode handling.
+use crate::unicode::grapheme_count;
 
 /// Utilities for cursor motions
 pub struct Motions;
@@ -204,7 +201,7 @@ impl Motions {
             if line_idx > 0 {
                 let prev_line = rope.line(line_idx - 1).to_string();
                 let prev_line = prev_line.trim_end_matches('\n');
-                let prev_len = prev_line.chars().count();
+                let prev_len = grapheme_count(prev_line);
                 buffer
                     .cursor_mut()
                     .set_position(line_idx - 1, prev_len.saturating_sub(1).max(0));
@@ -1150,7 +1147,7 @@ impl Motions {
 
         // Adjust column to be within line bounds
         if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = line.trim_end_matches('\n').chars().count();
+            let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
                 let clamped_col = col.min(line_len.saturating_sub(1));
                 buffer.cursor_mut().set_col(clamped_col);
@@ -1182,7 +1179,7 @@ impl Motions {
 
         // Adjust column to be within line bounds
         if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = line.trim_end_matches('\n').chars().count();
+            let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
                 let clamped_col = col.min(line_len.saturating_sub(1));
                 buffer.cursor_mut().set_col(clamped_col);
@@ -1216,7 +1213,7 @@ impl Motions {
 
         // Adjust column to be within line bounds
         if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = line.trim_end_matches('\n').chars().count();
+            let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
                 let clamped_col = col.min(line_len.saturating_sub(1));
                 buffer.cursor_mut().set_col(clamped_col);
@@ -1249,7 +1246,7 @@ impl Motions {
 
         // Adjust column to be within line bounds
         if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = line.trim_end_matches('\n').chars().count();
+            let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
                 let clamped_col = col.min(line_len.saturating_sub(1));
                 buffer.cursor_mut().set_col(clamped_col);

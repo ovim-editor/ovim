@@ -4,6 +4,7 @@ mod java;
 use auto_install::{attempt_auto_install, InstallResult};
 use ovim::editor::Editor;
 use ovim::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
+use ovim::lsp::uri_from_file_path;
 use std::path::{Path, PathBuf};
 
 pub use java::init_java_status_sender;
@@ -151,11 +152,21 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                 editor.register_lsp_server(language_id.clone(), server_command.clone());
 
                 // Start notification listener to receive diagnostics
-                lsp_manager.start_notification_listener(language_id).await;
+                lsp_manager.start_notification_listener(language_id.clone()).await;
 
-                // IMPORTANT: Don't send didOpen here - it will be handled by ensure_document_opened
-                // when the editor actually needs to use LSP features. This avoids race conditions
-                // and duplicate didOpen notifications.
+                // PRE-WARM: Send didOpen immediately to eliminate first-request latency
+                // This ensures the LSP server has indexed the document before the first
+                // hover/goto_definition request, making K/gd feel instant.
+                if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                    let content = editor.buffer().rope().to_string();
+                    if let Some(uri) = uri_from_file_path(&file_path) {
+                        let _ = lsp_manager.did_open(uri, &language_id, 1, content).await;
+                        // Mark as sent to prevent duplicate from ensure_lsp_document_synced
+                        editor.mark_document_opened(&file_path);
+                        ovim::lsp_debug!("LSP", "Pre-warmed didOpen for {}", file_path);
+                    }
+                }
+
                 editor.set_lsp_status(format!("LSP: {} ready", lang_config.name));
             }
             Err(e) => {

@@ -155,6 +155,8 @@ impl Editor {
                     language: None,
                 };
                 self.preview_cache.insert(file_path.to_string(), cache);
+                // Track as last shown so fallback works correctly
+                self.last_shown_preview = Some(file_path.to_string());
                 return self.preview_cache.get(file_path);
             }
         }
@@ -176,6 +178,8 @@ impl Editor {
         };
 
         self.preview_cache.insert(file_path.to_string(), cache);
+        // Track as last shown so fallback works correctly
+        self.last_shown_preview = Some(file_path.to_string());
         self.preview_cache.get(file_path)
     }
 
@@ -193,26 +197,27 @@ impl Editor {
 
     /// Gets preview with fallback - prefers current file, but shows last preview if loading
     /// This provides smooth transitions without "Loading..." flicker
-    pub fn get_preview_with_fallback(
-        &mut self,
-        file_path: &str,
-    ) -> Option<(&PreviewCache, String)> {
+    /// Returns (preview, actual_path, is_stale) where is_stale indicates fallback was used
+    pub fn get_preview_with_fallback(&self, file_path: &str) -> Option<(&PreviewCache, bool)> {
         // Try to get the requested preview
         if let Some(preview) = self.preview_cache.get(file_path) {
-            // Update last shown
-            self.last_shown_preview = Some(file_path.to_string());
-            return Some((preview, file_path.to_string()));
+            return Some((preview, false));
         }
 
         // Fall back to last shown preview while new one loads
         if let Some(last_path) = &self.last_shown_preview {
             if let Some(preview) = self.preview_cache.get(last_path) {
-                // Return the old preview (with its path for reference)
-                return Some((preview, last_path.clone()));
+                // Return the old preview (marked as stale)
+                return Some((preview, true));
             }
         }
 
         None
+    }
+
+    /// Update the last shown preview path (called after successful render)
+    pub fn set_last_shown_preview(&mut self, file_path: &str) {
+        self.last_shown_preview = Some(file_path.to_string());
     }
 
     /// Limits preview cache size to prevent memory bloat
@@ -227,5 +232,37 @@ impl Editor {
                 self.preview_cache.remove(&key);
             }
         }
+    }
+
+    // ==================== File List Cache Methods ====================
+
+    /// File list cache TTL (5 minutes)
+    const FILE_LIST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+    /// Gets cached file list if available and fresh (less than 5 minutes old)
+    pub fn get_cached_file_list(
+        &self,
+        root: &std::path::Path,
+    ) -> Option<&[super::PickerResult]> {
+        let (cached_root, files, timestamp) = self.file_list_cache.as_ref()?;
+        if cached_root == root && timestamp.elapsed() < Self::FILE_LIST_CACHE_TTL {
+            Some(files.as_slice())
+        } else {
+            None
+        }
+    }
+
+    /// Stores the file list in cache with current timestamp
+    pub fn update_file_list_cache(
+        &mut self,
+        root: std::path::PathBuf,
+        files: Vec<super::PickerResult>,
+    ) {
+        self.file_list_cache = Some((root, files, std::time::Instant::now()));
+    }
+
+    /// Invalidates the file list cache (called on file save/create/delete)
+    pub fn invalidate_file_list_cache(&mut self) {
+        self.file_list_cache = None;
     }
 }
