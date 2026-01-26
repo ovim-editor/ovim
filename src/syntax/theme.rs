@@ -7,18 +7,27 @@ pub enum HighlightGroup {
     Keyword,
     Function,
     Type,
+    /// Built-in types (string, number, boolean, void, etc.)
+    TypeBuiltin,
     String,
     Number,
     Comment,
     Operator,
     Variable,
+    /// Built-in variables (this, self, super, process, console, etc.)
+    VariableBuiltin,
     Macro,
     Constant,
     Property,
     Parameter,
     Label,
     Punctuation,
+    /// Punctuation that acts as delimiters (JSX <, >, />, braces in expressions)
+    PunctuationDelimiter,
+    /// JSX/HTML tags
     Tag,
+    /// Constructor/class names when used (new Foo, <Component />)
+    Constructor,
     /// Markup italic/emphasis (*text* or _text_)
     MarkupItalic,
     /// Markup bold/strong (**text** or __text__)
@@ -116,18 +125,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, Color::Magenta);
         scheme.set_syntax(HighlightGroup::Function, Color::Blue);
         scheme.set_syntax(HighlightGroup::Type, Color::Yellow);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, Color::Cyan);
         scheme.set_syntax(HighlightGroup::String, Color::Green);
         scheme.set_syntax(HighlightGroup::Number, Color::Cyan);
         scheme.set_syntax(HighlightGroup::Comment, Color::DarkGray);
         scheme.set_syntax(HighlightGroup::Operator, Color::White);
         scheme.set_syntax(HighlightGroup::Variable, Color::White);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, Color::Red);
         scheme.set_syntax(HighlightGroup::Macro, Color::Magenta);
         scheme.set_syntax(HighlightGroup::Constant, Color::Cyan);
         scheme.set_syntax(HighlightGroup::Property, Color::Blue);
         scheme.set_syntax(HighlightGroup::Parameter, Color::White);
         scheme.set_syntax(HighlightGroup::Label, Color::Yellow);
         scheme.set_syntax(HighlightGroup::Punctuation, Color::White);
-        scheme.set_syntax(HighlightGroup::Tag, Color::Blue);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, Color::DarkGray);
+        scheme.set_syntax(HighlightGroup::Tag, Color::Red);
+        scheme.set_syntax(HighlightGroup::Constructor, Color::Yellow);
         scheme.set_syntax(HighlightGroup::MarkupItalic, Color::Cyan);
         scheme.set_syntax(HighlightGroup::MarkupBold, Color::Yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, Color::Magenta);
@@ -175,18 +188,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, red);
         scheme.set_syntax(HighlightGroup::Function, green);
         scheme.set_syntax(HighlightGroup::Type, yellow);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, blue);
         scheme.set_syntax(HighlightGroup::String, green);
         scheme.set_syntax(HighlightGroup::Number, purple);
         scheme.set_syntax(HighlightGroup::Comment, gray);
         scheme.set_syntax(HighlightGroup::Operator, fg);
-        scheme.set_syntax(HighlightGroup::Variable, blue);
+        scheme.set_syntax(HighlightGroup::Variable, fg);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, orange);
         scheme.set_syntax(HighlightGroup::Macro, aqua);
         scheme.set_syntax(HighlightGroup::Constant, purple);
         scheme.set_syntax(HighlightGroup::Property, aqua);
         scheme.set_syntax(HighlightGroup::Parameter, blue);
         scheme.set_syntax(HighlightGroup::Label, orange);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
-        scheme.set_syntax(HighlightGroup::Tag, aqua);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, gray);
+        scheme.set_syntax(HighlightGroup::Tag, red);
+        scheme.set_syntax(HighlightGroup::Constructor, yellow);
         scheme.set_syntax(HighlightGroup::MarkupItalic, aqua);
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, red);
@@ -234,18 +251,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, red);
         scheme.set_syntax(HighlightGroup::Function, green);
         scheme.set_syntax(HighlightGroup::Type, yellow);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, blue);
         scheme.set_syntax(HighlightGroup::String, green);
         scheme.set_syntax(HighlightGroup::Number, purple);
         scheme.set_syntax(HighlightGroup::Comment, gray);
         scheme.set_syntax(HighlightGroup::Operator, fg);
-        scheme.set_syntax(HighlightGroup::Variable, blue);
+        scheme.set_syntax(HighlightGroup::Variable, fg);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, orange);
         scheme.set_syntax(HighlightGroup::Macro, aqua);
         scheme.set_syntax(HighlightGroup::Constant, purple);
         scheme.set_syntax(HighlightGroup::Property, aqua);
         scheme.set_syntax(HighlightGroup::Parameter, blue);
         scheme.set_syntax(HighlightGroup::Label, orange);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
-        scheme.set_syntax(HighlightGroup::Tag, aqua);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, gray);
+        scheme.set_syntax(HighlightGroup::Tag, red);
+        scheme.set_syntax(HighlightGroup::Constructor, yellow);
         scheme.set_syntax(HighlightGroup::MarkupItalic, aqua);
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, red);
@@ -295,18 +316,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, green);
         scheme.set_syntax(HighlightGroup::Function, blue);
         scheme.set_syntax(HighlightGroup::Type, yellow);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, cyan);
         scheme.set_syntax(HighlightGroup::String, cyan);
         scheme.set_syntax(HighlightGroup::Number, magenta);
         scheme.set_syntax(HighlightGroup::Comment, base01);
         scheme.set_syntax(HighlightGroup::Operator, base0);
-        scheme.set_syntax(HighlightGroup::Variable, blue);
+        scheme.set_syntax(HighlightGroup::Variable, base0);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, orange);
         scheme.set_syntax(HighlightGroup::Macro, orange);
         scheme.set_syntax(HighlightGroup::Constant, cyan);
         scheme.set_syntax(HighlightGroup::Property, blue);
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, violet);
         scheme.set_syntax(HighlightGroup::Punctuation, base0);
-        scheme.set_syntax(HighlightGroup::Tag, cyan);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, base01);
+        scheme.set_syntax(HighlightGroup::Tag, red);
+        scheme.set_syntax(HighlightGroup::Constructor, yellow);
         scheme.set_syntax(HighlightGroup::MarkupItalic, cyan);
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, orange);
@@ -356,18 +381,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, green);
         scheme.set_syntax(HighlightGroup::Function, blue);
         scheme.set_syntax(HighlightGroup::Type, yellow);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, cyan);
         scheme.set_syntax(HighlightGroup::String, cyan);
         scheme.set_syntax(HighlightGroup::Number, magenta);
         scheme.set_syntax(HighlightGroup::Comment, base1);
         scheme.set_syntax(HighlightGroup::Operator, base00);
-        scheme.set_syntax(HighlightGroup::Variable, blue);
+        scheme.set_syntax(HighlightGroup::Variable, base00);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, orange);
         scheme.set_syntax(HighlightGroup::Macro, orange);
         scheme.set_syntax(HighlightGroup::Constant, cyan);
         scheme.set_syntax(HighlightGroup::Property, blue);
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, violet);
         scheme.set_syntax(HighlightGroup::Punctuation, base00);
-        scheme.set_syntax(HighlightGroup::Tag, cyan);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, base1);
+        scheme.set_syntax(HighlightGroup::Tag, red);
+        scheme.set_syntax(HighlightGroup::Constructor, yellow);
         scheme.set_syntax(HighlightGroup::MarkupItalic, cyan);
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, orange);
@@ -414,18 +443,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, pink);
         scheme.set_syntax(HighlightGroup::Function, green);
         scheme.set_syntax(HighlightGroup::Type, blue);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, blue);
         scheme.set_syntax(HighlightGroup::String, yellow);
         scheme.set_syntax(HighlightGroup::Number, purple);
         scheme.set_syntax(HighlightGroup::Comment, gray);
         scheme.set_syntax(HighlightGroup::Operator, pink);
         scheme.set_syntax(HighlightGroup::Variable, fg);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, orange);
         scheme.set_syntax(HighlightGroup::Macro, green);
         scheme.set_syntax(HighlightGroup::Constant, purple);
         scheme.set_syntax(HighlightGroup::Property, fg);
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, yellow);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
-        scheme.set_syntax(HighlightGroup::Tag, blue);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, gray);
+        scheme.set_syntax(HighlightGroup::Tag, pink);
+        scheme.set_syntax(HighlightGroup::Constructor, blue);
         scheme.set_syntax(HighlightGroup::MarkupItalic, blue);
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, pink);
@@ -474,18 +507,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, pink);
         scheme.set_syntax(HighlightGroup::Function, green);
         scheme.set_syntax(HighlightGroup::Type, cyan);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, cyan);
         scheme.set_syntax(HighlightGroup::String, yellow);
         scheme.set_syntax(HighlightGroup::Number, purple);
         scheme.set_syntax(HighlightGroup::Comment, comment);
         scheme.set_syntax(HighlightGroup::Operator, pink);
         scheme.set_syntax(HighlightGroup::Variable, fg);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, orange);
         scheme.set_syntax(HighlightGroup::Macro, cyan);
         scheme.set_syntax(HighlightGroup::Constant, purple);
         scheme.set_syntax(HighlightGroup::Property, fg);
         scheme.set_syntax(HighlightGroup::Parameter, orange);
         scheme.set_syntax(HighlightGroup::Label, cyan);
         scheme.set_syntax(HighlightGroup::Punctuation, fg);
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, comment);
         scheme.set_syntax(HighlightGroup::Tag, pink);
+        scheme.set_syntax(HighlightGroup::Constructor, cyan);
         scheme.set_syntax(HighlightGroup::MarkupItalic, cyan);
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, purple);
@@ -540,18 +577,22 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::Keyword, purple);
         scheme.set_syntax(HighlightGroup::Function, blue);
         scheme.set_syntax(HighlightGroup::Type, cyan);
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, blue); // Built-in types like string, number
         scheme.set_syntax(HighlightGroup::String, green);
         scheme.set_syntax(HighlightGroup::Number, orange);
         scheme.set_syntax(HighlightGroup::Comment, comment);
-        scheme.set_syntax(HighlightGroup::Operator, cyan);
+        scheme.set_syntax(HighlightGroup::Operator, fg); // Dim operators to reduce noise
         scheme.set_syntax(HighlightGroup::Variable, fg);
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, red); // this, console, process
         scheme.set_syntax(HighlightGroup::Macro, magenta);
         scheme.set_syntax(HighlightGroup::Constant, orange);
         scheme.set_syntax(HighlightGroup::Property, teal);
         scheme.set_syntax(HighlightGroup::Parameter, yellow);
         scheme.set_syntax(HighlightGroup::Label, blue);
-        scheme.set_syntax(HighlightGroup::Punctuation, cyan);
-        scheme.set_syntax(HighlightGroup::Tag, teal);
+        scheme.set_syntax(HighlightGroup::Punctuation, fg); // Dim punctuation
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, comment); // Subtle delimiters
+        scheme.set_syntax(HighlightGroup::Tag, red); // JSX component tags
+        scheme.set_syntax(HighlightGroup::Constructor, red); // new Foo(), <Component />
         scheme.set_syntax(HighlightGroup::MarkupItalic, cyan);
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, blue);
