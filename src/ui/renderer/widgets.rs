@@ -802,6 +802,10 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor, _full_area: Rect) {
     let picker_area = get_picker_area(frame.area());
     let show_preview = should_show_preview(picker_area);
 
+    // Clear entire picker area to prevent bleed-through from editor buffer underneath.
+    // This is essential - terminal UIs don't auto-clear, old content persists.
+    frame.render_widget(ratatui::widgets::Clear, picker_area);
+
     // Create block with rounded border and styled colors
     let mode_name = match picker.mode() {
         crate::editor::PickerMode::FindFiles => " 󰈞 Find Files ",
@@ -1096,7 +1100,8 @@ fn render_picker_preview(
     frame.render_widget(preview_block, area);
 
     // Clear the preview area to prevent text bleeding from previous frames.
-    // Use a single styled block instead of generating blank lines (avoids allocations).
+    // Clear resets cells, then block fills with background color.
+    frame.render_widget(ratatui::widgets::Clear, inner_area);
     frame.render_widget(
         Block::default().style(Style::default().bg(Color::Rgb(25, 29, 40))),
         inner_area,
@@ -1386,12 +1391,12 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
-    // Clear the entire inner area to prevent bleed-through from the editor buffer.
-    // Terminal UIs don't automatically clear - old content persists unless overwritten.
-    let blank_lines = vec![" ".repeat(inner_area.width as usize); inner_area.height as usize];
-    let clear_widget = Paragraph::new(blank_lines.join("\n"))
-        .style(Style::default().bg(Color::Rgb(25, 29, 40)));
-    frame.render_widget(clear_widget, inner_area);
+    // Clear the inner area to prevent bleed-through from the editor buffer.
+    frame.render_widget(ratatui::widgets::Clear, inner_area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(25, 29, 40))),
+        inner_area,
+    );
 
     // Show centered empty state message
     let empty_msg = " 󰈈  No file selected";
