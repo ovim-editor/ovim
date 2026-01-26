@@ -58,6 +58,16 @@ impl Editor {
         self.loading_preview = None;
     }
 
+    /// Returns true if user is scrolling rapidly through picker results.
+    /// Used to skip expensive preview rendering during rapid navigation.
+    /// Threshold: 50ms since last selection change
+    pub fn is_picker_scrolling_rapidly(&self) -> bool {
+        match self.last_picker_selection_change {
+            Some(last_change) => last_change.elapsed().as_millis() < 50,
+            None => false,
+        }
+    }
+
     /// Checks if enough time has elapsed since picker query changed (for debouncing)
     /// Returns true if we should load preview now
     pub fn should_load_picker_preview(&self, debounce_ms: u64) -> bool {

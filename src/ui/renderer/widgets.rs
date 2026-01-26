@@ -1095,16 +1095,12 @@ fn render_picker_preview(
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
-    // Clear the entire inner area first to prevent text bleeding from previous frames.
-    // Terminal UIs don't automatically clear - old content persists unless overwritten.
-    // Without this, when rendering "Loading preview..." (1 line), the other ~39 lines
-    // would show ghost text from the editor buffer underneath.
-    //
-    // We need to render actual blank content, not just set a background color.
-    let blank_lines = vec![" ".repeat(inner_area.width as usize); inner_area.height as usize];
-    let clear_widget = Paragraph::new(blank_lines.join("\n"))
-        .style(Style::default().bg(Color::Rgb(25, 29, 40)));
-    frame.render_widget(clear_widget, inner_area);
+    // Clear the preview area to prevent text bleeding from previous frames.
+    // Use a single styled block instead of generating blank lines (avoids allocations).
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(25, 29, 40))),
+        inner_area,
+    );
 
     // Try to get preview (only show exact match, no fallback to avoid scroll artifacts)
     let file_path = &result.location;
@@ -1152,9 +1148,13 @@ fn render_picker_preview(
         (0, max_lines.min(total_lines))
     };
 
-    if let Some(lang) = preview.language {
-        // Use syntax highlighting
-        match crate::syntax::SyntaxHighlighter::new(lang) {
+    // Skip expensive syntax highlighting during rapid scrolling for responsive feel.
+    // Plain text rendering is ~10x faster than syntax-highlighted rendering.
+    let use_syntax = preview.language.is_some() && !editor.is_picker_scrolling_rapidly();
+
+    if use_syntax {
+        // Use syntax highlighting (only when not scrolling rapidly)
+        match crate::syntax::SyntaxHighlighter::new(preview.language.unwrap()) {
             Ok(mut highlighter) => {
                 render_preview_with_syntax(
                     frame,
@@ -1175,7 +1175,7 @@ fn render_picker_preview(
             }
         }
     } else {
-        // No syntax highlighting available, show plain text
+        // Plain text preview (fast path for rapid scrolling or unsupported languages)
         render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
     }
 
