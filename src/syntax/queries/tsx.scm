@@ -1,4 +1,4 @@
-; TypeScript syntax highlighting
+; TSX (TypeScript + JSX) syntax highlighting
 
 ; ============================================================================
 ; Keywords
@@ -220,3 +220,21 @@
 ; ============================================================================
 ["(" ")" "[" "]" "{" "}"] @punctuation
 ["," "." ";" ":"] @punctuation
+
+; ============================================================================
+; JSX Elements
+; ============================================================================
+; JSX element names
+(jsx_opening_element
+  name: (identifier) @tag)
+(jsx_closing_element
+  name: (identifier) @tag)
+(jsx_self_closing_element
+  name: (identifier) @tag)
+
+; JSX attributes
+(jsx_attribute
+  (property_identifier) @property)
+
+; JSX text content
+(jsx_text) @string

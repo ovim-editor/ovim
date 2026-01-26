@@ -1,5 +1,10 @@
+; JavaScript syntax highlighting
+
+; ============================================================================
 ; Keywords
+; ============================================================================
 [
+  "as"
   "async"
   "await"
   "break"
@@ -19,6 +24,7 @@
   "for"
   "from"
   "function"
+  "get"
   "if"
   "import"
   "in"
@@ -27,6 +33,7 @@
   "new"
   "of"
   "return"
+  "set"
   "static"
   "switch"
   "throw"
@@ -39,37 +46,114 @@
   "yield"
 ] @keyword
 
+; ============================================================================
 ; Functions
-(function_declaration name: (identifier) @function)
-(method_definition name: (property_identifier) @function)
-(call_expression function: (identifier) @function)
+; ============================================================================
+(function_declaration
+  name: (identifier) @function)
+(method_definition
+  name: (property_identifier) @function)
+(call_expression
+  function: (identifier) @function)
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @function))
 
-; Arrow functions and function expressions don't have names to capture directly,
-; but we can highlight them through their parent structures
+; Arrow functions with explicit names
+(variable_declarator
+  name: (identifier) @function
+  value: (arrow_function))
 
+; ============================================================================
+; Variables and identifiers
+; ============================================================================
+(identifier) @variable
+
+; ============================================================================
+; Properties
+; ============================================================================
+(property_identifier) @property
+(shorthand_property_identifier) @property
+(shorthand_property_identifier_pattern) @property
+
+; Object keys
+(pair
+  key: (property_identifier) @property)
+(pair
+  key: (string) @property)
+
+; ============================================================================
+; Parameters
+; ============================================================================
+(formal_parameters
+  (identifier) @parameter)
+(rest_pattern
+  (identifier) @parameter)
+
+; Destructuring parameters
+(formal_parameters
+  (object_pattern
+    (shorthand_property_identifier_pattern) @parameter))
+(formal_parameters
+  (array_pattern
+    (identifier) @parameter))
+
+; ============================================================================
 ; Strings
+; ============================================================================
 (string) @string
 (template_string) @string
+(template_substitution
+  "${" @punctuation
+  "}" @punctuation)
 
+; Regex
+(regex) @string
+
+; ============================================================================
 ; Numbers
+; ============================================================================
 (number) @number
 
-; Booleans
+; ============================================================================
+; Constants and literals
+; ============================================================================
 [(true) (false)] @constant
 (null) @constant
 (undefined) @constant
+(this) @constant
 
+; ============================================================================
 ; Comments
+; ============================================================================
 (comment) @comment
 
+; ============================================================================
 ; Operators
+; ============================================================================
 [
   "="
+  "+="
+  "-="
+  "*="
+  "/="
+  "%="
+  "**="
+  "<<="
+  ">>="
+  ">>>="
+  "&="
+  "^="
+  "|="
+  "&&="
+  "||="
+  "??="
   "+"
   "-"
   "*"
   "/"
   "%"
+  "**"
   "=="
   "==="
   "!="
@@ -80,14 +164,43 @@
   ">="
   "&&"
   "||"
+  "??"
   "!"
+  "~"
+  "&"
+  "|"
+  "^"
+  "<<"
+  ">>"
+  ">>>"
+  "++"
+  "--"
   "?"
   ":"
   "=>"
+  "..."
 ] @operator
 
-; Properties
-(property_identifier) @property
+; ============================================================================
+; Punctuation
+; ============================================================================
+["(" ")" "[" "]" "{" "}"] @punctuation
+["," "." ";" ":"] @punctuation
 
-; Parameters
-(formal_parameters (identifier) @parameter)
+; ============================================================================
+; JSX Elements (for .jsx files)
+; ============================================================================
+; JSX element names
+(jsx_opening_element
+  name: (identifier) @tag)
+(jsx_closing_element
+  name: (identifier) @tag)
+(jsx_self_closing_element
+  name: (identifier) @tag)
+
+; JSX attributes
+(jsx_attribute
+  (property_identifier) @property)
+
+; JSX text content
+(jsx_text) @string

@@ -47,13 +47,27 @@ fn test_tsx_tree_sitter_grammar() {
 
 #[test]
 fn test_tsx_highlight_query() {
-    // Both should use the same highlight query
+    // TSX has its own highlight query with JSX support
     let tsx_query = LanguageRegistry::get_highlight_query(Language::Tsx);
     let ts_query = LanguageRegistry::get_highlight_query(Language::TypeScript);
 
-    // The queries should be the same (both use HIGHLIGHTS_QUERY from tree-sitter-typescript)
-    assert_eq!(
-        tsx_query, ts_query,
-        "TSX and TypeScript should share the same highlight query"
+    // TSX query should contain JSX-specific patterns
+    assert!(
+        tsx_query.contains("jsx_opening_element"),
+        "TSX query should contain JSX element patterns"
+    );
+    assert!(
+        tsx_query.contains("jsx_closing_element"),
+        "TSX query should contain JSX closing element patterns"
+    );
+    assert!(
+        tsx_query.contains("jsx_self_closing_element"),
+        "TSX query should contain JSX self-closing element patterns"
+    );
+
+    // TypeScript query should NOT contain JSX patterns
+    assert!(
+        !ts_query.contains("jsx_opening_element"),
+        "TypeScript query should NOT contain JSX patterns"
     );
 }
