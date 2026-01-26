@@ -216,13 +216,15 @@ fn normalize_path(path: &Path, editor: &mut Editor) -> PathBuf {
 fn determine_language_id(config_id: &str, abs_path: &Path) -> String {
     // Special case: TypeScript and JavaScript share typescript-language-server
     // but need different language IDs based on file extension
-    if config_id == "typescript" || config_id == "javascript" {
+    // LSP standard language IDs: typescript, typescriptreact, javascript, javascriptreact
+    if config_id == "typescript" || config_id == "javascript" || config_id == "tsx" {
         let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext == "ts" || ext == "tsx" {
-            return "typescript".to_string();
-        } else {
-            return "javascript".to_string();
-        }
+        return match ext {
+            "tsx" => "typescriptreact".to_string(),
+            "jsx" => "javascriptreact".to_string(),
+            "ts" | "mts" | "cts" => "typescript".to_string(),
+            _ => "javascript".to_string(),
+        };
     }
 
     // Default: use config ID as language ID
