@@ -1,4 +1,5 @@
 use crate::editor::Editor;
+use crate::syntax::HighlightGroup;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -6,10 +7,50 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+use std::ops::Range;
 use unicode_width::UnicodeWidthStr;
 
 use super::helpers::{expand_tabs, expand_tabs_with_mapping, truncate_to_width};
 use super::styles::remap_highlights;
+
+/// Binary search for the highlight group at a given byte index.
+/// Highlights must be sorted by range.start (ascending).
+/// Returns the highlight group if byte_idx falls within any range.
+/// O(log n) instead of O(n) linear search.
+#[inline]
+fn find_highlight_at_byte(
+    highlights: &[(Range<usize>, HighlightGroup)],
+    byte_idx: usize,
+) -> Option<HighlightGroup> {
+    if highlights.is_empty() {
+        return None;
+    }
+
+    // Binary search: find the first range where start > byte_idx
+    // All ranges that could contain byte_idx have start <= byte_idx
+    let partition = highlights.partition_point(|(range, _)| range.start <= byte_idx);
+
+    if partition == 0 {
+        // No range starts at or before byte_idx
+        return None;
+    }
+
+    // Check ranges from partition-1 backwards (most specific/last defined wins)
+    // In practice, we usually only need to check 1-2 ranges
+    for i in (0..partition).rev() {
+        let (range, group) = &highlights[i];
+        if range.end > byte_idx {
+            return Some(*group);
+        }
+        // Optimization: if this range ends before byte_idx and the previous
+        // range also starts before this one ends, we can stop
+        if i > 0 && highlights[i - 1].0.end <= range.start {
+            break;
+        }
+    }
+
+    None
+}
 
 /// Renders the LSP progress line (just above status line)
 pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
@@ -1238,20 +1279,15 @@ fn render_preview_with_syntax(
 
         while col_idx < chars.len() {
             // Find the syntax group for this character (convert to byte index)
+            // Uses O(log n) binary search instead of O(n) linear search
             let byte_idx = byte_indices[col_idx];
-            let syntax_group = highlights
-                .iter()
-                .find(|(range, _)| range.contains(&byte_idx))
-                .map(|(_, group)| *group);
+            let syntax_group = find_highlight_at_byte(&highlights, byte_idx);
 
             // Find the end of this styled region
             let mut end_col = col_idx + 1;
             while end_col < chars.len() {
                 let next_byte_idx = byte_indices[end_col];
-                let next_group = highlights
-                    .iter()
-                    .find(|(range, _)| range.contains(&next_byte_idx))
-                    .map(|(_, group)| *group);
+                let next_group = find_highlight_at_byte(&highlights, next_byte_idx);
 
                 if next_group != syntax_group {
                     break;
