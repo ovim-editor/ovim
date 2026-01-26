@@ -189,25 +189,31 @@ impl SyntaxHighlighter {
     }
 
     /// Converts a tree-sitter capture name to a highlight group
-    /// Supports hierarchical names with fallback (e.g., "comment.documentation" -> "comment" -> "Other")
+    /// Supports hierarchical names with specific handling (e.g., "type.builtin" -> TypeBuiltin)
     fn capture_to_highlight_group(name: &str) -> HighlightGroup {
-        // Try exact match first
+        // Try exact match first (most common cases)
         match name {
             "keyword" => return HighlightGroup::Keyword,
             "function" => return HighlightGroup::Function,
             "type" => return HighlightGroup::Type,
+            "type.builtin" => return HighlightGroup::TypeBuiltin,
             "string" => return HighlightGroup::String,
             "number" => return HighlightGroup::Number,
             "comment" => return HighlightGroup::Comment,
             "operator" => return HighlightGroup::Operator,
             "variable" => return HighlightGroup::Variable,
+            "variable.builtin" => return HighlightGroup::VariableBuiltin,
             "macro" => return HighlightGroup::Macro,
             "constant" => return HighlightGroup::Constant,
             "property" => return HighlightGroup::Property,
             "parameter" => return HighlightGroup::Parameter,
             "label" => return HighlightGroup::Label,
             "punctuation" => return HighlightGroup::Punctuation,
+            "punctuation.delimiter" => return HighlightGroup::PunctuationDelimiter,
+            "punctuation.bracket" => return HighlightGroup::Punctuation,
             "tag" => return HighlightGroup::Tag,
+            "tag.delimiter" => return HighlightGroup::PunctuationDelimiter,
+            "constructor" => return HighlightGroup::Constructor,
             // Markup-specific captures for markdown
             "markup.italic" => return HighlightGroup::MarkupItalic,
             "markup.bold" => return HighlightGroup::MarkupBold,
@@ -218,7 +224,6 @@ impl SyntaxHighlighter {
 
         // If no exact match, try hierarchical fallback
         // For "comment.documentation", try "comment"
-        // For "type.builtin", try "type"
         if let Some(base) = name.split('.').next() {
             match base {
                 "keyword" => return HighlightGroup::Keyword,
@@ -236,6 +241,7 @@ impl SyntaxHighlighter {
                 "label" => return HighlightGroup::Label,
                 "punctuation" => return HighlightGroup::Punctuation,
                 "tag" => return HighlightGroup::Tag,
+                "constructor" => return HighlightGroup::Constructor,
                 // Markup fallback - e.g., "markup.emphasis" -> markup
                 "markup" => return HighlightGroup::MarkupItalic,
                 _ => {}

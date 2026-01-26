@@ -61,8 +61,11 @@
 ; ============================================================================
 ; Types
 ; ============================================================================
+; Custom type identifiers
 (type_identifier) @type
-(predefined_type) @type
+
+; Built-in/predefined types (string, number, boolean, etc.)
+(predefined_type) @type.builtin
 
 ; Generic type parameters
 (type_parameter
@@ -97,8 +100,12 @@
   value: (arrow_function))
 
 ; ============================================================================
-; Variables and identifiers
+; Variables
 ; ============================================================================
+; Built-in variables/globals
+(this) @variable.builtin
+
+; Regular identifiers (lowest priority, will be overridden by more specific matches)
 (identifier) @variable
 
 ; ============================================================================
@@ -137,9 +144,11 @@
 ; ============================================================================
 (string) @string
 (template_string) @string
+
+; Template string interpolation delimiters
 (template_substitution
-  "${" @punctuation
-  "}" @punctuation)
+  "${" @punctuation.delimiter
+  "}" @punctuation.delimiter)
 
 ; Regex
 (regex) @string
@@ -155,7 +164,6 @@
 [(true) (false)] @constant
 (null) @constant
 (undefined) @constant
-(this) @constant
 
 ; ============================================================================
 ; Comments
@@ -219,12 +227,12 @@
 ; Punctuation
 ; ============================================================================
 ["(" ")" "[" "]" "{" "}"] @punctuation
-["," "." ";" ":"] @punctuation
+["," "." ";"] @punctuation
 
 ; ============================================================================
 ; JSX Elements
 ; ============================================================================
-; JSX element names
+; JSX tag names
 (jsx_opening_element
   name: (identifier) @tag)
 (jsx_closing_element
@@ -232,9 +240,28 @@
 (jsx_self_closing_element
   name: (identifier) @tag)
 
+; JSX tag delimiters - make them stand out
+(jsx_opening_element
+  "<" @tag.delimiter)
+(jsx_opening_element
+  ">" @tag.delimiter)
+(jsx_closing_element
+  "</" @tag.delimiter)
+(jsx_closing_element
+  ">" @tag.delimiter)
+(jsx_self_closing_element
+  "<" @tag.delimiter)
+(jsx_self_closing_element
+  "/>" @tag.delimiter)
+
 ; JSX attributes
 (jsx_attribute
   (property_identifier) @property)
+
+; JSX expression braces
+(jsx_expression
+  "{" @punctuation.delimiter
+  "}" @punctuation.delimiter)
 
 ; JSX text content
 (jsx_text) @string
