@@ -1,3 +1,5 @@
+use ignore::WalkBuilder;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -39,19 +41,31 @@ impl TreeNode {
         })
     }
 
-    /// Loads children for a directory node
+    /// Loads children for a directory node (respects .gitignore)
     pub fn load_children(&mut self) {
         if !self.is_dir {
             return;
         }
 
-        let Ok(entries) = fs::read_dir(&self.path) else {
-            return;
-        };
-
         let mut children = Vec::new();
-        for entry in entries.flatten() {
-            if let Some(node) = Self::from_path(&entry.path(), self.depth + 1) {
+
+        // Use ignore crate for gitignore support (depth 1 = immediate children only)
+        let walker = WalkBuilder::new(&self.path)
+            .max_depth(Some(1)) // Only immediate children
+            .hidden(false) // Show hidden files (user can toggle)
+            .git_ignore(true) // Respect .gitignore
+            .git_global(true) // Respect global gitignore
+            .git_exclude(true) // Respect .git/info/exclude
+            .filter_entry(|e| e.file_name() != OsStr::new(".git")) // Skip .git dir
+            .build();
+
+        for entry in walker.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            // Skip the root directory itself
+            if path == self.path {
+                continue;
+            }
+            if let Some(node) = Self::from_path(path, self.depth + 1) {
                 children.push(node);
             }
         }
