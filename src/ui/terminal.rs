@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crossterm::{
     cursor::SetCursorStyle,
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -17,7 +18,7 @@ impl Terminal {
     pub fn new(override_size: Option<(u16, u16)>) -> Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
         Ok(Self {
             _stdout: stdout,
             override_size,
@@ -42,6 +43,7 @@ impl Drop for Terminal {
         let _ = disable_raw_mode();
         let _ = execute!(
             io::stdout(),
+            DisableBracketedPaste,
             LeaveAlternateScreen,
             SetCursorStyle::DefaultUserShape
         );

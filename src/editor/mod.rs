@@ -967,6 +967,48 @@ impl Editor {
         (text, reg_type)
     }
 
+    /// Handles a bracketed paste event (cmd-v / ctrl-shift-v in terminal)
+    pub fn handle_paste_event(&mut self, text: &str) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+
+        match self.mode() {
+            Mode::Insert => {
+                // Insert pasted text at cursor position as a single change
+                let cursor = self.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let position = (cursor.line(), cursor.col());
+                let change = Change::insert(position, text.to_string(), cursor_before);
+                change.apply(self.buffer_mut());
+                self.add_change(change);
+            }
+            Mode::Normal => {
+                // Set unnamed register and paste after cursor
+                self.registers.set(None, text.to_string());
+                let cursor = self.buffer().cursor();
+                let cursor_before = (cursor.line(), cursor.col());
+                let position = (cursor.line(), cursor.col() + 1);
+                let change = Change::insert(position, text.to_string(), cursor_before);
+                change.apply(self.buffer_mut());
+                self.add_change(change);
+            }
+            Mode::Command => {
+                // Insert text into command buffer
+                self.command.command_line.push_str(text);
+            }
+            Mode::Search => {
+                // Insert text into search buffer
+                self.search.search_buffer.push_str(text);
+            }
+            _ => {
+                // Visual modes: treat like normal mode paste
+                self.registers.set(None, text.to_string());
+            }
+        }
+        Ok(())
+    }
+
     /// Starts building a composite change (e.g., when entering insert mode)
     pub fn start_change_building(&mut self, cursor_before: Position) {
         self.buffer_mut()
