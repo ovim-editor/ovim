@@ -103,6 +103,9 @@ pub struct EditorOptions {
     pub sidescroll: usize,
     /// Minimum columns to keep left and right of cursor (default: 5)
     pub sidescrolloff: usize,
+    /// Clipboard mode: "unnamedplus" (default), "unnamed", or "" (vim-compatible)
+    /// When set, yank/delete/paste use the system clipboard by default
+    pub clipboard: String,
 }
 
 impl Default for EditorOptions {
@@ -125,6 +128,7 @@ impl Default for EditorOptions {
             wrap: true,
             sidescroll: 0,
             sidescrolloff: 5,
+            clipboard: "unnamedplus".to_string(),
         }
     }
 }
@@ -892,11 +896,16 @@ impl Editor {
 
     /// Yanks text to the appropriate register with explicit type
     pub fn yank_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
+        let had_explicit_register = self.input.pending_register.is_some();
         if let Some(reg) = self.input.pending_register {
-            self.registers.set_with_type(Some(reg), text, reg_type);
+            self.registers.set_with_type(Some(reg), text.clone(), reg_type);
             self.input.pending_register = None;
         } else {
-            self.registers.yank_with_type(text, reg_type);
+            self.registers.yank_with_type(text.clone(), reg_type);
+        }
+        // Sync to system clipboard when clipboard option is set and no explicit register was used
+        if !had_explicit_register && !self.options.clipboard.is_empty() {
+            self.registers.set_clipboard(text);
         }
     }
 
@@ -907,11 +916,16 @@ impl Editor {
 
     /// Deletes text and stores in the appropriate register with explicit type
     pub fn delete_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
+        let had_explicit_register = self.input.pending_register.is_some();
         if let Some(reg) = self.input.pending_register {
-            self.registers.set_with_type(Some(reg), text, reg_type);
+            self.registers.set_with_type(Some(reg), text.clone(), reg_type);
             self.input.pending_register = None;
         } else {
-            self.registers.delete_with_type(text, reg_type);
+            self.registers.delete_with_type(text.clone(), reg_type);
+        }
+        // Sync to system clipboard when clipboard option is set and no explicit register was used
+        if !had_explicit_register && !self.options.clipboard.is_empty() {
+            self.registers.set_clipboard(text);
         }
     }
 
@@ -919,6 +933,9 @@ impl Editor {
     pub fn get_from_register(&mut self) -> String {
         let text = if let Some(reg) = self.input.pending_register {
             self.registers.get(Some(reg))
+        } else if !self.options.clipboard.is_empty() {
+            // When clipboard option is set, read from system clipboard
+            self.registers.get_clipboard()
         } else {
             self.registers.get_default().to_string()
         };
@@ -930,6 +947,18 @@ impl Editor {
     pub fn get_from_register_with_type(&mut self) -> (String, RegisterType) {
         let (text, reg_type) = if let Some(reg) = self.input.pending_register {
             self.registers.get_with_type(Some(reg))
+        } else if !self.options.clipboard.is_empty() {
+            // When clipboard option is set, read from system clipboard
+            // Use Character type since system clipboard doesn't carry type info
+            let clipboard_text = self.registers.get_clipboard();
+            // Check if the unnamed register has the same text - if so, use its type
+            let (default_text, default_type) = self.registers.get_default_with_type();
+            if default_text == clipboard_text {
+                (clipboard_text, default_type)
+            } else {
+                // Clipboard has different content (from external paste), treat as character
+                (clipboard_text, RegisterType::Character)
+            }
         } else {
             let (t, rt) = self.registers.get_default_with_type();
             (t.to_string(), rt)
