@@ -12,6 +12,7 @@ use std::ops::Range;
 use unicode_width::UnicodeWidthStr;
 
 use super::helpers::{expand_tabs, expand_tabs_with_mapping, truncate_to_width};
+use super::layout::OverlayContext;
 use super::styles::remap_highlights;
 
 /// A widget that fills every cell in an area with a styled space.
@@ -405,13 +406,15 @@ pub fn render_hover_window(
     editor: &Editor,
     hover_text: &str,
     scroll_offset: usize,
-    buffer_area: Rect,
-    viewport_start: usize,
+    ctx: &OverlayContext,
     hover_position: Option<(usize, usize)>,
     is_preview: bool,
     theme: &crate::syntax::Theme,
     content_type: crate::editor::HoverContentType,
 ) {
+    let layout = ctx.layout;
+    let viewport_start = ctx.viewport_start;
+    let buffer_area = layout.buffer_area;
     use super::markdown::{colors, parse_markdown, render_markdown};
 
     const MIN_WIDTH: u16 = 30;
@@ -458,20 +461,7 @@ pub fn render_hover_window(
         (cursor.line(), cursor.col())
     });
 
-    // Calculate gutter width
-    let show_numbers = editor.options.number || editor.options.relative_number;
-    let max_line_num = editor.buffer().line_count();
-    let line_num_width = if show_numbers {
-        max_line_num.to_string().len().max(3)
-    } else {
-        0
-    };
-    let sign_width = 2;
-    let gutter_width = if show_numbers || sign_width > 0 {
-        sign_width + line_num_width + 1
-    } else {
-        0
-    };
+    let gutter_width = layout.gutter_width;
 
     // Convert cursor to screen coordinates
     let screen_line = cursor_line.saturating_sub(viewport_start);
@@ -596,9 +586,11 @@ pub fn render_hover_window(
 pub fn render_completion_menu(
     frame: &mut Frame,
     editor: &Editor,
-    buffer_area: Rect,
-    viewport_start: usize,
+    ctx: &OverlayContext,
 ) {
+    let layout = ctx.layout;
+    let viewport_start = ctx.viewport_start;
+    let buffer_area = layout.buffer_area;
     let completion_menu = editor.completion_menu();
     if !completion_menu.is_visible() {
         return;
@@ -629,20 +621,7 @@ pub fn render_completion_menu(
     let tab_width = editor.options.tab_width;
     let display_col = super::helpers::char_col_to_display_col(line_text, cursor_col, tab_width);
 
-    // Calculate gutter width
-    let show_numbers = editor.options.number || editor.options.relative_number;
-    let max_line_num = line_count;
-    let line_num_width = if show_numbers {
-        max_line_num.to_string().len().max(3)
-    } else {
-        0
-    };
-    let sign_width = 2;
-    let gutter_width = if show_numbers || sign_width > 0 {
-        sign_width + line_num_width + 1
-    } else {
-        0
-    };
+    let gutter_width = layout.gutter_width;
 
     // Position menu below cursor
     let menu_x = buffer_area.x + gutter_width as u16 + display_col as u16;

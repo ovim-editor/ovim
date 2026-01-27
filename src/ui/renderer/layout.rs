@@ -46,6 +46,14 @@ impl BufferLayout {
     }
 }
 
+/// Context passed to overlay widgets (hover, completion) and cursor
+/// positioning that need to locate themselves relative to the buffer viewport.
+#[derive(Debug, Clone, Copy)]
+pub struct OverlayContext<'a> {
+    pub layout: &'a BufferLayout,
+    pub viewport_start: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

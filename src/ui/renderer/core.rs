@@ -15,13 +15,14 @@ use std::io;
 use super::buffer::render_buffer;
 use super::dashboard::render_dashboard;
 use super::helpers::char_col_to_display_col;
+use super::layout::{BufferLayout, OverlayContext};
 use super::widgets::{
     render_command_line, render_completion_menu, render_file_tree, render_hover_window,
     render_picker, render_progress_line, render_search_line, render_status_line, render_tab_bar,
 };
 
 /// Recursively renders windows in a split layout
-/// Returns (viewport_start, buffer_area) for the focused window (for cursor positioning)
+/// Returns (viewport_start, layout) for the focused window (for cursor positioning)
 fn render_window_tree(
     frame: &mut Frame,
     editor: &Editor,
@@ -30,17 +31,18 @@ fn render_window_tree(
     area: Rect,
     focused_index: usize,
     current_index: &mut usize,
-) -> Option<(usize, Rect)> {
+) -> Option<(usize, BufferLayout)> {
     match node {
         WindowNode::Leaf(_window) => {
             let is_focused = *current_index == focused_index;
             *current_index += 1;
 
-            // Render this window's buffer
-            let viewport_start = render_buffer(frame, editor, theme, area);
+            // Compute layout for this window and render
+            let layout = BufferLayout::compute(editor, area);
+            let viewport_start = render_buffer(frame, editor, theme, &layout);
 
             if is_focused {
-                Some((viewport_start, area))
+                Some((viewport_start, layout))
             } else {
                 None
             }
@@ -267,33 +269,23 @@ impl Renderer {
             .map(|wm| wm.root().count_windows() > 1)
             .unwrap_or(false);
 
-        // Ensure wrap map is up to date before rendering
-        if editor.options.wrap {
-            // Estimate text width: frame width minus gutter
-            let show_numbers = editor.options.number || editor.options.relative_number;
-            let line_count = editor.buffer().line_count();
-            let line_num_width = if show_numbers {
-                line_count.to_string().len().max(3)
-            } else {
-                0
-            };
-            let gutter_width = if show_numbers || true {
-                // sign_width(2) + line_num_width + spacing(1)
-                2 + line_num_width + 1
-            } else {
-                0
-            };
-            let text_width = (chunks[0].width as usize).saturating_sub(gutter_width);
-            editor.ensure_wrap_map(text_width);
-        }
+        // Determine the buffer area first (accounts for textwidth narrowing),
+        // then ensure the wrap map uses the same width the renderer will use.
+        // The wrap map must be initialized before render_buffer since the
+        // renderer reads it for viewport calculations.
+        let (viewport_start, layout) = if has_splits {
+            // For splits, use chunks[0] width for wrap map (focused window area
+            // isn't known until render_window_tree runs)
+            if editor.options.wrap {
+                let est_layout = BufferLayout::compute(editor, chunks[0]);
+                editor.ensure_wrap_map(est_layout.text_width);
+            }
 
-        // Render buffer area(s) - either single buffer or split windows
-        let (viewport_start, buffer_area) = if has_splits {
             // Render split windows recursively
             if let Some(wm) = editor.window_manager() {
                 let focused_index = wm.focused_window_index();
                 let mut current_index = 0;
-                if let Some((vs, ba)) = render_window_tree(
+                if let Some((vs, ly)) = render_window_tree(
                     frame,
                     editor,
                     &theme,
@@ -302,16 +294,18 @@ impl Renderer {
                     focused_index,
                     &mut current_index,
                 ) {
-                    (vs, ba)
+                    (vs, ly)
                 } else {
                     // Fallback: render single buffer
-                    let viewport_start = render_buffer(frame, editor, &theme, chunks[0]);
-                    (viewport_start, chunks[0])
+                    let fallback_layout = BufferLayout::compute(editor, chunks[0]);
+                    let viewport_start = render_buffer(frame, editor, &theme, &fallback_layout);
+                    (viewport_start, fallback_layout)
                 }
             } else {
                 // No window manager - render single buffer
-                let viewport_start = render_buffer(frame, editor, &theme, chunks[0]);
-                (viewport_start, chunks[0])
+                let fallback_layout = BufferLayout::compute(editor, chunks[0]);
+                let viewport_start = render_buffer(frame, editor, &theme, &fallback_layout);
+                (viewport_start, fallback_layout)
             }
         } else {
             // Single window - apply textwidth centering if set
@@ -332,18 +326,25 @@ impl Renderer {
                 chunks[0]
             };
 
+            let single_layout = BufferLayout::compute(editor, buffer_area);
+
+            // Ensure wrap map uses the actual buffer area width (after textwidth narrowing)
+            if editor.options.wrap {
+                editor.ensure_wrap_map(single_layout.text_width);
+            }
+
             // Render the main text area
-            let viewport_start = render_buffer(frame, editor, &theme, buffer_area);
-            (viewport_start, buffer_area)
+            let viewport_start = render_buffer(frame, editor, &theme, &single_layout);
+            (viewport_start, single_layout)
         };
 
         // Update editor's viewport height for accurate scroll calculations
-        editor.set_viewport_height(buffer_area.height as usize);
+        editor.set_viewport_height(layout.buffer_area.height as usize);
 
         // Update window manager dimensions to match actual buffer area
         // This ensures viewport commands (zt, zb, zz) use the correct height
         if let Some(wm) = editor.window_manager_mut() {
-            wm.update_dimensions(buffer_area.width, buffer_area.height);
+            wm.update_dimensions(layout.buffer_area.width, layout.buffer_area.height);
         }
 
         // Render progress line if present
@@ -368,6 +369,12 @@ impl Renderer {
             render_picker(frame, editor, frame.area());
         }
 
+        // Build overlay context once for all overlay + cursor consumers
+        let ctx = OverlayContext {
+            layout: &layout,
+            viewport_start,
+        };
+
         // Render hover window if in a hover mode
         if editor.mode().is_hover() {
             if let Some(hover_text) = editor.hover_info() {
@@ -379,8 +386,7 @@ impl Renderer {
                     editor,
                     hover_text,
                     editor.hover_scroll(),
-                    buffer_area,
-                    viewport_start,
+                    &ctx,
                     hover_pos,
                     is_preview,
                     &theme,
@@ -391,21 +397,22 @@ impl Renderer {
 
         // Render completion menu if visible (in Insert mode)
         if editor.completion_menu().is_visible() {
-            render_completion_menu(frame, editor, buffer_area, viewport_start);
+            render_completion_menu(frame, editor, &ctx);
         }
 
         // Set hardware cursor position
-        Self::set_cursor_position(frame, editor, buffer_area, viewport_start, status_chunk);
+        Self::set_cursor_position(frame, editor, &ctx, status_chunk);
     }
 
     /// Sets the hardware cursor position based on the current mode
     fn set_cursor_position(
         frame: &mut Frame,
         editor: &mut Editor,
-        buffer_area: Rect,
-        viewport_start: usize,
+        ctx: &OverlayContext,
         status_chunk: Rect,
     ) {
+        let layout = ctx.layout;
+        let viewport_start = ctx.viewport_start;
         let cursor_pos = editor.buffer().cursor();
         let cursor_line = cursor_pos.line();
         let cursor_col = cursor_pos.col();
@@ -446,22 +453,9 @@ impl Renderer {
             let tab_width = editor.options.tab_width;
             let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
 
-            // Calculate gutter width for cursor offset
-            let show_numbers = editor.options.number || editor.options.relative_number;
-            let max_line_num = line_count;
-            let line_num_width = if show_numbers {
-                max_line_num.to_string().len().max(3)
-            } else {
-                0
-            };
-            let sign_width = 2;
-            let gutter_width = if show_numbers || sign_width > 0 {
-                sign_width + line_num_width + 1
-            } else {
-                0
-            };
-
-            let text_width = buffer_area.width.saturating_sub(gutter_width as u16) as usize;
+            let buffer_area = layout.buffer_area;
+            let gutter_width = layout.gutter_width;
+            let text_width = layout.text_width;
 
             // Calculate cursor screen position, accounting for soft wrap
             let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
