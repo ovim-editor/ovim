@@ -143,17 +143,9 @@ use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-/// Calculates the display width of a string, accounting for tab expansion.
+/// Calculates the display width of a string, accounting for tabs and wide characters.
 fn display_width(text: &str, tab_width: usize) -> usize {
-    let mut width = 0;
-    for ch in text.chars() {
-        if ch == '\t' {
-            width += tab_width - (width % tab_width);
-        } else {
-            width += 1;
-        }
-    }
-    width
+    crate::display::display_width(text, tab_width)
 }
 
 /// Commands sent from background tasks to the LSP manager via channel
