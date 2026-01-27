@@ -16,11 +16,13 @@ pub struct WrapMap {
     wrap_width: usize,
     /// Tab width for column calculations
     tab_width: usize,
+    /// Buffer version when this map was built (for invalidation)
+    buffer_version: usize,
 }
 
 impl WrapMap {
     /// Creates a new WrapMap by computing visual line counts for all lines.
-    pub fn new<F>(line_count: usize, wrap_width: usize, tab_width: usize, line_len: F) -> Self
+    pub fn new<F>(line_count: usize, wrap_width: usize, tab_width: usize, buffer_version: usize, line_len: F) -> Self
     where
         F: Fn(usize) -> usize,
     {
@@ -43,7 +45,13 @@ impl WrapMap {
             total_visual_lines: total,
             wrap_width: width,
             tab_width,
+            buffer_version,
         }
+    }
+
+    /// Returns the buffer version this map was built for
+    pub fn buffer_version(&self) -> usize {
+        self.buffer_version
     }
 
     /// Computes how many visual lines a line of the given display width needs.
@@ -114,13 +122,14 @@ impl WrapMap {
     }
 
     /// Rebuild the entire map (e.g., after resize or wrap toggle).
-    pub fn rebuild<F>(&mut self, line_count: usize, wrap_width: usize, tab_width: usize, line_len: F)
+    pub fn rebuild<F>(&mut self, line_count: usize, wrap_width: usize, tab_width: usize, buffer_version: usize, line_len: F)
     where
         F: Fn(usize) -> usize,
     {
         let width = wrap_width.max(1);
         self.wrap_width = width;
         self.tab_width = tab_width;
+        self.buffer_version = buffer_version;
         self.visual_counts.clear();
         self.visual_counts.reserve(line_count);
         self.visual_offsets.clear();
@@ -163,27 +172,27 @@ mod tests {
 
     #[test]
     fn test_single_line_fits() {
-        let map = WrapMap::new(1, 80, 4, |_| 40);
+        let map = WrapMap::new(1, 80, 4, 0, |_| 40);
         assert_eq!(map.visual_lines_for(0), 1);
         assert_eq!(map.total_visual_lines(), 1);
     }
 
     #[test]
     fn test_line_exactly_fits() {
-        let map = WrapMap::new(1, 80, 4, |_| 80);
+        let map = WrapMap::new(1, 80, 4, 0, |_| 80);
         assert_eq!(map.visual_lines_for(0), 1);
     }
 
     #[test]
     fn test_line_wraps_once() {
-        let map = WrapMap::new(1, 80, 4, |_| 81);
+        let map = WrapMap::new(1, 80, 4, 0, |_| 81);
         assert_eq!(map.visual_lines_for(0), 2);
         assert_eq!(map.total_visual_lines(), 2);
     }
 
     #[test]
     fn test_empty_line() {
-        let map = WrapMap::new(1, 80, 4, |_| 0);
+        let map = WrapMap::new(1, 80, 4, 0, |_| 0);
         assert_eq!(map.visual_lines_for(0), 1);
     }
 
@@ -191,7 +200,7 @@ mod tests {
     fn test_multiple_lines() {
         // Line 0: 40 chars (1 visual), Line 1: 160 chars (2 visual), Line 2: 0 (1 visual)
         let widths = [40, 160, 0];
-        let map = WrapMap::new(3, 80, 4, |i| widths[i]);
+        let map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
         assert_eq!(map.visual_lines_for(0), 1);
         assert_eq!(map.visual_lines_for(1), 2);
         assert_eq!(map.visual_lines_for(2), 1);
@@ -201,7 +210,7 @@ mod tests {
     #[test]
     fn test_logical_to_visual() {
         let widths = [40, 160, 0];
-        let map = WrapMap::new(3, 80, 4, |i| widths[i]);
+        let map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
         assert_eq!(map.logical_to_visual(0), 0);
         assert_eq!(map.logical_to_visual(1), 1);
         assert_eq!(map.logical_to_visual(2), 3);
@@ -210,7 +219,7 @@ mod tests {
     #[test]
     fn test_visual_to_logical() {
         let widths = [40, 160, 0];
-        let map = WrapMap::new(3, 80, 4, |i| widths[i]);
+        let map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
         assert_eq!(map.visual_to_logical(0), (0, 0));
         assert_eq!(map.visual_to_logical(1), (1, 0));
         assert_eq!(map.visual_to_logical(2), (1, 1));
@@ -219,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_cursor_to_visual() {
-        let map = WrapMap::new(2, 80, 4, |i| if i == 0 { 200 } else { 40 });
+        let map = WrapMap::new(2, 80, 4, 0, |i| if i == 0 { 200 } else { 40 });
         // Line 0: 200 chars -> 3 visual lines
         // Cursor at col 85 -> sub_line 1, visual_col 5
         let (row, col) = map.cursor_to_visual(0, 85);
@@ -230,7 +239,7 @@ mod tests {
     #[test]
     fn test_roundtrip() {
         let widths = [80, 161, 50, 240, 0];
-        let map = WrapMap::new(5, 80, 4, |i| widths[i]);
+        let map = WrapMap::new(5, 80, 4, 0, |i| widths[i]);
         for line in 0..5 {
             let visual = map.logical_to_visual(line);
             let (got_line, got_sub) = map.visual_to_logical(visual);
@@ -242,7 +251,7 @@ mod tests {
     #[test]
     fn test_invalidate_line() {
         let widths = [40usize, 160, 0];
-        let mut map = WrapMap::new(3, 80, 4, |i| widths[i]);
+        let mut map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
         assert_eq!(map.total_visual_lines(), 4);
 
         // Line 1 changed from 160 to 40 chars (2 -> 1 visual)
@@ -255,7 +264,7 @@ mod tests {
     #[test]
     fn test_visual_lines_in_range() {
         let widths = [40, 160, 0, 80];
-        let map = WrapMap::new(4, 80, 4, |i| widths[i]);
+        let map = WrapMap::new(4, 80, 4, 0, |i| widths[i]);
         // Lines: 1 + 2 + 1 + 1 = 5 total
         assert_eq!(map.visual_lines_in_range(0, 4), 5);
         assert_eq!(map.visual_lines_in_range(1, 3), 3); // 2 + 1
