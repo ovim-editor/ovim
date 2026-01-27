@@ -1,7 +1,7 @@
 use crate::editor::Editor;
 use crate::syntax::Theme;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -11,6 +11,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthChar;
 
 use super::helpers::expand_tabs_with_mapping;
+use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{get_git_sign_style, get_line_number_style, remap_highlights};
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
@@ -218,7 +219,7 @@ fn build_gutter_line(
 ) -> Line<'static> {
     if is_continuation {
         // Blank gutter for wrap continuation rows
-        let width = 2 + line_num_width + 1; // sign_width + line_num_width + spacing
+        let width = SIGN_WIDTH + line_num_width + GUTTER_SPACING;
         return Line::from(" ".repeat(width));
     }
 
@@ -329,7 +330,8 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
 }
 
 /// Renders the buffer content and returns the viewport start line
-pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) -> usize {
+pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: &BufferLayout) -> usize {
+    let area = layout.buffer_area;
     let buffer = editor.buffer();
     let rope = buffer.rope();
     let cursor = buffer.cursor();
@@ -343,26 +345,15 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     let h_offset = editor.horizontal_offset();
     let wrap = editor.options.wrap;
 
-    // Calculate gutter width
-    let show_numbers = editor.options.number || editor.options.relative_number;
-    let max_line_num = line_count;
-    let line_num_width = if show_numbers {
-        max_line_num.to_string().len().max(3) // At least 3 chars for line numbers
-    } else {
-        0
-    };
-    let sign_width = 2; // Space for signs (git, diagnostics, etc.)
-    let gutter_width = if show_numbers || sign_width > 0 {
-        (sign_width + line_num_width + 1) as u16 // +1 for spacing
-    } else {
-        0
-    };
+    // Use layout-provided dimensions
+    let line_num_width = layout.line_num_width;
+    let gutter_width_u16 = layout.gutter_width as u16;
 
     // Split area into gutter and text
-    let (gutter_area, text_area) = if gutter_width > 0 {
+    let (gutter_area, text_area) = if layout.gutter_width > 0 {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(gutter_width), Constraint::Min(1)])
+            .constraints([Constraint::Length(gutter_width_u16), Constraint::Min(1)])
             .split(area);
         (Some(chunks[0]), chunks[1])
     } else {
