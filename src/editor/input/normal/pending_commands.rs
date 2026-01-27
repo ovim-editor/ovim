@@ -176,6 +176,66 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             }
             editor.clear_count();
         }
+        ('g', KeyCode::Char('j')) => {
+            // gj - move down one visual (display) line
+            // With soft wrap, moves within a wrapped line's visual rows
+            let count = editor.count().unwrap_or(1);
+            if let Some(wrap_map) = editor.wrap_map() {
+                let cursor = editor.buffer().cursor();
+                let line = cursor.line();
+                let col = cursor.col();
+                let (visual_row, _) = wrap_map.cursor_to_visual(line, col);
+                let target_row = visual_row + count;
+                let (new_line, sub_line) = wrap_map.visual_to_logical(
+                    target_row.min(wrap_map.total_visual_lines().saturating_sub(1)),
+                );
+                let new_col = sub_line * wrap_map.wrap_width() + (col % wrap_map.wrap_width());
+                // Clamp col to line length
+                let max_col = editor
+                    .buffer()
+                    .line(new_line)
+                    .map(|l| l.trim_end_matches('\n').chars().count().saturating_sub(1))
+                    .unwrap_or(0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(new_line, new_col.min(max_col));
+            } else {
+                // No wrap map - fall back to regular j motion
+                for _ in 0..count {
+                    helpers::move_down(editor);
+                }
+            }
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('k')) => {
+            // gk - move up one visual (display) line
+            let count = editor.count().unwrap_or(1);
+            if let Some(wrap_map) = editor.wrap_map() {
+                let cursor = editor.buffer().cursor();
+                let line = cursor.line();
+                let col = cursor.col();
+                let (visual_row, _) = wrap_map.cursor_to_visual(line, col);
+                let target_row = visual_row.saturating_sub(count);
+                let (new_line, sub_line) = wrap_map.visual_to_logical(target_row);
+                let new_col = sub_line * wrap_map.wrap_width() + (col % wrap_map.wrap_width());
+                let max_col = editor
+                    .buffer()
+                    .line(new_line)
+                    .map(|l| l.trim_end_matches('\n').chars().count().saturating_sub(1))
+                    .unwrap_or(0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(new_line, new_col.min(max_col));
+            } else {
+                // No wrap map - fall back to regular k motion
+                for _ in 0..count {
+                    helpers::move_up(editor);
+                }
+            }
+            editor.clear_count();
+        }
 
         // =====================================================================
         // 'R' - LSP gr commands (pending after 'gr')
