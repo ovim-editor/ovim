@@ -21,6 +21,317 @@ use super::widgets::{
     render_picker, render_progress_line, render_search_line, render_status_line, render_tab_bar,
 };
 
+// ---------------------------------------------------------------------------
+// Frame layout types
+// ---------------------------------------------------------------------------
+
+/// Areas computed from the frame layout (tab bar, file tree, buffer, status, progress).
+struct FrameAreas {
+    tab_area: Option<Rect>,
+    file_tree_area: Option<Rect>,
+    buffer_chunk: Rect,
+    status_chunk: Rect,
+    progress_chunk: Option<Rect>,
+}
+
+// ---------------------------------------------------------------------------
+// Extracted render phases (free functions)
+// ---------------------------------------------------------------------------
+
+/// Phase 1: Fill the frame with blanks and initialize the window manager.
+fn clear_frame(frame: &mut Frame, editor: &mut Editor) {
+    let area = frame.area();
+    editor.init_window_manager(area.width, area.height);
+
+    let blank_line = " ".repeat(area.width as usize);
+    let blank_lines: Vec<Line> = (0..area.height)
+        .map(|_| Line::from(blank_line.clone()))
+        .collect();
+    let bg_paragraph = Paragraph::new(blank_lines).style(Style::default().bg(Color::Reset));
+    frame.render_widget(bg_paragraph, area);
+}
+
+/// Phase 2: Compute the frame layout (tab bar, file tree, buffer, status splits).
+///
+/// Returns `None` if the editor is in dashboard mode (caller should render
+/// the dashboard and return early).
+fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
+    if editor.should_show_dashboard() {
+        return None;
+    }
+
+    let main_area = frame.area();
+
+    // Tab bar (if multiple tabs) + rest
+    let (tab_area, remaining_area) = if editor.tab_count() > 1 {
+        let vertical_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
+            .split(main_area);
+        (Some(vertical_chunks[0]), vertical_chunks[1])
+    } else {
+        (None, main_area)
+    };
+
+    // File tree (if visible) + rest
+    let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
+        let horizontal_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(30), Constraint::Min(1)].as_ref())
+            .split(remaining_area);
+        (Some(horizontal_chunks[0]), horizontal_chunks[1])
+    } else {
+        (None, remaining_area)
+    };
+
+    // Buffer + optional progress line + status line
+    let has_progress = editor.lsp_progress_message().is_some();
+    let chunks = if has_progress {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(
+                [
+                    Constraint::Min(1),
+                    Constraint::Length(1), // progress line
+                    Constraint::Length(1), // status line
+                ]
+                .as_ref(),
+            )
+            .split(content_area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+            .split(content_area)
+    };
+
+    let (status_chunk, progress_chunk) = if has_progress {
+        (chunks[2], Some(chunks[1]))
+    } else {
+        (chunks[1], None)
+    };
+
+    Some(FrameAreas {
+        tab_area,
+        file_tree_area,
+        buffer_chunk: chunks[0],
+        status_chunk,
+        progress_chunk,
+    })
+}
+
+/// Phase 3: Render the buffer area (split or single window), returning
+/// the viewport start line and the focused window's layout.
+fn render_buffer_area(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    theme: &Theme,
+    areas: &FrameAreas,
+) -> (usize, BufferLayout) {
+    let has_splits = editor
+        .window_manager()
+        .map(|wm| wm.root().count_windows() > 1)
+        .unwrap_or(false);
+
+    if has_splits {
+        // For splits, use buffer_chunk width for wrap map (focused window area
+        // isn't known until render_window_tree runs)
+        if editor.options.wrap {
+            let est_layout = BufferLayout::compute(editor, areas.buffer_chunk);
+            editor.ensure_wrap_map(est_layout.text_width);
+        }
+
+        // Render split windows recursively
+        if let Some(wm) = editor.window_manager() {
+            let focused_index = wm.focused_window_index();
+            let mut current_index = 0;
+            if let Some((vs, ly)) = render_window_tree(
+                frame,
+                editor,
+                theme,
+                wm.root(),
+                areas.buffer_chunk,
+                focused_index,
+                &mut current_index,
+            ) {
+                (vs, ly)
+            } else {
+                let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
+                let viewport_start = render_buffer(frame, editor, theme, &fallback_layout);
+                (viewport_start, fallback_layout)
+            }
+        } else {
+            let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
+            let viewport_start = render_buffer(frame, editor, theme, &fallback_layout);
+            (viewport_start, fallback_layout)
+        }
+    } else {
+        // Single window — apply textwidth centering if set
+        let buffer_area = if let Some(textwidth) = editor.options.textwidth {
+            let max_width = textwidth as u16;
+            if areas.buffer_chunk.width > max_width {
+                let margin = (areas.buffer_chunk.width - max_width) / 2;
+                Rect {
+                    x: areas.buffer_chunk.x + margin,
+                    y: areas.buffer_chunk.y,
+                    width: max_width,
+                    height: areas.buffer_chunk.height,
+                }
+            } else {
+                areas.buffer_chunk
+            }
+        } else {
+            areas.buffer_chunk
+        };
+
+        let single_layout = BufferLayout::compute(editor, buffer_area);
+
+        if editor.options.wrap {
+            editor.ensure_wrap_map(single_layout.text_width);
+        }
+
+        let viewport_start = render_buffer(frame, editor, theme, &single_layout);
+        (viewport_start, single_layout)
+    }
+}
+
+/// Phase 4: Render the status area (progress line + status/command/search line).
+fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
+    if let Some(progress_chunk) = areas.progress_chunk {
+        if let Some(progress_msg) = editor.lsp_progress_message() {
+            render_progress_line(frame, &progress_msg, progress_chunk);
+        }
+    }
+
+    if editor.mode() == crate::mode::Mode::Command {
+        render_command_line(frame, editor, areas.status_chunk);
+    } else if editor.mode() == crate::mode::Mode::Search {
+        render_search_line(frame, editor, areas.status_chunk);
+    } else {
+        render_status_line(frame, editor, areas.status_chunk);
+    }
+}
+
+/// Phase 5: Render overlay widgets (picker, hover, completion).
+fn render_overlays(frame: &mut Frame, editor: &mut Editor, theme: &Theme, ctx: &OverlayContext) {
+    // Picker overlay
+    if editor.mode() == crate::mode::Mode::Picker {
+        render_picker(frame, editor, frame.area());
+    }
+
+    // Hover window
+    if editor.mode().is_hover() {
+        if let Some(hover_text) = editor.hover_info() {
+            let is_preview = editor.mode() == crate::mode::Mode::HoverPreview;
+            let hover_pos = editor.hover_position();
+            let content_type = editor.hover_content_type();
+            render_hover_window(
+                frame,
+                editor,
+                hover_text,
+                editor.hover_scroll(),
+                ctx,
+                hover_pos,
+                is_preview,
+                theme,
+                content_type,
+            );
+        }
+    }
+
+    // Completion menu
+    if editor.completion_menu().is_visible() {
+        render_completion_menu(frame, editor, ctx);
+    }
+}
+
+/// Sets the hardware cursor position based on the current mode.
+fn set_cursor_position(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    ctx: &OverlayContext,
+    status_chunk: Rect,
+) {
+    let layout = ctx.layout;
+    let viewport_start = ctx.viewport_start;
+    let cursor_pos = editor.buffer().cursor();
+    let cursor_line = cursor_pos.line();
+    let cursor_col = cursor_pos.col();
+
+    if editor.mode() == crate::mode::Mode::Picker {
+        if let Some(picker) = editor.picker() {
+            let cursor_pos = picker.query_cursor();
+            let picker_area = super::widgets::get_picker_area(frame.area());
+            let cursor_x = (picker_area.x + 1 + 2 + cursor_pos as u16)
+                .min(picker_area.x + picker_area.width.saturating_sub(2));
+            let cursor_y = picker_area.y + 1;
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    } else if editor.mode() == crate::mode::Mode::Command {
+        let cmd_cursor_x = (editor.command_line().len() + 1)
+            .min(status_chunk.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((status_chunk.x + cmd_cursor_x as u16, status_chunk.y));
+    } else if editor.mode() == crate::mode::Mode::Search {
+        let search_cursor_x = (editor.search.search_buffer.len() + 1)
+            .min(status_chunk.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
+    } else {
+        let rope = editor.buffer().rope();
+        let line_count = editor.buffer().line_count();
+        let line_text = if cursor_line < line_count {
+            rope.line(cursor_line).to_string()
+        } else {
+            String::new()
+        };
+        let line_text = line_text.trim_end_matches('\n');
+
+        let tab_width = editor.options.tab_width;
+        let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
+
+        let buffer_area = layout.buffer_area;
+        let gutter_width = layout.gutter_width;
+        let text_width = layout.text_width;
+
+        let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
+            if let Some(wrap_map) = editor.wrap_map() {
+                let (abs_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col);
+                let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
+                let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
+                let screen_col = display_col % text_width;
+                (
+                    screen_row.min(buffer_area.height.saturating_sub(1) as usize),
+                    screen_col.min(text_width.saturating_sub(1)),
+                )
+            } else {
+                let screen_line = cursor_line.saturating_sub(viewport_start);
+                let h_offset = editor.horizontal_offset();
+                let adjusted_col = display_col.saturating_sub(h_offset);
+                (
+                    screen_line.min(buffer_area.height.saturating_sub(1) as usize),
+                    adjusted_col.min(text_width.saturating_sub(1)),
+                )
+            }
+        } else {
+            let screen_line = cursor_line.saturating_sub(viewport_start);
+            let h_offset = editor.horizontal_offset();
+            let adjusted_col = display_col.saturating_sub(h_offset);
+            (
+                screen_line.min(buffer_area.height.saturating_sub(1) as usize),
+                adjusted_col.min(text_width.saturating_sub(1)),
+            )
+        };
+
+        frame.set_cursor_position((
+            buffer_area.x + gutter_width as u16 + cursor_x as u16,
+            buffer_area.y + cursor_y as u16,
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Split window rendering (unchanged)
+// ---------------------------------------------------------------------------
+
 /// Recursively renders windows in a split layout
 /// Returns (viewport_start, layout) for the focused window (for cursor positioning)
 fn render_window_tree(
@@ -37,7 +348,6 @@ fn render_window_tree(
             let is_focused = *current_index == focused_index;
             *current_index += 1;
 
-            // Compute layout for this window and render
             let layout = BufferLayout::compute(editor, area);
             let viewport_start = render_buffer(frame, editor, theme, &layout);
 
@@ -53,10 +363,8 @@ fn render_window_tree(
             first,
             second,
         } => {
-            // Calculate split areas (including 1-pixel separator)
             let (first_area, sep_area, second_area) = match direction {
                 SplitDirection::Horizontal => {
-                    // Windows stacked vertically (horizontal separator line)
                     let first_height = (area.height as f32 * *ratio) as u16;
                     let sep_height = 1u16;
                     let second_height = area.height.saturating_sub(first_height + sep_height);
@@ -82,7 +390,6 @@ fn render_window_tree(
                     (first_rect, sep_rect, second_rect)
                 }
                 SplitDirection::Vertical => {
-                    // Windows side by side (vertical separator line)
                     let first_width = (area.width as f32 * *ratio) as u16;
                     let sep_width = 1u16;
                     let second_width = area.width.saturating_sub(first_width + sep_width);
@@ -109,10 +416,8 @@ fn render_window_tree(
                 }
             };
 
-            // Render separator
             render_separator(frame, sep_area, *direction);
 
-            // Recursively render children
             let first_result =
                 render_window_tree(frame, editor, theme, first, first_area, focused_index, current_index);
             let second_result =
@@ -126,8 +431,8 @@ fn render_window_tree(
 /// Renders a separator line between split windows
 fn render_separator(frame: &mut Frame, area: Rect, direction: SplitDirection) {
     let sep_char = match direction {
-        SplitDirection::Horizontal => '─', // Horizontal line for horizontal split
-        SplitDirection::Vertical => '│',   // Vertical line for vertical split
+        SplitDirection::Horizontal => '─',
+        SplitDirection::Vertical => '│',
     };
 
     let sep_style = Style::default()
@@ -136,14 +441,12 @@ fn render_separator(frame: &mut Frame, area: Rect, direction: SplitDirection) {
 
     match direction {
         SplitDirection::Horizontal => {
-            // Draw horizontal line
             let line_text = sep_char.to_string().repeat(area.width as usize);
             let line = Line::from(Span::styled(line_text, sep_style));
             let paragraph = Paragraph::new(vec![line]);
             frame.render_widget(paragraph, area);
         }
         SplitDirection::Vertical => {
-            // Draw vertical line (multiple rows)
             let lines: Vec<Line> = (0..area.height)
                 .map(|_| Line::from(Span::styled(sep_char.to_string(), sep_style)))
                 .collect();
@@ -152,6 +455,10 @@ fn render_separator(frame: &mut Frame, area: Rect, direction: SplitDirection) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Renderer struct
+// ---------------------------------------------------------------------------
 
 /// Handles rendering the editor state to the terminal
 pub struct Renderer {
@@ -180,325 +487,51 @@ impl Renderer {
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
     pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor) {
-        // Fill entire frame with blank lines to prevent artifacts from previous renders
-        let area = frame.area();
+        clear_frame(frame, editor);
 
-        // Initialize window manager with terminal dimensions if not already initialized
-        // This is needed for viewport commands (zz, zt, zb, etc.) to work
-        editor.init_window_manager(area.width, area.height);
+        let areas = match compute_frame_layout(frame, editor) {
+            Some(areas) => areas,
+            None => {
+                render_dashboard(frame, editor, frame.area());
+                return;
+            }
+        };
 
-        let blank_line = " ".repeat(area.width as usize);
-        let blank_lines: Vec<Line> = (0..area.height)
-            .map(|_| Line::from(blank_line.clone()))
-            .collect();
-        let bg_paragraph = Paragraph::new(blank_lines).style(Style::default().bg(Color::Reset));
-        frame.render_widget(bg_paragraph, area);
-
-        // Render dashboard if in Dashboard mode
-        if editor.should_show_dashboard() {
-            render_dashboard(frame, editor, area);
-            return;
-        }
-
-        // Get color scheme from editor, fall back to Tokyonight if not found
         let scheme = editor
             .get_color_scheme()
             .cloned()
             .unwrap_or_else(crate::syntax::ColorScheme::tokyonight);
         let theme = Theme::from_scheme(scheme);
 
-        // Layout: [tab bar (if multiple tabs)] + [file tree (optional)] + main buffer + status line
-        let main_area = frame.area();
-
-        // First split: tab bar (if multiple tabs) + rest
-        let (tab_area, remaining_area) = if editor.tab_count() > 1 {
-            let vertical_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Min(1)].as_ref())
-                .split(main_area);
-            (Some(vertical_chunks[0]), vertical_chunks[1])
-        } else {
-            (None, main_area)
-        };
-
-        // Render tab bar if we have multiple tabs
-        if let Some(tab_area) = tab_area {
+        // Render chrome
+        if let Some(tab_area) = areas.tab_area {
             render_tab_bar(frame, editor, tab_area);
         }
-
-        // Second split: file tree (if visible) + rest
-        let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
-            let horizontal_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(30), Constraint::Min(1)].as_ref())
-                .split(remaining_area);
-            (Some(horizontal_chunks[0]), horizontal_chunks[1])
-        } else {
-            (None, remaining_area)
-        };
-
-        // Second split: buffer + progress line (optional) + status line
-        let has_progress = editor.lsp_progress_message().is_some();
-        let chunks = if has_progress {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints(
-                    [
-                        Constraint::Min(1),
-                        Constraint::Length(1), // progress line
-                        Constraint::Length(1), // status line
-                    ]
-                    .as_ref(),
-                )
-                .split(content_area)
-        } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
-                .split(content_area)
-        };
-
-        // Render the file tree if visible
-        if let Some(tree_area) = file_tree_area {
+        if let Some(tree_area) = areas.file_tree_area {
             render_file_tree(frame, editor, tree_area);
         }
 
-        // Check if we have split windows
-        let has_splits = editor
-            .window_manager()
-            .map(|wm| wm.root().count_windows() > 1)
-            .unwrap_or(false);
+        // Render buffer content
+        let (viewport_start, layout) = render_buffer_area(frame, editor, &theme, &areas);
 
-        // Determine the buffer area first (accounts for textwidth narrowing),
-        // then ensure the wrap map uses the same width the renderer will use.
-        // The wrap map must be initialized before render_buffer since the
-        // renderer reads it for viewport calculations.
-        let (viewport_start, layout) = if has_splits {
-            // For splits, use chunks[0] width for wrap map (focused window area
-            // isn't known until render_window_tree runs)
-            if editor.options.wrap {
-                let est_layout = BufferLayout::compute(editor, chunks[0]);
-                editor.ensure_wrap_map(est_layout.text_width);
-            }
-
-            // Render split windows recursively
-            if let Some(wm) = editor.window_manager() {
-                let focused_index = wm.focused_window_index();
-                let mut current_index = 0;
-                if let Some((vs, ly)) = render_window_tree(
-                    frame,
-                    editor,
-                    &theme,
-                    wm.root(),
-                    chunks[0],
-                    focused_index,
-                    &mut current_index,
-                ) {
-                    (vs, ly)
-                } else {
-                    // Fallback: render single buffer
-                    let fallback_layout = BufferLayout::compute(editor, chunks[0]);
-                    let viewport_start = render_buffer(frame, editor, &theme, &fallback_layout);
-                    (viewport_start, fallback_layout)
-                }
-            } else {
-                // No window manager - render single buffer
-                let fallback_layout = BufferLayout::compute(editor, chunks[0]);
-                let viewport_start = render_buffer(frame, editor, &theme, &fallback_layout);
-                (viewport_start, fallback_layout)
-            }
-        } else {
-            // Single window - apply textwidth centering if set
-            let buffer_area = if let Some(textwidth) = editor.options.textwidth {
-                let max_width = textwidth as u16;
-                if chunks[0].width > max_width {
-                    let margin = (chunks[0].width - max_width) / 2;
-                    Rect {
-                        x: chunks[0].x + margin,
-                        y: chunks[0].y,
-                        width: max_width,
-                        height: chunks[0].height,
-                    }
-                } else {
-                    chunks[0]
-                }
-            } else {
-                chunks[0]
-            };
-
-            let single_layout = BufferLayout::compute(editor, buffer_area);
-
-            // Ensure wrap map uses the actual buffer area width (after textwidth narrowing)
-            if editor.options.wrap {
-                editor.ensure_wrap_map(single_layout.text_width);
-            }
-
-            // Render the main text area
-            let viewport_start = render_buffer(frame, editor, &theme, &single_layout);
-            (viewport_start, single_layout)
-        };
-
-        // Update editor's viewport height for accurate scroll calculations
+        // Update viewport dimensions
         editor.set_viewport_height(layout.buffer_area.height as usize);
-
-        // Update window manager dimensions to match actual buffer area
-        // This ensures viewport commands (zt, zb, zz) use the correct height
         if let Some(wm) = editor.window_manager_mut() {
             wm.update_dimensions(layout.buffer_area.width, layout.buffer_area.height);
         }
 
-        // Render progress line if present
-        if has_progress {
-            if let Some(progress_msg) = editor.lsp_progress_message() {
-                render_progress_line(frame, &progress_msg, chunks[1]);
-            }
-        }
-
-        // Render the status line or command line or search line
-        let status_chunk = if has_progress { chunks[2] } else { chunks[1] };
-        if editor.mode() == crate::mode::Mode::Command {
-            render_command_line(frame, editor, status_chunk);
-        } else if editor.mode() == crate::mode::Mode::Search {
-            render_search_line(frame, editor, status_chunk);
-        } else {
-            render_status_line(frame, editor, status_chunk);
-        }
-
-        // Render picker overlay if in Picker mode
-        if editor.mode() == crate::mode::Mode::Picker {
-            render_picker(frame, editor, frame.area());
-        }
-
-        // Build overlay context once for all overlay + cursor consumers
+        // Render status + overlays + cursor
+        render_status_area(frame, editor, &areas);
         let ctx = OverlayContext {
             layout: &layout,
             viewport_start,
         };
-
-        // Render hover window if in a hover mode
-        if editor.mode().is_hover() {
-            if let Some(hover_text) = editor.hover_info() {
-                let is_preview = editor.mode() == crate::mode::Mode::HoverPreview;
-                let hover_pos = editor.hover_position();
-                let content_type = editor.hover_content_type();
-                render_hover_window(
-                    frame,
-                    editor,
-                    hover_text,
-                    editor.hover_scroll(),
-                    &ctx,
-                    hover_pos,
-                    is_preview,
-                    &theme,
-                    content_type,
-                );
-            }
-        }
-
-        // Render completion menu if visible (in Insert mode)
-        if editor.completion_menu().is_visible() {
-            render_completion_menu(frame, editor, &ctx);
-        }
-
-        // Set hardware cursor position
-        Self::set_cursor_position(frame, editor, &ctx, status_chunk);
-    }
-
-    /// Sets the hardware cursor position based on the current mode
-    fn set_cursor_position(
-        frame: &mut Frame,
-        editor: &mut Editor,
-        ctx: &OverlayContext,
-        status_chunk: Rect,
-    ) {
-        let layout = ctx.layout;
-        let viewport_start = ctx.viewport_start;
-        let cursor_pos = editor.buffer().cursor();
-        let cursor_line = cursor_pos.line();
-        let cursor_col = cursor_pos.col();
-
-        if editor.mode() == crate::mode::Mode::Picker {
-            // Position cursor in picker query line at the cursor position
-            if let Some(picker) = editor.picker() {
-                let cursor_pos = picker.query_cursor();
-                let picker_area = super::widgets::get_picker_area(frame.area());
-                // +1 for border, +2 for " " prefix (icon + space)
-                let cursor_x = (picker_area.x + 1 + 2 + cursor_pos as u16)
-                    .min(picker_area.x + picker_area.width.saturating_sub(2)); // Keep within bounds
-                let cursor_y = picker_area.y + 1; // +1 for border
-                frame.set_cursor_position((cursor_x, cursor_y));
-            }
-        } else if editor.mode() == crate::mode::Mode::Command {
-            // Position cursor in command line
-            let cmd_cursor_x = (editor.command_line().len() + 1)
-                .min(status_chunk.width.saturating_sub(1) as usize);
-            frame.set_cursor_position((status_chunk.x + cmd_cursor_x as u16, status_chunk.y));
-        } else if editor.mode() == crate::mode::Mode::Search {
-            // Position cursor in search line
-            let search_cursor_x = (editor.search.search_buffer.len() + 1)
-                .min(status_chunk.width.saturating_sub(1) as usize);
-            frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
-        } else {
-            // Position cursor in text buffer (accounting for gutter, tabs, and wide chars)
-            let rope = editor.buffer().rope();
-            let line_count = editor.buffer().line_count();
-            let line_text = if cursor_line < line_count {
-                rope.line(cursor_line).to_string()
-            } else {
-                String::new()
-            };
-            let line_text = line_text.trim_end_matches('\n');
-
-            // Convert character column to display column (accounting for tabs and emojis)
-            let tab_width = editor.options.tab_width;
-            let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
-
-            let buffer_area = layout.buffer_area;
-            let gutter_width = layout.gutter_width;
-            let text_width = layout.text_width;
-
-            // Calculate cursor screen position, accounting for soft wrap
-            let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
-                if let Some(wrap_map) = editor.wrap_map() {
-                    // Visual row of this cursor in the entire document
-                    let (abs_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col);
-                    // Visual row of the viewport start
-                    let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
-                    let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
-                    let screen_col = display_col % text_width;
-                    (
-                        screen_row.min(buffer_area.height.saturating_sub(1) as usize),
-                        screen_col.min(text_width.saturating_sub(1)),
-                    )
-                } else {
-                    let screen_line = cursor_line.saturating_sub(viewport_start);
-                    let h_offset = editor.horizontal_offset();
-                    let adjusted_col = display_col.saturating_sub(h_offset);
-                    (
-                        screen_line.min(buffer_area.height.saturating_sub(1) as usize),
-                        adjusted_col.min(text_width.saturating_sub(1)),
-                    )
-                }
-            } else {
-                let screen_line = cursor_line.saturating_sub(viewport_start);
-                let h_offset = editor.horizontal_offset();
-                let adjusted_col = display_col.saturating_sub(h_offset);
-                (
-                    screen_line.min(buffer_area.height.saturating_sub(1) as usize),
-                    adjusted_col.min(text_width.saturating_sub(1)),
-                )
-            };
-
-            frame.set_cursor_position((
-                buffer_area.x + gutter_width as u16 + cursor_x as u16,
-                buffer_area.y + cursor_y as u16,
-            ));
-        }
+        render_overlays(frame, editor, &theme, &ctx);
+        set_cursor_position(frame, editor, &ctx, areas.status_chunk);
     }
 
     /// Renders the editor state to the terminal
     pub fn render(&mut self, editor: &mut Editor) -> Result<()> {
-        // Set cursor style based on mode
         let cursor_style = match editor.mode() {
             crate::mode::Mode::Insert => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Picker => SetCursorStyle::BlinkingBar,
@@ -511,14 +544,12 @@ impl Renderer {
         };
         crossterm::execute!(io::stdout(), cursor_style)?;
 
-        // Force autoresize to clear internal buffer state
         self.terminal.autoresize()?;
 
         self.terminal.draw(|frame| {
             Self::render_to_frame(frame, editor);
         })?;
 
-        // Flush to ensure all changes are written
         use std::io::Write;
         io::stdout().flush()?;
 
