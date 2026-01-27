@@ -614,17 +614,21 @@ impl Editor {
         let width = text_width.max(1);
         let tab_width = self.options.tab_width;
         let line_count = self.buffer().line_count();
+        let buf_version = self.buffer().version();
 
         // Check if we can reuse existing map
         if let Some(ref map) = self.wrap_map {
-            if map.wrap_width() == width && map.line_count() == line_count {
+            if map.wrap_width() == width
+                && map.line_count() == line_count
+                && map.buffer_version() == buf_version
+            {
                 return; // Already up to date
             }
         }
 
         // Build new wrap map
         let rope = self.buffer().rope().clone();
-        let map = WrapMap::new(line_count, width, tab_width, |line_idx| {
+        let map = WrapMap::new(line_count, width, tab_width, buf_version, |line_idx| {
             if line_idx < rope.len_lines() {
                 let line = rope.line(line_idx);
                 let text = line.to_string();
@@ -664,33 +668,56 @@ impl Editor {
         let scrolloff = self.options.scrolloff;
 
         // Calculate new scroll offset
-        let mut new_offset = current_offset;
+        let new_offset;
 
-        // Apply scrolloff margins - keep cursor at least scrolloff lines from edges
-        // When cursor goes above viewport top + scrolloff margin
-        if cursor_line < current_offset + scrolloff {
-            // Scroll up to position cursor at scrolloff distance from top
-            new_offset = cursor_line.saturating_sub(scrolloff);
-        }
-        // When cursor goes below viewport bottom - scrolloff margin
-        else if cursor_line + scrolloff >= current_offset + visible_lines {
-            // Scroll down to position cursor at scrolloff distance from bottom
-            // Fix: Don't let scroll offset go negative for short files
-            // Formula: new_offset = cursor_line - (visible_lines - scrolloff - 1)
-            // But ensure we don't go below 0
-            if visible_lines > scrolloff + 1 {
-                new_offset = cursor_line.saturating_sub(visible_lines - scrolloff - 1);
+        if self.options.wrap {
+            if let Some(ref wrap_map) = self.wrap_map {
+                // Wrap-aware scrolling: work in visual rows
+                let cursor_col = self.buffer().cursor().col();
+                // Get the display column for proper sub-line calculation
+                let line_text = if cursor_line < self.buffer().line_count() {
+                    let text = self.buffer().rope().line(cursor_line).to_string();
+                    text.trim_end_matches('\n').to_string()
+                } else {
+                    String::new()
+                };
+                let disp_col = display_width(&line_text[..line_text.chars().take(cursor_col).collect::<String>().len()], self.options.tab_width);
+                let (cursor_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, disp_col);
+                let viewport_visual_start = wrap_map.logical_to_visual(current_offset);
+
+                if cursor_visual_row < viewport_visual_start + scrolloff {
+                    // Cursor above viewport top margin — scroll up
+                    // Find the logical line whose visual start puts cursor at scrolloff from top
+                    let target_visual = cursor_visual_row.saturating_sub(scrolloff);
+                    let (new_line, _) = wrap_map.visual_to_logical(target_visual);
+                    new_offset = new_line;
+                } else if cursor_visual_row + scrolloff >= viewport_visual_start + visible_lines {
+                    // Cursor below viewport bottom margin — scroll down
+                    let target_visual = if visible_lines > scrolloff + 1 {
+                        cursor_visual_row.saturating_sub(visible_lines - scrolloff - 1)
+                    } else {
+                        cursor_visual_row.saturating_sub(visible_lines / 2)
+                    };
+                    let (new_line, _) = wrap_map.visual_to_logical(target_visual);
+                    new_offset = new_line;
+                } else {
+                    new_offset = current_offset;
+                }
             } else {
-                // viewport smaller than scrolloff margins - just center cursor
-                new_offset = cursor_line.saturating_sub(visible_lines / 2);
+                // Wrap enabled but no wrap map yet — use logical line fallback
+                new_offset = Self::compute_logical_scroll_offset(
+                    cursor_line, current_offset, visible_lines, scrolloff,
+                );
             }
-        }
+        } else {
+            new_offset = Self::compute_logical_scroll_offset(
+                cursor_line, current_offset, visible_lines, scrolloff,
+            );
+        };
 
         // Ensure scroll_offset doesn't go beyond buffer
         let max_line = self.buffer().line_count().saturating_sub(1);
-        if cursor_line > max_line {
-            new_offset = 0;
-        }
+        let new_offset = if cursor_line > max_line { 0 } else { new_offset };
 
         // Update both editor-level and window-level scroll offsets
         self.scroll_offset = new_offset;
@@ -716,6 +743,26 @@ impl Editor {
                     self.mark_dirty();
                 }
             }
+        }
+    }
+
+    /// Computes scroll offset using logical line counting (non-wrap path)
+    fn compute_logical_scroll_offset(
+        cursor_line: usize,
+        current_offset: usize,
+        visible_lines: usize,
+        scrolloff: usize,
+    ) -> usize {
+        if cursor_line < current_offset + scrolloff {
+            cursor_line.saturating_sub(scrolloff)
+        } else if cursor_line + scrolloff >= current_offset + visible_lines {
+            if visible_lines > scrolloff + 1 {
+                cursor_line.saturating_sub(visible_lines - scrolloff - 1)
+            } else {
+                cursor_line.saturating_sub(visible_lines / 2)
+            }
+        } else {
+            current_offset
         }
     }
 

@@ -433,10 +433,6 @@ impl Renderer {
             frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
         } else {
             // Position cursor in text buffer (accounting for gutter, tabs, and wide chars)
-            let screen_line = cursor_line.saturating_sub(viewport_start);
-            let cursor_y = screen_line.min(buffer_area.height.saturating_sub(1) as usize);
-
-            // Get the line text and convert character column to display column
             let rope = editor.buffer().rope();
             let line_count = editor.buffer().line_count();
             let line_text = if cursor_line < line_count {
@@ -449,7 +445,6 @@ impl Renderer {
             // Convert character column to display column (accounting for tabs and emojis)
             let tab_width = editor.options.tab_width;
             let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
-            let cursor_x = display_col.min(buffer_area.width.saturating_sub(1) as usize);
 
             // Calculate gutter width for cursor offset
             let show_numbers = editor.options.number || editor.options.relative_number;
@@ -464,6 +459,36 @@ impl Renderer {
                 sign_width + line_num_width + 1
             } else {
                 0
+            };
+
+            let text_width = buffer_area.width.saturating_sub(gutter_width as u16) as usize;
+
+            // Calculate cursor screen position, accounting for soft wrap
+            let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
+                if let Some(wrap_map) = editor.wrap_map() {
+                    // Visual row of this cursor in the entire document
+                    let (abs_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col);
+                    // Visual row of the viewport start
+                    let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
+                    let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
+                    let screen_col = display_col % text_width;
+                    (
+                        screen_row.min(buffer_area.height.saturating_sub(1) as usize),
+                        screen_col.min(text_width.saturating_sub(1)),
+                    )
+                } else {
+                    let screen_line = cursor_line.saturating_sub(viewport_start);
+                    (
+                        screen_line.min(buffer_area.height.saturating_sub(1) as usize),
+                        display_col.min(buffer_area.width.saturating_sub(1) as usize),
+                    )
+                }
+            } else {
+                let screen_line = cursor_line.saturating_sub(viewport_start);
+                (
+                    screen_line.min(buffer_area.height.saturating_sub(1) as usize),
+                    display_col.min(buffer_area.width.saturating_sub(1) as usize),
+                )
             };
 
             frame.set_cursor_position((
