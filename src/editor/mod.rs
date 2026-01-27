@@ -673,7 +673,7 @@ impl Editor {
                 } else {
                     String::new()
                 };
-                let disp_col = display_width(&line_text[..line_text.chars().take(cursor_col).collect::<String>().len()], self.options.tab_width);
+                let disp_col = crate::display::char_col_to_display_col(&line_text, cursor_col, self.options.tab_width);
                 let (cursor_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, disp_col);
                 let viewport_visual_start = wrap_map.logical_to_visual(current_offset);
 
