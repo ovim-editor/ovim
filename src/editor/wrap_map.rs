@@ -54,6 +54,11 @@ impl WrapMap {
         self.buffer_version
     }
 
+    /// Updates the stored buffer version without rebuilding.
+    pub fn set_buffer_version(&mut self, version: usize) {
+        self.buffer_version = version;
+    }
+
     /// Computes how many visual lines a line of the given display width needs.
     fn compute_visual_lines(display_width: usize, wrap_width: usize) -> u16 {
         if display_width == 0 {

@@ -608,19 +608,25 @@ impl Editor {
         let line_count = self.buffer().line_count();
         let buf_version = self.buffer().version();
 
-        // Check if we can reuse existing map
-        if let Some(ref map) = self.wrap_map {
-            if map.wrap_width() == width
-                && map.line_count() == line_count
-                && map.buffer_version() == buf_version
-            {
+        // Check if existing map is up to date or can be incrementally updated
+        let needs_action = if let Some(ref map) = self.wrap_map {
+            if map.buffer_version() == buf_version && map.wrap_width() == width && map.line_count() == line_count {
                 return; // Already up to date
             }
-        }
+            if map.wrap_width() == width && map.line_count() == line_count {
+                // Only buffer content changed — can use incremental update
+                Some(true) // incremental
+            } else {
+                Some(false) // full rebuild
+            }
+        } else {
+            None // no map yet
+        };
 
-        // Build new wrap map
+        // Extract data needed for closures before mutably borrowing self.wrap_map
+        let cursor_line = self.buffer().cursor().line();
         let rope = self.buffer().rope().clone();
-        let map = WrapMap::new(line_count, width, tab_width, buf_version, |line_idx| {
+        let make_line_len = |line_idx: usize| -> usize {
             if line_idx < rope.len_lines() {
                 let line = rope.line(line_idx);
                 let text = line.to_string();
@@ -629,8 +635,26 @@ impl Editor {
             } else {
                 0
             }
-        });
-        self.wrap_map = Some(map);
+        };
+
+        match needs_action {
+            Some(true) => {
+                // Incremental: only invalidate cursor line
+                let map = self.wrap_map.as_mut().unwrap();
+                map.invalidate_line(cursor_line, make_line_len);
+                map.set_buffer_version(buf_version);
+            }
+            Some(false) => {
+                // Full rebuild (width or line count changed)
+                let map = self.wrap_map.as_mut().unwrap();
+                map.rebuild(line_count, width, tab_width, buf_version, make_line_len);
+            }
+            None => {
+                // Build from scratch
+                let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_len);
+                self.wrap_map = Some(map);
+            }
+        }
     }
 
     /// Gets the horizontal scroll offset (leftmost visible column)
