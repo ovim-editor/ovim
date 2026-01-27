@@ -1617,6 +1617,14 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             "showmatch" | "sm" => format!("  {}showmatch", if opts.showmatch { "" } else { "no" }),
             "swapfile" | "swf" => format!("  {}swapfile", if opts.swapfile { "" } else { "no" }),
             "backup" | "bk" => format!("  {}backup", if opts.backup { "" } else { "no" }),
+            "clipboard" | "cb" => {
+                if opts.clipboard.is_empty() {
+                    "  clipboard=".to_string()
+                } else {
+                    format!("  clipboard={}", opts.clipboard)
+                }
+            }
+            "wrap" => format!("  {}wrap", if opts.wrap { "" } else { "no" }),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -1792,6 +1800,14 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                 line_count: None,
             });
         }
+        "noclipboard" | "nocb" => {
+            editor.options.clipboard = String::new();
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  clipboard=".to_string()),
+                line_count: None,
+            });
+        }
         _ => {}
     }
 
@@ -1870,6 +1886,25 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                     error: format!("Invalid number: {}", value),
                 }),
             },
+            "clipboard" | "cb" => {
+                match value {
+                    "unnamedplus" | "unnamed" | "" => {
+                        editor.options.clipboard = value.to_string();
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(if value.is_empty() {
+                                "  clipboard=".to_string()
+                            } else {
+                                format!("  clipboard={}", value)
+                            }),
+                            line_count: None,
+                        })
+                    }
+                    _ => ApiResponse::Error(ErrorResponse {
+                        error: format!("Invalid clipboard value: {} (use 'unnamedplus', 'unnamed', or '')", value),
+                    }),
+                }
+            }
             _ => ApiResponse::Error(ErrorResponse {
                 error: format!("Unknown option: {}", opt_name),
             }),
