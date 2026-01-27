@@ -36,6 +36,7 @@ mod visual_context;
 mod visual_mode;
 mod window;
 mod window_viewport;
+mod wrap_map;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range, TextObjectType};
 pub use command_context::CommandContext;
@@ -63,6 +64,7 @@ pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
 pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
+pub use wrap_map::WrapMap;
 
 /// Editor options and settings
 #[derive(Debug, Clone)]
@@ -140,6 +142,19 @@ use crate::syntax::ColorSchemeRegistry;
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+
+/// Calculates the display width of a string, accounting for tab expansion.
+fn display_width(text: &str, tab_width: usize) -> usize {
+    let mut width = 0;
+    for ch in text.chars() {
+        if ch == '\t' {
+            width += tab_width - (width % tab_width);
+        } else {
+            width += 1;
+        }
+    }
+    width
+}
 
 /// Commands sent from background tasks to the LSP manager via channel
 #[derive(Debug)]
@@ -274,6 +289,8 @@ pub struct Editor {
     /// Cached file list for picker: (root_path, files, timestamp)
     /// Speeds up repeated picker opens by reusing file discovery results
     file_list_cache: Option<(std::path::PathBuf, Vec<PickerResult>, std::time::Instant)>,
+    /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
+    wrap_map: Option<WrapMap>,
 }
 
 /// State for tracking Replace mode for dot-repeat
@@ -383,6 +400,7 @@ impl Editor {
             pending_semantic_change: None,
             replace_mode_state: None,
             file_list_cache: None,
+            wrap_map: None,
         }
     }
 
@@ -441,6 +459,7 @@ impl Editor {
             pending_semantic_change: None,
             replace_mode_state: None,
             file_list_cache: None,
+            wrap_map: None,
         }
     }
 
@@ -578,6 +597,44 @@ impl Editor {
         }
         // Fall back to editor-level scroll offset for headless/test mode
         self.scroll_offset
+    }
+
+    /// Gets a reference to the wrap map (if available)
+    pub fn wrap_map(&self) -> Option<&WrapMap> {
+        self.wrap_map.as_ref()
+    }
+
+    /// Ensures the wrap map is built and up-to-date for the current buffer.
+    /// Called from the rendering layer before drawing wrapped lines.
+    pub fn ensure_wrap_map(&mut self, text_width: usize) {
+        if !self.options.wrap {
+            self.wrap_map = None;
+            return;
+        }
+        let width = text_width.max(1);
+        let tab_width = self.options.tab_width;
+        let line_count = self.buffer().line_count();
+
+        // Check if we can reuse existing map
+        if let Some(ref map) = self.wrap_map {
+            if map.wrap_width() == width && map.line_count() == line_count {
+                return; // Already up to date
+            }
+        }
+
+        // Build new wrap map
+        let rope = self.buffer().rope().clone();
+        let map = WrapMap::new(line_count, width, tab_width, |line_idx| {
+            if line_idx < rope.len_lines() {
+                let line = rope.line(line_idx);
+                let text = line.to_string();
+                let text = text.trim_end_matches('\n');
+                display_width(text, tab_width)
+            } else {
+                0
+            }
+        });
+        self.wrap_map = Some(map);
     }
 
     /// Gets the horizontal scroll offset (leftmost visible column)
