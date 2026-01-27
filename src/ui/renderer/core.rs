@@ -478,16 +478,20 @@ impl Renderer {
                     )
                 } else {
                     let screen_line = cursor_line.saturating_sub(viewport_start);
+                    let h_offset = editor.horizontal_offset();
+                    let adjusted_col = display_col.saturating_sub(h_offset);
                     (
                         screen_line.min(buffer_area.height.saturating_sub(1) as usize),
-                        display_col.min(buffer_area.width.saturating_sub(1) as usize),
+                        adjusted_col.min(text_width.saturating_sub(1)),
                     )
                 }
             } else {
                 let screen_line = cursor_line.saturating_sub(viewport_start);
+                let h_offset = editor.horizontal_offset();
+                let adjusted_col = display_col.saturating_sub(h_offset);
                 (
                     screen_line.min(buffer_area.height.saturating_sub(1) as usize),
-                    display_col.min(buffer_area.width.saturating_sub(1) as usize),
+                    adjusted_col.min(text_width.saturating_sub(1)),
                 )
             };
 
