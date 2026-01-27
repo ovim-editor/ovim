@@ -40,24 +40,7 @@ pub fn expand_tabs(text: &str, tab_width: usize) -> String {
 
 /// Converts a character column index to a display column, accounting for tabs and wide characters
 pub fn char_col_to_display_col(text: &str, char_col: usize, tab_width: usize) -> usize {
-    let mut display_col = 0;
-
-    for (current_char_idx, ch) in text.chars().enumerate() {
-        if current_char_idx >= char_col {
-            break;
-        }
-
-        if ch == '\t' {
-            // Move to next tab stop
-            let spaces_to_add = tab_width - (display_col % tab_width);
-            display_col += spaces_to_add;
-        } else {
-            // Use display width (emojis = 2, most chars = 1, zero-width = 0)
-            display_col += ch.width().unwrap_or(1);
-        }
-    }
-
-    display_col
+    crate::display::char_col_to_display_col(text, char_col, tab_width)
 }
 
 /// Truncates text to fit within a display width, accounting for wide characters

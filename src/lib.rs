@@ -13,6 +13,7 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod daemon;
+pub mod display;
 pub mod language_config;
 pub mod editor;
 pub mod git;
