@@ -210,6 +210,10 @@ pub async fn run_event_loop(
                         InputHandler::handle_key_event_no_dirty(editor, key_event)?;
                         last_edit = Instant::now();
                     }
+                    Event::Paste(text) => {
+                        editor.handle_paste_event(&text)?;
+                        last_edit = Instant::now();
+                    }
                     Event::Resize(_, _) => {
                         // Terminal was resized - handled by dirty flag below
                     }
