@@ -183,19 +183,32 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if let Some(wrap_map) = editor.wrap_map() {
                 let cursor = editor.buffer().cursor();
                 let line = cursor.line();
-                let col = cursor.col();
-                let (visual_row, _) = wrap_map.cursor_to_visual(line, col);
+                let char_col = cursor.col();
+                let tab_width = editor.options.tab_width;
+
+                // Convert char col to display col for wrap map operations
+                let line_text = editor
+                    .buffer()
+                    .line(line)
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+                let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+
+                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col);
                 let target_row = visual_row + count;
                 let (new_line, sub_line) = wrap_map.visual_to_logical(
                     target_row.min(wrap_map.total_visual_lines().saturating_sub(1)),
                 );
-                let new_col = sub_line * wrap_map.wrap_width() + (col % wrap_map.wrap_width());
-                // Clamp col to line length
-                let max_col = editor
+                // Compute target display col and convert back to char col
+                let target_disp_col = sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
+                let new_line_text = editor
                     .buffer()
                     .line(new_line)
-                    .map(|l| l.trim_end_matches('\n').chars().count().saturating_sub(1))
-                    .unwrap_or(0);
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+                let new_col = crate::display::display_col_to_char_col(&new_line_text, target_disp_col, tab_width);
+                // Clamp col to line length
+                let max_col = new_line_text.chars().count().saturating_sub(1);
                 editor
                     .buffer_mut()
                     .cursor_mut()
@@ -214,16 +227,27 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if let Some(wrap_map) = editor.wrap_map() {
                 let cursor = editor.buffer().cursor();
                 let line = cursor.line();
-                let col = cursor.col();
-                let (visual_row, _) = wrap_map.cursor_to_visual(line, col);
+                let char_col = cursor.col();
+                let tab_width = editor.options.tab_width;
+
+                let line_text = editor
+                    .buffer()
+                    .line(line)
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+                let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+
+                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col);
                 let target_row = visual_row.saturating_sub(count);
                 let (new_line, sub_line) = wrap_map.visual_to_logical(target_row);
-                let new_col = sub_line * wrap_map.wrap_width() + (col % wrap_map.wrap_width());
-                let max_col = editor
+                let target_disp_col = sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
+                let new_line_text = editor
                     .buffer()
                     .line(new_line)
-                    .map(|l| l.trim_end_matches('\n').chars().count().saturating_sub(1))
-                    .unwrap_or(0);
+                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .unwrap_or_default();
+                let new_col = crate::display::display_col_to_char_col(&new_line_text, target_disp_col, tab_width);
+                let max_col = new_line_text.chars().count().saturating_sub(1);
                 editor
                     .buffer_mut()
                     .cursor_mut()
