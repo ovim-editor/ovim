@@ -46,6 +46,44 @@ When set, the buffer content is horizontally centered with margins on both sides
 :set noet
 ```
 
+## Clipboard
+
+By default, ovim syncs the unnamed register with the system clipboard. Yanking (`yy`, `yw`, etc.) copies to the clipboard, and pasting (`p`, `P`) reads from it.
+
+```vim
+:set clipboard=unnamedplus  " Sync with system clipboard (default)
+:set clipboard=unnamed      " Sync with selection clipboard (X11 primary)
+:set clipboard=             " Vim-compatible: no automatic clipboard sync
+:set noclipboard            " Same as clipboard= (disable sync)
+:set nocb                   " Short form
+
+:set clipboard?             " Show current value
+```
+
+When an explicit register is used (e.g., `"ayy`), the clipboard is not touched. Only operations without an explicit register are synced.
+
+**Bracketed paste:** Terminal paste (Cmd-V / Ctrl-Shift-V) is handled natively in all modes — insert, normal, command, and search.
+
+## Wrap
+
+Controls whether long lines wrap visually across multiple terminal rows.
+
+```vim
+:set wrap                   " Enable soft wrap (default)
+:set nowrap                 " Disable: long lines scroll horizontally
+:set wrap?                  " Show current value
+```
+
+When wrap is on:
+- Lines exceeding the terminal width continue on the next visual row
+- Line numbers appear only on the first visual row of each line
+- `gj` / `gk` move by visual (display) lines
+- `j` / `k` continue to move by logical lines
+
+When wrap is off:
+- Long lines are clipped with `<` / `>` indicators at the edges
+- Horizontal scrolling follows the cursor automatically
+
 ## Scrolling
 
 ```vim
