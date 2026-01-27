@@ -9,6 +9,12 @@
 | OV-00005 | Pending | LOW | Low | [STATE] `snapshot` returns null for cursor_line, cursor_col, file fields - state not being serialized correctly (cli/snapshot.rs) |
 | OV-00006 | Pending | TRIAGE | Medium | [LSP] `hover` returns null on valid symbol positions - investigate if this is ovim not forwarding request correctly or LSP response handling issue |
 | OV-00007 | Pending | TRIAGE | Medium | [LSP] `find-references` returns empty array - investigate if ovim is correctly forwarding LSP request and parsing response |
+| OV-00008 | Fixed | HIGH | Medium | [WRAP] Display column vs character column mismatch in wrap scroll offset - Fixed: replaced substring+display_width hack with char_col_to_display_col in update_scroll_offset (src/editor/mod.rs) |
+| OV-00009 | Fixed | MEDIUM | Medium | [PERF] ensure_wrap_map rebuilds entire map on every buffer edit - Fixed: use invalidate_line for O(1) single-line updates when only buffer version changed (src/editor/mod.rs:ensure_wrap_map) |
+| OV-00010 | Fixed | HIGH | Low | [RENDER] Cursor positioning ignores horizontal_offset in nowrap mode - Fixed: subtract horizontal_offset from display_col in both nowrap branches of set_cursor_position (src/ui/renderer/core.rs) |
+| OV-00011 | Fixed | MEDIUM | Medium | [WRAP] gj/gk use character column instead of display column - Fixed: convert char col to display col before wrap map ops, convert back to char col for target position (src/editor/input/normal/pending_commands.rs) |
+| OV-00012 | Fixed | MEDIUM | Low | [CMD] Verify :set wrap / :set nowrap command wiring - Already wired up at commands.rs:1787-1802, no code change needed |
+| OV-00013 | Fixed | LOW | Medium | [WRAP] split_line_into_rows doesn't handle wide characters at wrap boundaries - Fixed: use UnicodeWidthChar for display width tracking, pad and push wide chars to next row at boundaries (src/ui/renderer/buffer.rs) |
 
 ## Bugs Filed Against Hyperion (if any)
 
