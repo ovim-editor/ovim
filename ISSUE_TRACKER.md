@@ -15,6 +15,11 @@
 | OV-00011 | Fixed | MEDIUM | Medium | [WRAP] gj/gk use character column instead of display column - Fixed: convert char col to display col before wrap map ops, convert back to char col for target position (src/editor/input/normal/pending_commands.rs) |
 | OV-00012 | Fixed | MEDIUM | Low | [CMD] Verify :set wrap / :set nowrap command wiring - Already wired up at commands.rs:1787-1802, no code change needed |
 | OV-00013 | Fixed | LOW | Medium | [WRAP] split_line_into_rows doesn't handle wide characters at wrap boundaries - Fixed: use UnicodeWidthChar for display width tracking, pad and push wide chars to next row at boundaries (src/ui/renderer/buffer.rs) |
+| OV-00014 | Pending | HIGH | Medium | [WRAP] WrapMap compute_visual_lines disagrees with renderer for wide chars — [details](issue-docs/OV-00014-wrapmap-wide-char-mismatch.md). (src/editor/wrap_map.rs, src/ui/renderer/buffer.rs) |
+| OV-00015 | Pending | MEDIUM | Medium | [PERF] Incremental wrap map invalidation only covers cursor line — [details](issue-docs/OV-00015-incremental-invalidation-cursor-only.md). (src/editor/mod.rs:ensure_wrap_map) |
+| OV-00016 | Pending | LOW | Medium | [WRAP] No virtcol/curswant tracking for gj/gk — [details](issue-docs/OV-00016-virtcol-curswant.md). (src/editor/input/normal/pending_commands.rs) |
+| OV-00017 | Pending | LOW | Low | [CLEANUP] Remove delegate display_width in editor/mod.rs — [details](issue-docs/OV-00017-remove-delegate-display-width.md). (src/editor/mod.rs) |
+| OV-00018 | Pending | MEDIUM | High | [UX] Tab completion for file paths in command mode (:e, :tabe, :sp, etc.) — [details](issue-docs/OV-00018-command-path-completion.md). (src/editor/completion.rs, src/editor/input/, src/commands.rs) |
 
 ## Bugs Filed Against Hyperion (if any)
 
