@@ -8,6 +8,8 @@ use ratatui::{
     Frame,
 };
 
+use unicode_width::UnicodeWidthChar;
+
 use super::helpers::expand_tabs_with_mapping;
 use super::styles::{get_git_sign_style, get_line_number_style, remap_highlights};
 use crate::syntax::HighlightGroup;
@@ -247,15 +249,21 @@ fn build_gutter_line(
 }
 
 /// Splits a rendered Line into multiple visual rows for soft wrapping.
-/// Each row fits within `width` characters. Rows are padded to full width.
+/// Each row fits within `width` display columns. Rows are padded to full width.
+/// Wide characters (CJK, emoji) that don't fit at a row boundary are pushed to
+/// the next row, with the remaining space padded (matching Neovim behavior).
 fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
-    // Calculate total character count
-    let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    // Calculate total display width
+    let total_width: usize = line
+        .spans
+        .iter()
+        .map(|s| s.content.chars().map(|c| c.width().unwrap_or(1)).sum::<usize>())
+        .sum();
 
-    if total_chars <= width {
+    if total_width <= width {
         // Line fits in one row - just pad it
         let mut row = line;
-        let pad = width.saturating_sub(total_chars);
+        let pad = width.saturating_sub(total_width);
         if pad > 0 {
             row.spans.push(Span::raw(" ".repeat(pad)));
         }
@@ -269,25 +277,42 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
 
     for span in line.spans {
         let style = span.style;
-        let chars: Vec<char> = span.content.chars().collect();
-        let mut offset = 0;
+        let mut chunk = String::new();
 
-        while offset < chars.len() {
-            let remaining_in_row = width - current_width;
-            let remaining_in_span = chars.len() - offset;
-            let take = remaining_in_row.min(remaining_in_span);
+        for ch in span.content.chars() {
+            let ch_width = ch.width().unwrap_or(1);
 
-            let chunk: String = chars[offset..offset + take].iter().collect();
-            current_spans.push(Span::styled(chunk, style));
-            current_width += take;
-            offset += take;
-
-            if current_width >= width {
-                // Row is full, push it
+            if current_width + ch_width > width {
+                // Flush accumulated chunk for this span
+                if !chunk.is_empty() {
+                    current_spans.push(Span::styled(chunk.clone(), style));
+                    chunk.clear();
+                }
+                // Pad remaining space in current row
+                let pad = width.saturating_sub(current_width);
+                if pad > 0 {
+                    current_spans.push(Span::raw(" ".repeat(pad)));
+                }
                 rows.push(Line::from(current_spans));
                 current_spans = Vec::new();
                 current_width = 0;
             }
+
+            chunk.push(ch);
+            current_width += ch_width;
+
+            if current_width >= width {
+                // Row exactly full, flush
+                current_spans.push(Span::styled(chunk.clone(), style));
+                chunk.clear();
+                rows.push(Line::from(current_spans));
+                current_spans = Vec::new();
+                current_width = 0;
+            }
+        }
+
+        if !chunk.is_empty() {
+            current_spans.push(Span::styled(chunk, style));
         }
     }
 
@@ -778,4 +803,46 @@ pub fn render_line_with_highlights(
     }
 
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_line_wide_char_at_boundary() {
+        // Width=4, content "abc世d"
+        // 'a'=1, 'b'=1, 'c'=1, '世'=2 -> doesn't fit (3+2=5 > 4), pad row 1
+        // Row 1: "abc " (padded), Row 2: "世d  " (padded)
+        let line = Line::from(vec![Span::raw("abc世d")]);
+        let rows = split_line_into_rows(line, 4);
+        assert_eq!(rows.len(), 2);
+
+        let row0_text: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let row1_text: String = rows[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(row0_text, "abc ");
+        assert_eq!(row1_text, "世d "); // 世=2 + d=1 = 3, pad 1 to fill width 4
+    }
+
+    #[test]
+    fn test_split_line_ascii_no_wide() {
+        let line = Line::from(vec![Span::raw("abcdefgh")]);
+        let rows = split_line_into_rows(line, 4);
+        assert_eq!(rows.len(), 2);
+
+        let row0_text: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let row1_text: String = rows[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(row0_text, "abcd");
+        assert_eq!(row1_text, "efgh");
+    }
+
+    #[test]
+    fn test_split_line_fits_in_one_row() {
+        let line = Line::from(vec![Span::raw("ab")]);
+        let rows = split_line_into_rows(line, 4);
+        assert_eq!(rows.len(), 1);
+
+        let text: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "ab  "); // padded
+    }
 }
