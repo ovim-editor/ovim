@@ -267,6 +267,26 @@ impl Renderer {
             .map(|wm| wm.root().count_windows() > 1)
             .unwrap_or(false);
 
+        // Ensure wrap map is up to date before rendering
+        if editor.options.wrap {
+            // Estimate text width: frame width minus gutter
+            let show_numbers = editor.options.number || editor.options.relative_number;
+            let line_count = editor.buffer().line_count();
+            let line_num_width = if show_numbers {
+                line_count.to_string().len().max(3)
+            } else {
+                0
+            };
+            let gutter_width = if show_numbers || true {
+                // sign_width(2) + line_num_width + spacing(1)
+                2 + line_num_width + 1
+            } else {
+                0
+            };
+            let text_width = (chunks[0].width as usize).saturating_sub(gutter_width);
+            editor.ensure_wrap_map(text_width);
+        }
+
         // Render buffer area(s) - either single buffer or split windows
         let (viewport_start, buffer_area) = if has_splits {
             // Render split windows recursively

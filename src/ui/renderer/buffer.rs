@@ -204,6 +204,105 @@ fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usi
     }
 }
 
+/// Builds a gutter line for a logical line (line number + git sign).
+/// If `is_continuation` is true, produces a blank gutter row.
+fn build_gutter_line(
+    editor: &Editor,
+    buffer: &crate::buffer::Buffer,
+    line_idx: usize,
+    line_num_width: usize,
+    cursor_line: usize,
+    is_continuation: bool,
+) -> Line<'static> {
+    if is_continuation {
+        // Blank gutter for wrap continuation rows
+        let width = 2 + line_num_width + 1; // sign_width + line_num_width + spacing
+        return Line::from(" ".repeat(width));
+    }
+
+    let line_num_text = if editor.options.relative_number {
+        let rel = if line_idx == cursor_line {
+            line_idx + 1
+        } else {
+            line_idx.abs_diff(cursor_line)
+        };
+        format!("{:>width$} ", rel, width = line_num_width)
+    } else if editor.options.number {
+        format!("{:>width$} ", line_idx + 1, width = line_num_width)
+    } else {
+        "  ".to_string()
+    };
+
+    let git_status = buffer.git_status().get_line_status(line_idx);
+    let (sign_text, sign_color) = get_git_sign_style(git_status);
+    let line_num_style = get_line_number_style(line_idx == cursor_line);
+
+    let sign_span = Span::styled(
+        sign_text,
+        Style::default().fg(sign_color).add_modifier(Modifier::BOLD),
+    );
+    let line_num_span = Span::styled(line_num_text, line_num_style);
+
+    Line::from(vec![sign_span, line_num_span])
+}
+
+/// Splits a rendered Line into multiple visual rows for soft wrapping.
+/// Each row fits within `width` characters. Rows are padded to full width.
+fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    // Calculate total character count
+    let total_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+
+    if total_chars <= width {
+        // Line fits in one row - just pad it
+        let mut row = line;
+        let pad = width.saturating_sub(total_chars);
+        if pad > 0 {
+            row.spans.push(Span::raw(" ".repeat(pad)));
+        }
+        return vec![row];
+    }
+
+    // Need to split spans across multiple rows
+    let mut rows = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0;
+
+    for span in line.spans {
+        let style = span.style;
+        let chars: Vec<char> = span.content.chars().collect();
+        let mut offset = 0;
+
+        while offset < chars.len() {
+            let remaining_in_row = width - current_width;
+            let remaining_in_span = chars.len() - offset;
+            let take = remaining_in_row.min(remaining_in_span);
+
+            let chunk: String = chars[offset..offset + take].iter().collect();
+            current_spans.push(Span::styled(chunk, style));
+            current_width += take;
+            offset += take;
+
+            if current_width >= width {
+                // Row is full, push it
+                rows.push(Line::from(current_spans));
+                current_spans = Vec::new();
+                current_width = 0;
+            }
+        }
+    }
+
+    // Push remaining content as final row
+    if !current_spans.is_empty() || rows.is_empty() {
+        let pad = width.saturating_sub(current_width);
+        if pad > 0 {
+            current_spans.push(Span::raw(" ".repeat(pad)));
+        }
+        rows.push(Line::from(current_spans));
+    }
+
+    rows
+}
+
 /// Renders the buffer content and returns the viewport start line
 pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) -> usize {
     let buffer = editor.buffer();
@@ -214,7 +313,6 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     // Calculate visible range using scroll offset (not centering)
     let visible_lines = area.height as usize;
     let start_line = editor.scroll_offset();
-    let end_line = (start_line + visible_lines).min(line_count);
 
     // Get horizontal viewport settings
     let h_offset = editor.horizontal_offset();
@@ -263,28 +361,21 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
         None
     };
 
-    // Build the gutter lines
-    if let Some(gutter_area) = gutter_area {
-        render_gutter(
-            frame,
-            editor,
-            buffer,
-            gutter_area,
-            start_line,
-            end_line,
-            line_num_width,
-            cursor.line(),
-        );
-    }
-
     // Build the visible text with syntax highlighting
+    // Gutter lines are built inline to match wrap continuation rows
     let mut lines = Vec::new();
+    let mut gutter_lines: Vec<Line<'static>> = Vec::new();
     let blank_line = " ".repeat(text_area.width as usize);
     let tab_width = editor.options.tab_width;
     let cursorline = editor.options.cursorline;
     let cursor_line_idx = cursor.line();
+    let text_width = text_area.width as usize;
+    let wrap_map = editor.wrap_map();
+    let has_wrap = wrap && wrap_map.is_some();
+    let mut visual_rows_used = 0;
 
-    for line_idx in start_line..end_line {
+    let mut line_idx = start_line;
+    while line_idx < line_count && visual_rows_used < visible_lines {
         if line_idx < rope.len_lines() {
             let line_text = rope.line(line_idx).to_string();
             // Remove trailing newline if present
@@ -295,7 +386,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
 
             // Apply horizontal viewport slicing if nowrap is set
             let (line_text, precedes, _extends) = if !wrap {
-                slice_horizontal_viewport(&line_text, h_offset, text_area.width as usize)
+                slice_horizontal_viewport(&line_text, h_offset, text_width)
             } else {
                 (line_text.to_string(), false, false)
             };
@@ -309,7 +400,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                 syntax_highlights = shift_highlights_for_viewport(
                     &syntax_highlights,
                     h_offset,
-                    text_area.width as usize,
+                    text_width,
                     precedes,
                 );
             }
@@ -345,7 +436,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
             let bracket_col = if !wrap {
                 bracket_col.and_then(|col| {
                     // Check if bracket is in visible horizontal range
-                    if col >= h_offset && col < h_offset + text_area.width as usize {
+                    if col >= h_offset && col < h_offset + text_width {
                         let offset_adjustment = if precedes { 1 } else { 0 };
                         Some(col - h_offset + offset_adjustment)
                     } else {
@@ -379,7 +470,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                     &syntax_highlights,
                 );
 
-                // Add diagnostic virtual text if present
+                // Add diagnostic virtual text if present (only on first visual row in wrap mode)
                 if has_diagnostics {
                     use lsp_types::DiagnosticSeverity;
                     // Get the first (most severe) diagnostic
@@ -392,7 +483,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                         _ => Color::Gray,
                     };
                     // Truncate message to fit on screen
-                    let max_msg_len = (text_area.width as usize).saturating_sub(line_text.chars().count() + 3);
+                    let max_msg_len = text_width.saturating_sub(line_text.chars().count() + 3);
                     let msg = diag.message.lines().next().unwrap_or("");
                     let msg = if msg.chars().count() > max_msg_len {
                         format!("{}...", msg.chars().take(max_msg_len.saturating_sub(3)).collect::<String>())
@@ -405,17 +496,10 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                     ));
                 }
 
-                // Pad line to clear previous content
-                let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-                if line_len < text_area.width as usize {
-                    line.spans
-                        .push(Span::raw(" ".repeat(text_area.width as usize - line_len)));
-                }
                 // Apply cursorline background if this is the cursor line
                 if is_cursor_line {
                     let cursorline_bg = Color::Rgb(40, 40, 50); // Subtle dark blue background
                     for span in &mut line.spans {
-                        // Preserve foreground color but add background
                         span.style = span.style.bg(cursorline_bg);
                     }
                 }
@@ -426,25 +510,110 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
                         .add_modifier(Modifier::BOLD);
                     apply_style_at_column(&mut line, col, bracket_style);
                 }
-                lines.push(line);
-            } else {
-                // Pad simple lines too
-                let line_len = line_text.chars().count();
-                let line_text = if line_len < text_area.width as usize {
-                    format!(
-                        "{}{}",
-                        line_text,
-                        " ".repeat(text_area.width as usize - line_len)
-                    )
+
+                // Soft wrap: split into visual rows if needed
+                if has_wrap {
+                    let visual_rows = split_line_into_rows(line, text_width);
+                    for (row_idx, row) in visual_rows.into_iter().enumerate() {
+                        if visual_rows_used >= visible_lines {
+                            break;
+                        }
+                        if gutter_area.is_some() {
+                            gutter_lines.push(build_gutter_line(
+                                editor, buffer, line_idx, line_num_width,
+                                cursor_line_idx, row_idx > 0,
+                            ));
+                        }
+                        lines.push(row);
+                        visual_rows_used += 1;
+                    }
                 } else {
-                    line_text.to_string()
-                };
-                lines.push(Line::from(line_text));
+                    // No wrap: pad and push single line
+                    let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    if line_len < text_width {
+                        line.spans
+                            .push(Span::raw(" ".repeat(text_width - line_len)));
+                    }
+                    if gutter_area.is_some() {
+                        gutter_lines.push(build_gutter_line(
+                            editor, buffer, line_idx, line_num_width,
+                            cursor_line_idx, false,
+                        ));
+                    }
+                    lines.push(line);
+                    visual_rows_used += 1;
+                }
+            } else {
+                // Simple rendering path (no highlighting)
+                if has_wrap {
+                    let chars: Vec<char> = line_text.chars().collect();
+                    if chars.is_empty() {
+                        if gutter_area.is_some() {
+                            gutter_lines.push(build_gutter_line(
+                                editor, buffer, line_idx, line_num_width,
+                                cursor_line_idx, false,
+                            ));
+                        }
+                        lines.push(Line::from(" ".repeat(text_width)));
+                        visual_rows_used += 1;
+                    } else {
+                        for (chunk_idx, chunk) in chars.chunks(text_width).enumerate() {
+                            if visual_rows_used >= visible_lines {
+                                break;
+                            }
+                            if gutter_area.is_some() {
+                                gutter_lines.push(build_gutter_line(
+                                    editor, buffer, line_idx, line_num_width,
+                                    cursor_line_idx, chunk_idx > 0,
+                                ));
+                            }
+                            let text: String = chunk.iter().collect();
+                            let pad = text_width.saturating_sub(chunk.len());
+                            let padded = if pad > 0 {
+                                format!("{}{}", text, " ".repeat(pad))
+                            } else {
+                                text
+                            };
+                            lines.push(Line::from(padded));
+                            visual_rows_used += 1;
+                        }
+                    }
+                } else {
+                    // No wrap: pad simple lines too
+                    if gutter_area.is_some() {
+                        gutter_lines.push(build_gutter_line(
+                            editor, buffer, line_idx, line_num_width,
+                            cursor_line_idx, false,
+                        ));
+                    }
+                    let line_len = line_text.chars().count();
+                    let line_text = if line_len < text_width {
+                        format!("{}{}", line_text, " ".repeat(text_width - line_len))
+                    } else {
+                        line_text.to_string()
+                    };
+                    lines.push(Line::from(line_text));
+                    visual_rows_used += 1;
+                }
             }
         } else {
             // Line beyond end of file - clear it
             lines.push(Line::from(blank_line.clone()));
+            visual_rows_used += 1;
         }
+        line_idx += 1;
+    }
+
+    // Fill remaining rows with blanks
+    while visual_rows_used < visible_lines {
+        lines.push(Line::from(blank_line.clone()));
+        visual_rows_used += 1;
+    }
+
+    // Render gutter
+    if let Some(gutter_area) = gutter_area {
+        let gutter_paragraph = Paragraph::new(gutter_lines);
+        frame.render_widget(gutter_paragraph, gutter_area);
     }
 
     let paragraph = Paragraph::new(lines)
@@ -453,60 +622,6 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Re
     frame.render_widget(paragraph, text_area);
 
     start_line
-}
-
-/// Renders the gutter (line numbers and git signs)
-#[allow(clippy::too_many_arguments)]
-fn render_gutter(
-    frame: &mut Frame,
-    editor: &Editor,
-    buffer: &crate::buffer::Buffer,
-    area: Rect,
-    start_line: usize,
-    end_line: usize,
-    line_num_width: usize,
-    cursor_line: usize,
-) {
-    let rope = buffer.rope();
-    let mut gutter_lines = Vec::new();
-
-    for line_idx in start_line..end_line {
-        if line_idx < rope.len_lines() {
-            let line_num_text = if editor.options.relative_number {
-                // Relative line numbers
-                let rel = if line_idx == cursor_line {
-                    line_idx + 1 // Show absolute for current line
-                } else {
-                    line_idx.abs_diff(cursor_line)
-                };
-                format!("{:>width$} ", rel, width = line_num_width)
-            } else if editor.options.number {
-                // Absolute line numbers
-                format!("{:>width$} ", line_idx + 1, width = line_num_width)
-            } else {
-                "  ".to_string()
-            };
-
-            // Add sign column for git status indicators
-            let git_status = buffer.git_status().get_line_status(line_idx);
-            let (sign_text, sign_color) = get_git_sign_style(git_status);
-
-            // Highlight current line number
-            let line_num_style = get_line_number_style(line_idx == cursor_line);
-
-            // Build gutter with separate styles for sign and line number
-            let sign_span = Span::styled(
-                sign_text,
-                Style::default().fg(sign_color).add_modifier(Modifier::BOLD),
-            );
-            let line_num_span = Span::styled(line_num_text, line_num_style);
-
-            gutter_lines.push(Line::from(vec![sign_span, line_num_span]));
-        }
-    }
-
-    let gutter_paragraph = Paragraph::new(gutter_lines);
-    frame.render_widget(gutter_paragraph, area);
 }
 
 /// Renders a single line with all highlighting (syntax, visual selection, search)
