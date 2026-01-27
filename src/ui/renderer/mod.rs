@@ -7,6 +7,7 @@ mod buffer;
 mod core;
 pub mod dashboard;
 mod helpers;
+mod layout;
 mod markdown;
 mod styles;
 mod widgets;
