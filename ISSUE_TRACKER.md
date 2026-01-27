@@ -20,6 +20,7 @@
 | OV-00016 | Pending | LOW | Medium | [WRAP] No virtcol/curswant tracking for gj/gk — [details](issue-docs/OV-00016-virtcol-curswant.md). (src/editor/input/normal/pending_commands.rs) |
 | OV-00017 | Pending | LOW | Low | [CLEANUP] Remove delegate display_width in editor/mod.rs — [details](issue-docs/OV-00017-remove-delegate-display-width.md). (src/editor/mod.rs) |
 | OV-00018 | Pending | MEDIUM | High | [UX] Tab completion for file paths in command mode (:e, :tabe, :sp, etc.) — [details](issue-docs/OV-00018-command-path-completion.md). (src/editor/completion.rs, src/editor/input/, src/commands.rs) |
+| OV-00019 | Pending | LOW | Medium | [SYNTAX] Markdown table highlighting — pipes, separators, and header cells get no highlighting because tree-sitter-md block grammar doesn't parse GFM tables. Regex overlay approach recommended. — [details](issue-docs/OV-00019-markdown-table-highlighting.md). (src/syntax/, src/buffer/highlighting.rs) |
 
 ## Bugs Filed Against Hyperion (if any)
 
