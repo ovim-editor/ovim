@@ -801,7 +801,7 @@ fn should_show_preview(area: Rect) -> bool {
 }
 
 /// Renders the picker overlay
-pub fn render_picker(frame: &mut Frame, editor: &mut Editor, _full_area: Rect) {
+pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     let Some(picker) = editor.picker() else {
         return;
     };
