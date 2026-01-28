@@ -216,7 +216,7 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
 fn render_overlays(frame: &mut Frame, editor: &mut Editor, theme: &Theme, ctx: &OverlayContext) {
     // Picker overlay
     if editor.mode() == crate::mode::Mode::Picker {
-        render_picker(frame, editor, frame.area());
+        render_picker(frame, editor);
     }
 
     // Hover window
