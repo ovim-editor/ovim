@@ -1733,9 +1733,25 @@ impl Editor {
 
         match result {
             Ok(actions) if !actions.is_empty() => {
-                self.lsp_state.available_code_actions = actions.clone();
-                // TODO: Show code actions in a picker/menu
-                self.set_lsp_status(format!("Found {} code actions", actions.len()));
+                // Build display titles for the picker
+                let titles: Vec<String> = actions
+                    .iter()
+                    .map(|a| match a {
+                        lsp_types::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                        lsp_types::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+                    })
+                    .collect();
+
+                self.lsp_state.available_code_actions = actions;
+
+                // Open a Custom picker so the user can select an action
+                let base_dir = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let picker = crate::editor::picker::Picker::new_custom(base_dir, titles);
+                self.set_picker(picker);
+                self.set_mode(crate::mode::Mode::Picker);
+                self.mark_picker_selection_changed();
+
                 Ok(true)
             }
             Ok(_) => {
