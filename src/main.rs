@@ -236,12 +236,9 @@ async fn main() -> Result<()> {
 
             if let Err(e) = session_info.write() {
                 eprintln!("Warning: Failed to write session info: {}", e);
-            } else {
-                eprintln!(
-                    "Session '{}' created at ~/.cache/ovim/sessions/{}.json",
-                    session_name, session_name
-                );
             }
+            // Don't log session creation in TUI mode — stderr shares the
+            // terminal and the message corrupts the ratatui display.
 
             session_info
         }
