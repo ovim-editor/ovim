@@ -15,6 +15,22 @@ use super::helpers::{expand_tabs, expand_tabs_with_mapping, truncate_to_width};
 use super::layout::OverlayContext;
 use super::styles::remap_highlights;
 
+// Picker color palette — single point of tuning for the entire fuzzy finder UI
+mod picker_colors {
+    use ratatui::style::Color;
+
+    pub const BG: Color = Color::Rgb(22, 22, 30);
+    pub const BG_ALT: Color = Color::Rgb(24, 24, 32);
+    pub const SELECTED: Color = Color::Rgb(45, 50, 70);
+    pub const BORDER: Color = Color::Rgb(80, 85, 110);
+    pub const SEPARATOR: Color = Color::Rgb(50, 55, 75);
+    pub const TITLE: Color = Color::Rgb(140, 160, 240);
+    pub const TEXT: Color = Color::Rgb(200, 205, 215);
+    pub const TEXT_BRIGHT: Color = Color::Rgb(240, 240, 255);
+    pub const TEXT_MUTED: Color = Color::Rgb(100, 110, 140);
+    pub const GREEN: Color = Color::Rgb(129, 250, 183);
+}
+
 /// A widget that fills every cell in an area with a styled space.
 /// This is the proper way to create a solid background - unlike Block which
 /// only renders borders, Fill writes to every cell, preventing bleed-through.
@@ -294,7 +310,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
         String::new()
     };
     let position = format!(" {}:{} ", cursor.line() + 1, cursor.col() + 1);
-    let modified = if buffer.is_modified() { " [+] " } else { " " };
+    let modified = if editor.is_modified() { " [+] " } else { " " };
     let file = buffer.file_path().unwrap_or("[No Name]");
 
     // Get diagnostic counts
@@ -899,11 +915,10 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     let picker_area = get_picker_area(frame.area());
     let show_preview = should_show_preview(picker_area);
 
-    // Fill entire picker area to prevent bleed-through from editor buffer underneath.
-    // Fill writes styled spaces to every cell - unlike Clear+Block which is fragile.
-    frame.render_widget(Fill::bg(Color::Rgb(20, 24, 35)), picker_area);
+    // Clear underlying content, then fill with picker background
+    frame.render_widget(ratatui::widgets::Clear, picker_area);
+    frame.render_widget(Fill::bg(picker_colors::BG), picker_area);
 
-    // Create block with rounded border and styled colors
     let mode_name = match picker.mode() {
         crate::editor::PickerMode::FindFiles => " 󰈞 Find Files ",
         crate::editor::PickerMode::LiveGrep => " 󰺮 Live Grep ",
@@ -912,18 +927,28 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
         crate::editor::PickerMode::LspLocations => " 󰘧 Navigation ",
     };
 
-    // Richer background with gradient-like effect
+    // Build right-aligned result count for the title bar
+    let result_count_title = {
+        let filtered = picker.filtered_results().len();
+        let total = picker.all_results_count();
+        format!(" {}/{} ", filtered, total)
+    };
+
     let block = Block::default()
-        .title(mode_name)
-        .title_style(
+        .title_top(Line::from(Span::styled(
+            mode_name,
             Style::default()
-                .fg(Color::Rgb(165, 180, 252)) // Soft indigo
+                .fg(picker_colors::TITLE)
                 .add_modifier(Modifier::BOLD),
-        )
+        )))
+        .title_top(Line::from(Span::styled(
+            result_count_title,
+            Style::default().fg(picker_colors::TEXT_MUTED),
+        )).alignment(Alignment::Right))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(100, 116, 180))) // Muted purple-blue
+        .border_style(Style::default().fg(picker_colors::BORDER))
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .style(Style::default().bg(Color::Rgb(20, 24, 35))); // Deep navy
+        .style(Style::default().bg(picker_colors::BG));
 
     frame.render_widget(block.clone(), picker_area);
 
@@ -978,61 +1003,40 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
 /// Renders the picker query line
 fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) {
     let query_text = picker.query();
-    let cursor_pos = picker.query_cursor();
     let prompt_icon = " ";
 
-    // Split query text at cursor position to render cursor in the right place
-    let chars: Vec<char> = query_text.chars().collect();
-    let before_cursor: String = chars.iter().take(cursor_pos).collect();
-    let after_cursor: String = chars.iter().skip(cursor_pos).collect();
-
-    // Calculate padding before moving strings into spans
+    // No fake cursor character — the terminal's native BlinkingBar cursor is
+    // positioned by set_cursor_position() in core.rs, so we just render the text.
     let query_line_width = area.width as usize;
-    let content_len = 2 + before_cursor.len() + 1 + after_cursor.len(); // icon + space + cursor + text
+    let content_len = 2 + query_text.len(); // icon + space + query text
     let padding = query_line_width.saturating_sub(content_len);
 
     let mut spans = vec![
         Span::styled(
             prompt_icon,
             Style::default()
-                .fg(Color::Rgb(129, 250, 183)) // Soft green
+                .fg(picker_colors::GREEN)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
         Span::styled(
-            before_cursor,
+            query_text.to_string(),
             Style::default()
-                .fg(Color::Rgb(220, 220, 230)) // Near white
+                .fg(picker_colors::TEXT_BRIGHT)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "▊", // Cursor block
-            Style::default()
-                .fg(Color::Rgb(165, 180, 252))
-                .add_modifier(Modifier::SLOW_BLINK),
         ),
     ];
 
-    if !after_cursor.is_empty() {
-        spans.push(Span::styled(
-            after_cursor,
-            Style::default()
-                .fg(Color::Rgb(220, 220, 230))
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-
-    // Add padding to fill the rest of the line with background color
     if padding > 0 {
         spans.push(Span::styled(
             " ".repeat(padding),
-            Style::default().bg(Color::Rgb(20, 24, 35)),
+            Style::default().bg(picker_colors::BG),
         ));
     }
 
     let query_line = Line::from(spans);
     let query_paragraph =
-        Paragraph::new(query_line).style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        Paragraph::new(query_line).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(query_paragraph, area);
 }
 
@@ -1042,12 +1046,93 @@ fn render_picker_separator(frame: &mut Frame, area: Rect) {
     let separator_line = Line::from(Span::styled(
         separator,
         Style::default()
-            .fg(Color::Rgb(60, 70, 100)) // Subtle line
-            .bg(Color::Rgb(20, 24, 35)), // Background color
+            .fg(picker_colors::SEPARATOR)
+            .bg(picker_colors::BG),
     ));
     let separator_paragraph =
-        Paragraph::new(separator_line).style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        Paragraph::new(separator_line).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(separator_paragraph, area);
+}
+
+/// Lightweight re-match of query against (possibly truncated) display string.
+/// Returns character indices of matched characters, for highlighting purposes.
+fn rematch_positions(query: &str, display: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut positions = Vec::new();
+    let query_lower: Vec<char> = query.to_lowercase().chars().collect();
+    let display_lower: Vec<char> = display.to_lowercase().chars().collect();
+
+    // Handle space-separated tokens: each token must match independently
+    let token_ranges: Vec<(usize, usize)> = {
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        for (i, &c) in query_lower.iter().enumerate() {
+            if c == ' ' {
+                if i > start {
+                    ranges.push((start, i));
+                }
+                start = i + 1;
+            }
+        }
+        if start < query_lower.len() {
+            ranges.push((start, query_lower.len()));
+        }
+        ranges
+    };
+
+    for (token_start, token_end) in token_ranges {
+        let token = &query_lower[token_start..token_end];
+        let mut qi = 0;
+        for (di, &dc) in display_lower.iter().enumerate() {
+            if qi < token.len() && token[qi] == dc {
+                positions.push(di);
+                qi += 1;
+            }
+        }
+    }
+
+    positions.sort_unstable();
+    positions.dedup();
+    positions
+}
+
+/// Builds spans for a display string with matched positions highlighted.
+fn build_highlighted_spans(
+    display: &str,
+    match_positions: &[usize],
+    text_color: Color,
+    bg_color: Color,
+    is_selected: bool,
+) -> Vec<Span<'static>> {
+    use std::collections::HashSet;
+    let matched: HashSet<usize> = match_positions.iter().copied().collect();
+    let chars: Vec<char> = display.chars().collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let is_match = matched.contains(&i);
+        let start = i;
+        while i < chars.len() && matched.contains(&i) == is_match {
+            i += 1;
+        }
+        let segment: String = chars[start..i].iter().collect();
+        let style = if is_match {
+            Style::default()
+                .fg(picker_colors::GREEN)
+                .bg(bg_color)
+                .add_modifier(Modifier::UNDERLINED)
+                .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() })
+        } else {
+            Style::default().fg(text_color).bg(bg_color)
+                .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() })
+        };
+        spans.push(Span::styled(segment, style));
+    }
+
+    spans
 }
 
 /// Renders the picker results list
@@ -1056,12 +1141,21 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     let selected_idx = picker.selected_index();
     let max_results = area.height as usize;
     let result_width = area.width as usize;
+    let total = results.len();
+    let query = picker.query();
 
-    // Calculate scroll offset to keep selected item visible
-    let scroll_offset = if selected_idx >= max_results {
-        selected_idx - max_results + 1
-    } else {
+    // Center-scroll: keep selected item in the middle of visible area
+    let scroll_offset = if total <= max_results {
         0
+    } else {
+        let half = max_results / 2;
+        if selected_idx < half {
+            0
+        } else if selected_idx + half >= total {
+            total.saturating_sub(max_results)
+        } else {
+            selected_idx.saturating_sub(half)
+        }
     };
 
     let visible_results: Vec<Line> = results
@@ -1073,110 +1167,83 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
             let actual_idx = idx + scroll_offset;
             let is_selected = actual_idx == selected_idx;
 
-            // Truncate the display path if needed
-            let max_display_len = result_width.saturating_sub(5); // Room for icon + prefix + padding
+            let max_display_len = result_width.saturating_sub(5);
             let display = crate::editor::Picker::truncate_path(&result.display, max_display_len);
 
-            // Choose icon based on file type or result type (using Nerd Font glyphs)
             let icon = if result.line > 0 {
-                "\u{f002}" // Search result icon (magnifying glass)
+                "\u{f002}"
             } else if display.ends_with('/') {
-                "\u{f024b}" // Directory icon (folder)
+                "\u{f024b}"
             } else {
-                "\u{f15b}" // File icon (document)
+                "\u{f15b}"
             };
 
-            let (icon_style, text_style, bg_color) = if is_selected {
-                (
-                    Style::default()
-                        .fg(Color::Rgb(129, 250, 183)) // Bright green for icon
-                        .add_modifier(Modifier::BOLD),
-                    Style::default()
-                        .fg(Color::Rgb(240, 240, 255)) // Bright text
-                        .bg(Color::Rgb(55, 65, 95)) // Highlighted background
-                        .add_modifier(Modifier::BOLD),
-                    Color::Rgb(55, 65, 95),
-                )
+            let (icon_color, text_color, bg_color) = if is_selected {
+                (picker_colors::GREEN, picker_colors::TEXT_BRIGHT, picker_colors::SELECTED)
             } else {
-                (
-                    Style::default().fg(Color::Rgb(120, 130, 160)), // Muted icon
-                    Style::default()
-                        .fg(Color::Rgb(180, 185, 200)) // Light gray text
-                        .bg(Color::Rgb(20, 24, 35)),
-                    Color::Rgb(20, 24, 35),
-                )
+                (picker_colors::TEXT_MUTED, picker_colors::TEXT, picker_colors::BG)
             };
+
+            let icon_style = Style::default().fg(icon_color).bg(bg_color)
+                .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() });
 
             let prefix = if is_selected { " ▸ " } else { "   " };
-            let text_content = format!("{}{}", prefix, display);
 
-            // Calculate padding
-            let content_len = icon.chars().count() + text_content.chars().count();
+            // Compute match positions on the (possibly truncated) display string
+            let positions = rematch_positions(query, &display);
+
+            let mut spans = vec![
+                Span::styled(icon.to_string(), icon_style),
+                Span::styled(
+                    prefix.to_string(),
+                    Style::default().fg(text_color).bg(bg_color)
+                        .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() }),
+                ),
+            ];
+            spans.extend(build_highlighted_spans(&display, &positions, text_color, bg_color, is_selected));
+
+            // Padding
+            let content_len = icon.chars().count() + prefix.chars().count() + display.chars().count();
             let padding = result_width.saturating_sub(content_len);
+            if padding > 0 {
+                spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+            }
 
-            Line::from(vec![
-                Span::styled(icon, icon_style),
-                Span::styled(text_content, text_style),
-                Span::styled(" ".repeat(padding), Style::default().bg(bg_color)),
-            ])
+            Line::from(spans)
         })
         .collect();
 
-    // Show results or "No matches" message
     let mut all_lines = visible_results;
 
     if results.is_empty() {
-        // Truly no matches
         let text = "  󰍉 No matches found";
         let padding = result_width.saturating_sub(text.chars().count());
         all_lines.push(Line::from(vec![
             Span::styled(
                 text,
                 Style::default()
-                    .fg(Color::Rgb(240, 120, 120)) // Soft red
-                    .bg(Color::Rgb(20, 24, 35)),
+                    .fg(Color::Rgb(240, 120, 120))
+                    .bg(picker_colors::BG),
             ),
             Span::styled(
                 " ".repeat(padding),
-                Style::default().bg(Color::Rgb(20, 24, 35)),
+                Style::default().bg(picker_colors::BG),
             ),
         ]));
-    } else {
-        // Add result count at the bottom if there's space
-        if all_lines.len() < max_results {
-            let result_count = format!(
-                "  {} result{}",
-                results.len(),
-                if results.len() == 1 { "" } else { "s" }
-            );
-            let padding = result_width.saturating_sub(result_count.len());
-            all_lines.push(Line::from(vec![
-                Span::styled(
-                    result_count,
-                    Style::default()
-                        .fg(Color::Rgb(100, 110, 140)) // Very muted
-                        .bg(Color::Rgb(20, 24, 35))
-                        .add_modifier(Modifier::ITALIC),
-                ),
-                Span::styled(
-                    " ".repeat(padding),
-                    Style::default().bg(Color::Rgb(20, 24, 35)),
-                ),
-            ]));
-        }
     }
+    // Result count is shown in the title bar — no footer needed
 
-    // Fill remaining lines with empty spans that have background color
+    // Fill remaining lines with background
     let lines_to_fill = max_results.saturating_sub(all_lines.len());
     for _ in 0..lines_to_fill {
         all_lines.push(Line::from(vec![Span::styled(
             " ".repeat(result_width),
-            Style::default().bg(Color::Rgb(20, 24, 35)),
+            Style::default().bg(picker_colors::BG),
         )]));
     }
 
     let results_paragraph =
-        Paragraph::new(all_lines).style(Style::default().bg(Color::Rgb(20, 24, 35)));
+        Paragraph::new(all_lines).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(results_paragraph, area);
 }
 
@@ -1187,17 +1254,15 @@ fn render_picker_preview(
     result: &crate::editor::PickerResult,
     area: Rect,
 ) {
-    // Add border around preview with enhanced styling
     let preview_block = Block::default()
         .borders(Borders::LEFT)
-        .border_style(Style::default().fg(Color::Rgb(60, 70, 100))) // Subtle divider
-        .style(Style::default().bg(Color::Rgb(25, 29, 40))); // Slightly different background
+        .border_style(Style::default().fg(picker_colors::SEPARATOR))
+        .style(Style::default().bg(picker_colors::BG_ALT));
 
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
-    // Fill the preview area to prevent text bleeding from previous frames.
-    frame.render_widget(Fill::bg(Color::Rgb(25, 29, 40)), inner_area);
+    frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
     // Try to get preview with fallback - show stale preview while new one loads
     // This eliminates the jarring "Loading..." flash when navigating quickly
@@ -1210,8 +1275,8 @@ fn render_picker_preview(
             let paragraph = Paragraph::new(loading_msg)
                 .style(
                     Style::default()
-                        .fg(Color::Rgb(120, 130, 160))
-                        .bg(Color::Rgb(25, 29, 40))
+                        .fg(picker_colors::TEXT_MUTED)
+                        .bg(picker_colors::BG_ALT)
                         .add_modifier(Modifier::ITALIC),
                 )
                 .alignment(Alignment::Center);
@@ -1278,7 +1343,7 @@ fn render_picker_preview(
     }
 
     let paragraph =
-        Paragraph::new(lines_to_render).style(Style::default().bg(Color::Rgb(25, 29, 40)));
+        Paragraph::new(lines_to_render).style(Style::default().bg(picker_colors::BG_ALT));
     frame.render_widget(paragraph, inner_area);
 }
 
@@ -1355,10 +1420,10 @@ fn render_preview_with_syntax(
         let line_num = format!("{:>4} │ ", line_idx + 1);
         let line_num_style = if is_target_line {
             Style::default()
-                .fg(Color::Rgb(129, 250, 183))
+                .fg(picker_colors::GREEN)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(100, 110, 140))
+            Style::default().fg(picker_colors::TEXT_MUTED)
         };
         spans.push(Span::styled(line_num, line_num_style));
 
@@ -1401,9 +1466,8 @@ fn render_preview_with_syntax(
                 Style::default().fg(Color::White)
             };
 
-            // Highlight the target line
             if is_target_line {
-                style = style.bg(Color::Rgb(55, 65, 95));
+                style = style.bg(picker_colors::SELECTED);
             }
 
             spans.push(Span::styled(text, style));
@@ -1454,16 +1518,16 @@ fn render_plain_preview(
         let line_num = format!("{:>4} │ ", line_idx + 1);
         let line_num_style = if is_target_line {
             Style::default()
-                .fg(Color::Rgb(129, 250, 183))
+                .fg(picker_colors::GREEN)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(100, 110, 140))
+            Style::default().fg(picker_colors::TEXT_MUTED)
         };
 
         let text_style = if is_target_line {
-            Style::default().fg(Color::White).bg(Color::Rgb(55, 65, 95))
+            Style::default().fg(Color::White).bg(picker_colors::SELECTED)
         } else {
-            Style::default().fg(Color::Rgb(200, 205, 220))
+            Style::default().fg(picker_colors::TEXT)
         };
 
         lines.push(Line::from(vec![
@@ -1475,25 +1539,22 @@ fn render_plain_preview(
 
 /// Renders empty state for the picker preview panel
 fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
-    // Add border around preview with enhanced styling
     let preview_block = Block::default()
         .borders(Borders::LEFT)
-        .border_style(Style::default().fg(Color::Rgb(60, 70, 100))) // Subtle divider
-        .style(Style::default().bg(Color::Rgb(25, 29, 40))); // Slightly different background
+        .border_style(Style::default().fg(picker_colors::SEPARATOR))
+        .style(Style::default().bg(picker_colors::BG_ALT));
 
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
-    // Fill the inner area to prevent bleed-through from the editor buffer.
-    frame.render_widget(Fill::bg(Color::Rgb(25, 29, 40)), inner_area);
+    frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
-    // Show centered empty state message
     let empty_msg = " 󰈈  No file selected";
     let paragraph = Paragraph::new(empty_msg)
         .style(
             Style::default()
-                .fg(Color::Rgb(100, 110, 140)) // Muted color
-                .bg(Color::Rgb(25, 29, 40))
+                .fg(picker_colors::TEXT_MUTED)
+                .bg(picker_colors::BG_ALT)
                 .add_modifier(Modifier::ITALIC),
         )
         .alignment(Alignment::Center);
