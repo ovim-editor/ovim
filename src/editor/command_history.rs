@@ -21,6 +21,11 @@ impl Editor {
         self.command.command_line.pop();
     }
 
+    /// Replaces the entire command line content
+    pub fn set_command_line(&mut self, cmd: &str) {
+        self.command.command_line = cmd.to_string();
+    }
+
     /// Adds current command to history
     pub fn add_command_to_history(&mut self) {
         let cmd = self.command.command_line.trim().to_string();

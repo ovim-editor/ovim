@@ -18,7 +18,8 @@ use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::widgets::{
     render_command_line, render_completion_menu, render_file_tree, render_hover_window,
-    render_picker, render_progress_line, render_search_line, render_status_line, render_tab_bar,
+    render_path_completion, render_picker, render_progress_line, render_search_line,
+    render_status_line, render_tab_bar,
 };
 
 // ---------------------------------------------------------------------------
@@ -212,8 +213,14 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
     }
 }
 
-/// Phase 5: Render overlay widgets (picker, hover, completion).
-fn render_overlays(frame: &mut Frame, editor: &mut Editor, theme: &Theme, ctx: &OverlayContext) {
+/// Phase 5: Render overlay widgets (picker, hover, completion, path completion).
+fn render_overlays(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    theme: &Theme,
+    ctx: &OverlayContext,
+    status_chunk: Rect,
+) {
     // Picker overlay
     if editor.mode() == crate::mode::Mode::Picker {
         render_picker(frame, editor);
@@ -239,9 +246,14 @@ fn render_overlays(frame: &mut Frame, editor: &mut Editor, theme: &Theme, ctx: &
         }
     }
 
-    // Completion menu
+    // Completion menu (LSP)
     if editor.completion_menu().is_visible() {
         render_completion_menu(frame, editor, ctx);
+    }
+
+    // Path completion popup (command mode)
+    if editor.path_completion().is_visible() {
+        render_path_completion(frame, editor, status_chunk);
     }
 }
 
@@ -526,7 +538,7 @@ impl Renderer {
             layout: &layout,
             viewport_start,
         };
-        render_overlays(frame, editor, &theme, &ctx);
+        render_overlays(frame, editor, &theme, &ctx, areas.status_chunk);
         set_cursor_position(frame, editor, &ctx, areas.status_chunk);
     }
 

@@ -18,6 +18,7 @@ mod mark_jump;
 mod marks;
 mod motions;
 mod operators;
+pub(crate) mod path_completion;
 mod performance;
 mod picker;
 mod picker_manager;
@@ -56,6 +57,7 @@ pub use operators::Operator;
 pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
 pub use picker::{Picker, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
+pub use path_completion::PathCompletionState;
 pub use register::{RegisterManager, RegisterType};
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
@@ -224,8 +226,10 @@ pub struct Editor {
     editor_bridge: Option<crate::lua::EditorBridge>,
     /// Last insert position (line, col) for gi command
     last_insert_position: Option<(usize, usize)>,
-    /// Completion menu popup
+    /// Completion menu popup (LSP)
     completion_menu: CompletionMenu,
+    /// Path completion state for command-line mode
+    path_completion: PathCompletionState,
     /// Preview cache for picker (file_path -> (content, syntax highlights))
     preview_cache: HashMap<String, PreviewCache>,
     /// Color scheme registry
@@ -366,6 +370,7 @@ impl Editor {
             editor_bridge: None,
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
+            path_completion: PathCompletionState::new(),
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
@@ -425,6 +430,7 @@ impl Editor {
             editor_bridge: None,
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
+            path_completion: PathCompletionState::new(),
             preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
