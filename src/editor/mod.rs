@@ -692,7 +692,17 @@ impl Editor {
         // Calculate new scroll offset
         let new_offset;
 
-        if self.options.wrap {
+        // Only use wrap-aware scrolling if the wrap map covers the current buffer.
+        // After edits (e.g. `o` inserting a line) the map is stale until the next
+        // render pass rebuilds it.  Using stale data causes cursor_to_visual to
+        // return 0 for the new line, jumping the viewport to the top.
+        let wrap_map_usable = self.options.wrap
+            && self
+                .wrap_map
+                .as_ref()
+                .is_some_and(|m| m.line_count() >= self.buffer().rope().len_lines());
+
+        if wrap_map_usable {
             if let Some(ref wrap_map) = self.wrap_map {
                 // Wrap-aware scrolling: work in visual rows
                 let cursor_col = self.buffer().cursor().col();
@@ -737,13 +747,11 @@ impl Editor {
             );
         };
 
-        // Ensure scroll_offset doesn't go beyond buffer
-        let max_line = self.buffer().line_count().saturating_sub(1);
-        let new_offset = if cursor_line > max_line {
-            0
-        } else {
-            new_offset.min(max_line)
-        };
+        // Clamp scroll offset to buffer bounds.
+        // Use rope's raw line count (includes trailing empty line after final \n)
+        // because the cursor can be on that line even though line_count() excludes it.
+        let raw_last_line = self.buffer().rope().len_lines().saturating_sub(1);
+        let new_offset = new_offset.min(raw_last_line);
 
         // Update both editor-level and window-level scroll offsets
         self.scroll_offset = new_offset;

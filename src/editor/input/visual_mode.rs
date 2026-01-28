@@ -321,16 +321,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             let target_line = if let Some(count) = editor.count() {
                 count.saturating_sub(1)
             } else {
-                let line_count = editor.buffer().line_count();
-                let mut last_line = line_count.saturating_sub(1);
-                // Check if last line is empty (just a newline)
-                // If so, go to the previous line (Neovim behavior)
-                if let Some(line) = editor.buffer().line(last_line) {
-                    if line == "\n" || line.is_empty() {
-                        last_line = last_line.saturating_sub(1);
-                    }
-                }
-                last_line
+                editor.buffer().line_count().saturating_sub(1)
             };
             editor.buffer_mut().cursor_mut().set_line(target_line);
             editor.buffer_mut().cursor_mut().set_col(0);

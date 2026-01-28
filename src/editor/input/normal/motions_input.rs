@@ -142,15 +142,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let target_line = if let Some(count) = editor.count() {
                 count.saturating_sub(1)
             } else {
-                let line_count = editor.buffer().line_count();
-                let mut last_line = line_count.saturating_sub(1);
-                // Check if last line is empty
-                if let Some(line) = editor.buffer().line(last_line) {
-                    if line == "\n" || line.is_empty() {
-                        last_line = last_line.saturating_sub(1);
-                    }
-                }
-                last_line
+                editor.buffer().line_count().saturating_sub(1)
             };
             editor.add_jump();
             editor
@@ -238,14 +230,7 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
         KeyCode::Char('d') => {
             let half_page = editor.half_page_scroll();
             let count = editor.count().unwrap_or(half_page);
-            let line_count = editor.buffer().line_count();
-            let mut max_line = line_count.saturating_sub(1);
-
-            if let Some(last_line) = editor.buffer().line(max_line) {
-                if last_line == "\n" || last_line.is_empty() {
-                    max_line = max_line.saturating_sub(1);
-                }
-            }
+            let max_line = editor.buffer().line_count().saturating_sub(1);
 
             let cursor = editor.buffer_mut().cursor_mut();
             let new_line = (cursor.line() + count).min(max_line);
