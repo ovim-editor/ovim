@@ -467,6 +467,22 @@ impl LspManager {
                     }
                 }
             }
+            "window/workDoneProgress/create" => {
+                // Server wants to create a progress token — acknowledge with success
+                // Responding with an error crashes some LSP servers (e.g. typescript-language-server)
+                if let Some(id) = request_id {
+                    if let Some(server) = self.servers.get(language_id) {
+                        let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
+                        if let Err(e) = server.send_response(response_msg).await {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to send workDoneProgress/create response: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
             _ => {
                 lsp_warn!(
                     "LSP-SERVER-REQUEST",
