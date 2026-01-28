@@ -28,6 +28,12 @@
 | OV-00024 | Fixed | MEDIUM | Low | [CMD] Tab completion skips first entry when popup was already visible from typing — first Tab called `select_next()` before `accept()`. Fixed: added `tab_accepted` flag to distinguish typing-triggered popup from Tab-triggered. |
 | OV-00025 | Pending | MEDIUM | Low | [CMD] Up/Down arrows in path completion don't update command line text — visual selection changes but command line stays the same, so Enter executes the Tab-selected entry, not the arrow-selected one. (src/editor/input/commands.rs) |
 | OV-00026 | Fixed | HIGH | Medium | [VISUAL] V<C-u> and V<C-d> broken — half-page scrolling in visual modes was not implemented. Fixed: added Ctrl-D/Ctrl-U handlers to visual_mode.rs. |
+| OV-00027 | Fixed | MEDIUM | Medium | [FILETREE] No scroll offset — file tree had no viewport scrolling, selection could go off-screen in large trees. Fixed: added scroll_offset + ensure_visible() to FileTree. |
+| OV-00028 | Fixed | MEDIUM | Low | [FILETREE] Selection not clamped after directory collapse — collapsing a directory above selected item could leave selected_index out of bounds. Fixed: clamp in rebuild_flattened(). |
+| OV-00029 | Fixed | LOW | Low | [FILETREE] Refresh loses expansion state — refresh() called open() which reset all expansion. Fixed: collect/restore expanded paths across refresh. |
+| OV-00030 | Fixed | LOW | Low | [FILETREE] Dead `<Space>e` toggle code in legacy leader handler — leader.rs maps `<Space>e` to diagnostics, legacy handler was unreachable. Fixed: removed dead code. |
+| OV-00031 | Fixed | MEDIUM | Medium | [FILETREE] `-` key was pure toggle, no reveal — pressing `-` didn't reveal current file in tree. Fixed: new semantics with reveal_path() and file_tree_reveal option. |
+| OV-00032 | Fixed | LOW | Low | [FILETREE] `h` key only collapsed dirs, no parent navigation — on files or collapsed dirs, `h` did nothing. Fixed: navigate_to_parent() fallback. |
 
 ## Bugs Filed Against Hyperion (if any)
 
