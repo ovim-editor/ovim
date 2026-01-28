@@ -1,4 +1,5 @@
 use crate::api::ApiResponse;
+use crate::editor::path_completion::extract_path_from_command;
 use crate::editor::{Change, Editor, Mode, Range};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -7,40 +8,97 @@ use crossterm::event::{KeyCode, KeyEvent};
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Char(ch) => {
-            // Add character to command line
             editor.append_to_command_line(ch);
+            update_path_completion(editor);
         }
         KeyCode::Backspace => {
-            // Remove last character from command line
             editor.backspace_command_line();
+            update_path_completion(editor);
+        }
+        KeyCode::Tab => {
+            handle_tab_completion(editor, false);
+        }
+        KeyCode::BackTab => {
+            handle_tab_completion(editor, true);
         }
         KeyCode::Up => {
-            // Navigate to previous command in history
-            editor.history_prev();
+            if editor.path_completion().is_visible() {
+                editor.path_completion_mut().select_previous();
+            } else {
+                editor.history_prev();
+            }
         }
         KeyCode::Down => {
-            // Navigate to next command in history
-            editor.history_next();
+            if editor.path_completion().is_visible() {
+                editor.path_completion_mut().select_next();
+            } else {
+                editor.history_next();
+            }
         }
         KeyCode::Enter => {
-            // Add to history before executing
+            editor.path_completion_mut().hide();
             editor.add_command_to_history();
-            // Execute the command
             execute_command(editor)?;
             editor.clear_command_line();
-            // Only set mode to Normal if not already in a hover mode (command may have opened a popup)
             if !editor.mode().is_hover() {
                 editor.set_mode(Mode::Normal);
             }
         }
         KeyCode::Esc => {
-            // Cancel command mode
+            editor.path_completion_mut().hide();
             editor.clear_command_line();
             editor.set_mode(Mode::Normal);
         }
         _ => {}
     }
     Ok(())
+}
+
+/// Updates the path completion popup based on current command line content.
+fn update_path_completion(editor: &mut Editor) {
+    let cmd = editor.command_line().to_string();
+    if let Some(path_portion) = extract_path_from_command(&cmd) {
+        let path_portion = path_portion.to_string();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        editor.path_completion_mut().update(&path_portion, &cwd);
+    } else {
+        editor.path_completion_mut().hide();
+    }
+}
+
+/// Handles Tab (forward=false) or BackTab (backward=true) for path completion.
+fn handle_tab_completion(editor: &mut Editor, backward: bool) {
+    if !editor.path_completion().is_visible() {
+        // Try to trigger completion from current command line.
+        update_path_completion(editor);
+        if !editor.path_completion().is_visible() {
+            return;
+        }
+    } else {
+        // Already visible — cycle selection.
+        if backward {
+            editor.path_completion_mut().select_previous();
+        } else {
+            editor.path_completion_mut().select_next();
+        }
+    }
+
+    // Accept the selected entry: replace path portion in command line.
+    let accepted = editor.path_completion().accept();
+    if let Some(new_path) = accepted {
+        let cmd = editor.command_line().to_string();
+        if let Some(path_portion) = extract_path_from_command(&cmd) {
+            let prefix_len = cmd.len() - path_portion.len();
+            let new_cmd = format!("{}{}", &cmd[..prefix_len], new_path);
+            editor.set_command_line(&new_cmd);
+
+            // If we just completed a directory, refresh entries for its contents.
+            if new_path.ends_with('/') {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                editor.path_completion_mut().update(&new_path, &cwd);
+            }
+        }
+    }
 }
 
 /// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax ($1, $2, $0, $0)

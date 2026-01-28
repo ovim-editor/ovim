@@ -1,6 +1,6 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
-use super::{Change, CompletionMenu, Editor, FileTree, LocationList, Mode, QuickfixEntry, QuickfixList, Range};
+use super::{Change, CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry, QuickfixList, Range};
 
 impl Editor {
     /// Gets a reference to the completion menu
@@ -11,6 +11,16 @@ impl Editor {
     /// Gets a mutable reference to the completion menu
     pub fn completion_menu_mut(&mut self) -> &mut CompletionMenu {
         &mut self.completion_menu
+    }
+
+    /// Gets a reference to the path completion state
+    pub fn path_completion(&self) -> &PathCompletionState {
+        &self.path_completion
+    }
+
+    /// Gets a mutable reference to the path completion state
+    pub fn path_completion_mut(&mut self) -> &mut PathCompletionState {
+        &mut self.path_completion
     }
 
     /// Hides the completion menu

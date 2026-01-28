@@ -769,6 +769,90 @@ pub fn render_command_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Renders the path completion popup above the command line.
+pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: Rect) {
+    let state = editor.path_completion();
+    if !state.is_visible() {
+        return;
+    }
+
+    let entries = state.entries();
+    let selected = state.selected_index();
+
+    let max_visible = 10usize;
+    let num_items = entries.len().min(max_visible);
+    if num_items == 0 {
+        return;
+    }
+
+    // Scroll window so selected item is always visible.
+    let scroll_offset = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let menu_height = num_items as u16 + 2; // +2 for borders
+    let max_name_len = entries
+        .iter()
+        .skip(scroll_offset)
+        .take(max_visible)
+        .map(|e| {
+            let display_len = e.name.width();
+            if e.is_dir { display_len + 1 } else { display_len }
+        })
+        .max()
+        .unwrap_or(20);
+    let menu_width = (max_name_len + 4).min(60).max(20) as u16;
+
+    // Position above the status line, left-aligned.
+    let menu_y = status_area.y.saturating_sub(menu_height);
+    let menu_x = status_area.x;
+    let menu_area = Rect::new(
+        menu_x,
+        menu_y,
+        menu_width.min(status_area.width),
+        menu_height,
+    );
+
+    // Build list items.
+    let items: Vec<ListItem> = entries
+        .iter()
+        .skip(scroll_offset)
+        .take(max_visible)
+        .enumerate()
+        .map(|(i, entry)| {
+            let display = if entry.is_dir {
+                format!("{}/", entry.name)
+            } else {
+                entry.name.clone()
+            };
+            let is_selected = (i + scroll_offset) == selected;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if entry.is_dir {
+                Style::default().fg(Color::Blue)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(Span::styled(display, style)))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().bg(Color::Black)),
+    );
+
+    frame.render_widget(ratatui::widgets::Clear, menu_area);
+    frame.render_widget(list, menu_area);
+}
+
 /// Renders the search line
 pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     let search_prefix = if editor.search.search_forward { "/" } else { "?" };
