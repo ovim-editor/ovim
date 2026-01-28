@@ -46,46 +46,13 @@ impl Motions {
         let chars: Vec<char> = line.chars().collect();
 
         if col >= chars.len() {
-            // Fix Bug 4: Handle consecutive empty lines properly
-            // At end of line, move to next line
-            if line_idx + 1 < rope.len_lines() {
-                let mut next_line_idx = line_idx + 1;
-                let mut found_non_empty = false;
-
-                // Skip over consecutive empty lines
-                loop {
-                    let next_line = rope.line(next_line_idx).to_string();
-                    let next_line_trimmed = next_line.trim_end_matches('\n');
-
-                    if next_line_trimmed.is_empty() {
-                        // Empty line - try next one
-                        if next_line_idx + 1 < rope.len_lines() {
-                            next_line_idx += 1;
-                        } else {
-                            // Reached end of file on empty line - don't move to it
-                            break;
-                        }
-                    } else {
-                        // Found non-empty line
-                        found_non_empty = true;
-                        break;
-                    }
-                }
-
-                if found_non_empty {
-                    buffer.cursor_mut().set_position(next_line_idx, 0);
-                    // Skip leading whitespace on the line we landed on
-                    Self::skip_whitespace_forward(buffer);
-                } else {
-                    // No non-empty line found - stay on current line's last char
-                    let max_col = chars.len().saturating_sub(1).max(0);
-                    buffer.cursor_mut().set_col(max_col);
-                }
-            } else {
-                // At end of last line - clamp cursor to valid position
-                let max_col = chars.len().saturating_sub(1).max(0);
-                buffer.cursor_mut().set_col(max_col);
+            // At end of line (or empty line), advance to next word start.
+            if let Some((next_line, next_col)) =
+                Self::find_next_word_start(rope, line_idx + 1, big_word)
+            {
+                buffer.cursor_mut().set_position(next_line, next_col);
             }
+            // else: at end of buffer, don't move
             return;
         }
 
@@ -125,45 +92,50 @@ impl Motions {
             }
         }
 
-        if new_col >= chars.len() && line_idx + 1 < rope.len_lines() {
-            // Fix Bug 4: Skip consecutive empty lines when moving to next line
-            let mut next_line_idx = line_idx + 1;
-            let mut found_non_empty = false;
-
-            // Skip over consecutive empty lines
-            loop {
-                let next_line = rope.line(next_line_idx).to_string();
-                let next_line_trimmed = next_line.trim_end_matches('\n');
-
-                if next_line_trimmed.is_empty() {
-                    // Empty line - try next one
-                    if next_line_idx + 1 < rope.len_lines() {
-                        next_line_idx += 1;
-                    } else {
-                        // Reached end of file on empty line - don't move to it
-                        break;
-                    }
-                } else {
-                    // Found non-empty line
-                    found_non_empty = true;
-                    break;
-                }
+        if new_col >= chars.len() {
+            // Ran past end of line — advance to next word start across lines.
+            if let Some((next_line, next_col)) =
+                Self::find_next_word_start(rope, line_idx + 1, big_word)
+            {
+                buffer.cursor_mut().set_position(next_line, next_col);
             }
-
-            if found_non_empty {
-                buffer.cursor_mut().set_position(next_line_idx, 0);
-                Self::skip_whitespace_forward(buffer);
-            } else {
-                // No non-empty line found - stay on current line's last char
-                buffer
-                    .cursor_mut()
-                    .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
-            }
+            // else: end of buffer, don't move
         } else {
             buffer
                 .cursor_mut()
                 .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
         }
+    }
+
+    /// Scan forward from `start_line` looking for the next word start.
+    ///
+    /// Vim rules for cross-line `w`/`W`:
+    /// - Empty line (zero visible chars) → word boundary, return `(line, 0)`
+    /// - Whitespace-only line → skip it entirely
+    /// - Line with non-whitespace → return `(line, first_non_ws_col)`
+    fn find_next_word_start(
+        rope: &ropey::Rope,
+        start_line: usize,
+        _big_word: bool,
+    ) -> Option<(usize, usize)> {
+        let total_lines = rope.len_lines();
+        for line_idx in start_line..total_lines {
+            let line = rope.line(line_idx).to_string();
+            let content = line.trim_end_matches('\n');
+
+            if content.is_empty() {
+                // Truly empty line — word boundary, stop here.
+                return Some((line_idx, 0));
+            }
+
+            // Check if line has any non-whitespace
+            if let Some(pos) = content.chars().position(|c| !c.is_whitespace()) {
+                return Some((line_idx, pos));
+            }
+
+            // Whitespace-only line — skip.
+        }
+        None
     }
 
     /// Moves cursor backward to the start of the previous word
@@ -447,30 +419,6 @@ impl Motions {
         }
 
         buffer.cursor_mut().set_col(new_col);
-    }
-
-    fn skip_whitespace_forward(buffer: &mut Buffer) {
-        let rope = buffer.rope();
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
-
-        if line_idx >= rope.len_lines() {
-            return;
-        }
-
-        let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
-        let chars: Vec<char> = line.chars().collect();
-
-        let mut new_col = col;
-        while new_col < chars.len() && Self::is_whitespace(chars[new_col]) {
-            new_col += 1;
-        }
-
-        buffer
-            .cursor_mut()
-            .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
     }
 
     /// Finds next occurrence of character on current line (f motion)

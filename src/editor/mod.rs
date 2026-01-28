@@ -39,7 +39,7 @@ mod window;
 mod window_viewport;
 mod wrap_map;
 
-pub use change::{Change, ChangeBuilder, ChangeManager, Position, Range, TextObjectType};
+pub use change::{Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType};
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
@@ -1152,6 +1152,13 @@ impl Editor {
         self.buffer_mut()
             .change_manager_mut()
             .start_building(cursor_before);
+    }
+
+    /// Sets how insert mode was entered on the current change builder (for dot repeat).
+    pub fn set_change_entry_mode(&mut self, mode: InsertEntryMode) {
+        self.buffer_mut()
+            .change_manager_mut()
+            .set_entry_mode(mode);
     }
 
     /// Adds a change to the change manager

@@ -462,8 +462,9 @@ fn test_dot_repeat_I_command() {
         .press('j')
         .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "START:hello\nworlSTART:d\n");
-    test.assert_cursor(1, 9);
+    // I repeats at first non-blank of the line, not at cursor position
+    assert_eq!(test.buffer_content(), "START:hello\nSTART:world\n");
+    test.assert_cursor(1, 5);
 }
 
 // ============================================================================

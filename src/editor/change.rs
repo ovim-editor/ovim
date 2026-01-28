@@ -37,6 +37,23 @@ impl Range {
     }
 }
 
+/// How insert mode was entered — used by dot repeat to reposition the cursor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InsertEntryMode {
+    /// `i` — insert at cursor (no repositioning needed)
+    Insert,
+    /// `a` — append after cursor
+    Append,
+    /// `I` — insert at first non-blank of line
+    FirstNonBlank,
+    /// `A` — append at end of line
+    EndOfLine,
+    /// `o` — open line below (handled separately)
+    OpenBelow,
+    /// `O` — open line above (handled separately)
+    OpenAbove,
+}
+
 /// Represents a semantic change to the buffer
 #[derive(Clone, Debug)]
 pub enum Change {
@@ -57,6 +74,8 @@ pub enum Change {
         changes: Vec<Change>,
         cursor_before: Position,
         cursor_after: Position,
+        /// How insert mode was entered — tells dot repeat how to reposition.
+        entry_mode: InsertEntryMode,
     },
     /// Number operation (increment/decrement) - stores the operation, not the text change
     /// This allows dot-repeat to work correctly on different numbers
@@ -151,6 +170,7 @@ impl Change {
             changes,
             cursor_before,
             cursor_after,
+            entry_mode: InsertEntryMode::Insert,
         }
     }
 
@@ -610,74 +630,87 @@ impl Change {
                 };
                 buffer.cursor_mut().set_position(start_line, final_col);
             }
-            Self::Composite { changes, .. } => {
-                // For composite changes (like insert mode), replay all sub-changes
-                // Special handling for o/O commands: detect if first change is newline insertion
-                // Detect o/O commands by checking the first change
-                // o: inserts "\nINDENT\n" (length > 1, starts with '\n') at current line
-                //    OR "INDENT\n" at next line (position.0 > cursor_before.0)
-                // O: inserts "\n" (length == 1) or "INDENT\n" (!starts_with('\n'))
-                //    at current line (position.1 == 0)
-                let (is_insert_line_below, is_insert_line_above) = changes.first().map(|c| {
-                    if let Self::InsertText { text, position, cursor_before, .. } = c {
-                        // Special case: "\n" at column 0 on same line is O, not o
-                        if text == "\n" && position.1 == 0 && position.0 == cursor_before.0 {
-                            (false, true)
-                        } else {
-                            let is_below = text.starts_with('\n') || (position.0 > cursor_before.0);
-                            let is_above = !is_below && text.ends_with('\n') && position.1 == 0;
-                            (is_below, is_above)
-                        }
-                    } else {
-                        (false, false)
+            Self::Composite { changes, entry_mode, .. } => {
+                // Position cursor according to how insert mode was originally entered.
+                match entry_mode {
+                    InsertEntryMode::Insert => {
+                        // i — cursor stays where it is
                     }
-                }).unwrap_or((false, false));
-
-                for (i, change) in changes.iter().enumerate() {
-                    if i == 0 && (is_insert_line_below || is_insert_line_above) {
-                        // Special handling for first change in o/O commands
-                        if let Self::InsertText { text, .. } = change {
-                            let cursor = buffer.cursor();
-                            let line_idx = cursor.line();
-
-                            if is_insert_line_below {
-                                // For 'o' command, insert at end of current line
-                                let position = if let Some(line) = buffer.line(line_idx) {
-                                    let line_text = line.trim_end_matches('\n');
-                                    let line_len = line_text.chars().count();
-                                    (line_idx, line_len)
-                                } else {
-                                    (line_idx, 0)
-                                };
-                                buffer.insert_text_at(position.0, position.1, text);
-                                // Cursor should be at start of new line (line_idx + 1, indent_len)
-                                // Extract indent from text (everything before last newline)
-                                let indent_len = if text.starts_with('\n') {
-                                    // Text is "\nINDENT\n" or "\n\n", indent is between the newlines
-                                    if text.len() > 2 {
-                                        text[1..text.len()-1].len()
-                                    } else {
-                                        0
-                                    }
-                                } else {
-                                    // Text is "INDENT\n", indent is before the newline
-                                    text.len() - 1
-                                };
-                                buffer.cursor_mut().set_position(line_idx + 1, indent_len);
-                            } else {
-                                // For 'O' command, insert at start of current line
-                                buffer.insert_text_at(line_idx, 0, text);
-                                // Cursor should stay on the new blank line (same line_idx, at indent_len)
-                                let indent_len = text.len() - 1; // text is "INDENT\n", so indent_len = len - 1
-                                buffer.cursor_mut().set_position(line_idx, indent_len);
-                            }
+                    InsertEntryMode::Append => {
+                        // a — move cursor right by 1
+                        let cursor = buffer.cursor_mut();
+                        cursor.move_right(1);
+                    }
+                    InsertEntryMode::FirstNonBlank => {
+                        // I — move to first non-blank of current line
+                        let line_idx = buffer.cursor().line();
+                        if let Some(line) = buffer.line(line_idx) {
+                            let content = line.trim_end_matches('\n');
+                            let col = content.chars().position(|c| !c.is_whitespace()).unwrap_or(0);
+                            buffer.cursor_mut().set_col(col);
                         }
-                    } else {
-                        change.repeat(buffer);
+                    }
+                    InsertEntryMode::EndOfLine => {
+                        // A — move to end of line
+                        let line_idx = buffer.cursor().line();
+                        if let Some(line) = buffer.line(line_idx) {
+                            let line_len = line.trim_end_matches('\n').chars().count();
+                            buffer.cursor_mut().set_col(line_len);
+                        }
+                    }
+                    InsertEntryMode::OpenBelow => {
+                        // o — insert newline below, position on new line
+                        if let Some(Self::InsertText { text, .. }) = changes.first() {
+                            let line_idx = buffer.cursor().line();
+                            let position = if let Some(line) = buffer.line(line_idx) {
+                                let line_len = line.trim_end_matches('\n').chars().count();
+                                (line_idx, line_len)
+                            } else {
+                                (line_idx, 0)
+                            };
+                            buffer.insert_text_at(position.0, position.1, text);
+                            let indent_len = if text.starts_with('\n') {
+                                if text.len() > 2 { text[1..text.len()-1].len() } else { 0 }
+                            } else {
+                                text.len() - 1
+                            };
+                            buffer.cursor_mut().set_position(line_idx + 1, indent_len);
+                        }
+                        // Replay remaining sub-changes (skip first which was the newline)
+                        for change in changes.iter().skip(1) {
+                            change.repeat(buffer);
+                        }
+                        let cursor = buffer.cursor_mut();
+                        if cursor.col() > 0 {
+                            cursor.move_left(1);
+                        }
+                        return;
+                    }
+                    InsertEntryMode::OpenAbove => {
+                        // O — insert newline above, position on new line
+                        if let Some(Self::InsertText { text, .. }) = changes.first() {
+                            let line_idx = buffer.cursor().line();
+                            buffer.insert_text_at(line_idx, 0, text);
+                            let indent_len = text.len() - 1;
+                            buffer.cursor_mut().set_position(line_idx, indent_len);
+                        }
+                        // Replay remaining sub-changes (skip first which was the newline)
+                        for change in changes.iter().skip(1) {
+                            change.repeat(buffer);
+                        }
+                        let cursor = buffer.cursor_mut();
+                        if cursor.col() > 0 {
+                            cursor.move_left(1);
+                        }
+                        return;
                     }
                 }
-                // After repeating composite change, move cursor back by 1
-                // to match the behavior of exiting insert mode with Esc
+
+                // For non-o/O modes: replay all sub-changes at repositioned cursor
+                for change in changes {
+                    change.repeat(buffer);
+                }
+                // Move cursor back by 1 to match Esc behavior
                 let cursor = buffer.cursor_mut();
                 if cursor.col() > 0 {
                     cursor.move_left(1);
@@ -846,6 +879,36 @@ impl Change {
             Self::ReplaceMode { cursor_before, .. } => *cursor_before,
         }
     }
+
+    /// Sets cursor_before on this change (used by repeat to record undo position).
+    pub fn set_cursor_before(&mut self, pos: Position) {
+        match self {
+            Self::InsertText { cursor_before, .. } => *cursor_before = pos,
+            Self::DeleteText { cursor_before, .. } => *cursor_before = pos,
+            Self::Composite { cursor_before, .. } => *cursor_before = pos,
+            Self::NumberOperation { cursor_before, .. } => *cursor_before = pos,
+            Self::JoinLines { cursor_before, .. } => *cursor_before = pos,
+            Self::ChangeTextObject { cursor_before, .. } => *cursor_before = pos,
+            Self::DeleteTextObject { cursor_before, .. } => *cursor_before = pos,
+            Self::ChangeWord { cursor_before, .. } => *cursor_before = pos,
+            Self::ReplaceMode { cursor_before, .. } => *cursor_before = pos,
+        }
+    }
+
+    /// Sets cursor_after on this change (used by repeat to record redo position).
+    pub fn set_cursor_after(&mut self, pos: Position) {
+        match self {
+            Self::InsertText { .. } => { /* InsertText has no cursor_after field */ }
+            Self::DeleteText { .. } => { /* DeleteText has no cursor_after field */ }
+            Self::Composite { cursor_after, .. } => *cursor_after = pos,
+            Self::NumberOperation { cursor_after, .. } => *cursor_after = pos,
+            Self::JoinLines { cursor_after, .. } => *cursor_after = pos,
+            Self::ChangeTextObject { cursor_after, .. } => *cursor_after = pos,
+            Self::DeleteTextObject { cursor_after, .. } => *cursor_after = pos,
+            Self::ChangeWord { cursor_after, .. } => *cursor_after = pos,
+            Self::ReplaceMode { cursor_after, .. } => *cursor_after = pos,
+        }
+    }
 }
 
 /// Builder for accumulating changes during insert mode
@@ -854,6 +917,7 @@ pub struct ChangeBuilder {
     changes: Vec<Change>,
     cursor_before: Position,
     cursor_after: Option<Position>,
+    entry_mode: InsertEntryMode,
 }
 
 impl ChangeBuilder {
@@ -862,7 +926,13 @@ impl ChangeBuilder {
             changes: Vec::new(),
             cursor_before,
             cursor_after: None,
+            entry_mode: InsertEntryMode::Insert,
         }
+    }
+
+    /// Sets how insert mode was entered (for dot repeat cursor positioning).
+    pub fn set_entry_mode(&mut self, mode: InsertEntryMode) {
+        self.entry_mode = mode;
     }
 
     /// Adds a change to the builder
@@ -888,6 +958,7 @@ impl ChangeBuilder {
                 changes: self.changes,
                 cursor_before: self.cursor_before,
                 cursor_after,
+                entry_mode: self.entry_mode,
             })
         }
     }
@@ -929,6 +1000,13 @@ impl ChangeManager {
     /// Starts building a composite change (e.g., when entering insert mode)
     pub fn start_building(&mut self, cursor_before: Position) {
         self.current_builder = Some(ChangeBuilder::new(cursor_before));
+    }
+
+    /// Sets the entry mode on the current builder (for dot repeat cursor positioning).
+    pub fn set_entry_mode(&mut self, mode: InsertEntryMode) {
+        if let Some(builder) = &mut self.current_builder {
+            builder.set_entry_mode(mode);
+        }
     }
 
     /// Adds a change to the current builder, or pushes directly if not building
@@ -982,9 +1060,15 @@ impl ChangeManager {
     /// Repeats the last change at the current cursor position
     pub fn repeat_last(&mut self, buffer: &mut Buffer) -> bool {
         if let Some(ref change) = self.last_change {
-            let repeated_change = change.clone();
+            let mut repeated_change = change.clone();
+            // Store the current cursor as this repeat's cursor_before so undo
+            // returns to the right place (not the original change's position).
+            let current_pos = (buffer.cursor().line(), buffer.cursor().col());
+            repeated_change.set_cursor_before(current_pos);
             repeated_change.repeat(buffer);
-            // When repeating, we create a new change
+            // Record cursor_after for redo
+            let after_pos = (buffer.cursor().line(), buffer.cursor().col());
+            repeated_change.set_cursor_after(after_pos);
             self.push_change(repeated_change);
             true
         } else {

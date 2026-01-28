@@ -4,7 +4,7 @@
 //! i, a, I, A, o, O, v, V, Ctrl-V, R, :, /, ?
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, Motions};
+use crate::editor::{Editor, InsertEntryMode, Motions};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -31,6 +31,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
+            editor.set_change_entry_mode(InsertEntryMode::Append);
             editor.set_mode(Mode::Insert);
             // Move cursor right (insert after)
             let cursor = editor.buffer_mut().cursor_mut();
@@ -44,6 +45,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
+            editor.set_change_entry_mode(InsertEntryMode::FirstNonBlank);
             editor.set_mode(Mode::Insert);
             // Move to first non-blank character
             Motions::first_non_blank(editor.buffer_mut());
@@ -56,6 +58,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
+            editor.set_change_entry_mode(InsertEntryMode::EndOfLine);
             editor.set_mode(Mode::Insert);
             // Move to end of line
             let line_idx = editor.buffer().cursor().line();
@@ -72,6 +75,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
+            editor.set_change_entry_mode(InsertEntryMode::OpenBelow);
             editor.set_mode(Mode::Insert);
             helpers::insert_line_below(editor)?;
             Ok(true)
@@ -83,6 +87,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
+            editor.set_change_entry_mode(InsertEntryMode::OpenAbove);
             editor.set_mode(Mode::Insert);
             helpers::insert_line_above(editor)?;
             Ok(true)
