@@ -329,15 +329,21 @@ impl LanguageServer {
         // 3. Restarting would require unsafe code or complex channel recreation
         // 4. Better to let the server process fail and restart cleanly
         let stdin_clone = stdin.clone();
+        let writer_state = inner.state.clone();
+        let writer_lang = inner.language.clone();
         tokio::spawn(async move {
             while let Some(msg) = outgoing_rx.recv().await {
                 let mut stdin_guard = stdin_clone.lock().await;
                 if let Err(e) = write_message(&mut *stdin_guard, &msg).await {
-                    crate::lsp_error!("Writer", "Error writing to language server: {}", e);
+                    crate::lsp_error!("Writer", "[{}] Error writing to language server: {}", writer_lang, e);
+                    let mut state = writer_state.lock().await;
+                    *state = ServerState::Failed {
+                        error: format!("Writer failed: {}", e),
+                        at: Instant::now(),
+                    };
                     break;
                 }
             }
-            // Writer task exiting - LSP server is no longer functional
         });
 
         // Spawn supervised stale request cleanup task
@@ -467,7 +473,16 @@ impl LanguageServer {
                 }
 
                 if header.is_empty() {
-                    // EOF reached - LSP server closed output
+                    // EOF reached - LSP server process exited or closed stdout
+                    crate::lsp_error!(
+                        &inner_clone.log_prefix(),
+                        "Reader EOF: LSP server closed output (process likely exited)"
+                    );
+                    let mut state = state_clone.lock().await;
+                    *state = ServerState::Failed {
+                        error: "LSP server process exited".to_string(),
+                        at: Instant::now(),
+                    };
                     break;
                 }
 
@@ -791,7 +806,7 @@ impl LanguageServer {
                     }
                 }))
             },
-            "javascript" | "typescript" => {
+            "javascript" | "typescript" | "typescriptreact" | "javascriptreact" => {
                 // TypeScript language server configuration
                 Some(json!({
                     "preferences": {
@@ -1094,11 +1109,25 @@ impl LanguageServer {
             ));
         }
 
+        // Check if server is still alive before sending
+        {
+            let state = self.inner.state.lock().await;
+            match &*state {
+                ServerState::Failed { error, .. } => {
+                    return Err(anyhow!("LSP server failed: {} (method: {})", error, method));
+                }
+                ServerState::Terminated => {
+                    return Err(anyhow!("LSP server terminated (method: {})", method));
+                }
+                _ => {} // Ready or Initializing — proceed
+            }
+        }
+
         self.inner
             .outgoing_tx
             .send(msg)
             .await
-            .map_err(|_| anyhow!("Failed to send request"))?;
+            .map_err(|_| anyhow!("LSP server not responding — channel closed (method: {})", method))?;
 
         // Wait for response with timeout
         // Use longer timeout for initialize request (jdtls can be very slow)
@@ -1184,7 +1213,7 @@ impl LanguageServer {
             .outgoing_tx
             .send(msg)
             .await
-            .map_err(|_| anyhow!("Failed to send notification"))?;
+            .map_err(|_| anyhow!("LSP server not responding — channel closed (notification: {})", method))?;
         Ok(())
     }
 
