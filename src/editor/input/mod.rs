@@ -182,11 +182,6 @@ impl InputHandler {
                     editor.request_organize_imports();
                     return Ok(());
                 }
-                KeyCode::Char('e') => {
-                    // <Space>e - Toggle file tree explorer
-                    editor.toggle_file_tree();
-                    return Ok(());
-                }
                 _ => {
                     // Cancel leader sequence
                     return Ok(());

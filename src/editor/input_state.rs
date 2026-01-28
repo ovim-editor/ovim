@@ -24,7 +24,7 @@ pub enum InputState {
     /// Example sequences:
     /// - `<Space>th` → type hierarchy
     /// - `<Space>ca` → code actions
-    /// - `<Space>e` → toggle file tree
+    /// - `<Space>e` → show diagnostic at cursor
     Leader {
         /// Keys pressed after leader (e.g., ['t'] waiting for 'h')
         keys: Vec<char>,
