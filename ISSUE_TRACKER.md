@@ -27,7 +27,7 @@
 | OV-00023 | Pending | LOW | Low | [TEST] `bug_reproduction_test` segfaults (SIGSEGV signal 11) on both main and feature branches — likely mlua/LuaJIT FFI issue, pre-existing. |
 | OV-00024 | Fixed | MEDIUM | Low | [CMD] Tab completion skips first entry when popup was already visible from typing — first Tab called `select_next()` before `accept()`. Fixed: added `tab_accepted` flag to distinguish typing-triggered popup from Tab-triggered. |
 | OV-00025 | Pending | MEDIUM | Low | [CMD] Up/Down arrows in path completion don't update command line text — visual selection changes but command line stays the same, so Enter executes the Tab-selected entry, not the arrow-selected one. (src/editor/input/commands.rs) |
-| OV-00026 | Pending | HIGH | Medium | [VISUAL] V<C-u> and V<C-d> broken — half-page scrolling in visual line mode doesn't work correctly. Needs investigation. (src/editor/input/) |
+| OV-00026 | Fixed | HIGH | Medium | [VISUAL] V<C-u> and V<C-d> broken — half-page scrolling in visual modes was not implemented. Fixed: added Ctrl-D/Ctrl-U handlers to visual_mode.rs. |
 
 ## Bugs Filed Against Hyperion (if any)
 
