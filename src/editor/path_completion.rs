@@ -189,6 +189,14 @@ impl PathCompletionState {
         self.visible && !self.entries.is_empty()
     }
 
+    /// Returns whether the currently selected entry is a directory.
+    pub fn selected_is_dir(&self) -> bool {
+        self.entries
+            .get(self.selected)
+            .map(|e| e.is_dir)
+            .unwrap_or(false)
+    }
+
     pub fn entries(&self) -> &[PathEntry] {
         &self.entries
     }
