@@ -733,7 +733,11 @@ impl Editor {
 
         // Ensure scroll_offset doesn't go beyond buffer
         let max_line = self.buffer().line_count().saturating_sub(1);
-        let new_offset = if cursor_line > max_line { 0 } else { new_offset };
+        let new_offset = if cursor_line > max_line {
+            0
+        } else {
+            new_offset.min(max_line)
+        };
 
         // Update both editor-level and window-level scroll offsets
         self.scroll_offset = new_offset;
