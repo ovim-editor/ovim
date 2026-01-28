@@ -531,6 +531,37 @@ impl Buffer {
         Some(version)
     }
 
+    /// Rebuilds highlight cache for only the viewport lines (start_line..end_line).
+    /// Does NOT clear pending_rehighlight — the full rebuild is still needed for off-screen content.
+    pub fn rebuild_viewport_highlight_cache(&mut self, start_line: usize, end_line: usize) {
+        let syntax = match self.syntax.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let content = self.rope.to_string();
+        let line_count = self.line_count();
+        let actual_end = end_line.min(line_count);
+        if start_line >= actual_end {
+            return;
+        }
+
+        let viewport_highlights = syntax.highlights_for_line_range(&content, start_line, actual_end);
+
+        // Ensure the cache exists and is the right size
+        let cache = self.cached_highlights.get_or_insert_with(|| vec![Vec::new(); line_count]);
+        // Resize if needed (buffer may have grown/shrunk)
+        cache.resize_with(line_count, Vec::new);
+
+        // Overwrite only the viewport portion
+        for (i, highlights) in viewport_highlights.into_iter().enumerate() {
+            let line_idx = start_line + i;
+            if line_idx < cache.len() {
+                cache[line_idx] = highlights;
+            }
+        }
+    }
+
     /// Applies re-highlighted results if version matches
     pub fn apply_highlights(
         &mut self,

@@ -130,6 +130,88 @@ impl SyntaxHighlighter {
         line_highlights
     }
 
+    /// Gets highlights for a range of lines (viewport-aware query)
+    /// Uses `set_point_range()` to restrict tree-sitter to only the visible lines.
+    /// Returns a Vec indexed from 0 = start_line, with length (end_line - start_line).
+    pub fn highlights_for_line_range(
+        &self,
+        source: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+        let Some(ref tree) = self.tree else {
+            return Vec::new();
+        };
+
+        let range_len = end_line.saturating_sub(start_line);
+        if range_len == 0 {
+            return Vec::new();
+        }
+
+        let lines: Vec<&str> = source.lines().collect();
+        let actual_end = end_line.min(lines.len());
+        let actual_len = actual_end.saturating_sub(start_line);
+        if actual_len == 0 {
+            return Vec::new();
+        }
+
+        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> =
+            vec![Vec::new(); actual_len];
+
+        // Calculate byte offsets for lines in range
+        let mut line_start_bytes = Vec::with_capacity(lines.len());
+        let mut offset = 0;
+        for line in &lines {
+            line_start_bytes.push(offset);
+            offset += line.len() + 1; // +1 for newline
+        }
+
+        // Restrict query cursor to the viewport line range
+        let mut cursor = QueryCursor::new();
+        cursor.set_point_range(
+            tree_sitter::Point { row: start_line, column: 0 }
+                ..tree_sitter::Point { row: actual_end, column: 0 },
+        );
+
+        let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                let node = capture.node;
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+
+                let capture_name = &self.capture_names[capture.index as usize];
+                let group = Self::capture_to_highlight_group(capture_name);
+
+                // Only process lines within our range
+                for line_idx in start_line..actual_end {
+                    let line_start_byte = line_start_bytes[line_idx];
+                    let line_end_byte = line_start_byte + lines[line_idx].len();
+
+                    if start_byte < line_end_byte && end_byte > line_start_byte {
+                        let col_start = start_byte.saturating_sub(line_start_byte);
+                        let line_len = lines[line_idx].len();
+                        let col_end = if end_byte <= line_end_byte {
+                            end_byte - line_start_byte
+                        } else {
+                            line_len
+                        };
+
+                        line_highlights[line_idx - start_line].push((col_start..col_end, group));
+                    }
+                }
+            }
+        }
+
+        // Sort each line's highlights by start position
+        for highlights in &mut line_highlights {
+            highlights.sort_by_key(|(range, _)| range.start);
+        }
+
+        line_highlights
+    }
+
     /// Gets highlights for a specific line
     /// Note: For bulk operations, use highlights_for_all_lines() which is much faster
     pub fn highlights_for_line(

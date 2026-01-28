@@ -167,7 +167,7 @@ pub async fn run_event_loop(
     mut java_status_rx: mpsc::UnboundedReceiver<String>,
 ) -> Result<()> {
     let mut last_edit = Instant::now();
-    let debounce_delay = Duration::from_millis(100);
+    let debounce_delay = Duration::from_millis(200);
     let mut last_input_time: Option<Instant> = None;
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
@@ -225,6 +225,11 @@ pub async fn run_event_loop(
 
             // Mark dirty ONCE after all events processed
             editor.mark_dirty();
+
+            // Immediate viewport rehighlight for accurate visible highlights (no debounce)
+            if editor.buffer().needs_rehighlight() {
+                editor.process_viewport_rehighlight();
+            }
 
             // Immediately process any LSP actions triggered by input (don't wait for tick)
             // This makes hover/goto/completion feel much snappier
