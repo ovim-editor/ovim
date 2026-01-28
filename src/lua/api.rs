@@ -222,6 +222,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Number(n) => format!("set textwidth={}", n as i64),
                     _ => return Err(mlua::Error::external("textwidth must be number")),
                 },
+                "filetreereveal" => match value {
+                    mlua::Value::Boolean(true) => "set filetreereveal".to_string(),
+                    mlua::Value::Boolean(false) => "set nofiletreereveal".to_string(),
+                    _ => return Err(mlua::Error::external("filetreereveal must be boolean")),
+                },
                 _ => {
                     return Err(mlua::Error::external(format!("Unknown option: {}", key)));
                 }

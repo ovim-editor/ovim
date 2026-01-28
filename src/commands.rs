@@ -1625,6 +1625,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                 }
             }
             "wrap" => format!("  {}wrap", if opts.wrap { "" } else { "no" }),
+            "filetreereveal" => format!("  {}filetreereveal", if opts.file_tree_reveal { "" } else { "no" }),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -1805,6 +1806,22 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             return ApiResponse::Success(SuccessResponse {
                 success: true,
                 message: Some("  clipboard=".to_string()),
+                line_count: None,
+            });
+        }
+        "filetreereveal" => {
+            editor.options.file_tree_reveal = true;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  filetreereveal".to_string()),
+                line_count: None,
+            });
+        }
+        "nofiletreereveal" => {
+            editor.options.file_tree_reveal = false;
+            return ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("  nofiletreereveal".to_string()),
                 line_count: None,
             });
         }
