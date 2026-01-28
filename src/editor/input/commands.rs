@@ -36,12 +36,44 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             }
         }
         KeyCode::Enter => {
-            editor.path_completion_mut().hide();
-            editor.add_command_to_history();
-            execute_command(editor)?;
-            editor.clear_command_line();
-            if !editor.mode().is_hover() {
-                editor.set_mode(Mode::Normal);
+            if editor.path_completion().is_visible() {
+                if editor.path_completion().selected_is_dir() {
+                    // Directory: accept into command line, refresh completions, don't execute.
+                    if let Some(new_path) = editor.path_completion().accept() {
+                        let cmd = editor.command_line().to_string();
+                        if let Some(path_portion) = extract_path_from_command(&cmd) {
+                            let prefix_len = cmd.len() - path_portion.len();
+                            let new_cmd = format!("{}{}", &cmd[..prefix_len], new_path);
+                            editor.set_command_line(&new_cmd);
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            editor.path_completion_mut().update(&new_path, &cwd);
+                        }
+                    }
+                } else {
+                    // File: accept into command line, then execute.
+                    if let Some(new_path) = editor.path_completion().accept() {
+                        let cmd = editor.command_line().to_string();
+                        if let Some(path_portion) = extract_path_from_command(&cmd) {
+                            let prefix_len = cmd.len() - path_portion.len();
+                            let new_cmd = format!("{}{}", &cmd[..prefix_len], new_path);
+                            editor.set_command_line(&new_cmd);
+                        }
+                    }
+                    editor.path_completion_mut().hide();
+                    editor.add_command_to_history();
+                    execute_command(editor)?;
+                    editor.clear_command_line();
+                    if !editor.mode().is_hover() {
+                        editor.set_mode(Mode::Normal);
+                    }
+                }
+            } else {
+                editor.add_command_to_history();
+                execute_command(editor)?;
+                editor.clear_command_line();
+                if !editor.mode().is_hover() {
+                    editor.set_mode(Mode::Normal);
+                }
             }
         }
         KeyCode::Esc => {
