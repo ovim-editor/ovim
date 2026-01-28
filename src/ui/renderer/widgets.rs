@@ -29,6 +29,8 @@ mod picker_colors {
     pub const TEXT_BRIGHT: Color = Color::Rgb(240, 240, 255);
     pub const TEXT_MUTED: Color = Color::Rgb(100, 110, 140);
     pub const GREEN: Color = Color::Rgb(129, 250, 183);
+    /// Soft blue for filenames in grep results — visually distinct anchor
+    pub const FILENAME: Color = Color::Rgb(130, 170, 255);
 }
 
 /// A widget that fills every cell in an area with a styled space.
@@ -1202,19 +1204,36 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
             if is_live_grep {
                 if let Some(content) = &result.content {
-                    // Two-part display: dim location + separator + highlighted content
-                    let muted_color = picker_colors::TEXT_MUTED;
-                    let muted_style = Style::default().fg(muted_color).bg(bg_color)
-                        .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() });
-                    spans.push(Span::styled(display.clone(), muted_style));
+                    // Grep result layout: filename:line  content
+                    // - filename in blue (prominent anchor)
+                    // - :line in muted (navigation metadata)
+                    // - content in normal text with green match highlights
+                    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+
+                    // Extract just the filename (basename) from the absolute path
+                    let basename = std::path::Path::new(&result.location)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| result.location.clone());
+
+                    let line_num = format!(":{}", result.line + 1);
+
+                    let filename_style = Style::default()
+                        .fg(picker_colors::FILENAME).bg(bg_color).add_modifier(bold);
+                    let linenum_style = Style::default()
+                        .fg(picker_colors::TEXT_MUTED).bg(bg_color).add_modifier(bold);
+
+                    spans.push(Span::styled(basename.clone(), filename_style));
+                    spans.push(Span::styled(line_num.clone(), linenum_style));
                     spans.push(Span::styled("  ", Style::default().bg(bg_color)));
 
                     // Truncate content to fit remaining width
-                    let used = icon.chars().count() + prefix.chars().count() + display.chars().count() + 2;
+                    let location_len = basename.chars().count() + line_num.chars().count();
+                    let used = icon.chars().count() + prefix.chars().count() + location_len + 2;
                     let content_max = result_width.saturating_sub(used);
                     let truncated_content: String = content.chars().take(content_max).collect();
 
-                    // Match highlights apply to the content (user searches content, not filenames)
+                    // Match highlights on the content (user searches content, not filenames)
                     let positions = rematch_positions(query, &truncated_content);
                     spans.extend(build_highlighted_spans(&truncated_content, &positions, text_color, bg_color, is_selected));
 
