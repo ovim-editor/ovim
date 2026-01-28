@@ -106,6 +106,9 @@ pub struct PathCompletionState {
     /// The original partial input that triggered completion.
     /// Used to restore when cycling past the end.
     original_input: String,
+    /// Whether Tab has accepted an entry since the last `update()`.
+    /// When false, the first Tab accepts the current selection without cycling.
+    tab_accepted: bool,
 }
 
 impl PathCompletionState {
@@ -116,6 +119,7 @@ impl PathCompletionState {
             visible: false,
             base_path: String::new(),
             original_input: String::new(),
+            tab_accepted: false,
         }
     }
 
@@ -137,6 +141,7 @@ impl PathCompletionState {
 
         self.selected = 0;
         self.visible = !self.entries.is_empty();
+        self.tab_accepted = false;
     }
 
     /// Accept the currently selected entry and return the new path portion.
@@ -164,6 +169,14 @@ impl PathCompletionState {
                 self.selected -= 1;
             }
         }
+    }
+
+    pub fn tab_accepted(&self) -> bool {
+        self.tab_accepted
+    }
+
+    pub fn set_tab_accepted(&mut self) {
+        self.tab_accepted = true;
     }
 
     pub fn hide(&mut self) {
