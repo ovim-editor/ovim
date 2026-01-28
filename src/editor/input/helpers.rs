@@ -54,18 +54,7 @@ pub fn move_up(editor: &mut Editor) {
 
 pub fn move_down(editor: &mut Editor) {
     let count = editor.effective_count();
-    let line_count = editor.buffer().line_count();
-    let mut max_line = line_count.saturating_sub(1);
-
-    // Check if last line is empty (just a newline)
-    // If so, don't allow moving to it (Neovim behavior)
-    if max_line < line_count {
-        if let Some(last_line) = editor.buffer().line(max_line) {
-            if last_line == "\n" || last_line.is_empty() {
-                max_line = max_line.saturating_sub(1);
-            }
-        }
-    }
+    let max_line = editor.buffer().line_count().saturating_sub(1);
 
     let cursor = editor.buffer_mut().cursor_mut();
     let new_line = (cursor.line() + count).min(max_line);
@@ -869,20 +858,7 @@ pub fn clamp_cursor_to_buffer(editor: &mut Editor) {
     }
 
     let cursor_line = editor.buffer().cursor().line();
-    let mut clamped_line = cursor_line.min(line_count.saturating_sub(1));
-
-    // If the last line is empty (just a newline), don't allow cursor on it
-    // This matches Neovim behavior
-    if clamped_line == line_count.saturating_sub(1) {
-        if let Some(last_line) = editor.buffer().line(clamped_line) {
-            if last_line == "\n" || last_line.is_empty() {
-                // Last line is empty, move cursor to previous line
-                if clamped_line > 0 {
-                    clamped_line = clamped_line.saturating_sub(1);
-                }
-            }
-        }
-    }
+    let clamped_line = cursor_line.min(line_count.saturating_sub(1));
 
     if cursor_line != clamped_line {
         editor.buffer_mut().cursor_mut().set_line(clamped_line);
