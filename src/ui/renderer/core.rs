@@ -78,7 +78,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
     let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
         let horizontal_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(30), Constraint::Min(1)].as_ref())
+            .constraints([Constraint::Length(50), Constraint::Min(1)].as_ref())
             .split(remaining_area);
         (Some(horizontal_chunks[0]), horizontal_chunks[1])
     } else {
