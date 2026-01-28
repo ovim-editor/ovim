@@ -286,6 +286,13 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
             Ok(true)
         }
 
+        // Go to definition in new tab
+        KeyCode::Char('g') => {
+            editor.request_goto_definition_new_tab();
+            editor.clear_count();
+            Ok(true)
+        }
+
         // Quit
         KeyCode::Char('q') => {
             editor.quit();

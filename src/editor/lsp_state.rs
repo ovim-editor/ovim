@@ -103,6 +103,7 @@ pub struct PendingLspRequest<T> {
 pub enum PendingLspResponse {
     Hover(PendingLspRequest<Option<String>>),
     Definition(PendingLspRequest<Option<lsp_types::Location>>),
+    DefinitionNewTab(PendingLspRequest<Option<lsp_types::Location>>),
     Implementation(PendingLspRequest<Option<lsp_types::Location>>),
     TypeDefinition(PendingLspRequest<Option<lsp_types::Location>>),
 }
@@ -120,6 +121,7 @@ pub enum LspResultType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LspAction {
     GoToDefinition,
+    GoToDefinitionNewTab,
     GoToImplementation,
     GoToType,
     ShowHover,
