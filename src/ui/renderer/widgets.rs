@@ -891,12 +891,12 @@ pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
 /// Calculates the picker overlay area (centered, takes up 80% of screen)
 pub fn get_picker_area(full_area: Rect) -> Rect {
-    let width = (full_area.width * 80) / 100;
-    let height = (full_area.height * 60) / 100;
-    let x = (full_area.width - width) / 2;
-    let y = (full_area.height - height) / 2;
+    let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
+    let height = ((full_area.height * 60) / 100).max(15).min(full_area.height);
+    let x = full_area.width.saturating_sub(width) / 2;
+    let y = full_area.height.saturating_sub(height) / 2;
 
-    Rect::new(x, y, width.max(60), height.max(15))
+    Rect::new(x, y, width, height)
 }
 
 /// Determines if we should show the preview panel based on available width
@@ -1158,6 +1158,8 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
         }
     };
 
+    let is_live_grep = matches!(picker.mode(), crate::editor::PickerMode::LiveGrep);
+
     let visible_results: Vec<Line> = results
         .iter()
         .skip(scroll_offset)
@@ -1189,9 +1191,6 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
             let prefix = if is_selected { " ▸ " } else { "   " };
 
-            // Compute match positions on the (possibly truncated) display string
-            let positions = rematch_positions(query, &display);
-
             let mut spans = vec![
                 Span::styled(icon.to_string(), icon_style),
                 Span::styled(
@@ -1200,13 +1199,50 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                         .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() }),
                 ),
             ];
-            spans.extend(build_highlighted_spans(&display, &positions, text_color, bg_color, is_selected));
 
-            // Padding
-            let content_len = icon.chars().count() + prefix.chars().count() + display.chars().count();
-            let padding = result_width.saturating_sub(content_len);
-            if padding > 0 {
-                spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+            if is_live_grep {
+                if let Some(content) = &result.content {
+                    // Two-part display: dim location + separator + highlighted content
+                    let muted_color = picker_colors::TEXT_MUTED;
+                    let muted_style = Style::default().fg(muted_color).bg(bg_color)
+                        .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() });
+                    spans.push(Span::styled(display.clone(), muted_style));
+                    spans.push(Span::styled("  ", Style::default().bg(bg_color)));
+
+                    // Truncate content to fit remaining width
+                    let used = icon.chars().count() + prefix.chars().count() + display.chars().count() + 2;
+                    let content_max = result_width.saturating_sub(used);
+                    let truncated_content: String = content.chars().take(content_max).collect();
+
+                    // Match highlights apply to the content (user searches content, not filenames)
+                    let positions = rematch_positions(query, &truncated_content);
+                    spans.extend(build_highlighted_spans(&truncated_content, &positions, text_color, bg_color, is_selected));
+
+                    let total_len = used + truncated_content.chars().count();
+                    let padding = result_width.saturating_sub(total_len);
+                    if padding > 0 {
+                        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+                    }
+                } else {
+                    // Fallback: no content field, render display as-is
+                    let positions = rematch_positions(query, &display);
+                    spans.extend(build_highlighted_spans(&display, &positions, text_color, bg_color, is_selected));
+                    let content_len = icon.chars().count() + prefix.chars().count() + display.chars().count();
+                    let padding = result_width.saturating_sub(content_len);
+                    if padding > 0 {
+                        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+                    }
+                }
+            } else {
+                // Standard display with fuzzy match highlighting
+                let positions = rematch_positions(query, &display);
+                spans.extend(build_highlighted_spans(&display, &positions, text_color, bg_color, is_selected));
+
+                let content_len = icon.chars().count() + prefix.chars().count() + display.chars().count();
+                let padding = result_width.saturating_sub(content_len);
+                if padding > 0 {
+                    spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+                }
             }
 
             Line::from(spans)

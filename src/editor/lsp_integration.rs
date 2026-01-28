@@ -983,6 +983,7 @@ impl Editor {
                             line,
                             col,
                             match_positions: Vec::new(),
+                            content: None,
                         })
                     })
                     .collect();
@@ -1068,6 +1069,7 @@ impl Editor {
                             line,
                             col,
                             match_positions: Vec::new(),
+                            content: None,
                         }
                     })
                     .collect();
@@ -1141,6 +1143,7 @@ impl Editor {
                             line,
                             col,
                             match_positions: Vec::new(),
+                            content: None,
                         })
                     })
                     .collect();
@@ -1255,6 +1258,7 @@ impl Editor {
                             line,
                             col,
                             match_positions: Vec::new(),
+                            content: None,
                         })
                     })
                     .collect();
@@ -1379,6 +1383,7 @@ impl Editor {
                             line,
                             col,
                             match_positions: Vec::new(),
+                            content: None,
                         })
                     })
                     .collect();
@@ -1522,6 +1527,7 @@ impl Editor {
                         line,
                         col,
                         match_positions: Vec::new(),
+                        content: None,
                     })
                 })
                 .collect();

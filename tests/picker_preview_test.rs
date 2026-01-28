@@ -14,6 +14,7 @@ fn test_picker_new_with_results_preserves_file_paths() {
             line: 157,
             col: 8,
             match_positions: Vec::new(),
+            content: None,
         },
         PickerResult {
             display: "lsp_integration.rs:2964:5".to_string(),
@@ -21,6 +22,7 @@ fn test_picker_new_with_results_preserves_file_paths() {
             line: 2963,
             col: 4,
             match_positions: Vec::new(),
+            content: None,
         },
     ];
 
@@ -81,6 +83,7 @@ fn test_picker_preserves_line_and_col() {
         line: 41,  // 0-indexed
         col: 14,   // 0-indexed
         match_positions: Vec::new(),
+        content: None,
     }];
 
     let base_dir = PathBuf::from("/path/to");

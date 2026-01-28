@@ -21,6 +21,8 @@ pub struct PickerResult {
     pub col: usize,
     /// Character indices in `display` that matched the query
     pub match_positions: Vec<usize>,
+    /// Matched content (for LiveGrep) — displayed separately from the location
+    pub content: Option<String>,
 }
 
 pub struct Picker {
@@ -95,6 +97,7 @@ impl Picker {
                 line: idx,
                 col: 0,
                 match_positions: Vec::new(),
+                content: None,
             })
             .collect();
 
@@ -124,6 +127,7 @@ impl Picker {
                 line: idx,
                 col: 0,
                 match_positions: Vec::new(),
+                content: None,
             })
             .collect();
 
@@ -154,6 +158,7 @@ impl Picker {
                 line: idx,
                 col: 0,
                 match_positions: Vec::new(),
+                content: None,
             })
             .collect();
 
@@ -244,11 +249,12 @@ impl Picker {
                 };
 
                 results.push(PickerResult {
-                    display: format!("{}:{}:{}: {}", file, line_num, col_num, content.trim()),
+                    display: format!("{}:{}:{}", file, line_num, col_num),
                     location: abs_path,
                     line: line_num.saturating_sub(1), // Convert to 0-indexed
                     col: col_num.saturating_sub(1),
                     match_positions: Vec::new(),
+                    content: Some(content.trim().to_string()),
                 });
             }
         }

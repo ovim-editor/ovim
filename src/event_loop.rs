@@ -642,6 +642,7 @@ fn spawn_file_finder_loading(
                             line: 0,
                             col: 0,
                             match_positions: Vec::new(),
+                            content: None,
                         };
 
                         // Collect for cache
