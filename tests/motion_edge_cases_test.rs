@@ -205,15 +205,19 @@ fn test_caret_on_empty_line() {
 fn test_multiple_consecutive_empty_lines() {
     let mut test = EditorTest::new("hello\n\n\n\nworld");
 
-    test.press('w') // First w: Move from "hello" past to trailing newline (line 5)
-        .press('w'); // Second w: Stay at trailing newline (line 5)
-
-    // "hello\n\n\n\nworld" + trailing newline = "hello\n\n\n\nworld\n"
     // Lines: 0="hello", 1="", 2="", 3="", 4="world", 5="" (trailing)
-    assert_eq!(test.buffer_content(), "hello\n\n\n\nworld\n");
+    // Empty lines are word boundaries — each `w` stops on the next empty line.
+    test.press('w'); // "hello" end-of-line → line 1 (empty) → stop
+    test.assert_cursor(1, 0);
 
-    // w from "hello" skips all content to trailing newline (line 5)
-    test.assert_cursor(5, 0);
+    test.press('w'); // line 1 (empty) → line 2 (empty) → stop
+    test.assert_cursor(2, 0);
+
+    test.press('w'); // line 2 (empty) → line 3 (empty) → stop
+    test.assert_cursor(3, 0);
+
+    test.press('w'); // line 3 (empty) → line 4 "world" → stop at col 0
+    test.assert_cursor(4, 0);
 }
 
 // ============================================================================
