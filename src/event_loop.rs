@@ -641,6 +641,7 @@ fn spawn_file_finder_loading(
                             location: path.to_string_lossy().to_string(),
                             line: 0,
                             col: 0,
+                            match_positions: Vec::new(),
                         };
 
                         // Collect for cache

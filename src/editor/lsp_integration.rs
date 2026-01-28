@@ -982,6 +982,7 @@ impl Editor {
                             location: path.to_string_lossy().to_string(),
                             line,
                             col,
+                            match_positions: Vec::new(),
                         })
                     })
                     .collect();
@@ -1066,6 +1067,7 @@ impl Editor {
                             location: file_path.to_string(),
                             line,
                             col,
+                            match_positions: Vec::new(),
                         }
                     })
                     .collect();
@@ -1138,6 +1140,7 @@ impl Editor {
                             location: path.to_string_lossy().to_string(),
                             line,
                             col,
+                            match_positions: Vec::new(),
                         })
                     })
                     .collect();
@@ -1251,6 +1254,7 @@ impl Editor {
                             location: path.to_string_lossy().to_string(),
                             line,
                             col,
+                            match_positions: Vec::new(),
                         })
                     })
                     .collect();
@@ -1374,6 +1378,7 @@ impl Editor {
                             location: path.to_string_lossy().to_string(),
                             line,
                             col,
+                            match_positions: Vec::new(),
                         })
                     })
                     .collect();
@@ -1516,6 +1521,7 @@ impl Editor {
                             location: path.to_string_lossy().to_string(),
                         line,
                         col,
+                        match_positions: Vec::new(),
                     })
                 })
                 .collect();

@@ -13,12 +13,14 @@ fn test_picker_new_with_results_preserves_file_paths() {
             location: "/Users/adrian/Projects/ovim/src/editor/picker.rs".to_string(),
             line: 157,
             col: 8,
+            match_positions: Vec::new(),
         },
         PickerResult {
             display: "lsp_integration.rs:2964:5".to_string(),
             location: "/Users/adrian/Projects/ovim/src/editor/lsp_integration.rs".to_string(),
             line: 2963,
             col: 4,
+            match_positions: Vec::new(),
         },
     ];
 
@@ -78,6 +80,7 @@ fn test_picker_preserves_line_and_col() {
         location: "/path/to/test.rs".to_string(),
         line: 41,  // 0-indexed
         col: 14,   // 0-indexed
+        match_positions: Vec::new(),
     }];
 
     let base_dir = PathBuf::from("/path/to");

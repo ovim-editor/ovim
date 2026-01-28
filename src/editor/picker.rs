@@ -19,6 +19,8 @@ pub struct PickerResult {
     pub line: usize,
     /// Column number (for LiveGrep, 0 for FindFiles)
     pub col: usize,
+    /// Character indices in `display` that matched the query
+    pub match_positions: Vec<usize>,
 }
 
 pub struct Picker {
@@ -92,6 +94,7 @@ impl Picker {
                 location: idx.to_string(), // Use index as location identifier
                 line: idx,
                 col: 0,
+                match_positions: Vec::new(),
             })
             .collect();
 
@@ -120,6 +123,7 @@ impl Picker {
                 location: idx.to_string(), // Use index as location identifier
                 line: idx,
                 col: 0,
+                match_positions: Vec::new(),
             })
             .collect();
 
@@ -149,6 +153,7 @@ impl Picker {
                 location: idx.to_string(), // Index into editor's LSP storage vectors
                 line: idx,
                 col: 0,
+                match_positions: Vec::new(),
             })
             .collect();
 
@@ -243,6 +248,7 @@ impl Picker {
                     location: abs_path,
                     line: line_num.saturating_sub(1), // Convert to 0-indexed
                     col: col_num.saturating_sub(1),
+                    match_positions: Vec::new(),
                 });
             }
         }
@@ -250,12 +256,10 @@ impl Picker {
         results
     }
 
-    /// Fuzzy match scoring function
-    /// Returns Some(score) if match succeeds, None otherwise
-    /// Higher scores are better matches
-    fn fuzzy_match(query: &str, target: &str) -> Option<i32> {
+    /// Fuzzy match that also returns the matched character positions in the target
+    fn fuzzy_match_with_positions(query: &str, target: &str) -> Option<(i32, Vec<usize>)> {
         if query.is_empty() {
-            return Some(0);
+            return Some((0, Vec::new()));
         }
 
         let query_lower = query.to_lowercase();
@@ -265,7 +269,7 @@ impl Picker {
         let target_chars: Vec<char> = target_lower.chars().collect();
 
         if query_chars.is_empty() {
-            return Some(0);
+            return Some((0, Vec::new()));
         }
 
         let mut query_idx = 0;
@@ -273,6 +277,7 @@ impl Picker {
         let mut score: i32 = 0;
         let mut consecutive_matches = 0;
         let mut last_match_idx: Option<usize> = None;
+        let mut positions = Vec::with_capacity(query_chars.len());
 
         while query_idx < query_chars.len() && target_idx < target_chars.len() {
             if query_chars[query_idx] == target_chars[target_idx] {
@@ -283,10 +288,9 @@ impl Picker {
                 if let Some(last_idx) = last_match_idx {
                     if target_idx == last_idx + 1 {
                         consecutive_matches += 1;
-                        score += consecutive_matches * 5; // Increasing bonus for longer sequences
+                        score += consecutive_matches * 5;
                     } else {
                         consecutive_matches = 0;
-                        // Penalty for gaps (but capped to not penalize too much)
                         let gap = target_idx - last_idx - 1;
                         score -= (gap as i32).min(3);
                     }
@@ -308,24 +312,68 @@ impl Picker {
                     }
                 }
 
-                // Note: Case match bonus removed - the original implementation used
-                // chars().nth() which is O(n) per call, causing O(n²) per fuzzy_match.
-                // The scoring improvement wasn't worth the performance cost.
-
+                positions.push(target_idx);
                 last_match_idx = Some(target_idx);
                 query_idx += 1;
             }
             target_idx += 1;
         }
 
-        // Check if we matched all query characters
         if query_idx == query_chars.len() {
-            // Bonus for shorter targets (more specific matches)
             score += 100 - (target_chars.len() as i32).min(100);
-            Some(score)
+            Some((score, positions))
         } else {
             None
         }
+    }
+
+    /// Filename-preferential fuzzy scoring
+    /// Splits query on whitespace (all tokens must match), prefers filename matches.
+    /// Returns (total_score, matched_positions_in_full_path).
+    fn fuzzy_score(query: &str, target: &str) -> Option<(i32, Vec<usize>)> {
+        if query.is_empty() {
+            return Some((0, Vec::new()));
+        }
+
+        let tokens: Vec<&str> = query.split_whitespace().collect();
+        if tokens.is_empty() {
+            return Some((0, Vec::new()));
+        }
+
+        // Extract filename and its char offset in the full path
+        let filename_start = target.rfind('/').map(|i| i + 1).unwrap_or(0);
+        let filename = &target[filename_start..];
+        // Convert byte offset to char offset
+        let filename_char_offset = target[..filename_start].chars().count();
+
+        let mut total_score: i32 = 0;
+        let mut all_positions = Vec::new();
+
+        for token in &tokens {
+            // Try matching against filename first (with bonus)
+            if let Some((score, positions)) = Self::fuzzy_match_with_positions(token, filename) {
+                total_score += score + 50; // Filename match bonus
+                // Offset positions to full-path indices
+                for pos in positions {
+                    all_positions.push(pos + filename_char_offset);
+                }
+            } else if let Some((score, positions)) = Self::fuzzy_match_with_positions(token, target)
+            {
+                // Fall back to full path match (no bonus)
+                total_score += score;
+                all_positions.extend(positions);
+            } else {
+                // Token didn't match at all — entire query fails
+                return None;
+            }
+        }
+
+        Some((total_score, all_positions))
+    }
+
+    /// Returns the total number of results (before filtering)
+    pub fn all_results_count(&self) -> usize {
+        self.all_results.len()
     }
 
     /// Updates the query and refreshes filtered results
@@ -339,49 +387,30 @@ impl Picker {
     /// Internal filter logic - called by both set_query and apply_pending_filter
     fn apply_filter_internal(&mut self) {
         match self.mode {
-            PickerMode::FindFiles => {
-                // Fuzzy matching with scoring
-                let mut scored_results: Vec<(PickerResult, i32)> = self
+            PickerMode::FindFiles | PickerMode::Custom | PickerMode::Completion | PickerMode::LspLocations => {
+                let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        Self::fuzzy_match(&self.query, &r.display).map(|score| (r.clone(), score))
+                        Self::fuzzy_score(&self.query, &r.display).map(|(score, positions)| {
+                            (r.clone(), score, positions)
+                        })
                     })
                     .collect();
 
-                // Sort by score (descending)
                 scored_results.sort_by(|a, b| b.1.cmp(&a.1));
 
                 self.filtered_results = scored_results
                     .into_iter()
-                    .map(|(result, _score)| result)
+                    .map(|(mut result, _score, positions)| {
+                        result.match_positions = positions;
+                        result
+                    })
                     .collect();
             }
             PickerMode::LiveGrep => {
-                // Perform live grep, then apply fuzzy filtering on results
                 let grep_results = Self::live_grep(&self.query, &self.base_dir);
-
-                // For LiveGrep, we still want to show the grep results as-is
-                // since the query is used for the actual grep search
                 self.filtered_results = grep_results;
-            }
-            PickerMode::Custom | PickerMode::Completion | PickerMode::LspLocations => {
-                // Fuzzy matching for custom mode, completion, and LSP locations
-                let mut scored_results: Vec<(PickerResult, i32)> = self
-                    .all_results
-                    .iter()
-                    .filter_map(|r| {
-                        Self::fuzzy_match(&self.query, &r.display).map(|score| (r.clone(), score))
-                    })
-                    .collect();
-
-                // Sort by score (descending)
-                scored_results.sort_by(|a, b| b.1.cmp(&a.1));
-
-                self.filtered_results = scored_results
-                    .into_iter()
-                    .map(|(result, _score)| result)
-                    .collect();
             }
         }
 
@@ -545,7 +574,7 @@ impl Picker {
             // Just check if it matches and append - don't try to maintain sort order
             // The filter will be re-applied with proper sorting when the user stops typing
             // This avoids O(n²) re-scoring of all existing results on each file addition
-            if Self::fuzzy_match(&self.query, &result.display).is_some() {
+            if Self::fuzzy_score(&self.query, &result.display).is_some() {
                 self.filtered_results.push(result);
                 // Mark that results need re-sorting (will happen on next filter apply)
                 self.pending_filter = true;
