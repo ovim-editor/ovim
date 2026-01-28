@@ -52,15 +52,29 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         // Apply the selected completion
                         editor.apply_completion(completion_index);
                     } else if picker_mode == PickerMode::LspLocations {
-                        // LSP locations mode - navigate to location
-                        let location_index = result.line; // We stored index in line field
+                        // LSP locations mode - navigate directly using file path + line/col
+                        // (open_location_picker stores actual paths and positions, not indices)
+                        let location = result.location.clone();
+                        let line = result.line;
+                        let col = result.col;
 
                         // Close picker first
                         editor.close_picker();
                         editor.set_mode(Mode::Normal);
 
-                        // Navigate to the LSP location
-                        editor.navigate_to_lsp_location(location_index);
+                        // Save position for Ctrl-T navigation back
+                        editor.push_tag();
+
+                        // Load the file
+                        if let Err(e) = editor.load_file(&location) {
+                            editor.set_lsp_status(format!("Failed to load file {}: {}", location, e));
+                            return Ok(());
+                        }
+
+                        // Jump to line/col and center
+                        editor.buffer_mut().cursor_mut().set_position(line, col);
+                        editor.buffer_mut().validate_cursor_position();
+                        editor.center_cursor_in_viewport();
                     } else {
                         // Regular mode - load file and jump to location
                         let location = result.location.clone();
