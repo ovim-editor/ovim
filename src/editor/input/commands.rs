@@ -74,14 +74,19 @@ fn handle_tab_completion(editor: &mut Editor, backward: bool) {
         if !editor.path_completion().is_visible() {
             return;
         }
-    } else {
-        // Already visible — cycle selection.
+        // First Tab after triggering: accept entry[0] without cycling.
+    } else if editor.path_completion().tab_accepted() {
+        // Already visible and Tab was used before — cycle selection.
         if backward {
             editor.path_completion_mut().select_previous();
         } else {
             editor.path_completion_mut().select_next();
         }
     }
+    // else: popup was visible from typing but Tab hasn't accepted yet —
+    // accept the current selection (entry[0]) without cycling.
+
+    editor.path_completion_mut().set_tab_accepted();
 
     // Accept the selected entry: replace path portion in command line.
     let accepted = editor.path_completion().accept();

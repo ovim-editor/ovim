@@ -19,12 +19,15 @@
 | OV-00015 | Pending | MEDIUM | Medium | [PERF] Incremental wrap map invalidation only covers cursor line — [details](issue-docs/OV-00015-incremental-invalidation-cursor-only.md). (src/editor/mod.rs:ensure_wrap_map) |
 | OV-00016 | Pending | LOW | Medium | [WRAP] No virtcol/curswant tracking for gj/gk — [details](issue-docs/OV-00016-virtcol-curswant.md). (src/editor/input/normal/pending_commands.rs) |
 | OV-00017 | Pending | LOW | Low | [CLEANUP] Remove delegate display_width in editor/mod.rs — [details](issue-docs/OV-00017-remove-delegate-display-width.md). (src/editor/mod.rs) |
-| OV-00018 | Pending | MEDIUM | High | [UX] Tab completion for file paths in command mode (:e, :tabe, :sp, etc.) — [details](issue-docs/OV-00018-command-path-completion.md). (src/editor/completion.rs, src/editor/input/, src/commands.rs) |
+| OV-00018 | Fixed | MEDIUM | High | [UX] Tab completion for file paths in command mode (:e, :tabe, :sp, etc.) — implemented with popup UI, Tab/BackTab cycling, prefix filtering. See OV-00025 for remaining arrow key issue. |
 | OV-00019 | Triage | HIGH | N/A | When there is a wrapping line above the cursor in the current buffer and the textwidth option is set, there is a miscalculation causing the vertical cursor position to be incorrect (cursor is below input point). There seems to be other related bugs, so investigation so required. |
 | OV-00020 | Fixed | LOW | Low | [CLEANUP] Dead `sign_width > 0` branch in gutter layout — always-true conditional with unreachable else. Fixed: removed dead branch, added SIGN_WIDTH/GUTTER_SPACING constants. |
 | OV-00021 | Fixed | LOW | Low | [CLEANUP] `render_hover_window` takes 10 parameters — collapsed layout+viewport into `OverlayContext`. Also applied to `render_completion_menu` and `set_cursor_position`. |
 | OV-00022 | Fixed | MEDIUM | Medium | [CLEANUP] `render_to_frame` is 218-line god method — decomposed into `clear_frame`, `compute_frame_layout`, `render_buffer_area`, `render_status_area`, `render_overlays` with `FrameAreas` struct. |
 | OV-00023 | Pending | LOW | Low | [TEST] `bug_reproduction_test` segfaults (SIGSEGV signal 11) on both main and feature branches — likely mlua/LuaJIT FFI issue, pre-existing. |
+| OV-00024 | Fixed | MEDIUM | Low | [CMD] Tab completion skips first entry when popup was already visible from typing — first Tab called `select_next()` before `accept()`. Fixed: added `tab_accepted` flag to distinguish typing-triggered popup from Tab-triggered. |
+| OV-00025 | Pending | MEDIUM | Low | [CMD] Up/Down arrows in path completion don't update command line text — visual selection changes but command line stays the same, so Enter executes the Tab-selected entry, not the arrow-selected one. (src/editor/input/commands.rs) |
+| OV-00026 | Pending | HIGH | Medium | [VISUAL] V<C-u> and V<C-d> broken — half-page scrolling in visual line mode doesn't work correctly. Needs investigation. (src/editor/input/) |
 
 ## Bugs Filed Against Hyperion (if any)
 
