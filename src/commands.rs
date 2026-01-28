@@ -1085,7 +1085,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             // Handle :bd (delete buffer)
             } else if command == "bd" || command == "bdelete" {
-                if editor.buffer().is_modified() {
+                if editor.is_modified() {
                     ApiResponse::Error(ErrorResponse {
                         error: "No write since last change (add ! to override)".to_string(),
                     })
@@ -1146,7 +1146,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             " "
                         };
                         let modified =
-                            if i < editor.buffer_count() && editor.buffers[i].is_modified() {
+                            if i < editor.buffer_count() && !editor.buffers[i].change_manager().is_at_save_point() {
                                 "+"
                             } else {
                                 " "
