@@ -18,9 +18,12 @@ pub struct EditorTest {
 impl EditorTest {
     /// Create a new test with initial buffer content
     pub fn new(content: &str) -> Self {
-        Self {
-            editor: Editor::with_content(content),
-        }
+        let mut editor = Editor::with_content(content);
+        // Disable system clipboard sync in tests — tests verify register
+        // semantics, not clipboard integration, and the system clipboard
+        // is shared global state that causes flaky cross-test contamination.
+        editor.options.clipboard = String::new();
+        Self { editor }
     }
 
     /// Create a new test with empty buffer

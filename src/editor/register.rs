@@ -1,11 +1,40 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
-/// System clipboard provider using arboard
-/// This is a helper to gracefully handle clipboard operations
-/// which might fail in certain environments (e.g., SSH, headless)
+/// Process-wide clipboard handle.
+///
+/// `NSPasteboard::generalPasteboard()` is a process-wide singleton that is
+/// not thread-safe.  arboard declares `unsafe impl Send + Sync` on its
+/// wrapper, but concurrent access from multiple threads corrupts the
+/// Objective-C runtime (SIGSEGV in `objc_msgSend`).
+///
+/// We hold a single `arboard::Clipboard` behind a mutex so all access is
+/// serialized.  This costs nothing in production (ovim is single-threaded,
+/// so the lock is never contended) and makes the test harness safe.
+///
+/// The `Option` is `None` when the clipboard is unavailable (SSH, headless,
+/// Wayland without a seat, etc.).
+static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+
+/// Initialize the global clipboard handle (best-effort, never panics).
+fn with_clipboard<T>(f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>) -> Option<T> {
+    let mut guard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
+    // Lazily initialize on first use.
+    if guard.is_none() {
+        *guard = arboard::Clipboard::new().ok();
+    }
+    let cb = guard.as_mut()?;
+    f(cb).ok()
+}
+
+/// System clipboard provider.
+///
+/// Reads/writes go through the process-wide `CLIPBOARD` mutex.
+/// When the system clipboard is unavailable, falls back to an
+/// in-process cache so the `+` / `*` registers still work.
 #[derive(Debug, Clone)]
 struct ClipboardProvider {
-    /// Last synced clipboard content (fallback if clipboard is unavailable)
+    /// Fallback when the system clipboard is unavailable.
     cached: String,
 }
 
@@ -16,39 +45,13 @@ impl ClipboardProvider {
         }
     }
 
-    /// Write text to system clipboard with fallback to cache
     fn write(&mut self, text: String) {
-        match arboard::Clipboard::new() {
-            Ok(mut clipboard) => {
-                if let Err(_e) = clipboard.set_text(text.clone()) {
-                    // Clipboard write failed, but still cache the value
-                    self.cached = text;
-                } else {
-                    self.cached = text;
-                }
-            }
-            Err(_e) => {
-                // Clipboard unavailable (SSH, headless, etc.), cache the value
-                self.cached = text;
-            }
-        }
+        with_clipboard(|cb| cb.set_text(text.clone()));
+        self.cached = text;
     }
 
-    /// Read text from system clipboard with fallback to cache
     fn read(&self) -> String {
-        match arboard::Clipboard::new() {
-            Ok(mut clipboard) => match clipboard.get_text() {
-                Ok(text) => text,
-                Err(_e) => {
-                    // Clipboard read failed, return cached value
-                    self.cached.clone()
-                }
-            },
-            Err(_e) => {
-                // Clipboard unavailable, return cached value
-                self.cached.clone()
-            }
-        }
+        with_clipboard(|cb| cb.get_text()).unwrap_or_else(|| self.cached.clone())
     }
 }
 
