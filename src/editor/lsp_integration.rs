@@ -266,6 +266,73 @@ impl Editor {
                 }
             }
 
+            crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(mut pending) => {
+                use tokio::sync::oneshot::error::TryRecvError;
+                match pending.receiver.try_recv() {
+                    Ok(Ok(Some(location))) => {
+                        crate::lsp_debug!("LSP-DEFINITION", "Received definition response (new tab)");
+
+                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
+                            let target_line = location.range.start.line as usize;
+                            let target_character = location.range.start.character;
+
+                            // Save current position to tag stack for Ctrl-T navigation
+                            self.push_tag();
+
+                            // Open in a new tab
+                            self.new_tab(Some(path.to_string_lossy().to_string()));
+                            if self.open_file(path.to_string_lossy().as_ref()).is_err() {
+                                self.set_lsp_status("Failed to open file".to_string());
+                                return false;
+                            }
+
+                            let target_col = self.utf16_to_col(target_line, target_character);
+                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                            self.buffer_mut().validate_cursor_position();
+                            self.center_cursor_in_viewport();
+                            let actual_col = self.buffer().cursor().col();
+                            self.set_lsp_status(format!(
+                                "Definition (new tab): {}:{}:{}",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                target_line + 1,
+                                actual_col + 1
+                            ));
+                            self.mark_dirty();
+                            true
+                        } else {
+                            self.set_lsp_status("Invalid file path in LSP response".to_string());
+                            false
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        crate::lsp_debug!("LSP-DEFINITION", "No definition found");
+                        self.set_lsp_status("No definition found".to_string());
+                        false
+                    }
+                    Ok(Err(e)) => {
+                        crate::lsp_debug!("LSP-DEFINITION", "Definition request failed: {:?}", e);
+                        self.set_lsp_status(format!("Definition failed: {}", e));
+                        false
+                    }
+                    Err(TryRecvError::Empty) => {
+                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
+                            crate::lsp_debug!("LSP-DEFINITION", "Definition request timed out, aborting task");
+                            pending.task.abort();
+                            self.set_lsp_status("Definition request timed out".to_string());
+                            return false;
+                        }
+                        self.lsp_state.pending_lsp_response =
+                            Some(crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending));
+                        false
+                    }
+                    Err(TryRecvError::Closed) => {
+                        crate::lsp_debug!("LSP-DEFINITION", "Definition request cancelled (sender dropped)");
+                        self.set_lsp_status("Definition request cancelled".to_string());
+                        false
+                    }
+                }
+            }
+
             crate::editor::lsp_state::PendingLspResponse::Implementation(mut pending) => {
                 use tokio::sync::oneshot::error::TryRecvError;
                 match pending.receiver.try_recv() {
@@ -806,6 +873,7 @@ impl Editor {
             );
             let result = match action {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
+                LspAction::GoToDefinitionNewTab => self.goto_definition_new_tab_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
                 LspAction::GoToType => self.goto_type_impl().await,
                 LspAction::ShowHover => {

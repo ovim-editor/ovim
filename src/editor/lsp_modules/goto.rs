@@ -13,6 +13,11 @@ impl Editor {
         self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToDefinition);
     }
 
+    /// Request go-to-definition at current cursor position, opening in a new tab
+    pub fn request_goto_definition_new_tab(&mut self) {
+        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToDefinitionNewTab);
+    }
+
     /// Request go-to-implementation at current cursor position
     pub fn request_goto_implementation(&mut self) {
         self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToImplementation);
@@ -23,8 +28,8 @@ impl Editor {
         self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToType);
     }
 
-    /// Implementation of goto-definition
-    pub(in crate::editor) async fn goto_definition_impl(&mut self) -> Result<bool> {
+    /// Implementation of goto-definition (optionally in a new tab)
+    async fn goto_definition_common(&mut self, new_tab: bool) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
         let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
@@ -103,19 +108,31 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response =
-            Some(crate::editor::lsp_state::PendingLspResponse::Definition(
-                crate::editor::lsp_state::PendingLspRequest {
-                    task,
-                    receiver: rx,
-                    started: std::time::Instant::now(),
-                }
-            ));
+        let pending = crate::editor::lsp_state::PendingLspRequest {
+            task,
+            receiver: rx,
+            started: std::time::Instant::now(),
+        };
+        self.lsp_state.pending_lsp_response = Some(if new_tab {
+            crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending)
+        } else {
+            crate::editor::lsp_state::PendingLspResponse::Definition(pending)
+        });
 
         // Show loading status
         self.set_lsp_status("Jumping to definition...".to_string());
 
         Ok(false) // Return immediately - result will be processed by poll_pending_lsp_responses
+    }
+
+    /// Implementation of goto-definition (same buffer)
+    pub(in crate::editor) async fn goto_definition_impl(&mut self) -> Result<bool> {
+        self.goto_definition_common(false).await
+    }
+
+    /// Implementation of goto-definition (new tab)
+    pub(in crate::editor) async fn goto_definition_new_tab_impl(&mut self) -> Result<bool> {
+        self.goto_definition_common(true).await
     }
 
     /// Implementation of goto-implementation
