@@ -989,6 +989,23 @@ impl Editor {
         self.mark_dirty();
     }
 
+    /// Immediate viewport-only syntax rehighlight.
+    /// Queries tree-sitter for just the visible lines and updates the cache.
+    /// This is called immediately after input so highlights are accurate without waiting for the debounce.
+    pub fn process_viewport_rehighlight(&mut self) {
+        if !self.buffer().needs_rehighlight() {
+            return;
+        }
+
+        let start_line = self.scroll_offset();
+        let end_line = start_line + self.viewport_height();
+
+        self.buffer_mut()
+            .rebuild_viewport_highlight_cache(start_line, end_line);
+
+        self.mark_dirty();
+    }
+
     /// Apply modeline options to editor settings
     fn apply_modeline(&mut self, modeline: &crate::modeline::Modeline) {
         // Indentation options
