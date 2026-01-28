@@ -242,6 +242,28 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Esc => {
             helpers::exit_visual_mode_to_normal(editor);
         }
+        // Half-page scroll down (Ctrl-D) — must come before 'd' delete handler
+        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            let half_page = editor.half_page_scroll();
+            let count = editor.count().unwrap_or(half_page);
+            let max_line = editor.buffer().line_count().saturating_sub(1);
+
+            let cursor = editor.buffer_mut().cursor_mut();
+            let new_line = (cursor.line() + count).min(max_line);
+            cursor.set_line(new_line);
+            helpers::clamp_cursor_to_line(editor);
+            editor.clear_count();
+        }
+        // Half-page scroll up (Ctrl-U) — must come before 'u' lowercase handler
+        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            let half_page = editor.half_page_scroll();
+            let count = editor.count().unwrap_or(half_page);
+            let cursor = editor.buffer_mut().cursor_mut();
+            let new_line = cursor.line().saturating_sub(count);
+            cursor.set_line(new_line);
+            helpers::clamp_cursor_to_line(editor);
+            editor.clear_count();
+        }
         // Text object prefixes in visual mode
         KeyCode::Char('i') | KeyCode::Char('a') => {
             // Set pending command to handle text objects (iw, aw, ip, ap, i{, a{, etc.)
