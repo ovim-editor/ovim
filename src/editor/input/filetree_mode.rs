@@ -1,7 +1,8 @@
 //! File tree mode input handling
 //!
 //! Handles navigation and actions within the file tree sidebar.
-//! j/k or arrows to navigate, Enter/o/l to open, x/h to collapse, r to refresh.
+//! j/k or arrows to navigate, Enter/o/l to open, h to collapse or go to parent,
+//! x to collapse, r to refresh, gg/G for top/bottom.
 
 use crate::editor::Editor;
 use crate::mode::Mode;
@@ -10,6 +11,21 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 /// Handles input in FileTree mode
 pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    // Handle pending 'g' for gg command
+    if editor.file_tree().pending_g() {
+        editor.file_tree_mut().set_pending_g(false);
+        match key_event.code {
+            KeyCode::Char('g') => {
+                // gg - go to top of tree
+                editor.file_tree_mut().select_first();
+            }
+            _ => {
+                // Invalid second key after g, ignore
+            }
+        }
+        return Ok(());
+    }
+
     match key_event.code {
         // Esc or q - close file tree
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -27,9 +43,27 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         KeyCode::Enter | KeyCode::Char('o') => {
             editor.open_file_from_tree();
         }
-        // x or h - collapse directory
-        KeyCode::Char('x') | KeyCode::Char('h') => {
-            // Only collapse if it's an expanded directory
+        // h - collapse expanded dir, or navigate to parent
+        KeyCode::Char('h') => {
+            let should_navigate_parent = if let Some(node) = editor.file_tree().selected_node() {
+                // If it's an expanded directory, collapse it
+                if node.is_dir() && node.is_expanded() {
+                    false // will toggle_selected instead
+                } else {
+                    true // navigate to parent
+                }
+            } else {
+                false
+            };
+
+            if should_navigate_parent {
+                editor.file_tree_mut().navigate_to_parent();
+            } else {
+                editor.file_tree_mut().toggle_selected();
+            }
+        }
+        // x - collapse directory (only collapses, never navigates)
+        KeyCode::Char('x') => {
             if let Some(node) = editor.file_tree().selected_node() {
                 if node.is_dir() && node.is_expanded() {
                     editor.file_tree_mut().toggle_selected();
@@ -44,7 +78,15 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         KeyCode::Char('r') => {
             editor.file_tree_mut().refresh();
         }
-        // Tab - switch focus to buffer
+        // g - first key of gg (go to top)
+        KeyCode::Char('g') => {
+            editor.file_tree_mut().set_pending_g(true);
+        }
+        // G - go to bottom of tree
+        KeyCode::Char('G') => {
+            editor.file_tree_mut().select_last();
+        }
+        // Tab - switch focus to buffer (keep tree open)
         KeyCode::Tab => {
             editor.set_mode(Mode::Normal);
         }

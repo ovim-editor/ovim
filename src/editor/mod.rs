@@ -110,6 +110,8 @@ pub struct EditorOptions {
     /// Clipboard mode: "unnamedplus" (default), "unnamed", or "" (vim-compatible)
     /// When set, yank/delete/paste use the system clipboard by default
     pub clipboard: String,
+    /// Whether `-` key auto-reveals current file in the file tree (default: true)
+    pub file_tree_reveal: bool,
 }
 
 impl Default for EditorOptions {
@@ -133,6 +135,7 @@ impl Default for EditorOptions {
             sidescroll: 0,
             sidescrolloff: 5,
             clipboard: "unnamedplus".to_string(),
+            file_tree_reveal: true,
         }
     }
 }

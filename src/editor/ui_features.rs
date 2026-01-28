@@ -130,18 +130,31 @@ impl Editor {
         self.file_tree.open(&root);
     }
 
-    /// Toggles the file tree visibility
+    /// Toggles the file tree with reveal semantics:
+    /// - Tree closed → open, reveal current file, enter FileTree mode
+    /// - Tree open + buffer focused (Normal) → reveal current file, enter FileTree mode
+    /// - Tree open + tree focused (FileTree) → close tree, enter Normal mode
     pub fn toggle_file_tree(&mut self) {
-        if !self.file_tree.is_visible() {
-            self.open_file_tree();
-            self.set_mode(Mode::FileTree);
-        } else {
-            self.file_tree.toggle();
+        if self.mode() == Mode::FileTree {
+            // Focused on tree → close it
+            self.file_tree.close();
             self.set_mode(Mode::Normal);
+        } else {
+            // Not focused → open/reveal + focus
+            if !self.file_tree.is_visible() {
+                self.open_file_tree();
+            }
+            if self.options.file_tree_reveal {
+                if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
+                    self.file_tree.reveal_path(std::path::Path::new(&path));
+                }
+            }
+            self.set_mode(Mode::FileTree);
         }
     }
 
-    /// Opens the file selected in the file tree
+    /// Opens the file selected in the file tree.
+    /// Opens file and closes the tree, or toggles directory expansion.
     pub fn open_file_from_tree(&mut self) {
         if let Some(node) = self.file_tree.selected_node() {
             if node.is_dir() {
@@ -151,7 +164,8 @@ impl Editor {
                 // Open file (checks for existing buffer)
                 let path = node.path().to_path_buf();
                 if let Ok(()) = self.open_file(&path) {
-                    // Switch back to Normal mode and keep file tree visible
+                    // Close tree and switch to Normal mode
+                    self.file_tree.close();
                     self.set_mode(Mode::Normal);
                 }
             }

@@ -704,11 +704,17 @@ pub fn render_file_tree(frame: &mut Frame, editor: &Editor, area: Rect) {
     let tree = editor.file_tree();
     let flattened = tree.flattened();
     let selected_index = tree.selected_index();
+    let scroll_offset = tree.scroll_offset();
 
-    // Create list items from flattened tree
+    // Calculate viewport height (area height minus border rows)
+    let viewport_height = area.height.saturating_sub(1) as usize; // -1 for right border title area
+
+    // Create list items from the visible portion of the flattened tree
     let items: Vec<ListItem> = flattened
         .iter()
         .enumerate()
+        .skip(scroll_offset)
+        .take(viewport_height)
         .map(|(idx, node)| {
             let indent = "  ".repeat(node.depth());
             let icon = if node.is_dir() {
