@@ -278,6 +278,12 @@ impl Picker {
             return Some((0, Vec::new()));
         }
 
+        // Prefer exact substring matches — find the best occurrence
+        if let Some(result) = Self::exact_substring_match(&query_chars, &target_chars) {
+            return Some(result);
+        }
+
+        // Fall back to fuzzy matching
         let mut query_idx = 0;
         let mut target_idx = 0;
         let mut score: i32 = 0;
@@ -331,6 +337,56 @@ impl Picker {
         } else {
             None
         }
+    }
+
+    /// Find the best exact substring match, preferring word boundaries and start of string.
+    /// Returns a high score so exact matches always rank above fuzzy matches.
+    fn exact_substring_match(
+        query_chars: &[char],
+        target_chars: &[char],
+    ) -> Option<(i32, Vec<usize>)> {
+        let query_len = query_chars.len();
+        if query_len == 0 || target_chars.len() < query_len {
+            return None;
+        }
+
+        let mut best: Option<(i32, usize)> = None;
+
+        for start in 0..=(target_chars.len() - query_len) {
+            let matches = (0..query_len).all(|i| target_chars[start + i] == query_chars[i]);
+            if !matches {
+                continue;
+            }
+
+            // Base: large bonus for being an exact substring
+            let mut score: i32 = 200;
+
+            // Bonus for matching at start of target
+            if start == 0 {
+                score += 20;
+            }
+
+            // Bonus for matching at a word boundary
+            if start > 0 {
+                let prev = target_chars[start - 1];
+                if prev == '/' || prev == '_' || prev == '-' || prev == '.' || prev == ' ' {
+                    score += 15;
+                }
+            }
+
+            // Prefer shorter targets (more specific match)
+            score += 100 - (target_chars.len() as i32).min(100);
+
+            match best {
+                Some((best_score, _)) if score <= best_score => {}
+                _ => best = Some((score, start)),
+            }
+        }
+
+        best.map(|(score, start)| {
+            let positions: Vec<usize> = (start..start + query_len).collect();
+            (score, positions)
+        })
     }
 
     /// Filename-preferential fuzzy scoring

@@ -20,7 +20,7 @@ mod motions;
 mod operators;
 pub(crate) mod path_completion;
 mod performance;
-mod picker;
+pub mod picker;
 mod picker_manager;
 mod quickfix;
 mod register;
