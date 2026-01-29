@@ -326,6 +326,69 @@ pub async fn get_prometheus_metrics() -> Response {
         .into_response()
 }
 
+/// Handler for GET /outline
+pub async fn get_outline(State(state): State<ApiState>) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    let (tx, rx) = oneshot::channel();
+
+    if state.tx.send(ApiRequest::GetOutline(tx)).is_err() {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to get outline"),
+    }
+}
+
+/// Handler for GET /symbol?q=query
+#[derive(Deserialize)]
+pub struct SymbolSearchQuery {
+    pub q: String,
+}
+
+pub async fn search_symbol(
+    State(state): State<ApiState>,
+    axum::extract::Query(params): axum::extract::Query<SymbolSearchQuery>,
+) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    let (tx, rx) = oneshot::channel();
+
+    if state
+        .tx
+        .send(ApiRequest::SearchSymbol(params.q, tx))
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to search symbols"),
+    }
+}
+
+/// Handler for GET /trace
+pub async fn get_trace(State(state): State<ApiState>) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    let (tx, rx) = oneshot::channel();
+
+    if state.tx.send(ApiRequest::GetTrace(tx)).is_err() {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to get trace"),
+    }
+}
+
 /// Helper function to create error responses
 fn error_response(message: &str) -> Response {
     (

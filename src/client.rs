@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::api::{BufferInfo, ContextWindowInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo};
+use crate::api::{BufferInfo, ContextWindowInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo, OutlineInfo, SymbolSearchInfo, TraceInfo};
 use crate::session::SessionInfo;
 
 /// Client for making requests to an ovim session
@@ -186,6 +186,55 @@ impl OvimClient {
         if !response.status().is_success() {
             let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
             anyhow::bail!("Failed to get LSP status: {:?}", error);
+        }
+
+        Ok(response.json()?)
+    }
+
+    /// Get document outline
+    pub fn get_outline(&self) -> Result<OutlineInfo> {
+        let response = self
+            .client
+            .get(format!("{}/v1/outline", self.base_url))
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
+            anyhow::bail!("Failed to get outline: {:?}", error);
+        }
+
+        Ok(response.json()?)
+    }
+
+    /// Search workspace symbols
+    pub fn search_symbols(&self, query: &str) -> Result<SymbolSearchInfo> {
+        let response = self
+            .client
+            .get(format!("{}/v1/symbol", self.base_url))
+            .query(&[("q", query)])
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
+            anyhow::bail!("Failed to search symbols: {:?}", error);
+        }
+
+        Ok(response.json()?)
+    }
+
+    /// Get call hierarchy trace
+    pub fn get_trace(&self) -> Result<TraceInfo> {
+        let response = self
+            .client
+            .get(format!("{}/v1/trace", self.base_url))
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
+            anyhow::bail!("Failed to get trace: {:?}", error);
         }
 
         Ok(response.json()?)

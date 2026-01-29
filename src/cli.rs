@@ -185,6 +185,29 @@ pub enum Command {
         session: Option<String>,
     },
 
+    /// Get structural outline of the current document
+    Outline {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Search workspace symbols by name
+    Symbol {
+        /// Symbol name or partial name to search
+        query: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Get call hierarchy (incoming/outgoing) for symbol at cursor
+    Trace {
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
     /// List document symbols
     Symbols {
         /// Session name (auto-discovered if not provided)

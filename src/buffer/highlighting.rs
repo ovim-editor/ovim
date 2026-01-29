@@ -479,6 +479,11 @@ impl Buffer {
         self.syntax.is_some()
     }
 
+    /// Returns a reference to the treesitter syntax tree, if available.
+    pub fn syntax_tree(&self) -> Option<&tree_sitter::Tree> {
+        self.syntax.as_ref().and_then(|s| s.tree())
+    }
+
     /// Checks if re-highlighting is needed
     pub fn needs_rehighlight(&self) -> bool {
         self.pending_rehighlight && self.syntax.is_some()

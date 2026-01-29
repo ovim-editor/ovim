@@ -334,6 +334,50 @@ pub fn get_tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "get_outline".to_string(),
+            description: "Get a structural outline (table of contents) of the current document with symbol names, kinds, and line ranges".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "search_symbol".to_string(),
+            description: "Search for symbols across the workspace by name (fuzzy). Returns up to 50 results with file, line, and kind".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Symbol name or partial name to search for"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        Tool {
+            name: "get_trace".to_string(),
+            description: "Get call hierarchy for the symbol at cursor: who calls it (incoming) and what it calls (outgoing)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
             name: "get_context_window".to_string(),
             description: "Get a 21-line context window around cursor (10 above, current, 10 below) with line numbers and cursor position".to_string(),
             input_schema: json!({
