@@ -708,13 +708,30 @@ fn cmd_hover(session_name: Option<String>) -> Result<()> {
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
+    // Ensure NORMAL mode before triggering hover (clears any previous hover state)
+    client.set_mode("NORMAL").context("Failed to set NORMAL mode")?;
+    thread::sleep(Duration::from_millis(50));
+
     client.send_keys("K").context("Failed to send hover keys")?;
-    thread::sleep(Duration::from_millis(300));
-    let snapshot = client.get_snapshot().context("Failed to get snapshot after hover")?;
+
+    // Poll for hover result: wait for mode to become HOVER/HOVER_NAVIGATE
+    // which indicates the LSP response has arrived and hover is displayed
+    let mut hover_info = None;
+    for _ in 0..10 {
+        thread::sleep(Duration::from_millis(100));
+        let snapshot = client.get_snapshot().context("Failed to get snapshot")?;
+        if snapshot.mode.contains("HOVER") {
+            hover_info = snapshot.hover_info;
+            break;
+        }
+    }
+
+    // Dismiss hover popup
+    let _ = client.set_mode("NORMAL");
 
     println!("{}", serde_json::to_string_pretty(&json!({
-        "success": snapshot.hover_info.is_some(),
-        "hover": snapshot.hover_info
+        "success": hover_info.is_some(),
+        "hover": hover_info
     }))?);
 
     Ok(())

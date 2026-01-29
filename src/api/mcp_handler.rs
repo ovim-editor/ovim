@@ -182,27 +182,72 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 Err(_) => Err(JsonRpcError::internal_error("Failed to execute command")),
             }
         }
-        "lsp_hover" | "lsp_goto_definition" => {
-            // These require direct key sequences to trigger LSP actions
-            let keys = if tool_name == "lsp_hover" { "K" } else { "gd" };
+        "lsp_hover" => {
+            // Ensure NORMAL mode before triggering hover
+            let (mode_tx, mode_rx) = oneshot::channel();
+            let _ = state.tx.send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
+            let _ = mode_rx.await;
+
+            // Send K to trigger hover
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::SendKeys("K".to_string(), tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+            let _ = rx.await;
+
+            // Poll snapshot: wait for mode to become HOVER (LSP response arrived)
+            let mut hover_text = None;
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                let (snap_tx, snap_rx) = oneshot::channel();
+                if state.tx.send(ApiRequest::GetSnapshot(snap_tx)).is_err() {
+                    break;
+                }
+                if let Ok(super::state::ApiResponse::Snapshot(snapshot)) = snap_rx.await {
+                    if snapshot.mode.contains("HOVER") {
+                        hover_text = snapshot.hover_info;
+                        break;
+                    }
+                }
+            }
+
+            // Dismiss hover popup, return to NORMAL mode
+            let (esc_tx, esc_rx) = oneshot::channel();
+            let _ = state.tx.send(ApiRequest::SetMode("NORMAL".to_string(), esc_tx));
+            let _ = esc_rx.await;
+
+            match hover_text {
+                Some(text) => Ok(mcp::tool_result(vec![mcp::text_content(&text)])),
+                None => Ok(mcp::tool_result(vec![mcp::text_content("No hover information available at cursor position")])),
+            }
+        }
+        "lsp_goto_definition" => {
+            // Ensure NORMAL mode before triggering goto definition
+            let (mode_tx, mode_rx) = oneshot::channel();
+            let _ = state.tx.send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
+            let _ = mode_rx.await;
 
             let (tx, rx) = oneshot::channel();
             state
                 .tx
-                .send(ApiRequest::SendKeys(keys.to_string(), tx))
+                .send(ApiRequest::SendKeys("gd".to_string(), tx))
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
                 Ok(response) => {
-                    if let super::state::ApiResponse::Success(_) = response {
-                        Ok(mcp::tool_result(vec![mcp::text_content(&format!("{} triggered", tool_name))]))
+                    if let super::state::ApiResponse::SendKeysResult(result) = response {
+                        let json_str = serde_json::to_string_pretty(&result.context)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
                     } else {
                         Err(JsonRpcError::internal_error("Unexpected response type"))
                     }
                 }
-                Err(_) => Err(JsonRpcError::internal_error("Failed to trigger LSP action")),
+                Err(_) => Err(JsonRpcError::internal_error("Failed to trigger goto definition")),
             }
         }
         "get_snapshot" => {

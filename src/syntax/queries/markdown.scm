@@ -1,6 +1,7 @@
 ; tree-sitter-md (block grammar) highlighting queries
 ; Note: This uses the block grammar which parses block-level structure.
 ; Inline elements (emphasis, bold, links) are NOT parsed as separate nodes.
+; Inline code (`code`) is handled by find_inline_code_spans() in highlighting.rs.
 
 ; Headings - capture the inline text content specifically
 (atx_heading (inline) @markup.heading)
