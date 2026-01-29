@@ -279,11 +279,18 @@ impl Editor {
                             // Save current position to tag stack for Ctrl-T navigation
                             self.push_tag();
 
-                            // Open in a new tab
+                            // Open in a new tab with its own buffer
+                            // Don't use open_file() - it reuses existing buffers,
+                            // which would make both tabs share the same buffer/cursor.
                             self.new_tab(Some(path.to_string_lossy().to_string()));
-                            if self.open_file(path.to_string_lossy().as_ref()).is_err() {
-                                self.set_lsp_status("Failed to open file".to_string());
-                                return false;
+                            match crate::buffer::Buffer::load_file(&path) {
+                                Ok(buffer) => {
+                                    self.buffers[self.current_buffer_index] = buffer;
+                                }
+                                Err(_) => {
+                                    self.set_lsp_status("Failed to open file".to_string());
+                                    return false;
+                                }
                             }
 
                             let target_col = self.utf16_to_col(target_line, target_character);
