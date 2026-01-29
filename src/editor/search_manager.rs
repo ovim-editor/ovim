@@ -86,8 +86,11 @@ impl Editor {
         // Start search from current cursor position (inclusive)
         if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
             self.buffer_mut().cursor_mut().set_position(line, col);
-            self.search.current_search = Some(search);
         }
+        // Always update current_search so highlighting reflects the actual pattern.
+        // If no match exists, find_all_in_line will return empty for each line,
+        // so stale highlights from a previous partial match won't linger.
+        self.search.current_search = Some(search);
     }
 
     /// Finds the next search match (n command)
