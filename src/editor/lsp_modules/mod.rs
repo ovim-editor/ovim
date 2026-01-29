@@ -12,3 +12,6 @@ mod hover;
 mod goto;
 mod diagnostics;
 mod completion;
+mod actions;
+mod references;
+pub(in crate::editor) mod workspace_edits;
