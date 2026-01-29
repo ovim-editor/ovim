@@ -278,3 +278,71 @@ fn test_o_mixed_indentation() {
         new_line
     );
 }
+
+// ============================================================================
+// Redo cursor validation after o
+// ============================================================================
+
+#[test]
+fn test_o_undo_redo_cursor_valid() {
+    // Regression: redo of 'o' could place cursor past end of line because
+    // cursor_after was captured in insert mode (one past last char).
+    let mut editor = Editor::with_content("hello\nworld");
+
+    // o, type text, Esc
+    press_char(&mut editor, 'o');
+    press_char(&mut editor, 'a');
+    press_char(&mut editor, 'b');
+    press_char(&mut editor, 'c');
+    press(&mut editor, KeyCode::Esc);
+
+    // Undo
+    press_char(&mut editor, 'u');
+    assert_eq!(editor.buffer().line_count(), 2);
+
+    // Redo (Ctrl-R)
+    InputHandler::handle_key_event(
+        &mut editor,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+
+    // After redo, cursor should be within valid line bounds (normal mode)
+    let cursor_line = editor.buffer().cursor().line();
+    let cursor_col = editor.buffer().cursor().col();
+    let line = editor.buffer().line(cursor_line).unwrap();
+    let line_len = line.trim_end_matches('\n').chars().count();
+    assert!(
+        cursor_col < line_len || line_len == 0,
+        "Cursor col {} should be < line_len {} after redo (line: {:?})",
+        cursor_col,
+        line_len,
+        line
+    );
+}
+
+// ============================================================================
+// Count not leaked through mode transitions
+// ============================================================================
+
+#[test]
+fn test_count_not_leaked_through_o() {
+    // Regression: typing '5o' would leak count=5 to next normal mode command.
+    let mut editor = Editor::with_content("line 1\nline 2\nline 3\nline 4\nline 5");
+
+    // Type 5, then o — count should be consumed/cleared
+    press_char(&mut editor, '5');
+    press_char(&mut editor, 'o');
+    press(&mut editor, KeyCode::Esc);
+
+    // Now type 'j' — should move 1 line, not 5
+    let before_line = editor.buffer().cursor().line();
+    press_char(&mut editor, 'j');
+    let after_line = editor.buffer().cursor().line();
+
+    assert_eq!(
+        after_line - before_line,
+        1,
+        "j after o should move 1 line, not 5 (count leaked)"
+    );
+}

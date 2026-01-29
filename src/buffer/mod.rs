@@ -547,6 +547,9 @@ impl Buffer {
             change.apply(self);
             // Push to undo stack
             self.change_manager.undo_stack.push(change);
+            // Validate cursor position (apply may restore insert-mode cursor_after
+            // which can be past end of line in normal mode)
+            self.validate_cursor_position();
             true
         } else {
             false

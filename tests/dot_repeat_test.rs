@@ -639,3 +639,102 @@ fn test_dot_repeat_complex_change() {
     );
     test.assert_cursor(2, 7);
 }
+
+// ============================================================================
+// Regression: dot-repeat o/O must create a new line, not corrupt current line
+// ============================================================================
+
+#[test]
+fn test_dot_repeat_o_on_indented_line() {
+    // Regression: dot-repeat of 'o' was inserting indent at end of current
+    // line instead of creating a new line below.
+    let mut test = EditorTest::new("    hello\n    world");
+
+    // o on indented line, type text, Esc
+    test.keys("o");
+    test.type_text("new");
+    test.press_esc();
+
+    // Move to "world" line and repeat
+    test.keys("j"); // now on "    world"
+    test.keys(".");
+
+    // Should have: "    hello", "    new", "    world", "    new"
+    assert_eq!(test.line(0).unwrap(), "    hello\n");
+    assert_eq!(test.line(1).unwrap(), "    new\n");
+    assert_eq!(test.line(2).unwrap(), "    world\n");
+    assert_eq!(test.line(3).unwrap(), "    new\n");
+    assert_eq!(test.line_count(), 4);
+}
+
+#[test]
+fn test_dot_repeat_O_on_indented_line() {
+    // Regression: same issue for O (open above)
+    let mut test = EditorTest::new("    hello\n    world");
+
+    // O on first line, type text, Esc
+    test.keys("O");
+    test.type_text("above");
+    test.press_esc();
+
+    // Move to "world" line and repeat
+    test.keys("jj"); // skip past hello to world
+    test.keys(".");
+
+    // Should insert "    above" above "    world"
+    assert_eq!(test.line_count(), 4);
+    assert!(
+        test.buffer_content().contains("    above\n    hello"),
+        "First O should be above hello"
+    );
+    assert!(
+        test.buffer_content().contains("    above\n    world"),
+        "Repeated O should be above world"
+    );
+}
+
+#[test]
+fn test_dot_repeat_o_esc_no_text() {
+    // Regression: o<Esc> with non-default entry_mode must preserve entry_mode
+    // for dot-repeat even when only 1 or 2 sub-changes exist.
+    let mut test = EditorTest::new("line 1\nline 2");
+
+    // o then immediately Esc (creates empty line)
+    test.keys("o");
+    test.press_esc();
+
+    // Move down and repeat
+    test.keys("j");
+    test.keys(".");
+
+    // Both lines should have gotten new empty lines below them
+    assert_eq!(test.line_count(), 4);
+    assert_eq!(test.line(0).unwrap(), "line 1\n");
+    assert_eq!(test.line(1).unwrap(), "\n");
+    assert_eq!(test.line(2).unwrap(), "line 2\n");
+    assert_eq!(test.line(3).unwrap(), "\n");
+}
+
+#[test]
+fn test_dot_repeat_o_uses_current_line_indent() {
+    // Dot-repeat of 'o' should use the CURRENT line's indent, not the
+    // indent from the original 'o' command.
+    let mut test = EditorTest::new("    four_spaces\n\t\ttwo_tabs");
+
+    // o on 4-space indented line, type text, Esc
+    test.keys("o");
+    test.type_text("x");
+    test.press_esc();
+
+    // Move to two-tabs line and repeat
+    test.keys("j"); // on two_tabs line
+    test.keys(".");
+
+    // The repeated line should use two_tabs indent, not four_spaces
+    let content = test.buffer_content();
+    assert!(
+        content.contains("\t\tx\n"),
+        "Repeated o should use current line's tab indent, got: {:?}",
+        content
+    );
+}
