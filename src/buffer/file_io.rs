@@ -440,6 +440,11 @@ impl Buffer {
         self.modified = false;
         self.pending_rehighlight = true;
 
+        // Full reparse of syntax tree so highlight cache queries fresh tree
+        if let Some(ref mut syntax) = self.syntax {
+            syntax.parse(&content);
+        }
+
         Ok(true)
     }
 
@@ -451,10 +456,15 @@ impl Buffer {
     }
 
     /// Unconditionally reloads the buffer from disk, discarding any changes.
-    /// Used by :e! command to force reload.
+    /// Used by :e and :e! commands to reload.
+    /// Preserves cursor position (clamped to new file bounds).
     pub fn reload_from_disk(&mut self) -> Result<()> {
         let file_path = self.file_path.clone()
             .context("No file path set")?;
+
+        // Save cursor position before reload
+        let old_line = self.cursor.line();
+        let old_col = self.cursor.col();
 
         // Read file content synchronously
         let bytes = std::fs::read(&file_path)
@@ -485,8 +495,18 @@ impl Buffer {
         self.modified = false;
         self.pending_rehighlight = true;
 
-        // Reset cursor to top-left
-        self.cursor.set_position(0, 0);
+        // Full reparse of syntax tree so highlight cache queries fresh tree
+        if let Some(ref mut syntax) = self.syntax {
+            syntax.parse(&content);
+        }
+
+        // Clamp cursor to new file bounds
+        let max_line = self.rope.len_lines().saturating_sub(1);
+        let line = old_line.min(max_line);
+        let line_len = self.rope.line(line).len_chars();
+        let max_col = if line_len > 0 { line_len.saturating_sub(1) } else { 0 };
+        let col = old_col.min(max_col);
+        self.cursor.set_position(line, col);
 
         Ok(())
     }
