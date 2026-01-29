@@ -2,6 +2,65 @@ use super::Buffer;
 use crate::syntax::{CodeBlockCache, HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter};
 use std::ops::Range;
 
+/// Finds inline code spans (single backtick `code`) in a line of text.
+/// Returns ranges covering the content between backticks (including the backticks).
+/// Handles escaped backticks and double-backtick (`` ` ``) spans.
+fn find_inline_code_spans(line: &str) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Skip escaped backticks
+        if chars[i] == '\\' {
+            i += 2;
+            continue;
+        }
+
+        if chars[i] == '`' {
+            // Count consecutive backticks for the opening delimiter
+            let open_start = i;
+            let mut backtick_count = 0;
+            while i < len && chars[i] == '`' {
+                backtick_count += 1;
+                i += 1;
+            }
+
+            // Find matching closing delimiter (same number of backticks)
+            let content_start = i;
+            let mut found_close = false;
+            while i < len {
+                if chars[i] == '`' {
+                    let mut close_count = 0;
+                    while i < len && chars[i] == '`' {
+                        close_count += 1;
+                        i += 1;
+                    }
+                    if close_count == backtick_count {
+                        // Found matching close - span covers open backticks through close backticks
+                        spans.push(open_start..i);
+                        found_close = true;
+                        break;
+                    }
+                    // Not matching, continue searching
+                } else {
+                    i += 1;
+                }
+            }
+
+            if !found_close {
+                // No closing delimiter found, the backticks are literal
+                i = content_start;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    spans
+}
+
 /// Per-line syntax highlights: maps character ranges to highlight groups
 pub type LineHighlights = Vec<Vec<(Range<usize>, HighlightGroup)>>;
 
@@ -367,6 +426,7 @@ impl Buffer {
     /// 1. Code block cache (for markdown code fences with known languages)
     /// 2. Semantic highlights (from LSP)
     /// 3. Tree-sitter cached highlights
+    /// 4. Inline code overlay (for markdown: backtick `code` spans)
     pub fn highlights_for_line(&self, line_idx: usize) -> Vec<(Range<usize>, HighlightGroup)> {
         // For markdown: check code block cache first (language-specific highlighting)
         if let Some(ref code_cache) = self.code_block_cache {
@@ -381,13 +441,44 @@ impl Buffer {
                 return semantic[line_idx].clone();
             }
         }
-        // Fall back to tree-sitter cached highlights
-        if let Some(ref cache) = self.cached_highlights {
+
+        // Get base highlights from tree-sitter cache
+        let mut highlights = if let Some(ref cache) = self.cached_highlights {
             if line_idx < cache.len() {
-                return cache[line_idx].clone();
+                cache[line_idx].clone()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        // For markdown files: overlay inline code spans (backtick `code`)
+        // Only for lines NOT inside fenced code blocks
+        if self.code_block_cache.is_some() {
+            let in_code_block = self
+                .code_block_cache
+                .as_ref()
+                .map_or(false, |c| c.is_line_in_code_block(line_idx));
+
+            if !in_code_block {
+                if let Some(line_text) = self.rope.line(line_idx).as_str() {
+                    let inline_spans = find_inline_code_spans(line_text);
+                    for span in inline_spans {
+                        highlights.push((span, HighlightGroup::MarkupRaw));
+                    }
+                } else {
+                    // Fallback for lines that cross chunk boundaries
+                    let line_text: String = self.rope.line(line_idx).chars().collect();
+                    let inline_spans = find_inline_code_spans(&line_text);
+                    for span in inline_spans {
+                        highlights.push((span, HighlightGroup::MarkupRaw));
+                    }
+                }
             }
         }
-        Vec::new()
+
+        highlights
     }
 
     /// Sets semantic highlights decoded from LSP semantic tokens

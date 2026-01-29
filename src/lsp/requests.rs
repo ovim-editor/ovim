@@ -3,7 +3,7 @@
 //! This module contains all the LSP request methods that query language servers
 //! for information (goto definition, hover, completion, etc.)
 
-use super::{utils::marked_string_to_text, LspManager, LspServerInfo};
+use super::{server::ServerState, utils::marked_string_to_text, LspManager, LspServerInfo};
 use anyhow::Result;
 use lsp_types::{Diagnostic, Uri};
 
@@ -1259,7 +1259,14 @@ impl LspManager {
             result.push(LspServerInfo {
                 language,
                 command,
-                state: format!("{:?}", state),
+                state: match &state {
+                    ServerState::Spawning => "spawning".to_string(),
+                    ServerState::Initializing { .. } => "initializing".to_string(),
+                    ServerState::Ready { .. } => "ready".to_string(),
+                    ServerState::Failed { error, .. } => format!("failed: {}", error),
+                    ServerState::ShuttingDown => "shutting_down".to_string(),
+                    ServerState::Terminated => "terminated".to_string(),
+                },
                 pending_requests: pending_count,
                 has_capabilities,
             });
