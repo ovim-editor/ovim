@@ -241,12 +241,14 @@ impl Picker {
 
     /// Simple glob pattern matching supporting `*` and `?` wildcards.
     /// Matches against the given string case-insensitively.
+    #[cfg(test)]
     fn glob_match(pattern: &str, text: &str) -> bool {
         let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
         let text: Vec<char> = text.to_lowercase().chars().collect();
         Self::glob_match_inner(&pattern, &text)
     }
 
+    #[cfg(test)]
     fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
         let mut pi = 0;
         let mut ti = 0;
@@ -281,6 +283,7 @@ impl Picker {
     /// The filter is space-separated tokens; all must match.
     /// Tokens containing `*` or `?` are glob-matched against the basename
     /// (or full path if token contains `/`). Otherwise, substring match (case-insensitive).
+    #[cfg(test)]
     fn matches_file_filter(filter: &str, path: &str) -> bool {
         if filter.is_empty() {
             return true;
@@ -338,8 +341,14 @@ impl Picker {
         // Add glob filters from file_filter
         for token in file_filter.split_whitespace() {
             if !token.is_empty() {
+                let is_glob = token.contains('*') || token.contains('?');
                 args.push("--glob".to_string());
-                args.push(token.to_string());
+                if is_glob {
+                    args.push(token.to_string());
+                } else {
+                    // Wrap plain substring as glob: "editor" -> "*editor*"
+                    args.push(format!("*{}*", token));
+                }
             }
         }
 
@@ -580,11 +589,10 @@ impl Picker {
     fn apply_filter_internal(&mut self) {
         match self.mode {
             PickerMode::FindFiles => {
-                let file_filter = self.file_filter.clone();
+                // No file_filter in FindFiles mode — query is the sole filter
                 let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
                     .all_results
                     .iter()
-                    .filter(|r| Self::matches_file_filter(&file_filter, &r.display))
                     .filter_map(|r| {
                         Self::fuzzy_score(&self.query, &r.display).map(|(score, positions)| {
                             (r.clone(), score, positions)
@@ -791,7 +799,7 @@ impl Picker {
 
     /// Returns true if this picker mode supports the file filter field
     pub fn has_file_filter(&self) -> bool {
-        matches!(self.mode, PickerMode::FindFiles | PickerMode::LiveGrep)
+        matches!(self.mode, PickerMode::LiveGrep)
     }
 
     /// Switches the active input field (only for modes with file filter)
@@ -822,11 +830,6 @@ impl Picker {
     /// Adds a file result (for incremental loading)
     pub fn add_file_result(&mut self, result: PickerResult) {
         self.all_results.push(result.clone());
-
-        // Check file filter first (for FindFiles mode)
-        if !Self::matches_file_filter(&self.file_filter, &result.display) {
-            return;
-        }
 
         // If query is empty, add to filtered results too
         if self.query.is_empty() {
@@ -1024,7 +1027,7 @@ mod tests {
 
     #[test]
     fn test_toggle_field() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        let mut picker = Picker::new_live_grep(PathBuf::from("."));
         assert_eq!(picker.active_field(), PickerField::Query);
 
         picker.toggle_field();
@@ -1032,6 +1035,15 @@ mod tests {
 
         picker.toggle_field();
         assert_eq!(picker.active_field(), PickerField::Query);
+    }
+
+    #[test]
+    fn test_toggle_field_no_op_for_find_files() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        assert_eq!(picker.active_field(), PickerField::Query);
+
+        picker.toggle_field();
+        assert_eq!(picker.active_field(), PickerField::Query); // No change
     }
 
     #[test]
@@ -1045,7 +1057,7 @@ mod tests {
 
     #[test]
     fn test_has_file_filter() {
-        assert!(Picker::new_file_finder(PathBuf::from(".")).has_file_filter());
+        assert!(!Picker::new_file_finder(PathBuf::from(".")).has_file_filter());
         assert!(Picker::new_live_grep(PathBuf::from(".")).has_file_filter());
         assert!(!Picker::new_custom(PathBuf::from("."), vec![]).has_file_filter());
         assert!(!Picker::new_completion(PathBuf::from("."), vec![]).has_file_filter());
@@ -1064,7 +1076,7 @@ mod tests {
 
     #[test]
     fn test_active_field_mut_delegates_to_filter() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        let mut picker = Picker::new_live_grep(PathBuf::from("."));
         picker.toggle_field();
 
         picker.insert_char('*');
@@ -1077,7 +1089,7 @@ mod tests {
 
     #[test]
     fn test_backspace_in_filter_field() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        let mut picker = Picker::new_live_grep(PathBuf::from("."));
         picker.toggle_field();
         picker.insert_char('a');
         picker.insert_char('b');
@@ -1088,7 +1100,7 @@ mod tests {
 
     #[test]
     fn test_cursor_movement_in_filter_field() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        let mut picker = Picker::new_live_grep(PathBuf::from("."));
         picker.toggle_field();
         picker.insert_char('a');
         picker.insert_char('b');
@@ -1103,36 +1115,5 @@ mod tests {
 
         picker.move_cursor_end();
         assert_eq!(picker.file_filter_cursor(), 3);
-    }
-
-    #[test]
-    fn test_find_files_filter_integration() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
-        picker.finish_loading();
-
-        // Add some file results
-        for name in &["main.rs", "lib.rs", "mod.ts", "index.js"] {
-            picker.add_file_result(PickerResult {
-                display: name.to_string(),
-                location: name.to_string(),
-                line: 0,
-                col: 0,
-                match_positions: Vec::new(),
-                content: None,
-            });
-        }
-
-        assert_eq!(picker.filtered_results().len(), 4);
-
-        // Now set a file filter for *.rs
-        picker.toggle_field();
-        picker.insert_char('*');
-        picker.insert_char('.');
-        picker.insert_char('r');
-        picker.insert_char('s');
-        picker.apply_pending_filter();
-
-        assert_eq!(picker.filtered_results().len(), 2);
-        assert!(picker.filtered_results().iter().all(|r| r.display.ends_with(".rs")));
     }
 }
