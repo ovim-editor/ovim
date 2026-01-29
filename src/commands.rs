@@ -1159,6 +1159,33 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     message: Some(buf_list.join("\n")),
                     line_count: None,
                 })
+            // Handle :e and :edit (bare) - reload current file if unmodified
+            } else if command == "e" || command == "edit" {
+                if editor.buffer().file_path().is_none() {
+                    return ApiResponse::Error(ErrorResponse {
+                        error: "No file name".to_string(),
+                    });
+                }
+                if editor.is_modified() {
+                    return ApiResponse::Error(ErrorResponse {
+                        error: "No write since last change (add ! to override)".to_string(),
+                    });
+                }
+                let path = editor.buffer().file_path().unwrap().to_string();
+                match editor.buffer_mut().reload_from_disk() {
+                    Ok(_) => {
+                        editor.mark_saved();
+                        let line_count = editor.buffer().rope().len_lines();
+                        ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("\"{}\" {}L reloaded", path, line_count)),
+                            line_count: None,
+                        })
+                    }
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to reload: {}", e),
+                    }),
+                }
             // Handle :e! and :edit! - reload current file discarding changes
             } else if command == "e!" || command == "edit!" {
                 if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
