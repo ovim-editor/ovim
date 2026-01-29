@@ -8,14 +8,23 @@
 mod lsp_modules;
 
 use super::*;
-use crate::lsp::{LspManager, uri_from_file_path, uri_to_file_path};
-use super::picker::PickerResult;
+use crate::lsp::{LspManager, uri_from_file_path};
 
 use anyhow::{anyhow, Result};
 use lsp_types::Location;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+
+/// Context for making an LSP request, encapsulating all the common setup.
+pub(in crate::editor) struct LspRequestContext {
+    pub lsp: Arc<crate::lsp::LspManager>,
+    pub uri: lsp_types::Uri,
+    pub file_path: String,
+    pub line: u32,
+    pub character: u32,
+    pub language_id: String,
+}
 
 impl Editor {
     /// Enables LSP support
@@ -186,318 +195,117 @@ impl Editor {
                 }
             }
 
-            crate::editor::lsp_state::PendingLspResponse::Definition(mut pending) => {
-                use tokio::sync::oneshot::error::TryRecvError;
-                match pending.receiver.try_recv() {
-                    Ok(Ok(Some(location))) => {
-                        // Success! Navigate to the definition
-                        crate::lsp_debug!("LSP-DEFINITION", "Received definition response");
-
-                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
-                            let target_line = location.range.start.line as usize;
-                            let target_character = location.range.start.character;
-
-                            // Save current position to tag stack for Ctrl-T navigation
-                            self.push_tag();
-
-                            // Open file if different from current
-                            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                                if self.open_file(path.to_string_lossy().as_ref()).is_err() {
-                                    self.set_lsp_status("Failed to open file".to_string());
-                                    return false;
-                                }
-                            }
-
-                            // Convert UTF-16 character offset to column position AFTER loading the target file
-                            let target_col = self.utf16_to_col(target_line, target_character);
-
-                            // Move cursor to location and validate bounds
-                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                            self.buffer_mut().validate_cursor_position();
-                            // Center cursor after jump (Vim behavior)
-                            self.center_cursor_in_viewport();
-                            let actual_col = self.buffer().cursor().col();
-                            self.set_lsp_status(format!(
-                                "Definition: {}:{}:{}",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                target_line + 1,
-                                actual_col + 1
-                            ));
-                            self.mark_dirty();
-
-                            true // UI should redraw
-                        } else {
-                            self.set_lsp_status("Invalid file path in LSP response".to_string());
-                            false
-                        }
-                    }
-                    Ok(Ok(None)) => {
-                        // No definition found
-                        crate::lsp_debug!("LSP-DEFINITION", "No definition found");
-                        self.set_lsp_status("No definition found".to_string());
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        // LSP error
-                        crate::lsp_debug!("LSP-DEFINITION", "Definition request failed: {:?}", e);
-                        self.set_lsp_status(format!("Definition failed: {}", e));
-                        false
-                    }
-                    Err(TryRecvError::Empty) => {
-                        // Check for timeout
-                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!("LSP-DEFINITION", "Definition request timed out, aborting task");
-                            pending.task.abort();
-                            self.set_lsp_status("Definition request timed out".to_string());
-                            return false;
-                        }
-
-                        // Still waiting - put it back
-                        self.lsp_state.pending_lsp_response =
-                            Some(crate::editor::lsp_state::PendingLspResponse::Definition(pending));
-                        false
-                    }
-                    Err(TryRecvError::Closed) => {
-                        // Sender dropped (shouldn't happen)
-                        crate::lsp_debug!("LSP-DEFINITION", "Definition request cancelled (sender dropped)");
-                        self.set_lsp_status("Definition request cancelled".to_string());
-                        false
-                    }
-                }
+            crate::editor::lsp_state::PendingLspResponse::Definition(pending) => {
+                self.poll_location_response(pending, "Definition", "LSP-DEFINITION", false)
             }
 
-            crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(mut pending) => {
-                use tokio::sync::oneshot::error::TryRecvError;
-                match pending.receiver.try_recv() {
-                    Ok(Ok(Some(location))) => {
-                        crate::lsp_debug!("LSP-DEFINITION", "Received definition response (new tab)");
-
-                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
-                            let target_line = location.range.start.line as usize;
-                            let target_character = location.range.start.character;
-
-                            // Save current position to tag stack for Ctrl-T navigation
-                            self.push_tag();
-
-                            // Open in a new tab with its own buffer
-                            // Don't use open_file() - it reuses existing buffers,
-                            // which would make both tabs share the same buffer/cursor.
-                            self.new_tab(Some(path.to_string_lossy().to_string()));
-                            match crate::buffer::Buffer::load_file(&path) {
-                                Ok(buffer) => {
-                                    self.buffers[self.current_buffer_index] = buffer;
-                                }
-                                Err(_) => {
-                                    self.set_lsp_status("Failed to open file".to_string());
-                                    return false;
-                                }
-                            }
-
-                            let target_col = self.utf16_to_col(target_line, target_character);
-                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                            self.buffer_mut().validate_cursor_position();
-                            self.center_cursor_in_viewport();
-                            let actual_col = self.buffer().cursor().col();
-                            self.set_lsp_status(format!(
-                                "Definition (new tab): {}:{}:{}",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                target_line + 1,
-                                actual_col + 1
-                            ));
-                            self.mark_dirty();
-                            true
-                        } else {
-                            self.set_lsp_status("Invalid file path in LSP response".to_string());
-                            false
-                        }
-                    }
-                    Ok(Ok(None)) => {
-                        crate::lsp_debug!("LSP-DEFINITION", "No definition found");
-                        self.set_lsp_status("No definition found".to_string());
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        crate::lsp_debug!("LSP-DEFINITION", "Definition request failed: {:?}", e);
-                        self.set_lsp_status(format!("Definition failed: {}", e));
-                        false
-                    }
-                    Err(TryRecvError::Empty) => {
-                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!("LSP-DEFINITION", "Definition request timed out, aborting task");
-                            pending.task.abort();
-                            self.set_lsp_status("Definition request timed out".to_string());
-                            return false;
-                        }
-                        self.lsp_state.pending_lsp_response =
-                            Some(crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending));
-                        false
-                    }
-                    Err(TryRecvError::Closed) => {
-                        crate::lsp_debug!("LSP-DEFINITION", "Definition request cancelled (sender dropped)");
-                        self.set_lsp_status("Definition request cancelled".to_string());
-                        false
-                    }
-                }
+            crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending) => {
+                self.poll_location_response(pending, "Definition", "LSP-DEFINITION", true)
             }
 
-            crate::editor::lsp_state::PendingLspResponse::Implementation(mut pending) => {
-                use tokio::sync::oneshot::error::TryRecvError;
-                match pending.receiver.try_recv() {
-                    Ok(Ok(Some(location))) => {
-                        // Success! Navigate to the implementation
-                        crate::lsp_debug!("LSP-IMPLEMENTATION", "Received implementation response");
-
-                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
-                            let target_line = location.range.start.line as usize;
-                            let target_character = location.range.start.character;
-
-                            // Save current position to tag stack for Ctrl-T navigation
-                            self.push_tag();
-
-                            // Open file if different from current
-                            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                                if self.open_file(path.to_string_lossy().as_ref()).is_err() {
-                                    self.set_lsp_status("Failed to open file".to_string());
-                                    return false;
-                                }
-                            }
-
-                            // Convert UTF-16 character offset to column position AFTER loading the target file
-                            let target_col = self.utf16_to_col(target_line, target_character);
-
-                            // Move cursor to location and validate bounds
-                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                            self.buffer_mut().validate_cursor_position();
-                            // Center cursor after jump (Vim behavior)
-                            self.center_cursor_in_viewport();
-                            let actual_col = self.buffer().cursor().col();
-                            self.set_lsp_status(format!(
-                                "Implementation: {}:{}:{}",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                target_line + 1,
-                                actual_col + 1
-                            ));
-                            self.mark_dirty();
-
-                            true // UI should redraw
-                        } else {
-                            self.set_lsp_status("Invalid file path in LSP response".to_string());
-                            false
-                        }
-                    }
-                    Ok(Ok(None)) => {
-                        // No implementation found
-                        crate::lsp_debug!("LSP-IMPLEMENTATION", "No implementation found");
-                        self.set_lsp_status("No implementation found".to_string());
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        // LSP error
-                        crate::lsp_debug!("LSP-IMPLEMENTATION", "Implementation request failed: {:?}", e);
-                        self.set_lsp_status(format!("Implementation failed: {}", e));
-                        false
-                    }
-                    Err(TryRecvError::Empty) => {
-                        // Check for timeout
-                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!("LSP-IMPLEMENTATION", "Implementation request timed out, aborting task");
-                            pending.task.abort();
-                            self.set_lsp_status("Implementation request timed out".to_string());
-                            return false;
-                        }
-
-                        // Still waiting - put it back
-                        self.lsp_state.pending_lsp_response =
-                            Some(crate::editor::lsp_state::PendingLspResponse::Implementation(pending));
-                        false
-                    }
-                    Err(TryRecvError::Closed) => {
-                        // Sender dropped (shouldn't happen)
-                        crate::lsp_debug!("LSP-IMPLEMENTATION", "Implementation request cancelled (sender dropped)");
-                        self.set_lsp_status("Implementation request cancelled".to_string());
-                        false
-                    }
-                }
+            crate::editor::lsp_state::PendingLspResponse::Implementation(pending) => {
+                self.poll_location_response(pending, "Implementation", "LSP-IMPLEMENTATION", false)
             }
 
-            crate::editor::lsp_state::PendingLspResponse::TypeDefinition(mut pending) => {
-                use tokio::sync::oneshot::error::TryRecvError;
-                match pending.receiver.try_recv() {
-                    Ok(Ok(Some(location))) => {
-                        // Success! Navigate to the type definition
-                        crate::lsp_debug!("LSP-TYPE", "Received type definition response");
+            crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending) => {
+                self.poll_location_response(pending, "Type", "LSP-TYPE", false)
+            }
+        }
+    }
 
-                        if let Some(path) = crate::lsp::uri_to_file_path(&location.uri) {
-                            let target_line = location.range.start.line as usize;
-                            let target_character = location.range.start.character;
+    /// Shared handler for location-based pending LSP responses (definition, implementation, type).
+    fn poll_location_response(
+        &mut self,
+        mut pending: crate::editor::lsp_state::PendingLspRequest<Option<Location>>,
+        label: &str,
+        log_tag: &str,
+        new_tab: bool,
+    ) -> bool {
+        use tokio::sync::oneshot::error::TryRecvError;
 
-                            // Save current position to tag stack for Ctrl-T navigation
-                            self.push_tag();
+        match pending.receiver.try_recv() {
+            Ok(Ok(Some(location))) => {
+                crate::lsp_debug!(log_tag, "Received {} response", label.to_lowercase());
 
-                            // Open file if different from current
-                            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref()) {
-                                if self.open_file(path.to_string_lossy().as_ref()).is_err() {
-                                    self.set_lsp_status("Failed to open file".to_string());
-                                    return false;
-                                }
-                            }
+                let Some(path) = crate::lsp::uri_to_file_path(&location.uri) else {
+                    self.set_lsp_status("Invalid file path in LSP response".to_string());
+                    return false;
+                };
 
-                            // Convert UTF-16 character offset to column position AFTER loading the target file
-                            let target_col = self.utf16_to_col(target_line, target_character);
+                let target_line = location.range.start.line as usize;
+                let target_character = location.range.start.character;
 
-                            // Move cursor to location and validate bounds
-                            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-                            self.buffer_mut().validate_cursor_position();
-                            // Center cursor after jump (Vim behavior)
-                            self.center_cursor_in_viewport();
-                            let actual_col = self.buffer().cursor().col();
-                            self.set_lsp_status(format!(
-                                "Type: {}:{}:{}",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                target_line + 1,
-                                actual_col + 1
-                            ));
-                            self.mark_dirty();
+                self.push_tag();
 
-                            true // UI should redraw
-                        } else {
-                            self.set_lsp_status("Invalid file path in LSP response".to_string());
-                            false
+                if new_tab {
+                    self.new_tab(Some(path.to_string_lossy().to_string()));
+                    match crate::buffer::Buffer::load_file(&path) {
+                        Ok(buffer) => {
+                            self.buffers[self.current_buffer_index] = buffer;
                         }
-                    }
-                    Ok(Ok(None)) => {
-                        // No type definition found
-                        crate::lsp_debug!("LSP-TYPE", "No type definition found");
-                        self.set_lsp_status("No type definition found".to_string());
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        // LSP error
-                        crate::lsp_debug!("LSP-TYPE", "Type definition request failed: {:?}", e);
-                        self.set_lsp_status(format!("Type definition failed: {}", e));
-                        false
-                    }
-                    Err(TryRecvError::Empty) => {
-                        // Check for timeout
-                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!("LSP-TYPE", "Type definition request timed out, aborting task");
-                            pending.task.abort();
-                            self.set_lsp_status("Type definition request timed out".to_string());
+                        Err(_) => {
+                            self.set_lsp_status("Failed to open file".to_string());
                             return false;
                         }
-
-                        // Still waiting - put it back
-                        self.lsp_state.pending_lsp_response =
-                            Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending));
-                        false
                     }
-                    Err(TryRecvError::Closed) => {
-                        // Sender dropped (shouldn't happen)
-                        crate::lsp_debug!("LSP-TYPE", "Type definition request cancelled (sender dropped)");
-                        self.set_lsp_status("Type definition request cancelled".to_string());
-                        false
-                    }
+                } else if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
+                    && self.open_file(path.to_string_lossy().as_ref()).is_err()
+                {
+                    self.set_lsp_status("Failed to open file".to_string());
+                    return false;
                 }
+
+                let target_col = self.utf16_to_col(target_line, target_character);
+                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut().validate_cursor_position();
+                self.center_cursor_in_viewport();
+                let actual_col = self.buffer().cursor().col();
+
+                let suffix = if new_tab { " (new tab)" } else { "" };
+                self.set_lsp_status(format!(
+                    "{}{}: {}:{}:{}",
+                    label, suffix,
+                    path.file_name().unwrap_or_default().to_string_lossy(),
+                    target_line + 1,
+                    actual_col + 1
+                ));
+                self.mark_dirty();
+                true
+            }
+            Ok(Ok(None)) => {
+                crate::lsp_debug!(log_tag, "No {} found", label.to_lowercase());
+                self.set_lsp_status(format!("No {} found", label.to_lowercase()));
+                false
+            }
+            Ok(Err(e)) => {
+                crate::lsp_debug!(log_tag, "{} request failed: {:?}", label, e);
+                self.set_lsp_status(format!("{} failed: {}", label, e));
+                false
+            }
+            Err(TryRecvError::Empty) => {
+                if pending.started.elapsed() > std::time::Duration::from_secs(10) {
+                    crate::lsp_debug!(log_tag, "{} request timed out, aborting task", label);
+                    pending.task.abort();
+                    self.set_lsp_status(format!("{} request timed out", label));
+                    return false;
+                }
+                // Still waiting - reconstruct the appropriate variant and put it back
+                let variant = if new_tab && label == "Definition" {
+                    crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending)
+                } else if label == "Definition" {
+                    crate::editor::lsp_state::PendingLspResponse::Definition(pending)
+                } else if label == "Implementation" {
+                    crate::editor::lsp_state::PendingLspResponse::Implementation(pending)
+                } else {
+                    crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending)
+                };
+                self.lsp_state.pending_lsp_response = Some(variant);
+                false
+            }
+            Err(TryRecvError::Closed) => {
+                crate::lsp_debug!(log_tag, "{} request cancelled (sender dropped)", label);
+                self.set_lsp_status(format!("{} request cancelled", label));
+                false
             }
         }
     }
@@ -985,1505 +793,59 @@ impl Editor {
         char_position
     }
 
-    /// Go to definition at current cursor position via LSP (implementation)
+    /// Prepare common context for an LSP request.
+    /// Handles: LSP manager check, file path resolution, URI creation,
+    /// cursor position (UTF-16), language detection, and document sync flush.
+    pub(in crate::editor) async fn prepare_lsp_request(
+        &mut self,
+        feature_name: &str,
+    ) -> Result<LspRequestContext> {
+        let lsp = self
+            .lsp_state
+            .lsp_manager
+            .clone()
+            .ok_or_else(|| anyhow!("LSP not available"))?;
 
-
-
-    async fn find_references_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use find-references".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let cursor = self.buffer().cursor();
-        let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Finding references...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        let result = lsp.references(&uri, line, character, language_id, true).await;
-
-        match result {
-            Ok(locations) if !locations.is_empty() => {
-                // Store references for picker navigation
-                self.lsp_state.available_references = locations.clone();
-                self.lsp_state.active_lsp_result_type = Some(LspResultType::References);
-
-                // Create picker items from locations
-                let items: Vec<PickerResult> = locations
-                    .iter()
-                    .filter_map(|loc| {
-                        let path = uri_to_file_path(&loc.uri)?;
-                        let line = loc.range.start.line as usize;
-                        let col = self.utf16_to_col(line, loc.range.start.character);
-                        Some(PickerResult {
-                            display: format!("{}:{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), line + 1, col + 1),
-                            location: path.to_string_lossy().to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        })
-                    })
-                    .collect();
-
-                // Open picker with results
-                self.open_location_picker(items, "References");
-                self.set_lsp_status(format!("Found {} references", locations.len()));
-
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No references found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("References request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn document_symbols_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
-            self.set_lsp_status("Save file first to use document-symbols".to_string());
-            return Ok(false);
-        };
+        let file_path = self
+            .buffer()
+            .file_path()
+            .ok_or_else(|| anyhow!("Save file first to use {}", feature_name))?
+            .to_string();
 
         let abs_path = if std::path::Path::new(&file_path).is_absolute() {
             file_path.clone()
         } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
+            std::env::current_dir()
+                .map(|cwd| cwd.join(&file_path).to_string_lossy().to_string())
+                .map_err(|_| anyhow!("Failed to resolve file path"))?
         };
 
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Fetching document symbols...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        let result = lsp.document_symbols(&uri, language_id).await;
-
-        match result {
-            Ok(symbols) if !symbols.is_empty() => {
-                // Store symbols for picker navigation
-                self.lsp_state.available_document_symbols = symbols.clone();
-                self.lsp_state.active_lsp_result_type = Some(LspResultType::DocumentSymbols);
-
-                // Create picker items from symbols
-                let items: Vec<PickerResult> = symbols
-                    .iter()
-                    .map(|sym| {
-                        let line = sym.range.start.line as usize;
-                        let col = self.utf16_to_col(line, sym.range.start.character);
-                        PickerResult {
-                            display: format!("{}:{}:{} {}", file_path, line + 1, col + 1, sym.name),
-                            location: file_path.to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        }
-                    })
-                    .collect();
-
-                self.open_location_picker(items, "Document Symbols");
-                self.set_lsp_status(format!("Found {} symbols", symbols.len()));
-
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No symbols found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Document symbols request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn workspace_symbols_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use workspace-symbols".to_string());
-            return Ok(false);
-        };
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Fetching workspace symbols...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // TODO: Support query parameter for filtering
-        let query = String::new();
-        let result = lsp.workspace_symbols(language_id, query).await;
-
-        match result {
-            Ok(symbols) if !symbols.is_empty() => {
-                // Store symbols for picker navigation
-                self.lsp_state.available_workspace_symbols = symbols.clone();
-                self.lsp_state.active_lsp_result_type = Some(LspResultType::WorkspaceSymbols);
-
-                // Create picker items from symbols
-                let items: Vec<PickerResult> = symbols
-                    .iter()
-                    .filter_map(|sym| {
-                        let path = uri_to_file_path(&sym.location.uri)?;
-                        let line = sym.location.range.start.line as usize;
-                        let col = self.utf16_to_col(line, sym.location.range.start.character);
-                        Some(PickerResult {
-                            display: format!("{}:{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), line + 1, col + 1),
-                            location: path.to_string_lossy().to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        })
-                    })
-                    .collect();
-
-                self.open_location_picker(items, "Workspace Symbols");
-                self.set_lsp_status(format!("Found {} symbols", symbols.len()));
-
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No workspace symbols found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Workspace symbols request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn call_hierarchy_incoming_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use call-hierarchy".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
+        let uri = crate::lsp::uri_from_file_path(&abs_path)
+            .ok_or_else(|| anyhow!("Invalid file path"))?;
 
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
+        let language_id = crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+            .ok_or_else(|| anyhow!("Language not supported for LSP"))?
+            .to_string();
 
-        self.set_lsp_status("Fetching incoming calls...".to_string());
-
+        // Flush pending document changes so LSP has the latest content
         let did_flush = self.ensure_lsp_document_synced().await;
         if did_flush {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        // First prepare call hierarchy to get items at cursor position
-        let items = lsp
-            .prepare_call_hierarchy(uri, line, character, language_id)
-            .await;
-
-        match items {
-            Ok(Some(items)) if !items.is_empty() => {
-                // Get incoming calls for the first item
-                let incoming = lsp.incoming_calls(items[0].clone(), language_id).await;
-
-                match incoming {
-                    Ok(Some(calls)) if !calls.is_empty() => {
-                        // Convert incoming calls to locations
-                        let locations: Vec<Location> = calls
-                            .iter()
-                            .map(|call| Location {
-                                uri: call.from.uri.clone(),
-                                range: call.from.selection_range,
-                            })
-                            .collect();
-
-                // Store for navigation
-                self.lsp_state.available_call_hierarchy = locations
-                    .iter()
-                    .map(|loc| {
-                        let path = uri_to_file_path(&loc.uri)
-                            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        (path, loc.clone())
-                    })
-                    .collect();
-                self.lsp_state.active_lsp_result_type = Some(LspResultType::CallHierarchy);
-
-                // Create picker items
-                let items: Vec<PickerResult> = locations
-                    .iter()
-                    .filter_map(|loc| {
-                        let path = uri_to_file_path(&loc.uri)?;
-                        let line = loc.range.start.line as usize;
-                        let col = self.utf16_to_col(line, loc.range.start.character);
-                        Some(PickerResult {
-                            display: format!("{}:{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), line + 1, col + 1),
-                            location: path.to_string_lossy().to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        })
-                    })
-                    .collect();
-
-                        self.open_location_picker(items, "Incoming Calls");
-                        self.set_lsp_status(format!("Found {} incoming calls", locations.len()));
-
-                        Ok(true)
-                    }
-                    Ok(_) => {
-                        self.set_lsp_status("No incoming calls found".to_string());
-                        Ok(false)
-                    }
-                    Err(e) => {
-                        self.set_lsp_status(format!("Incoming calls request failed: {}", e));
-                        Err(e)
-                    }
-                }
-            }
-            Ok(_) => {
-                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Call hierarchy prepare failed: {}", e));
-                Err(e)
-            }
-        }
+        Ok(LspRequestContext {
+            lsp,
+            uri,
+            file_path,
+            line,
+            character,
+            language_id,
+        })
     }
 
-    async fn call_hierarchy_outgoing_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use call-hierarchy".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-            };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let cursor = self.buffer().cursor();
-        let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Fetching outgoing calls...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // First prepare call hierarchy to get items at cursor position
-        let items = lsp
-            .prepare_call_hierarchy(uri, line, character, language_id)
-            .await;
-
-        match items {
-            Ok(Some(items)) if !items.is_empty() => {
-                // Get outgoing calls for the first item
-                let outgoing = lsp.outgoing_calls(items[0].clone(), language_id).await;
-
-                match outgoing {
-                    Ok(Some(calls)) if !calls.is_empty() => {
-                        // Convert outgoing calls to locations
-                        let locations: Vec<Location> = calls
-                            .iter()
-                            .map(|call| Location {
-                                uri: call.to.uri.clone(),
-                                range: call.to.selection_range,
-                            })
-                            .collect();
-
-                // Store for navigation
-                self.lsp_state.available_call_hierarchy = locations
-                    .iter()
-                    .map(|loc| {
-                        let path = uri_to_file_path(&loc.uri)
-                            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        (path, loc.clone())
-                    })
-                    .collect();
-                self.lsp_state.active_lsp_result_type = Some(LspResultType::CallHierarchy);
-
-                // Create picker items
-                let items: Vec<PickerResult> = locations
-                    .iter()
-                    .filter_map(|loc| {
-                        let path = uri_to_file_path(&loc.uri)?;
-                        let line = loc.range.start.line as usize;
-                        let col = self.utf16_to_col(line, loc.range.start.character);
-                        Some(PickerResult {
-                            display: format!("{}:{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), line + 1, col + 1),
-                            location: path.to_string_lossy().to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        })
-                    })
-                    .collect();
-
-                        self.open_location_picker(items, "Outgoing Calls");
-                        self.set_lsp_status(format!("Found {} outgoing calls", locations.len()));
-
-                        Ok(true)
-                    }
-                    Ok(_) => {
-                        self.set_lsp_status("No outgoing calls found".to_string());
-                        Ok(false)
-                    }
-                    Err(e) => {
-                        self.set_lsp_status(format!("Outgoing calls request failed: {}", e));
-                        Err(e)
-                    }
-                }
-            }
-            Ok(_) => {
-                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Call hierarchy prepare failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn type_hierarchy_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use type-hierarchy".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let cursor = self.buffer().cursor();
-        let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Fetching type hierarchy...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // First prepare the type hierarchy to get the item at the cursor
-        let prepare_result = lsp
-            .prepare_type_hierarchy(uri.clone(), line, character, language_id)
-            .await;
-
-        let items = match prepare_result {
-            Ok(Some(items)) => items,
-            Ok(None) => {
-                self.set_lsp_status("No type hierarchy available at cursor".to_string());
-                return Ok(false);
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Type hierarchy request failed: {}", e));
-                return Err(e);
-            }
-        };
-
-        // Use the first item to fetch supertypes and subtypes
-        let item = &items[0];
-
-        let mut all_types = Vec::new();
-        let mut all_types_data = Vec::new();
-
-        // Fetch supertypes
-        if let Ok(Some(supertypes)) = lsp.supertypes(item.clone(), language_id).await {
-            for supertype in supertypes {
-                let location = Location {
-                    uri: supertype.uri.clone(),
-                    range: supertype.selection_range,
-                };
-                all_types.push(location.clone());
-                all_types_data.push((format!("↑ {}", supertype.name), location));
-            }
-        }
-
-        // Fetch subtypes
-        if let Ok(Some(subtypes)) = lsp.subtypes(item.clone(), language_id).await {
-            for subtype in subtypes {
-                let location = Location {
-                    uri: subtype.uri.clone(),
-                    range: subtype.selection_range,
-                };
-                all_types.push(location.clone());
-                all_types_data.push((format!("↓ {}", subtype.name), location));
-            }
-        }
-
-        if !all_types.is_empty() {
-            // Store for navigation
-            self.lsp_state.available_type_hierarchy = all_types_data;
-            self.lsp_state.active_lsp_result_type = Some(LspResultType::TypeHierarchy);
-
-            // Create picker items
-            let items: Vec<PickerResult> = all_types
-                .iter()
-                .filter_map(|loc| {
-                    let path = uri_to_file_path(&loc.uri)?;
-                    let line = loc.range.start.line as usize;
-                    let col = self.utf16_to_col(line, loc.range.start.character);
-                    Some(PickerResult {
-                            display: format!("{}:{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), line + 1, col + 1),
-                            location: path.to_string_lossy().to_string(),
-                        line,
-                        col,
-                        match_positions: Vec::new(),
-                        content: None,
-                    })
-                })
-                .collect();
-
-            self.open_location_picker(items, "Type Hierarchy");
-            self.set_lsp_status(format!("Found {} types", all_types.len()));
-
-            Ok(true)
-        } else {
-            self.set_lsp_status("No type hierarchy found".to_string());
-            Ok(false)
-        }
-    }
-
-
-
-    async fn format_document_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use format".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Formatting document...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // Get tab settings from buffer
-        let tab_size = 4; // TODO: get from config
-        let insert_spaces = true; // TODO: get from config
-
-        let result = lsp.format_document(&uri, language_id, tab_size, insert_spaces).await;
-
-        match result {
-            Ok(edits) if !edits.is_empty() => {
-                self.apply_lsp_edits(edits);
-                self.set_lsp_status("Document formatted".to_string());
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No formatting changes".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Format request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn code_actions_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use code actions".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let cursor = self.buffer().cursor();
-        let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Fetching code actions...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // Get diagnostics for the current line to provide context for code actions
-        let diagnostics = lsp.get_diagnostics_for_line(&uri, line).await;
-        let result = lsp.code_actions(&uri, line, character, language_id, diagnostics).await;
-
-        match result {
-            Ok(actions) if !actions.is_empty() => {
-                // Build display titles for the picker
-                let titles: Vec<String> = actions
-                    .iter()
-                    .map(|a| match a {
-                        lsp_types::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
-                        lsp_types::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
-                    })
-                    .collect();
-
-                self.lsp_state.available_code_actions = actions;
-
-                // Open a Custom picker so the user can select an action
-                let base_dir = std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let picker = crate::editor::picker::Picker::new_custom(base_dir, titles);
-                self.set_picker(picker);
-                self.set_mode(crate::mode::Mode::Picker);
-                self.mark_picker_selection_changed();
-
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No code actions available".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Code actions request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    /// Apply LSP text edits to the current buffer
-    fn apply_lsp_edits(&mut self, edits: Vec<lsp_types::TextEdit>) {
-        // Sort edits in reverse order (bottom to top) to maintain correct positions
-        let mut sorted_edits = edits;
-        sorted_edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then(b.range.start.character.cmp(&a.range.start.character))
-        });
-
-        for edit in sorted_edits {
-            let start_line = edit.range.start.line as usize;
-            let end_line = edit.range.end.line as usize;
-            // Convert UTF-16 positions to character positions
-            let start_col = self.utf16_to_col(start_line, edit.range.start.character);
-            let end_line_for_col = end_line;
-            let end_col = self.utf16_to_col(end_line_for_col, edit.range.end.character);
-
-            // Delete the range first, then insert the new text
-            self.buffer_mut().delete_range(start_line, start_col, end_line, end_col);
-            self.buffer_mut().insert_text_at(start_line, start_col, &edit.new_text);
-        }
-    }
-
-    /// Apply a code action by index from available code actions
-    pub fn apply_code_action(&mut self, action_index: usize) {
-        if action_index >= self.lsp_state.available_code_actions.len() {
-            self.set_lsp_status("Invalid code action index".to_string());
-            return;
-        }
-
-        let action = self.lsp_state.available_code_actions[action_index].clone();
-
-        // Code actions can contain either:
-        // 1. Direct edits (workspace edit)
-        // 2. Commands to execute on the server
-        match action {
-            lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
-                let workspace_edit = match code_action.edit {
-                    Some(edit) => edit,
-                    None => {
-                        self.set_lsp_status("Code action has no edit".to_string());
-                        return;
-                    }
-                };
-
-                // Apply workspace edits directly
-                if let Some(changes) = &workspace_edit.changes {
-                    // changes: HashMap<Uri, Vec<TextEdit>>
-                    for (uri, edits) in changes {
-                        // Find buffer for this URI (or open it)
-                        if let Some(path) = uri_to_file_path(uri) {
-                            let current_path = self.buffer().file_path().map(|s| s.to_string());
-
-                            if current_path.as_deref() == Some(path.to_string_lossy().as_ref()) {
-                                // Edits for current buffer
-                                self.apply_lsp_edits(edits.clone());
-                            } else {
-                                // TODO: Handle edits for other files
-                                // Need to load buffer, apply edits, save
-                                // Note: Silently skip edits for other files (not yet supported)
-                            }
-                        }
-                    }
-                }
-
-                if let Some(document_changes) = &workspace_edit.document_changes {
-                    match document_changes {
-                        lsp_types::DocumentChanges::Edits(edits) => {
-                            for text_doc_edit in edits {
-                                if let Some(path) = uri_to_file_path(&text_doc_edit.text_document.uri) {
-                                    let current_path = self.buffer().file_path().map(|s| s.to_string());
-
-                                    if current_path.as_deref()
-                                        == Some(path.to_string_lossy().as_ref())
-                                    {
-                                        // Extract TextEdit from OneOf
-                                        let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
-                                            .edits
-                                            .iter()
-                                            .map(|e| match e {
-                                                lsp_types::OneOf::Left(edit) => edit.clone(),
-                                                lsp_types::OneOf::Right(annot_edit) => {
-                                                    annot_edit.text_edit.clone()
-                                                }
-                                            })
-                                            .collect();
-
-                                        self.apply_lsp_edits(text_edits);
-                                    } else {
-                                        // Note: Silently skip edits for other files (not yet supported)
-                                    }
-                                }
-                            }
-                        }
-                        lsp_types::DocumentChanges::Operations(ops) => {
-                            for op in ops {
-                                match op {
-                                    lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
-                                        if let Some(path) = uri_to_file_path(&text_doc_edit.text_document.uri)
-                                        {
-                                            let current_path =
-                                                self.buffer().file_path().map(|s| s.to_string());
-
-                                            if current_path.as_deref()
-                                                == Some(path.to_string_lossy().as_ref())
-                                            {
-                                                // Extract TextEdit from OneOf
-                                                let text_edits: Vec<lsp_types::TextEdit> =
-                                                    text_doc_edit
-                                                        .edits
-                                                        .iter()
-                                                        .map(|e| match e {
-                                                            lsp_types::OneOf::Left(edit) => {
-                                                                edit.clone()
-                                                            }
-                                                            lsp_types::OneOf::Right(annot_edit) => {
-                                                                annot_edit.text_edit.clone()
-                                                            }
-                                                        })
-                                                        .collect();
-
-                                                self.apply_lsp_edits(text_edits);
-                                            }
-                                        }
-                                    }
-                                    lsp_types::DocumentChangeOperation::Op(_resource_op) => {
-                                        // Note: Silently skip resource operations (not yet supported)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                self.set_lsp_status("Code action applied".to_string());
-            }
-            lsp_types::CodeActionOrCommand::Command(command) => {
-                // Commands need to be executed on the LSP server
-                // Requires sending workspace/executeCommand request
-                let lsp = match &self.lsp_state.lsp_manager {
-                    Some(lsp) => lsp.clone(),
-                    None => {
-                        self.set_lsp_status("LSP not available".to_string());
-                        return;
-                    }
-                };
-
-                // Get language_id from current file
-                let language_id = match self.buffer().file_path() {
-                    Some(path) => {
-                        match crate::syntax::LanguageRegistry::get_lsp_language_id(path) {
-                            Some(id) => id,
-                            None => {
-                                self.set_lsp_status("Language not supported for LSP".to_string());
-                                return;
-                            }
-                        }
-                    }
-                    None => {
-                        self.set_lsp_status("No file open for command execution".to_string());
-                        return;
-                    }
-                };
-
-                // Spawn async task to execute command
-                let command_str = command.command.clone();
-                let command_args = command.arguments.clone();
-                tokio::spawn(async move {
-                    let result = lsp.execute_command(command_str, command_args, language_id).await;
-                    // Note: Silently handle result (avoid interrupting user output)
-                    let _ = result;
-                });
-
-                self.set_lsp_status("Executing code action command...".to_string());
-            }
-        }
-
-        // Clear available actions after applying
-        self.lsp_state.available_code_actions.clear();
-    }
-
-    /// Apply a completion by index from available completions
-
-    /// Navigate to an LSP location by index (from references, symbols, call hierarchy, etc.)
-    pub fn navigate_to_lsp_location(&mut self, index: usize) {
-        // Determine which result type we're navigating
-        let result_type = match &self.lsp_state.active_lsp_result_type {
-            Some(t) => t,
-            None => {
-                self.set_lsp_status("No LSP results available".to_string());
-                return;
-            }
-        };
-
-        // Get the location based on result type
-        let location = match result_type {
-            LspResultType::References => {
-                if index >= self.lsp_state.available_references.len() {
-                    self.set_lsp_status("Invalid reference index".to_string());
-                    return;
-                }
-                self.lsp_state.available_references[index].clone()
-            }
-            LspResultType::DocumentSymbols => {
-                if index >= self.lsp_state.available_document_symbols.len() {
-                    self.set_lsp_status("Invalid symbol index".to_string());
-                    return;
-                }
-                let symbol = &self.lsp_state.available_document_symbols[index];
-                let file_path = self.buffer().file_path().expect("Document symbols require a file");
-                let uri = uri_from_file_path(file_path).expect("Invalid file path");
-                Location {
-                    uri,
-                    range: symbol.selection_range,
-                }
-            }
-            LspResultType::WorkspaceSymbols => {
-                if index >= self.lsp_state.available_workspace_symbols.len() {
-                    self.set_lsp_status("Invalid symbol index".to_string());
-                    return;
-                }
-                self.lsp_state.available_workspace_symbols[index]
-                    .location
-                    .clone()
-            }
-            LspResultType::CallHierarchy | LspResultType::TypeHierarchy => {
-                let hierarchy_items = if matches!(result_type, LspResultType::CallHierarchy) {
-                    &self.lsp_state.available_call_hierarchy
-                } else {
-                    &self.lsp_state.available_type_hierarchy
-                };
-
-                if index >= hierarchy_items.len() {
-                    self.set_lsp_status("Invalid hierarchy index".to_string());
-                    return;
-                }
-
-                // Extract Location from hierarchy data (stored as tuples)
-                hierarchy_items[index].1.clone()
-            }
-        };
-
-        // Navigate to the location
-        if let Some(path) = uri_to_file_path(&location.uri) {
-            let target_line = location.range.start.line as usize;
-            let target_character = location.range.start.character;
-
-            // Save current position to tag stack for Ctrl-T navigation
-            self.push_tag();
-
-            // Open file if different from current
-            if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
-                && self.open_file(path.to_string_lossy().as_ref()).is_err()
-            {
-                self.set_lsp_status("Failed to open file".to_string());
-                return;
-            }
-
-            // Convert UTF-16 character offset to column position AFTER loading the target file
-            let target_col = self.utf16_to_col(target_line, target_character);
-
-            // Move cursor to location and validate bounds
-            self.buffer_mut().cursor_mut().set_position(target_line, target_col);
-            self.buffer_mut().validate_cursor_position();
-            // Center cursor after jump (Vim behavior)
-            self.center_cursor_in_viewport();
-            let actual_col = self.buffer().cursor().col();
-            self.set_lsp_status(format!(
-                "Navigated to {}:{}:{}",
-                path.file_name().unwrap_or_default().to_string_lossy(),
-                target_line + 1,
-                actual_col + 1
-            ));
-        } else {
-            self.set_lsp_status("Invalid file path in LSP response".to_string());
-        }
-    }
-
-    async fn organize_imports_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to organize imports".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Organizing imports...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // Request code actions for organize imports (at file start, no diagnostics needed)
-        let diagnostics = Vec::new();
-        let result = lsp.code_actions(&uri, 0, 0, language_id, diagnostics).await;
-
-        match result {
-            Ok(actions) => {
-                // Find organize imports action
-                let organize_action = actions.into_iter().find(|action| match action {
-                    lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
-                        // Check if this looks like an organize imports edit
-                        code_action.edit.as_ref().is_some_and(|edit| {
-                            edit.changes.is_some() || edit.document_changes.is_some()
-                        })
-                    }
-                    lsp_types::CodeActionOrCommand::Command(cmd) => cmd.command.contains("organizeImports"),
-                });
-
-                if let Some(action) = organize_action {
-                    // Apply the action
-                    self.lsp_state.available_code_actions = vec![action];
-                    self.apply_code_action(0);
-                    self.set_lsp_status("Imports organized".to_string());
-                    Ok(true)
-                } else {
-                    self.set_lsp_status("No organize imports action available".to_string());
-                    Ok(false)
-                }
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Organize imports failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn rename_impl(&mut self, new_name: String) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use rename".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        // Get cursor position (convert to UTF-16 for LSP)
-        let cursor = self.buffer().cursor();
-        let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status(format!("Renaming to '{}'...", new_name));
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-
-        // Call the rename method with individual parameters (using UTF-16 character position)
-        let result = lsp.rename(&uri, line, character, language_id, new_name.to_string()).await;
-
-        match result {
-            Ok(Some(workspace_edit)) => {
-                // Apply the workspace edit
-                let applied = self.apply_workspace_edit(workspace_edit).await?;
-                if applied {
-                    self.set_lsp_status("Rename completed".to_string());
-                    Ok(true)
-                } else {
-                    self.set_lsp_status("Rename failed to apply".to_string());
-                    Ok(false)
-                }
-            }
-            Ok(None) => {
-                self.set_lsp_status("Rename not available at this location".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Rename request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    async fn semantic_tokens_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
-            Some(lsp) => lsp.clone(),
-            None => {
-                self.set_lsp_status("LSP not available".to_string());
-                return Ok(false);
-            }
-        };
-
-        let Some(file_path) = self.buffer().file_path() else {
-            self.set_lsp_status("Save file first to use semantic tokens".to_string());
-            return Ok(false);
-        };
-
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
-        } else {
-            match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
-                Err(_) => {
-                    self.set_lsp_status("Failed to resolve file path".to_string());
-                    return Ok(false);
-                }
-            }
-        };
-
-        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
-
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
-            Some(id) => id,
-            None => {
-                self.set_lsp_status("Language not supported for LSP".to_string());
-                return Ok(false);
-            }
-        };
-
-        self.set_lsp_status("Fetching semantic tokens...".to_string());
-
-        let result = lsp.semantic_tokens_full(&uri, language_id).await;
-
-        match result {
-            Ok(Some(_tokens)) => {
-                // TODO: Store and use semantic tokens for enhanced syntax highlighting
-                self.set_lsp_status("Semantic tokens received".to_string());
-                Ok(true)
-            }
-            Ok(None) => {
-                self.set_lsp_status("No semantic tokens available".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Semantic tokens request failed: {}", e));
-                Err(e)
-            }
-        }
-    }
-
-    /// Apply a workspace edit (used for rename, organize imports, etc.)
-    pub async fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
-        let mut all_applied = true;
-        let mut modified_files = Vec::new();
-
-        // Handle `changes` (deprecated but still widely used)
-        if let Some(changes) = edit.changes {
-            for (uri, text_edits) in changes {
-                // Find or load the buffer for this URI
-                if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(&uri) {
-                    // Track modified file
-                    if let Some(path) = uri_to_file_path(&uri) {
-                        let file_name = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
-                        if !modified_files.contains(&file_name.to_string()) {
-                            modified_files.push(file_name.to_string());
-                        }
-                    }
-
-                    // Apply edits to the buffer
-                    if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
-                        all_applied = false;
-                    }
-                } else {
-                    all_applied = false;
-                }
-            }
-        }
-
-        // Handle `document_changes` (newer, more powerful format)
-        if let Some(document_changes) = edit.document_changes {
-            match document_changes {
-                lsp_types::DocumentChanges::Edits(edits) => {
-                    for text_doc_edit in edits {
-                        let uri = &text_doc_edit.text_document.uri;
-
-                        // Find or load the buffer for this URI
-                        if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(uri) {
-                            // Track modified file
-                            if let Some(path) = uri_to_file_path(uri) {
-                                let file_name = path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown");
-                                if !modified_files.contains(&file_name.to_string()) {
-                                    modified_files.push(file_name.to_string());
-                                }
-                            }
-
-                            // Extract text edits from OneOf wrapper
-                            let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
-                                .edits
-                                .iter()
-                                .map(|e| match e {
-                                    lsp_types::OneOf::Left(edit) => edit.clone(),
-                                    lsp_types::OneOf::Right(annot_edit) => {
-                                        annot_edit.text_edit.clone()
-                                    }
-                                })
-                                .collect();
-
-                            // Apply edits to the buffer
-                            if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
-                                all_applied = false;
-                            }
-                        } else {
-                            all_applied = false;
-                        }
-                    }
-                }
-                lsp_types::DocumentChanges::Operations(ops) => {
-                    for op in ops {
-                        match op {
-                            lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
-                                let uri = &text_doc_edit.text_document.uri;
-
-                                // Find or load the buffer for this URI
-                                if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(uri) {
-                                    // Track modified file
-                                    if let Some(path) = uri_to_file_path(uri) {
-                                        let file_name = path
-                                            .file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("unknown");
-                                        if !modified_files.contains(&file_name.to_string()) {
-                                            modified_files.push(file_name.to_string());
-                                        }
-                                    }
-
-                                    // Extract text edits
-                                    let text_edits: Vec<lsp_types::TextEdit> = text_doc_edit
-                                        .edits
-                                        .iter()
-                                        .map(|e| match e {
-                                            lsp_types::OneOf::Left(edit) => edit.clone(),
-                                            lsp_types::OneOf::Right(annot_edit) => {
-                                                annot_edit.text_edit.clone()
-                                            }
-                                        })
-                                        .collect();
-
-                                    // Apply edits to the buffer
-                                    if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
-                                        all_applied = false;
-                                    }
-                                } else {
-                                    all_applied = false;
-                                }
-                            }
-                            lsp_types::DocumentChangeOperation::Op(resource_op) => {
-                                // Handle resource operations (create, rename, delete files)
-                                match resource_op {
-                                    lsp_types::ResourceOp::Create(create_file) => {
-                                        // Create a new file
-                                        let file_path = match uri_to_file_path(&create_file.uri) {
-                                            Some(p) => p,
-                                            None => {
-                                                all_applied = false;
-                                                continue;
-                                            }
-                                        };
-
-                                        // Check if file already exists
-                                        let should_create = create_file
-                                            .options
-                                            .as_ref()
-                                            .map(|opts| {
-                                                if file_path.exists() {
-                                                    opts.overwrite.unwrap_or(false)
-                                                } else {
-                                                    true
-                                                }
-                                            })
-                                            .unwrap_or(!file_path.exists());
-
-                                        if should_create
-                                            && std::fs::write(&file_path, "").is_err() {
-                                                all_applied = false;
-                                            }
-                                    }
-                                    lsp_types::ResourceOp::Rename(rename_file) => {
-                                        // Rename/move a file
-                                        let old_path = match uri_to_file_path(&rename_file.old_uri) {
-                                            Some(p) => p,
-                                            None => {
-                                                all_applied = false;
-                                                continue;
-                                            }
-                                        };
-                                        let new_path = match uri_to_file_path(&rename_file.new_uri) {
-                                            Some(p) => p,
-                                            None => {
-                                                all_applied = false;
-                                                continue;
-                                            }
-                                        };
-
-                                        // Create parent directories if needed
-                                        if let Some(parent) = new_path.parent() {
-                                            if !parent.exists()
-                                                && std::fs::create_dir_all(parent).is_err() {
-                                                    all_applied = false;
-                                                    continue;
-                                                }
-                                        }
-
-                                        // Perform the rename
-                                        if std::fs::rename(&old_path, &new_path).is_err() {
-                                            all_applied = false;
-                                        }
-                                    }
-                                    lsp_types::ResourceOp::Delete(delete_file) => {
-                                        // Delete a file
-                                        let file_path = match uri_to_file_path(&delete_file.uri) {
-                                            Some(p) => p,
-                                            None => {
-                                                all_applied = false;
-                                                continue;
-                                            }
-                                        };
-
-                                        if file_path.exists()
-                                            && std::fs::remove_file(&file_path).is_err() {
-                                                all_applied = false;
-                                            }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Show summary of changes
-        if !modified_files.is_empty() {
-            let summary = if modified_files.len() == 1 {
-                format!("Modified {}", modified_files[0])
-            } else {
-                format!("Modified {} files", modified_files.len())
-            };
-            self.set_lsp_status(summary);
-        }
-
-        Ok(all_applied)
-    }
-
-    /// Helper method to open a location picker with LSP results
-    fn open_location_picker(&mut self, items: Vec<PickerResult>, _title: &str) {
-        use std::path::PathBuf;
-
-        let base_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-        // Use new_with_results to preserve the actual file paths in location field
-        // This is crucial for preview loading to work correctly
-        let picker = Picker::new_with_results(base_dir, items);
-        self.set_picker(picker);
-        self.set_mode(Mode::Picker);
-        self.mark_picker_selection_changed();
-    }
 }
