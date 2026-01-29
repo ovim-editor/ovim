@@ -416,27 +416,23 @@ impl Change {
                 text,
                 cursor_before,
             } => {
-                // To undo an insert, delete the inserted text
-                // We need to use the rope state AFTER the insert to find the correct positions
+                // To undo an insert, delete the inserted text using absolute
+                // char positions. We can't use delete_range(line, col) because
+                // it clamps columns via line_len() (which excludes newlines),
+                // but insertions can target the newline position (e.g., line
+                // paste inserts at rope().line().len_chars() which includes \n).
                 let (start_line, start_col) = *position;
 
-                // Convert position to absolute char index using current rope
                 let start_char = if start_line < buffer.rope().len_lines() {
                     buffer.rope().line_to_char(start_line) + start_col
                 } else {
                     buffer.rope().len_chars()
                 };
 
-                // Calculate end char position by adding text length
                 let text_len = text.chars().count();
                 let end_char = (start_char + text_len).min(buffer.rope().len_chars());
 
-                // Convert end_char back to (line, col)
-                let end_line = buffer.rope().char_to_line(end_char);
-                let end_line_start = buffer.rope().line_to_char(end_line);
-                let end_col = end_char - end_line_start;
-
-                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.delete_char_range(start_char, end_char);
                 // Restore cursor to where it was before the change
                 buffer
                     .cursor_mut()

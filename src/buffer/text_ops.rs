@@ -122,6 +122,48 @@ impl Buffer {
         deleted
     }
 
+    /// Deletes text by absolute char positions in the rope.
+    ///
+    /// Unlike `delete_range` which clamps columns to `line_len()` (excluding
+    /// newlines), this method uses the char indices directly. This is needed
+    /// for undo of insertions at positions past the content of a line (e.g.,
+    /// after the newline character).
+    pub fn delete_char_range(&mut self, start_char: usize, end_char: usize) {
+        crate::metrics::BUFFER_EDITS_TOTAL.inc();
+
+        let start_pos = start_char.min(self.rope.len_chars());
+        let end_pos = end_char.min(self.rope.len_chars());
+
+        if start_pos >= end_pos {
+            return;
+        }
+
+        let start_line = self.rope.char_to_line(start_pos);
+        let start_col = start_pos - self.rope.line_to_char(start_line);
+        let end_line = self.rope.char_to_line(end_pos);
+        let end_col = end_pos - self.rope.line_to_char(end_line);
+
+        let deleted = self.rope.slice(start_pos..end_pos).to_string();
+
+        let ts_edit =
+            self.create_ts_delete_edit(start_line, start_col, end_line, end_col, &deleted);
+        self.shift_highlights_for_deletion(start_line, start_col, end_line, end_col);
+
+        self.rope.remove(start_pos..end_pos);
+        self.modified = true;
+
+        crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
+        crate::metrics::BUFFER_LINES.set(self.rope.len_lines() as i64);
+
+        if let Some(edit) = ts_edit {
+            self.apply_incremental_syntax_edit(edit);
+        }
+
+        self.version += 1;
+        self.highlight_version = self.highlight_version.wrapping_add(1);
+        self.pending_rehighlight = true;
+    }
+
     /// Replaces the entire buffer content
     pub fn replace_all(&mut self, content: &str) {
         self.rope = ropey::Rope::from_str(content);

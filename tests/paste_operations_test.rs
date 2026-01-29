@@ -327,10 +327,8 @@ fn test_paste_and_undo() {
         .keys("p") // Paste
         .keys("u"); // Undo
 
-    // TODO: Undo for linewise paste has a bug - it removes the wrong content
-    // Expected: "line 1\nline 2\n" (original)
-    // Actual: "line 1line 2\n" (newline between lines removed)
-    assert_eq!(test.buffer_content(), "line 1line 2\n");
+    // Undo should restore the original buffer
+    assert_eq!(test.buffer_content(), "line 1\nline 2\n");
     // Cursor returns to position before paste
     test.assert_cursor(0, 0);
 }
@@ -342,14 +340,11 @@ fn test_paste_undo_redo() {
     test.keys("yy") // Yank
         .keys("p") // Paste
         .keys("u") // Undo
-        .press('\x12'); // Ctrl-R (redo)
+        .keys("<C-r>"); // Redo
 
-    // TODO: Undo/redo for linewise paste has a bug
-    // After undo: "line 1line 2\n" (broken)
-    // After redo: re-applies paste but buffer is already broken
-    assert_eq!(test.buffer_content(), "line 1line 2\n");
-    // Cursor position
-    test.assert_cursor(0, 0);
+    // After redo, the paste should be re-applied
+    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\n");
+    test.assert_cursor(1, 0);
 }
 
 #[test]
