@@ -656,21 +656,24 @@ impl Change {
                     }
                     InsertEntryMode::OpenBelow => {
                         // o — insert newline below, position on new line
-                        if let Some(Self::InsertText { text, .. }) = changes.first() {
+                        // Replicate insert_line_below logic using CURRENT line's indent
+                        if !changes.is_empty() {
                             let line_idx = buffer.cursor().line();
-                            let position = if let Some(line) = buffer.line(line_idx) {
-                                let line_len = line.trim_end_matches('\n').chars().count();
-                                (line_idx, line_len)
+                            let line_text = buffer.line(line_idx).unwrap_or_default();
+                            let indent: String = line_text
+                                .chars()
+                                .take_while(|c| c.is_whitespace() && *c != '\n')
+                                .collect();
+
+                            let (insert_pos, text) = if line_text.ends_with('\n') {
+                                ((line_idx + 1, 0), format!("{}\n", indent))
                             } else {
-                                (line_idx, 0)
+                                let line_len = line_text.chars().count();
+                                ((line_idx, line_len), format!("\n{}\n", indent))
                             };
-                            buffer.insert_text_at(position.0, position.1, text);
-                            let indent_len = if text.starts_with('\n') {
-                                if text.len() > 2 { text[1..text.len()-1].len() } else { 0 }
-                            } else {
-                                text.len() - 1
-                            };
-                            buffer.cursor_mut().set_position(line_idx + 1, indent_len);
+
+                            buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
+                            buffer.cursor_mut().set_position(line_idx + 1, indent.chars().count());
                         }
                         // Replay remaining sub-changes (skip first which was the newline)
                         for change in changes.iter().skip(1) {
@@ -684,11 +687,18 @@ impl Change {
                     }
                     InsertEntryMode::OpenAbove => {
                         // O — insert newline above, position on new line
-                        if let Some(Self::InsertText { text, .. }) = changes.first() {
+                        // Replicate insert_line_above logic using CURRENT line's indent
+                        if !changes.is_empty() {
                             let line_idx = buffer.cursor().line();
-                            buffer.insert_text_at(line_idx, 0, text);
-                            let indent_len = text.len() - 1;
-                            buffer.cursor_mut().set_position(line_idx, indent_len);
+                            let line_text = buffer.line(line_idx).unwrap_or_default();
+                            let indent: String = line_text
+                                .chars()
+                                .take_while(|c| c.is_whitespace() && *c != '\n')
+                                .collect();
+
+                            let text = format!("{}\n", indent);
+                            buffer.insert_text_at(line_idx, 0, &text);
+                            buffer.cursor_mut().set_position(line_idx, indent.chars().count());
                         }
                         // Replay remaining sub-changes (skip first which was the newline)
                         for change in changes.iter().skip(1) {
@@ -945,7 +955,11 @@ impl ChangeBuilder {
     pub fn build(self, buffer_cursor: Position) -> Option<Change> {
         if self.changes.is_empty() {
             None
-        } else if self.changes.len() == 1 {
+        } else if self.changes.len() == 1
+            && !matches!(self.entry_mode, InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove)
+        {
+            // Unwrap single changes for most entry modes. OpenBelow/OpenAbove need
+            // the Composite wrapper to preserve entry_mode for dot-repeat.
             Some(self.changes.into_iter().next().unwrap())
         } else {
             // Use explicitly set cursor_after, or fall back to current buffer cursor

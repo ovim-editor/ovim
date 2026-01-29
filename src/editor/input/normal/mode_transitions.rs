@@ -16,6 +16,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     match key_event.code {
         // i - insert before cursor
         KeyCode::Char('i') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -26,6 +27,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // a - insert after cursor
         KeyCode::Char('a') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -40,6 +42,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // I - insert at first non-blank
         KeyCode::Char('I') => {
+            editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -53,6 +56,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // A - insert at end of line
         KeyCode::Char('A') => {
+            editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -70,6 +74,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // o - open line below
         KeyCode::Char('o') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -82,6 +87,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // O - open line above
         KeyCode::Char('O') => {
+            editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
