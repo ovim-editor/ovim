@@ -954,36 +954,42 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
 
     frame.render_widget(block.clone(), picker_area);
 
-    // Split picker area into left (query + results) and right (preview)
+    // Layout: query row spans full width, then separator, then body (results | preview)
     let inner_area = block.inner(picker_area);
-    let main_chunks = if show_preview {
+
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Length(1), // Query row (full width)
+                Constraint::Length(1), // Separator
+                Constraint::Min(1),    // Body (results + optional preview)
+            ]
+            .as_ref(),
+        )
+        .split(inner_area);
+
+    let query_row = vertical_chunks[0];
+    let separator_row = vertical_chunks[1];
+    let body_area = vertical_chunks[2];
+
+    render_picker_query(frame, picker, query_row);
+    render_picker_separator(frame, separator_row);
+
+    // Split body into results (left) and preview (right)
+    let body_chunks = if show_preview {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)].as_ref())
-            .split(inner_area)
+            .split(body_area)
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(100)].as_ref())
-            .split(inner_area)
+            .split(body_area)
     };
 
-    // Split left side into query line + separator + results
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Length(1), // Query line
-                Constraint::Length(1), // Separator
-                Constraint::Min(1),    // Results
-            ]
-            .as_ref(),
-        )
-        .split(main_chunks[0]);
-
-    render_picker_query(frame, picker, left_chunks[0]);
-    render_picker_separator(frame, left_chunks[1]);
-    render_picker_results(frame, picker, left_chunks[2]);
+    render_picker_results(frame, picker, body_chunks[0]);
 
     // Get selected result (need to clone to release immutable borrow of picker)
     let selected_result = picker.selected_result().cloned();
@@ -994,46 +1000,148 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     // Render preview panel if enabled
     if show_preview {
         if let Some(selected) = selected_result {
-            render_picker_preview(frame, editor, &selected, main_chunks[1]);
+            render_picker_preview(frame, editor, &selected, body_chunks[1]);
         } else {
             // Render empty state when no selection
-            render_picker_empty_state(frame, main_chunks[1]);
+            render_picker_empty_state(frame, body_chunks[1]);
         }
     }
 }
 
-/// Renders the picker query line
+/// Renders the picker query line (single or dual field)
 fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) {
-    let query_text = picker.query();
-    let prompt_icon = " ";
+    use crate::editor::PickerField;
 
-    // No fake cursor character — the terminal's native BlinkingBar cursor is
-    // positioned by set_cursor_position() in core.rs, so we just render the text.
-    let query_line_width = area.width as usize;
-    let content_len = 2 + query_text.len(); // icon + space + query text
-    let padding = query_line_width.saturating_sub(content_len);
+    let query_text = picker.query();
+    let has_filter = picker.has_file_filter();
+
+    if !has_filter {
+        // Single field mode — same as before
+        let prompt_icon = " ";
+        let query_line_width = area.width as usize;
+        let content_len = 2 + query_text.len();
+        let padding = query_line_width.saturating_sub(content_len);
+
+        let mut spans = vec![
+            Span::styled(
+                prompt_icon,
+                Style::default()
+                    .fg(picker_colors::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                query_text.to_string(),
+                Style::default()
+                    .fg(picker_colors::TEXT_BRIGHT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+
+        if padding > 0 {
+            spans.push(Span::styled(
+                " ".repeat(padding),
+                Style::default().bg(picker_colors::BG),
+            ));
+        }
+
+        let query_line = Line::from(spans);
+        let query_paragraph =
+            Paragraph::new(query_line).style(Style::default().bg(picker_colors::BG));
+        frame.render_widget(query_paragraph, area);
+        return;
+    }
+
+    // Dual field mode: [search icon] query │ [filter icon] file_filter
+    let active = picker.active_field();
+    let filter_text = picker.file_filter();
+    let total_width = area.width as usize;
+
+    // Split: ~70% for search, 1 char separator, rest for filter
+    let search_width = (total_width * 70 / 100).max(10);
+    let sep_width = 1;
+    let filter_width = total_width.saturating_sub(search_width + sep_width);
+
+    // Search field
+    let search_active = active == PickerField::Query;
+    let search_icon_color = if search_active { picker_colors::GREEN } else { picker_colors::TEXT_MUTED };
+    let search_text_style = if search_active {
+        Style::default().fg(picker_colors::TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(picker_colors::TEXT_MUTED)
+    };
+
+    let search_icon = " ";
+    let search_content_len = 2 + query_text.len(); // icon + space + text
+    let search_padding = search_width.saturating_sub(search_content_len);
 
     let mut spans = vec![
         Span::styled(
-            prompt_icon,
-            Style::default()
-                .fg(picker_colors::GREEN)
-                .add_modifier(Modifier::BOLD),
+            search_icon,
+            Style::default().fg(search_icon_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
-        Span::styled(
-            query_text.to_string(),
-            Style::default()
-                .fg(picker_colors::TEXT_BRIGHT)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(query_text.to_string(), search_text_style),
     ];
 
-    if padding > 0 {
+    if search_padding > 0 {
         spans.push(Span::styled(
-            " ".repeat(padding),
+            " ".repeat(search_padding),
             Style::default().bg(picker_colors::BG),
         ));
+    }
+
+    // Separator
+    spans.push(Span::styled(
+        "│",
+        Style::default().fg(picker_colors::SEPARATOR).bg(picker_colors::BG),
+    ));
+
+    // File filter field
+    let filter_active = active == PickerField::FileFilter;
+    let filter_icon = " ";
+    let filter_icon_color = if filter_active { picker_colors::GREEN } else { picker_colors::TEXT_MUTED };
+    let filter_text_style = if filter_active {
+        Style::default().fg(picker_colors::TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(picker_colors::TEXT_MUTED)
+    };
+
+    spans.push(Span::styled(
+        filter_icon,
+        Style::default().fg(filter_icon_color).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(" ", Style::default()));
+
+    if filter_text.is_empty() && !filter_active {
+        // Show placeholder hint
+        let hint = if cfg!(target_os = "macos") {
+            "⌥→ file filter"
+        } else {
+            "C-→ file filter"
+        };
+        let hint_len = 2 + hint.chars().count(); // icon + space + hint
+        let hint_padding = filter_width.saturating_sub(hint_len);
+        spans.push(Span::styled(
+            hint.to_string(),
+            Style::default().fg(picker_colors::TEXT_MUTED).add_modifier(Modifier::ITALIC),
+        ));
+        if hint_padding > 0 {
+            spans.push(Span::styled(
+                " ".repeat(hint_padding),
+                Style::default().bg(picker_colors::BG),
+            ));
+        }
+    } else {
+        let filter_content_len = 2 + filter_text.len(); // icon + space + text
+        let filter_padding = filter_width.saturating_sub(filter_content_len);
+        spans.push(Span::styled(filter_text.to_string(), filter_text_style));
+        if filter_padding > 0 {
+            spans.push(Span::styled(
+                " ".repeat(filter_padding),
+                Style::default().bg(picker_colors::BG),
+            ));
+        }
     }
 
     let query_line = Line::from(spans);

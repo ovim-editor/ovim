@@ -55,7 +55,7 @@ pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
 pub use operators::Operator;
 pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
-pub use picker::{Picker, PickerMode, PickerResult};
+pub use picker::{Picker, PickerField, PickerMode, PickerResult};
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use path_completion::PathCompletionState;
 pub use register::{RegisterManager, RegisterType};
