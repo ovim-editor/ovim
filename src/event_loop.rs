@@ -217,8 +217,17 @@ pub async fn run_event_loop(
                     Event::Resize(_, _) => {
                         // Terminal was resized - handled by dirty flag below
                     }
+                    Event::FocusGained => {
+                        // Auto-reload file if changed externally while terminal was unfocused
+                        if let Ok(true) = editor.buffer_mut().reload_if_changed_sync() {
+                            // File was reloaded - trigger rehighlight
+                            if editor.buffer().needs_rehighlight() {
+                                editor.process_viewport_rehighlight();
+                            }
+                        }
+                    }
                     _ => {
-                        // Ignore other events (mouse, focus, etc.)
+                        // Ignore other events (mouse, focus lost, etc.)
                     }
                 }
             }
