@@ -53,6 +53,7 @@ impl Editor {
 
     /// Marks that the picker selection moved (for debouncing preview loading)
     pub fn mark_picker_selection_changed(&mut self) {
+        self.prev_picker_selection_change = self.last_picker_selection_change;
         self.last_picker_selection_change = Some(std::time::Instant::now());
         // Allow new preview to load for the freshly selected entry
         self.loading_preview = None;
@@ -60,11 +61,15 @@ impl Editor {
 
     /// Returns true if user is scrolling rapidly through picker results.
     /// Used to skip expensive preview rendering during rapid navigation.
-    /// Threshold: 50ms since last selection change
+    /// Detects rapid scrolling by checking if two consecutive selection changes
+    /// happened within 80ms of each other (i.e., holding j/k or fast repeated presses).
+    /// A single keypress won't trigger this — only sustained rapid navigation.
     pub fn is_picker_scrolling_rapidly(&self) -> bool {
-        match self.last_picker_selection_change {
-            Some(last_change) => last_change.elapsed().as_millis() < 50,
-            None => false,
+        match (self.prev_picker_selection_change, self.last_picker_selection_change) {
+            (Some(prev), Some(last)) => {
+                last.duration_since(prev).as_millis() < 80
+            }
+            _ => false,
         }
     }
 
@@ -135,6 +140,7 @@ impl Editor {
         // Clear preview cache when closing picker to free memory
         self.preview_cache.clear();
         self.last_picker_selection_change = None;
+        self.prev_picker_selection_change = None;
     }
 
     /// Gets preview from cache or loads it (async version)

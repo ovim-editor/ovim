@@ -267,6 +267,8 @@ pub struct Editor {
     last_picker_query_change: Option<std::time::Instant>,
     /// Last time picker selection moved (for debouncing preview loading)
     last_picker_selection_change: Option<std::time::Instant>,
+    /// Previous picker selection change time (for detecting rapid scrolling vs single navigation)
+    prev_picker_selection_change: Option<std::time::Instant>,
     /// Currently loading preview path (to avoid duplicate requests)
     loading_preview: Option<String>,
     /// Last successfully shown preview path (to show while new one loads)
@@ -391,6 +393,7 @@ impl Editor {
             tab_page_manager: TabPageManager::new(),
             last_picker_query_change: None,
             last_picker_selection_change: None,
+            prev_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
             metrics: PerformanceMetrics::new(),
@@ -451,6 +454,7 @@ impl Editor {
             tab_page_manager: TabPageManager::new(),
             last_picker_query_change: None,
             last_picker_selection_change: None,
+            prev_picker_selection_change: None,
             loading_preview: None,
             last_shown_preview: None,
             metrics: PerformanceMetrics::new(),
