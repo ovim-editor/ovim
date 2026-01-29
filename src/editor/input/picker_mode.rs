@@ -25,6 +25,31 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.close_picker();
             editor.set_mode(Mode::Normal);
         }
+        // Tab / BackTab - toggle between query and file filter fields
+        KeyCode::Tab | KeyCode::BackTab => {
+            if let Some(picker) = editor.picker_mut() {
+                picker.toggle_field();
+            }
+        }
+        // Alt+Right / Alt+Left (macOS) or Ctrl+Right / Ctrl+Left (other) - toggle field
+        KeyCode::Right
+            if (cfg!(target_os = "macos") && key_event.modifiers.contains(KeyModifiers::ALT))
+                || (!cfg!(target_os = "macos")
+                    && key_event.modifiers.contains(KeyModifiers::CONTROL)) =>
+        {
+            if let Some(picker) = editor.picker_mut() {
+                picker.toggle_field();
+            }
+        }
+        KeyCode::Left
+            if (cfg!(target_os = "macos") && key_event.modifiers.contains(KeyModifiers::ALT))
+                || (!cfg!(target_os = "macos")
+                    && key_event.modifiers.contains(KeyModifiers::CONTROL)) =>
+        {
+            if let Some(picker) = editor.picker_mut() {
+                picker.toggle_field();
+            }
+        }
         // Enter - select current item
         KeyCode::Enter => {
             if let Some(picker) = editor.picker() {

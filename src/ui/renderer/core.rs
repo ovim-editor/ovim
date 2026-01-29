@@ -272,11 +272,35 @@ fn set_cursor_position(
 
     if editor.mode() == crate::mode::Mode::Picker {
         if let Some(picker) = editor.picker() {
-            let cursor_pos = picker.query_cursor();
             let picker_area = super::widgets::get_picker_area(frame.area());
-            let cursor_x = (picker_area.x + 1 + 2 + cursor_pos as u16)
-                .min(picker_area.x + picker_area.width.saturating_sub(2));
+            // Inner area is picker_area inset by 1 on each side (border)
+            let inner_x = picker_area.x + 1;
+            let inner_width = picker_area.width.saturating_sub(2) as usize;
             let cursor_y = picker_area.y + 1;
+
+            let cursor_x = if picker.has_file_filter() {
+                use crate::editor::PickerField;
+                let search_width = (inner_width * 70 / 100).max(10);
+                match picker.active_field() {
+                    PickerField::Query => {
+                        // icon(1) + space(1) + cursor_pos
+                        let pos = picker.query_cursor();
+                        (inner_x + 2 + pos as u16).min(inner_x + search_width as u16 - 1)
+                    }
+                    PickerField::FileFilter => {
+                        // search_width + sep(1) + icon(1) + space(1) + cursor_pos
+                        let pos = picker.file_filter_cursor();
+                        let filter_start = inner_x + search_width as u16 + 1; // after separator
+                        (filter_start + 2 + pos as u16)
+                            .min(inner_x + inner_width as u16 - 1)
+                    }
+                }
+            } else {
+                let cursor_pos = picker.query_cursor();
+                (inner_x + 2 + cursor_pos as u16)
+                    .min(inner_x + inner_width as u16 - 1)
+            };
+
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     } else if editor.mode() == crate::mode::Mode::Command {

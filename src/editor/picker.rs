@@ -9,6 +9,12 @@ pub enum PickerMode {
     LspLocations,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PickerField {
+    Query,
+    FileFilter,
+}
+
 #[derive(Debug, Clone)]
 pub struct PickerResult {
     /// Display text for the result
@@ -32,6 +38,12 @@ pub struct Picker {
     query: String,
     /// Cursor position in the query (byte offset)
     query_cursor: usize,
+    /// File filter string (for FindFiles/LiveGrep modes)
+    file_filter: String,
+    /// Cursor position in the file filter (char offset)
+    file_filter_cursor: usize,
+    /// Which input field is currently active
+    active_field: PickerField,
     /// All available results (unfiltered)
     all_results: Vec<PickerResult>,
     /// Filtered results based on query
@@ -48,6 +60,8 @@ pub struct Picker {
     pending_filter: bool,
     /// The last query that was actually filtered
     last_filtered_query: String,
+    /// The last file filter that was actually filtered
+    last_filtered_file_filter: String,
 }
 
 impl Picker {
@@ -58,6 +72,9 @@ impl Picker {
             mode: PickerMode::FindFiles,
             query: String::new(),
             query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
             selected_index: 0,
@@ -66,6 +83,7 @@ impl Picker {
             loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
         }
     }
 
@@ -75,6 +93,9 @@ impl Picker {
             mode: PickerMode::LiveGrep,
             query: String::new(),
             query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
             selected_index: 0,
@@ -83,6 +104,7 @@ impl Picker {
             loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
         }
     }
 
@@ -105,6 +127,9 @@ impl Picker {
             mode: PickerMode::Custom,
             query: String::new(),
             query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
             all_results: results.clone(),
             filtered_results: results,
             selected_index: 0,
@@ -113,6 +138,7 @@ impl Picker {
             loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
         }
     }
 
@@ -135,6 +161,9 @@ impl Picker {
             mode: PickerMode::Completion,
             query: String::new(),
             query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
             all_results: results.clone(),
             filtered_results: results,
             selected_index: 0,
@@ -143,6 +172,7 @@ impl Picker {
             loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
         }
     }
 
@@ -166,6 +196,9 @@ impl Picker {
             mode: PickerMode::LspLocations,
             query: String::new(),
             query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
             all_results: results.clone(),
             filtered_results: results,
             selected_index: 0,
@@ -174,6 +207,7 @@ impl Picker {
             loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
         }
     }
 
@@ -184,6 +218,9 @@ impl Picker {
             mode: PickerMode::LspLocations,
             query: String::new(),
             query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
             all_results: results.clone(),
             filtered_results: results,
             selected_index: 0,
@@ -192,6 +229,7 @@ impl Picker {
             loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
         }
     }
 
@@ -201,23 +239,115 @@ impl Picker {
         // This is a placeholder for API compatibility
     }
 
+    /// Simple glob pattern matching supporting `*` and `?` wildcards.
+    /// Matches against the given string case-insensitively.
+    fn glob_match(pattern: &str, text: &str) -> bool {
+        let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+        let text: Vec<char> = text.to_lowercase().chars().collect();
+        Self::glob_match_inner(&pattern, &text)
+    }
+
+    fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
+        let mut pi = 0;
+        let mut ti = 0;
+        let mut star_pi = None;
+        let mut star_ti = 0;
+
+        while ti < text.len() {
+            if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+                pi += 1;
+                ti += 1;
+            } else if pi < pattern.len() && pattern[pi] == '*' {
+                star_pi = Some(pi);
+                star_ti = ti;
+                pi += 1;
+            } else if let Some(sp) = star_pi {
+                pi = sp + 1;
+                star_ti += 1;
+                ti = star_ti;
+            } else {
+                return false;
+            }
+        }
+
+        while pi < pattern.len() && pattern[pi] == '*' {
+            pi += 1;
+        }
+
+        pi == pattern.len()
+    }
+
+    /// Checks if a result's file path matches the file filter.
+    /// The filter is space-separated tokens; all must match.
+    /// Tokens containing `*` or `?` are glob-matched against the basename
+    /// (or full path if token contains `/`). Otherwise, substring match (case-insensitive).
+    fn matches_file_filter(filter: &str, path: &str) -> bool {
+        if filter.is_empty() {
+            return true;
+        }
+
+        let tokens: Vec<&str> = filter.split_whitespace().collect();
+        if tokens.is_empty() {
+            return true;
+        }
+
+        let basename = std::path::Path::new(path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+
+        let path_lower = path.to_lowercase();
+        let basename_lower = basename.to_lowercase();
+
+        for token in &tokens {
+            let is_glob = token.contains('*') || token.contains('?');
+            let has_slash = token.contains('/');
+
+            if is_glob {
+                let target = if has_slash { &path_lower } else { &basename_lower };
+                if !Self::glob_match(token, target) {
+                    return false;
+                }
+            } else {
+                let token_lower = token.to_lowercase();
+                let target = if has_slash { &path_lower } else { &basename_lower };
+                if !target.contains(&token_lower) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
     /// Performs live grep using ripgrep or grep
-    fn live_grep(query: &str, base_dir: &Path) -> Vec<PickerResult> {
+    fn live_grep(query: &str, base_dir: &Path, file_filter: &str) -> Vec<PickerResult> {
         use std::process::Command;
 
         if query.is_empty() {
             return Vec::new();
         }
 
+        let mut args = vec![
+            "--line-number".to_string(),
+            "--column".to_string(),
+            "--no-heading".to_string(),
+            "--color=never".to_string(),
+        ];
+
+        // Add glob filters from file_filter
+        for token in file_filter.split_whitespace() {
+            if !token.is_empty() {
+                args.push("--glob".to_string());
+                args.push(token.to_string());
+            }
+        }
+
+        args.push(query.to_string());
+
         // Try ripgrep first, fall back to grep
         let output = Command::new("rg")
-            .args([
-                "--line-number",
-                "--column",
-                "--no-heading",
-                "--color=never",
-                query,
-            ])
+            .args(&args)
             .current_dir(base_dir)
             .output();
 
@@ -449,7 +579,30 @@ impl Picker {
     /// Internal filter logic - called by both set_query and apply_pending_filter
     fn apply_filter_internal(&mut self) {
         match self.mode {
-            PickerMode::FindFiles | PickerMode::Custom | PickerMode::Completion | PickerMode::LspLocations => {
+            PickerMode::FindFiles => {
+                let file_filter = self.file_filter.clone();
+                let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
+                    .all_results
+                    .iter()
+                    .filter(|r| Self::matches_file_filter(&file_filter, &r.display))
+                    .filter_map(|r| {
+                        Self::fuzzy_score(&self.query, &r.display).map(|(score, positions)| {
+                            (r.clone(), score, positions)
+                        })
+                    })
+                    .collect();
+
+                scored_results.sort_by(|a, b| b.1.cmp(&a.1));
+
+                self.filtered_results = scored_results
+                    .into_iter()
+                    .map(|(mut result, _score, positions)| {
+                        result.match_positions = positions;
+                        result
+                    })
+                    .collect();
+            }
+            PickerMode::Custom | PickerMode::Completion | PickerMode::LspLocations => {
                 let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
                     .all_results
                     .iter()
@@ -471,7 +624,7 @@ impl Picker {
                     .collect();
             }
             PickerMode::LiveGrep => {
-                let grep_results = Self::live_grep(&self.query, &self.base_dir);
+                let grep_results = Self::live_grep(&self.query, &self.base_dir, &self.file_filter);
                 self.filtered_results = grep_results;
             }
         }
@@ -480,6 +633,7 @@ impl Picker {
         self.selected_index = 0;
         // Track what query was filtered
         self.last_filtered_query = self.query.clone();
+        self.last_filtered_file_filter = self.file_filter.clone();
         self.pending_filter = false;
     }
 
@@ -501,15 +655,28 @@ impl Picker {
         }
     }
 
-    /// Inserts a character at the cursor position
-    /// Note: Does NOT immediately filter - call apply_pending_filter() after debounce
+    /// Returns mutable references to the active field's text and cursor
+    fn active_field_mut(&mut self) -> (&mut String, &mut usize) {
+        match self.active_field {
+            PickerField::Query => (&mut self.query, &mut self.query_cursor),
+            PickerField::FileFilter => (&mut self.file_filter, &mut self.file_filter_cursor),
+        }
+    }
+
+    /// Converts character position to byte position in a string
+    fn char_pos_to_byte_pos_in(s: &str, char_pos: usize) -> usize {
+        s.char_indices()
+            .nth(char_pos)
+            .map(|(byte_pos, _)| byte_pos)
+            .unwrap_or(s.len())
+    }
+
+    /// Inserts a character at the cursor position in the active field
     pub fn insert_char(&mut self, ch: char) {
-        // Insert character at cursor position
-        let byte_pos = self.char_pos_to_byte_pos(self.query_cursor);
-        self.query.insert(byte_pos, ch);
-        // Move cursor forward
-        self.query_cursor += 1;
-        // Mark filter pending instead of immediate filtering
+        let (text, cursor) = self.active_field_mut();
+        let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor);
+        text.insert(byte_pos, ch);
+        *cursor += 1;
         self.mark_filter_pending();
     }
 
@@ -518,62 +685,59 @@ impl Picker {
         self.insert_char(ch);
     }
 
-    /// Removes the character before the cursor
-    /// Note: Does NOT immediately filter - call apply_pending_filter() after debounce
+    /// Removes the character before the cursor in the active field
     pub fn backspace_query(&mut self) {
-        if self.query_cursor > 0 {
-            let byte_pos = self.char_pos_to_byte_pos(self.query_cursor - 1);
-            self.query.remove(byte_pos);
-            self.query_cursor -= 1;
-            // Mark filter pending instead of immediate filtering
-            self.mark_filter_pending();
+        let (text, cursor) = self.active_field_mut();
+        if *cursor > 0 {
+            let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor - 1);
+            text.remove(byte_pos);
+            *cursor -= 1;
+        } else {
+            return;
         }
+        self.mark_filter_pending();
     }
 
-    /// Removes the character at the cursor (delete key)
-    /// Note: Does NOT immediately filter - call apply_pending_filter() after debounce
+    /// Removes the character at the cursor in the active field (delete key)
     pub fn delete_char(&mut self) {
-        let char_len = self.query.chars().count();
-        if self.query_cursor < char_len {
-            let byte_pos = self.char_pos_to_byte_pos(self.query_cursor);
-            self.query.remove(byte_pos);
-            // Mark filter pending instead of immediate filtering
-            self.mark_filter_pending();
+        let (text, cursor) = self.active_field_mut();
+        let char_len = text.chars().count();
+        if *cursor < char_len {
+            let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor);
+            text.remove(byte_pos);
+        } else {
+            return;
         }
+        self.mark_filter_pending();
     }
 
-    /// Moves cursor left in the query
+    /// Moves cursor left in the active field
     pub fn move_cursor_left(&mut self) {
-        if self.query_cursor > 0 {
-            self.query_cursor -= 1;
+        let (_text, cursor) = self.active_field_mut();
+        if *cursor > 0 {
+            *cursor -= 1;
         }
     }
 
-    /// Moves cursor right in the query
+    /// Moves cursor right in the active field
     pub fn move_cursor_right(&mut self) {
-        let char_len = self.query.chars().count();
-        if self.query_cursor < char_len {
-            self.query_cursor += 1;
+        let (text, cursor) = self.active_field_mut();
+        let char_len = text.chars().count();
+        if *cursor < char_len {
+            *cursor += 1;
         }
     }
 
-    /// Moves cursor to the beginning of the query
+    /// Moves cursor to the beginning of the active field
     pub fn move_cursor_home(&mut self) {
-        self.query_cursor = 0;
+        let (_text, cursor) = self.active_field_mut();
+        *cursor = 0;
     }
 
-    /// Moves cursor to the end of the query
+    /// Moves cursor to the end of the active field
     pub fn move_cursor_end(&mut self) {
-        self.query_cursor = self.query.chars().count();
-    }
-
-    /// Converts character position to byte position
-    fn char_pos_to_byte_pos(&self, char_pos: usize) -> usize {
-        self.query
-            .char_indices()
-            .nth(char_pos)
-            .map(|(byte_pos, _)| byte_pos)
-            .unwrap_or(self.query.len())
+        let (text, cursor) = self.active_field_mut();
+        *cursor = text.chars().count();
     }
 
     /// Moves selection down
@@ -625,9 +789,44 @@ impl Picker {
         &self.base_dir
     }
 
+    /// Returns true if this picker mode supports the file filter field
+    pub fn has_file_filter(&self) -> bool {
+        matches!(self.mode, PickerMode::FindFiles | PickerMode::LiveGrep)
+    }
+
+    /// Switches the active input field (only for modes with file filter)
+    pub fn toggle_field(&mut self) {
+        if self.has_file_filter() {
+            self.active_field = match self.active_field {
+                PickerField::Query => PickerField::FileFilter,
+                PickerField::FileFilter => PickerField::Query,
+            };
+        }
+    }
+
+    /// Gets the current file filter string
+    pub fn file_filter(&self) -> &str {
+        &self.file_filter
+    }
+
+    /// Gets the file filter cursor position
+    pub fn file_filter_cursor(&self) -> usize {
+        self.file_filter_cursor
+    }
+
+    /// Gets the currently active field
+    pub fn active_field(&self) -> PickerField {
+        self.active_field
+    }
+
     /// Adds a file result (for incremental loading)
     pub fn add_file_result(&mut self, result: PickerResult) {
         self.all_results.push(result.clone());
+
+        // Check file filter first (for FindFiles mode)
+        if !Self::matches_file_filter(&self.file_filter, &result.display) {
+            return;
+        }
 
         // If query is empty, add to filtered results too
         if self.query.is_empty() {
@@ -759,5 +958,181 @@ impl Picker {
         }
 
         included_parts.join("/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_glob_match_star() {
+        assert!(Picker::glob_match("*.rs", "main.rs"));
+        assert!(Picker::glob_match("*.rs", "MAIN.RS"));
+        assert!(!Picker::glob_match("*.rs", "main.ts"));
+        assert!(Picker::glob_match("src/*", "src/lib.rs"));
+        assert!(Picker::glob_match("*test*", "my_test_file.rs"));
+    }
+
+    #[test]
+    fn test_glob_match_question() {
+        assert!(Picker::glob_match("?.rs", "a.rs"));
+        assert!(!Picker::glob_match("?.rs", "ab.rs"));
+        assert!(Picker::glob_match("??.rs", "ab.rs"));
+    }
+
+    #[test]
+    fn test_glob_match_combined() {
+        assert!(Picker::glob_match("*_test.?s", "my_test.rs"));
+        assert!(Picker::glob_match("*_test.?s", "my_test.ts"));
+        assert!(!Picker::glob_match("*_test.?s", "my_test.css"));
+    }
+
+    #[test]
+    fn test_matches_file_filter_empty() {
+        assert!(Picker::matches_file_filter("", "src/main.rs"));
+        assert!(Picker::matches_file_filter("   ", "src/main.rs"));
+    }
+
+    #[test]
+    fn test_matches_file_filter_substring() {
+        assert!(Picker::matches_file_filter("mod", "src/mod.rs"));
+        assert!(Picker::matches_file_filter("mod", "src/editor/mod.rs"));
+        assert!(!Picker::matches_file_filter("xyz", "src/main.rs"));
+    }
+
+    #[test]
+    fn test_matches_file_filter_glob() {
+        assert!(Picker::matches_file_filter("*.rs", "src/main.rs"));
+        assert!(!Picker::matches_file_filter("*.ts", "src/main.rs"));
+    }
+
+    #[test]
+    fn test_matches_file_filter_multiple_tokens() {
+        // All tokens must match
+        assert!(Picker::matches_file_filter("*.rs mod", "mod.rs"));
+        assert!(!Picker::matches_file_filter("*.rs xyz", "mod.rs"));
+    }
+
+    #[test]
+    fn test_matches_file_filter_path_token() {
+        // Token with `/` matches against full path
+        assert!(Picker::matches_file_filter("src/", "src/main.rs"));
+        assert!(!Picker::matches_file_filter("src/", "lib/main.rs"));
+    }
+
+    #[test]
+    fn test_toggle_field() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        assert_eq!(picker.active_field(), PickerField::Query);
+
+        picker.toggle_field();
+        assert_eq!(picker.active_field(), PickerField::FileFilter);
+
+        picker.toggle_field();
+        assert_eq!(picker.active_field(), PickerField::Query);
+    }
+
+    #[test]
+    fn test_toggle_field_no_op_for_custom() {
+        let mut picker = Picker::new_custom(PathBuf::from("."), vec!["a".into(), "b".into()]);
+        assert_eq!(picker.active_field(), PickerField::Query);
+
+        picker.toggle_field();
+        assert_eq!(picker.active_field(), PickerField::Query); // No change
+    }
+
+    #[test]
+    fn test_has_file_filter() {
+        assert!(Picker::new_file_finder(PathBuf::from(".")).has_file_filter());
+        assert!(Picker::new_live_grep(PathBuf::from(".")).has_file_filter());
+        assert!(!Picker::new_custom(PathBuf::from("."), vec![]).has_file_filter());
+        assert!(!Picker::new_completion(PathBuf::from("."), vec![]).has_file_filter());
+        assert!(!Picker::new_lsp_locations(PathBuf::from("."), vec![]).has_file_filter());
+    }
+
+    #[test]
+    fn test_active_field_mut_delegates_to_query() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        // Active field is Query by default
+        picker.insert_char('a');
+        picker.insert_char('b');
+        assert_eq!(picker.query(), "ab");
+        assert_eq!(picker.file_filter(), "");
+    }
+
+    #[test]
+    fn test_active_field_mut_delegates_to_filter() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        picker.toggle_field();
+
+        picker.insert_char('*');
+        picker.insert_char('.');
+        picker.insert_char('r');
+        picker.insert_char('s');
+        assert_eq!(picker.file_filter(), "*.rs");
+        assert_eq!(picker.query(), "");
+    }
+
+    #[test]
+    fn test_backspace_in_filter_field() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        picker.toggle_field();
+        picker.insert_char('a');
+        picker.insert_char('b');
+        picker.backspace_query();
+        assert_eq!(picker.file_filter(), "a");
+        assert_eq!(picker.file_filter_cursor(), 1);
+    }
+
+    #[test]
+    fn test_cursor_movement_in_filter_field() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        picker.toggle_field();
+        picker.insert_char('a');
+        picker.insert_char('b');
+        picker.insert_char('c');
+        assert_eq!(picker.file_filter_cursor(), 3);
+
+        picker.move_cursor_left();
+        assert_eq!(picker.file_filter_cursor(), 2);
+
+        picker.move_cursor_home();
+        assert_eq!(picker.file_filter_cursor(), 0);
+
+        picker.move_cursor_end();
+        assert_eq!(picker.file_filter_cursor(), 3);
+    }
+
+    #[test]
+    fn test_find_files_filter_integration() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        picker.finish_loading();
+
+        // Add some file results
+        for name in &["main.rs", "lib.rs", "mod.ts", "index.js"] {
+            picker.add_file_result(PickerResult {
+                display: name.to_string(),
+                location: name.to_string(),
+                line: 0,
+                col: 0,
+                match_positions: Vec::new(),
+                content: None,
+            });
+        }
+
+        assert_eq!(picker.filtered_results().len(), 4);
+
+        // Now set a file filter for *.rs
+        picker.toggle_field();
+        picker.insert_char('*');
+        picker.insert_char('.');
+        picker.insert_char('r');
+        picker.insert_char('s');
+        picker.apply_pending_filter();
+
+        assert_eq!(picker.filtered_results().len(), 2);
+        assert!(picker.filtered_results().iter().all(|r| r.display.ends_with(".rs")));
     }
 }
