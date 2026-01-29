@@ -517,6 +517,18 @@ async fn handle_api_request(
 
             let _ = tx.send(ApiResponse::Metrics(metrics_info));
         }
+        ApiRequest::GetOutline(tx) => {
+            let info = editor.get_outline().await;
+            let _ = tx.send(ApiResponse::Outline(info));
+        }
+        ApiRequest::SearchSymbol(query, tx) => {
+            let info = editor.search_symbols(&query).await;
+            let _ = tx.send(ApiResponse::SymbolSearch(info));
+        }
+        ApiRequest::GetTrace(tx) => {
+            let info = editor.get_trace().await;
+            let _ = tx.send(ApiResponse::Trace(info));
+        }
         ApiRequest::GetContextWindow(tx) => {
             let buffer = editor.buffer();
             let cursor = buffer.cursor();

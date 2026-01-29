@@ -302,6 +302,71 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 Err(_) => Err(JsonRpcError::internal_error("Failed to set mode")),
             }
         }
+        "get_outline" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetOutline(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::Outline(info) = response {
+                        let json_str = serde_json::to_string_pretty(&info)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get outline")),
+            }
+        }
+        "search_symbol" => {
+            let query = arguments
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| JsonRpcError::invalid_params("Missing 'query' argument"))?;
+
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::SearchSymbol(query.to_string(), tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::SymbolSearch(info) = response {
+                        let json_str = serde_json::to_string_pretty(&info)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to search symbols")),
+            }
+        }
+        "get_trace" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetTrace(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(response) => {
+                    if let super::state::ApiResponse::Trace(info) = response {
+                        let json_str = serde_json::to_string_pretty(&info)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                    } else {
+                        Err(JsonRpcError::internal_error("Unexpected response type"))
+                    }
+                }
+                Err(_) => Err(JsonRpcError::internal_error("Failed to get trace")),
+            }
+        }
         "get_context_window" => {
             let (tx, rx) = oneshot::channel();
             state

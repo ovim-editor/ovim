@@ -51,6 +51,9 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::Hover { session } => cmd_hover(session),
         Command::Search { pattern, session } => cmd_search(&pattern, session),
         Command::NextMatch { session } => cmd_next_match(session),
+        Command::Outline { session } => cmd_outline(session),
+        Command::Symbol { query, session } => cmd_symbol(&query, session),
+        Command::Trace { session } => cmd_trace(session),
         Command::Diagnostics { session } => cmd_diagnostics(session),
         Command::Symbols { session } => cmd_symbols(session),
         Command::ListLanguages { verbose } => cmd_list_languages(verbose),
@@ -769,6 +772,45 @@ fn cmd_next_match(session_name: Option<String>) -> Result<()> {
         "column": after.cursor.column + 1
     }))?);
 
+    Ok(())
+}
+
+/// Get structural outline of the current document
+fn cmd_outline(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let outline = client
+        .get_outline()
+        .context("Failed to get outline")?;
+
+    println!("{}", serde_json::to_string_pretty(&outline)?);
+    Ok(())
+}
+
+/// Search workspace symbols by name
+fn cmd_symbol(query: &str, session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let results = client
+        .search_symbols(query)
+        .context("Failed to search symbols")?;
+
+    println!("{}", serde_json::to_string_pretty(&results)?);
+    Ok(())
+}
+
+/// Get call hierarchy trace for symbol at cursor
+fn cmd_trace(session_name: Option<String>) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let trace = client
+        .get_trace()
+        .context("Failed to get trace")?;
+
+    println!("{}", serde_json::to_string_pretty(&trace)?);
     Ok(())
 }
 
