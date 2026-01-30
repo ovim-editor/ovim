@@ -1680,7 +1680,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.number = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  number".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1688,7 +1688,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.number = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  nonumber".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1696,7 +1696,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.relative_number = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  relativenumber".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1704,7 +1704,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.relative_number = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  norelativenumber".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1712,7 +1712,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.expand_tab = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  expandtab".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1720,7 +1720,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.expand_tab = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  noexpandtab".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1728,7 +1728,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.ignorecase = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  ignorecase".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1736,7 +1736,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.ignorecase = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  noignorecase".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1744,7 +1744,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.smartcase = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  smartcase".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1752,7 +1752,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.smartcase = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  nosmartcase".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1760,7 +1760,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.cursorline = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  cursorline".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1768,7 +1768,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.cursorline = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  nocursorline".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1776,7 +1776,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.showmatch = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  showmatch".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1784,7 +1784,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.showmatch = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  noshowmatch".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1792,7 +1792,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.swapfile = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  swapfile".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1800,7 +1800,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.swapfile = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  noswapfile".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1808,7 +1808,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.backup = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  backup".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1816,7 +1816,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.backup = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  nobackup".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1824,7 +1824,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.wrap = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  wrap".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1832,7 +1832,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.wrap = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  nowrap".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1840,7 +1840,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.clipboard = String::new();
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  clipboard=".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1848,7 +1848,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.file_tree_reveal = true;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  filetreereveal".to_string()),
+                message: None,
                 line_count: None,
             });
         }
@@ -1856,7 +1856,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             editor.options.file_tree_reveal = false;
             return ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some("  nofiletreereveal".to_string()),
+                message: None,
                 line_count: None,
             });
         }
