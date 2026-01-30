@@ -18,21 +18,22 @@ use super::dashboard::render_dashboard;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::widgets::{
-    render_command_line, render_completion_menu, render_file_tree, render_hover_window,
-    render_path_completion, render_picker, render_progress_line, render_search_line,
-    render_status_line, render_tab_bar,
+    render_command_line, render_completion_menu, render_diagnostic_badge, render_file_tree,
+    render_hover_window, render_message_line, render_path_completion, render_picker,
+    render_progress_line, render_search_line, render_status_line, render_tab_bar,
 };
 
 // ---------------------------------------------------------------------------
 // Frame layout types
 // ---------------------------------------------------------------------------
 
-/// Areas computed from the frame layout (tab bar, file tree, buffer, status, progress).
+/// Areas computed from the frame layout (tab bar, file tree, buffer, status, command, progress).
 struct FrameAreas {
     tab_area: Option<Rect>,
     file_tree_area: Option<Rect>,
     buffer_chunk: Rect,
     status_chunk: Rect,
+    command_chunk: Rect,
     progress_chunk: Option<Rect>,
 }
 
@@ -86,7 +87,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         (None, remaining_area)
     };
 
-    // Buffer + optional progress line + status line
+    // Buffer + optional progress line + status line + command line
     let has_progress = editor.lsp_progress_message().is_some();
     let chunks = if has_progress {
         Layout::default()
@@ -96,6 +97,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
                     Constraint::Min(1),
                     Constraint::Length(1), // progress line
                     Constraint::Length(1), // status line
+                    Constraint::Length(1), // command/message line
                 ]
                 .as_ref(),
             )
@@ -103,14 +105,21 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
     } else {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)].as_ref())
+            .constraints(
+                [
+                    Constraint::Min(1),
+                    Constraint::Length(1), // status line
+                    Constraint::Length(1), // command/message line
+                ]
+                .as_ref(),
+            )
             .split(content_area)
     };
 
-    let (status_chunk, progress_chunk) = if has_progress {
-        (chunks[2], Some(chunks[1]))
+    let (status_chunk, command_chunk, progress_chunk) = if has_progress {
+        (chunks[2], chunks[3], Some(chunks[1]))
     } else {
-        (chunks[1], None)
+        (chunks[1], chunks[2], None)
     };
 
     Some(FrameAreas {
@@ -118,6 +127,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         file_tree_area,
         buffer_chunk: chunks[0],
         status_chunk,
+        command_chunk,
         progress_chunk,
     })
 }
@@ -197,7 +207,7 @@ fn render_buffer_area(
     }
 }
 
-/// Phase 4: Render the status area (progress line + status/command/search line).
+/// Phase 4: Render the status area (progress line + status line + command/message line).
 fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
     if let Some(progress_chunk) = areas.progress_chunk {
         if let Some(progress_msg) = editor.lsp_progress_message() {
@@ -205,12 +215,16 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
         }
     }
 
+    // Status line is always visible (mode, filename, position, diagnostics, LSP)
+    render_status_line(frame, editor, areas.status_chunk);
+
+    // Command/message line below the status line
     if editor.mode() == crate::mode::Mode::Command {
-        render_command_line(frame, editor, areas.status_chunk);
+        render_command_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::Search {
-        render_search_line(frame, editor, areas.status_chunk);
+        render_search_line(frame, editor, areas.command_chunk);
     } else {
-        render_status_line(frame, editor, areas.status_chunk);
+        render_message_line(frame, editor, areas.command_chunk);
     }
 }
 
@@ -220,8 +234,20 @@ fn render_overlays(
     editor: &mut Editor,
     theme: &Theme,
     ctx: &OverlayContext,
-    status_chunk: Rect,
+    command_chunk: Rect,
 ) {
+    // Diagnostic badge (top-right of buffer area) — hidden during full-screen overlays
+    let mode = editor.mode();
+    if !matches!(
+        mode,
+        crate::mode::Mode::Picker
+            | crate::mode::Mode::LspManager
+            | crate::mode::Mode::HoverPreview
+            | crate::mode::Mode::HoverNavigate
+    ) {
+        render_diagnostic_badge(frame, editor, ctx.layout.buffer_area);
+    }
+
     // LSP Manager overlay
     if editor.mode() == crate::mode::Mode::LspManager {
         if let Some(panel) = editor.lsp_manager_panel() {
@@ -261,7 +287,7 @@ fn render_overlays(
 
     // Path completion popup (command mode)
     if editor.path_completion().is_visible() {
-        render_path_completion(frame, editor, status_chunk);
+        render_path_completion(frame, editor, command_chunk);
     }
 }
 
@@ -270,7 +296,7 @@ fn set_cursor_position(
     frame: &mut Frame,
     editor: &mut Editor,
     ctx: &OverlayContext,
-    status_chunk: Rect,
+    command_chunk: Rect,
 ) {
     let layout = ctx.layout;
     let viewport_start = ctx.viewport_start;
@@ -326,12 +352,12 @@ fn set_cursor_position(
         }
     } else if editor.mode() == crate::mode::Mode::Command {
         let cmd_cursor_x = (editor.command_line().len() + 1)
-            .min(status_chunk.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((status_chunk.x + cmd_cursor_x as u16, status_chunk.y));
+            .min(command_chunk.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((command_chunk.x + cmd_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::Search {
         let search_cursor_x = (editor.search.search_buffer.len() + 1)
-            .min(status_chunk.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((status_chunk.x + search_cursor_x as u16, status_chunk.y));
+            .min(command_chunk.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((command_chunk.x + search_cursor_x as u16, command_chunk.y));
     } else {
         let rope = editor.buffer().rope();
         let line_count = editor.buffer().line_count();
@@ -585,8 +611,8 @@ impl Renderer {
             layout: &layout,
             viewport_start,
         };
-        render_overlays(frame, editor, &theme, &ctx, areas.status_chunk);
-        set_cursor_position(frame, editor, &ctx, areas.status_chunk);
+        render_overlays(frame, editor, &theme, &ctx, areas.command_chunk);
+        set_cursor_position(frame, editor, &ctx, areas.command_chunk);
     }
 
     /// Renders the editor state to the terminal

@@ -877,6 +877,25 @@ pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: R
     frame.render_widget(list, menu_area);
 }
 
+/// Renders the message line (command line area when not in command/search mode).
+/// Shows LSP status messages, command feedback, or blank.
+pub fn render_message_line(frame: &mut Frame, editor: &Editor, area: Rect) {
+    let message = editor.lsp_status();
+    let text = if message.is_empty() {
+        String::new()
+    } else {
+        message.to_string()
+    };
+
+    let line = Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(Color::White).bg(Color::Black),
+    )]);
+
+    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
+    frame.render_widget(paragraph, area);
+}
+
 /// Renders the search line
 pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     let search_prefix = if editor.search.search_forward { "/" } else { "?" };
@@ -1756,4 +1775,63 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
         height: 1,
     };
     frame.render_widget(paragraph, centered_area);
+}
+
+/// Renders a diagnostic badge overlay in the top-right corner of the buffer area.
+///
+/// Shows error/warning counts as a colored badge (red bg for errors, yellow for warnings only).
+/// Hidden when: counts are zero, badge is dismissed, or buffer is too narrow.
+pub fn render_diagnostic_badge(
+    frame: &mut Frame,
+    editor: &Editor,
+    buffer_area: Rect,
+) {
+    if editor.diagnostic_badge_dismissed() {
+        return;
+    }
+
+    let (errors, warnings, _, _) = editor.cached_diagnostic_count();
+    if errors == 0 && warnings == 0 {
+        return;
+    }
+
+    // Build badge text
+    let badge_text = if errors > 0 && warnings > 0 {
+        format!(" E:{} W:{} ", errors, warnings)
+    } else if errors > 0 {
+        format!(" E:{} ", errors)
+    } else {
+        format!(" W:{} ", warnings)
+    };
+
+    let badge_width = badge_text.len() as u16;
+
+    // Guard: skip if buffer area is too narrow
+    if buffer_area.width < badge_width + 2 {
+        return;
+    }
+
+    // Position: top-right of buffer area, 1 cell from right edge
+    let badge_x = buffer_area.right().saturating_sub(badge_width + 1);
+    let badge_y = buffer_area.y;
+
+    let badge_area = Rect {
+        x: badge_x,
+        y: badge_y,
+        width: badge_width,
+        height: 1,
+    };
+
+    let bg_color = if errors > 0 { Color::Red } else { Color::Yellow };
+    let fg_color = if errors > 0 { Color::White } else { Color::Black };
+
+    let badge = Paragraph::new(Span::styled(
+        badge_text,
+        Style::default()
+            .fg(fg_color)
+            .bg(bg_color)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    frame.render_widget(badge, badge_area);
 }
