@@ -280,36 +280,27 @@ impl Editor {
                 self.options.smartcase,
             );
 
-            // In normal mode, check if cursor is within a match at current position
-            if !in_visual_mode {
-                if let Some(line_text) = self.buffer().line(cursor_line) {
-                    let matches = rev_search.find_all_in_line(&line_text);
-                    let cursor_in_match = matches.iter().any(|(start_col, end_col)| {
-                        cursor_col >= *start_col && cursor_col < *end_col
-                    });
-
-                    if cursor_in_match {
-                        // If cursor is within a match, select the current match
-                        if let Some((start_col, end_col)) = matches.iter().find(|(start, end)| {
-                            cursor_col >= *start && cursor_col < *end
-                        }) {
-                            // In normal mode, enter visual mode and select this match
-                            self.set_visual_start(cursor_line, *start_col);
-                            self.buffer_mut().cursor_mut().set_position(cursor_line, end_col - 1);
-                            self.set_mode(Mode::Visual);
-                            return true;
-                        }
-                    }
-                }
-            }
-
             // Find the previous match
+            // If cursor is within a match, start searching from before that match
             let search_col = if in_visual_mode {
                 cursor_col
-            } else if cursor_col > 0 {
-                cursor_col - 1
             } else {
-                0
+                // Check if cursor is within a match - if so, search from before it
+                let mut col = if cursor_col > 0 { cursor_col - 1 } else { 0 };
+                if let Some(line_text) = self.buffer().line(cursor_line) {
+                    let matches = rev_search.find_all_in_line(&line_text);
+                    if let Some((start_col, _end_col)) = matches.iter().find(|(start, end)| {
+                        cursor_col >= *start && cursor_col < *end
+                    }) {
+                        // Cursor is inside a match - search from before this match's start
+                        col = if *start_col > 0 { start_col - 1 } else {
+                            // Match starts at col 0 — find_backward with from_col=0
+                            // searches empty text on current line, then wraps to previous lines
+                            0
+                        };
+                    }
+                }
+                col
             };
             if let Some((line, col, match_text)) = rev_search.find_next(self.buffer(), cursor_line, search_col) {
                 let match_len = match_text.chars().count();

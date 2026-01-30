@@ -249,6 +249,9 @@ fn apply_change_operator(
         editor.set_pending_semantic_change(PendingSemanticChange {
             object_type: Some(obj_type),
             is_word_change: false,
+            is_search_match_change: false,
+            search_pattern: None,
+            search_forward: None,
             old_text: deleted,
             old_range: change_range,
             cursor_before,

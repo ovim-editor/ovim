@@ -617,7 +617,8 @@ fn test_delete_word_and_paste() {
         .keys("p"); // Paste after "w"
 
     assert_eq!(test.buffer_content(), "whello orld\n");
-    test.assert_cursor(0, 7);
+    // Vim: cursor on last character of pasted text ("hello " → last char at col 6)
+    test.assert_cursor(0, 6);
 }
 
 #[test]

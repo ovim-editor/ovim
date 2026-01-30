@@ -504,6 +504,16 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
             let change = Change::insert(position, text, cursor_before);
             change.apply(editor.buffer_mut());
             editor.add_change(change);
+            // change.apply() sets cursor one-past-end via calculate_end_position.
+            // Vim places cursor on the last character of pasted text.
+            // If cursor col > 0, move back by 1 to land on last char.
+            let cur = editor.buffer().cursor();
+            let cur_col = cur.col();
+            let cur_line = cur.line();
+            if cur_col > 0 {
+                editor.buffer_mut().cursor_mut().set_position(cur_line, cur_col - 1);
+            }
+            // If col == 0 (text ended with \n), cursor is already at correct position
         }
     }
 

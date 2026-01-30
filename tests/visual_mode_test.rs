@@ -260,7 +260,8 @@ fn test_v_yank_and_replace() {
         .keys("llll") // Select "world"
         .press('p'); // Paste (should replace selection)
 
-    assert_eq!(test.buffer_content(), "hello world\n");
+    // Vim replaces visual selection with yanked text: "hello" replaces "world" → "hello hello"
+    assert_eq!(test.buffer_content(), "hello hello\n");
     test.assert_cursor(0, 10);
 }
 

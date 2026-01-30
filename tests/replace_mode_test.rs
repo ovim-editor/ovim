@@ -545,7 +545,7 @@ fn test_r_with_register() {
     // rX replaces first char (now 'X')
     // "ap pastes "hello" after cursor
     assert_eq!(test.buffer_content(), "Xhelloello world\n");
-    test.assert_cursor(0, 6); // Cursor at end of pasted text (after 'o' in "hello")
+    test.assert_cursor(0, 5); // Vim: cursor on last character of pasted text
     assert_eq!(test.mode(), Mode::Normal);
 }
 

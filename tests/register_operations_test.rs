@@ -15,7 +15,7 @@ fn test_yank_to_named_register() {
 
     // yiw yanks "hello" (no trailing space), p pastes after last char 'd'
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    test.assert_cursor(0, 16);
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn test_delete_to_named_register() {
         .keys("\"ap"); // Paste from register 'a'
 
     assert_eq!(test.buffer_content(), "world testhello \n");
-    test.assert_cursor(0, 16);
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn test_change_to_named_register() {
 
     // ciw deletes "hello" (no trailing space), p pastes after 'd'
     assert_eq!(test.buffer_content(), "goodbye worldhello\n");
-    test.assert_cursor(0, 18);
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -61,8 +61,8 @@ fn test_multiple_named_registers() {
 
     // yiw yanks words without trailing space
     // Paste operations work on same line
-    assert_eq!(test.buffer_content(), "one two three fourone\ntwothree\n");
-    test.assert_cursor(0, 31);
+    assert_eq!(test.buffer_content(), "one two three fouronetwothree\n");
+    test.assert_cursor(0, 28);
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn test_overwrite_named_register() {
 
     // yiw yanks "second" (no trailing space)
     assert_eq!(test.buffer_content(), "first second thirdsecond\n");
-    test.assert_cursor(0, 24);
+    test.assert_cursor(0, 23);
 }
 
 #[test]
@@ -108,7 +108,7 @@ fn test_append_to_register() {
 
     // yiw yanks words without trailing space, appending gives "helloworld"
     assert_eq!(test.buffer_content(), "hello world testhelloworld\n");
-    test.assert_cursor(0, 26);
+    test.assert_cursor(0, 25);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn test_append_multiple_times() {
 
     // yiw yanks words without trailing space, appending gives "onetwothree"
     assert_eq!(test.buffer_content(), "one two three fouronetwothree\n");
-    test.assert_cursor(0, 29);
+    test.assert_cursor(0, 28);
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn test_append_with_delete() {
     // After two dw, buffer is "test", cursor at 0
     // p pastes "hello world " after 't', giving "thello world est"
     assert_eq!(test.buffer_content(), "thello world est\n");
-    test.assert_cursor(0, 13);
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -157,7 +157,7 @@ fn test_unnamed_register_yank() {
 
     // yiw yanks "hello" (no trailing space)
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    test.assert_cursor(0, 16);
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn test_unnamed_register_delete() {
     // dw deletes "hello ", leaving "world", cursor at 0
     // p pastes "hello " after 'w', giving "whello orld"
     assert_eq!(test.buffer_content(), "whello orld\n");
-    test.assert_cursor(0, 7);
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn test_unnamed_register_change() {
 
     // ciw deletes "hello" (no trailing space)
     assert_eq!(test.buffer_content(), "X worldhello\n");
-    test.assert_cursor(0, 12);
+    test.assert_cursor(0, 11);
 }
 
 // ============================================================================
@@ -204,7 +204,7 @@ fn test_register_0_yank() {
     // After dw: buffer = "world", cursor at 0
     // "0p pastes "hello" after 'w', giving "whelloorld"
     assert_eq!(test.buffer_content(), "whelloorld\n");
-    test.assert_cursor(0, 6);
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -219,11 +219,11 @@ fn test_numbered_delete_history() {
         .keys("\"3p"); // Paste third most recent ("one ") after ' '
 
     // After 3 dw: buffer = "four five", cursor at 0
-    // "1p: "fthree our five" (paste "three " after 'f'), cursor at 7
-    // "2p: after ' ' at position 7, paste "two ", giving "fthree otwo ur five", cursor at 12
-    // "3p: after ' ' at position 12, paste "one ", giving "fthree otwo uone r five", cursor at 17
-    assert_eq!(test.buffer_content(), "fthree otwo uone r five\n");
-    test.assert_cursor(0, 17);
+    // "1p: paste "three " after 'f', cursor on last pasted char (space at 6)
+    // "2p: paste "two " after space, cursor on last pasted char
+    // "3p: paste "one " after that
+    assert_eq!(test.buffer_content(), "fthree two one our five\n");
+    test.assert_cursor(0, 14);
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn test_register_0_only_yanks() {
     // After 2x: buffer = "llo world", cursor at 0
     // "0p pastes "hello" after 'l', giving "lhellolo world"
     assert_eq!(test.buffer_content(), "lhellolo world\n");
-    test.assert_cursor(0, 6);
+    test.assert_cursor(0, 5);
 }
 
 // ============================================================================
@@ -256,7 +256,7 @@ fn test_small_delete_register() {
     // After x: buffer = "ello world", cursor at 0
     // "-p pastes "h" after 'e', giving "ehlllo world"
     assert_eq!(test.buffer_content(), "ehllo world\n");
-    test.assert_cursor(0, 2);
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -270,10 +270,10 @@ fn test_small_delete_vs_numbered() {
 
     // After x: buffer = "ello world", cursor at 0
     // After dw: buffer = "world", cursor at 0
-    // "-p: paste 'h' after 'w', giving "whorld", cursor at 2
-    // "1p: paste "ello " after 'h', giving "wello oello rld", cursor at 12
-    assert_eq!(test.buffer_content(), "wello oello rld\n");
-    test.assert_cursor(0, 12);
+    // "-p: paste 'h' after 'w', giving "whorld", cursor at 1
+    // "1p: paste "ello " after 'h', giving "wello ello orld"
+    assert_eq!(test.buffer_content(), "wello ello orld\n");
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -340,7 +340,7 @@ fn test_blackhole_register_delete() {
     // TODO: Black hole register not fully implemented - delete still updates unnamed
     // Actual behavior: "hello world\n" (no paste happens because unnamed is now empty or "world")
     assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 11);
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -359,7 +359,7 @@ fn test_blackhole_register_change() {
     // "_ciw should NOT update unnamed, but actual behavior updates it to "two"
     // p pastes "two" after 'e', giving "one X threetwo"
     assert_eq!(test.buffer_content(), "one X threetwo\n");
-    test.assert_cursor(0, 14);
+    test.assert_cursor(0, 13);
 }
 
 // ============================================================================
@@ -414,7 +414,7 @@ fn test_clipboard_register_yank() {
 
     // yiw yanks "hello" (no trailing space)
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    test.assert_cursor(0, 16);
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn test_selection_register() {
 
     // yiw yanks "hello" (no trailing space)
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    test.assert_cursor(0, 16);
+    test.assert_cursor(0, 15);
 }
 
 // ============================================================================
@@ -502,7 +502,7 @@ fn test_register_survives_undo() {
     // After undo, buffer is restored to "hello world"
     // $ moves to end, "ap pastes "hello" after 'd'
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    test.assert_cursor(0, 16);
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -543,7 +543,7 @@ fn test_register_linewise_vs_charwise() {
     // G goes to line 3, "ap pastes "line 1\n" below
     // Cursor now on "line 1" (line 3), "bp pastes "1" after 'l'
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nl1ine 1\n");
-    test.assert_cursor(3, 2);
+    test.assert_cursor(3, 1);
 }
 
 // ============================================================================
@@ -560,7 +560,7 @@ fn test_register_with_count_yank() {
 
     // yiw yanks "one" (no trailing space)
     assert_eq!(test.buffer_content(), "one two three fourone\n");
-    test.assert_cursor(0, 21);
+    test.assert_cursor(0, 20);
 }
 
 #[test]
@@ -587,7 +587,7 @@ fn test_register_paste_with_count() {
     // TODO: Count prefix for paste not fully implemented, only pastes once
     // yiw yanks "word" (no trailing space)
     assert_eq!(test.buffer_content(), "wordword\n");
-    test.assert_cursor(0, 8);
+    test.assert_cursor(0, 7);
 }
 
 // ============================================================================
@@ -603,10 +603,10 @@ fn test_delete_updates_both_unnamed_and_numbered() {
         .keys("\"1p"); // Paste "hello " from "1 after ' '
 
     // After dw: buffer = "world", cursor at 0
-    // p: "whello orld", cursor at 7
-    // "1p: paste "hello " after 'o', giving "whello ohello rld"
-    assert_eq!(test.buffer_content(), "whello ohello rld\n");
-    test.assert_cursor(0, 14);
+    // p: "whello orld", cursor at 6 (last pasted char)
+    // "1p: paste "hello " after 'l', giving "whello hello orld"
+    assert_eq!(test.buffer_content(), "whello hello orld\n");
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -619,11 +619,10 @@ fn test_yank_updates_unnamed_and_0() {
         .keys("\"0p"); // Paste "hello" from "0 after 'o'
 
     // yiw yanks "hello" (no trailing space)
-    // p: "hello worldhello", cursor at 16
-    // "0p: paste creates new line (linewise paste behavior)
-    // But cursor stays on original line
-    assert_eq!(test.buffer_content(), "hello worldhello\nhello\n");
-    test.assert_cursor(0, 22);
+    // p: "hello worldhello", cursor at 15 (last pasted char)
+    // "0p: paste "hello" after 'o', giving "hello worldhellohello"
+    assert_eq!(test.buffer_content(), "hello worldhellohello\n");
+    test.assert_cursor(0, 20);
 }
 
 #[test]
@@ -641,11 +640,10 @@ fn test_change_updates_unnamed_but_not_0() {
     // yiw yanks "hello" (no trailing space) to "0
     // ciw deletes "hello" (no trailing space) to unnamed
     // Buffer after change: "X world"
-    // p: "X worldhello", cursor at 12
-    // "0p: paste creates new line (linewise paste behavior)
-    // But cursor stays on original line
-    assert_eq!(test.buffer_content(), "X worldhello\nhello\n");
-    test.assert_cursor(0, 18);
+    // p: "X worldhello", cursor at 11 (last pasted char)
+    // "0p: paste "hello" after 'o', giving "X worldhellohello"
+    assert_eq!(test.buffer_content(), "X worldhellohello\n");
+    test.assert_cursor(0, 16);
 }
 
 // ============================================================================
@@ -675,7 +673,7 @@ fn test_register_case_sensitivity() {
 
     // yiw yanks words without trailing space, appending gives "helloworld"
     assert_eq!(test.buffer_content(), "hello world testhelloworld\n");
-    test.assert_cursor(0, 26);
+    test.assert_cursor(0, 25);
 }
 
 // ============================================================================
@@ -695,9 +693,8 @@ fn test_register_chain_operations() {
         .keys("\"ap"); // Paste from a
 
     // Complex chain - verify actual behavior
-    // The actual output shows: "one tonewtwootonewtwoo three four"
-    assert_eq!(test.buffer_content(), "one tonewtwootonewtwoo three four\n");
-    test.assert_cursor(0, 22);
+    assert_eq!(test.buffer_content(), "one tonetwotonetwowowo three four\n");
+    test.assert_cursor(0, 19);
 }
 
 #[test]
@@ -715,7 +712,6 @@ fn test_swap_words_with_registers() {
         .keys("\"ap"); // Paste "hello"
 
     // Complex swap operation - verify actual behavior
-    // The actual output shows: " worldworld\nhello"
     assert_eq!(test.buffer_content(), " worldworld\nhello\n");
-    test.assert_cursor(1, 6);
+    test.assert_cursor(1, 5);
 }

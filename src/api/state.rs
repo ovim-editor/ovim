@@ -22,6 +22,7 @@ pub enum ApiRequest {
     GetOutline(oneshot::Sender<ApiResponse>),
     SearchSymbol(String, oneshot::Sender<ApiResponse>),
     GetTrace(oneshot::Sender<ApiResponse>),
+    GetDiagnostics(oneshot::Sender<ApiResponse>),
 }
 
 /// Response types that can be returned from the editor
@@ -41,6 +42,7 @@ pub enum ApiResponse {
     Outline(OutlineInfo),
     SymbolSearch(SymbolSearchInfo),
     Trace(TraceInfo),
+    Diagnostics(DiagnosticsInfo),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
@@ -241,6 +243,38 @@ pub struct TraceNode {
     pub line: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Diagnostics information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsInfo {
+    pub file: Option<String>,
+    pub diagnostics: Vec<DiagnosticItem>,
+    pub counts: DiagnosticCounts,
+}
+
+/// A single diagnostic item
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticItem {
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+    pub severity: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// Diagnostic counts by severity
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticCounts {
+    pub errors: usize,
+    pub warnings: usize,
+    pub info: usize,
+    pub hints: usize,
 }
 
 /// Visual selection range

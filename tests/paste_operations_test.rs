@@ -59,7 +59,8 @@ fn test_p_characterwise_middle_of_word() {
         .keys("p"); // Paste after 'w'
 
     assert_eq!(test.buffer_content(), "hello whello orld\n");
-    test.assert_cursor(0, 13);
+    // Vim: cursor on last character of pasted text
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -73,8 +74,8 @@ fn test_p_characterwise_end_of_line() {
     // yiw on "hello" yanks just "hello" (no trailing space)
     // $ moves to last char 'd', p pastes after it
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    // Cursor after pasted "hello" (position 16, past the last 'o')
-    test.assert_cursor(0, 16);
+    // Vim: cursor on last character of pasted text
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -89,8 +90,8 @@ fn test_p_characterwise_empty_line() {
     // Two j's: first to empty line (cursor clamped), second to "world"
     // p on col 0 of "world" pastes after 'w'
     assert_eq!(test.buffer_content(), "hello\n\nwhelloorld\n");
-    // Cursor after pasted "hello" (position 6, past the last 'o')
-    test.assert_cursor(2, 6);
+    // Vim: cursor on last character of pasted text
+    test.assert_cursor(2, 5);
 }
 
 #[test]
@@ -211,7 +212,8 @@ fn test_yank_delete_paste() {
         .keys("p"); // Paste "hello"
 
     assert_eq!(test.buffer_content(), "hello tworld est\n");
-    test.assert_cursor(0, 13);
+    // Vim: cursor on last character of pasted text
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -254,8 +256,8 @@ fn test_p_with_count_characterwise() {
 
     // TODO: Count prefix for paste not implemented, only pastes once
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    // Cursor after pasted "hello" (position 16)
-    test.assert_cursor(0, 16);
+    // Vim: cursor on last character of pasted text
+    test.assert_cursor(0, 15);
 }
 
 // ============================================================================
@@ -299,8 +301,8 @@ fn test_yank_and_paste_single_char() {
 
     // abc -> abac (insert 'a' after 'b')
     assert_eq!(test.buffer_content(), "abac\n");
-    // Cursor after pasted char (position 3)
-    test.assert_cursor(0, 3);
+    // Vim: cursor on last character of pasted text
+    test.assert_cursor(0, 2);
 }
 
 #[test]
