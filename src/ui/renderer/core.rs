@@ -2,6 +2,7 @@ use crate::editor::{Editor, SplitDirection, WindowNode};
 use crate::syntax::Theme;
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
+use crossterm::terminal::SetTitle;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -578,7 +579,17 @@ impl Renderer {
             }
             _ => SetCursorStyle::SteadyBlock,
         };
-        crossterm::execute!(io::stdout(), cursor_style)?;
+        let title = editor
+            .buffer()
+            .file_path()
+            .map(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(p)
+            })
+            .unwrap_or("ovim");
+        crossterm::execute!(io::stdout(), cursor_style, SetTitle(title))?;
 
         self.terminal.autoresize()?;
 
