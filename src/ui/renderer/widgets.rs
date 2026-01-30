@@ -19,8 +19,8 @@ use super::styles::remap_highlights;
 mod picker_colors {
     use ratatui::style::Color;
 
-    pub const BG: Color = Color::Rgb(22, 22, 30);
-    pub const BG_ALT: Color = Color::Rgb(24, 24, 32);
+    pub const BG: Color = Color::Reset;
+    pub const BG_ALT: Color = Color::Reset;
     pub const SELECTED: Color = Color::Rgb(45, 50, 70);
     pub const BORDER: Color = Color::Rgb(80, 85, 110);
     pub const SEPARATOR: Color = Color::Rgb(50, 55, 75);
