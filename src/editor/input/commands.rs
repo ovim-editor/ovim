@@ -12,8 +12,13 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             update_path_completion(editor);
         }
         KeyCode::Backspace => {
-            editor.backspace_command_line();
-            update_path_completion(editor);
+            if editor.command_line().is_empty() {
+                editor.path_completion_mut().hide();
+                editor.set_mode(Mode::Normal);
+            } else {
+                editor.backspace_command_line();
+                update_path_completion(editor);
+            }
         }
         KeyCode::Tab => {
             handle_tab_completion(editor, false);
