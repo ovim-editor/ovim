@@ -168,17 +168,30 @@ fn process_picker_results(
     preview_rx: &mut tokio::sync::mpsc::Receiver<(String, editor::PreviewCache)>,
     file_rx: &mut tokio::sync::mpsc::Receiver<editor::PickerResult>,
 ) {
-    // Try to drain pending preview loads
+    // Try to drain pending preview loads (single mark_dirty after batch)
+    let mut previews_loaded = false;
     while let Ok((path, cache)) = preview_rx.try_recv() {
         editor.insert_preview(path, cache);
-        editor.mark_dirty(); // Trigger redraw when preview loads
+        previews_loaded = true;
     }
-    // Try to drain pending file results
-    while let Ok(result) = file_rx.try_recv() {
-        if let Some(picker) = editor.picker_mut() {
-            picker.add_file_result(result);
-            editor.mark_dirty();
+    if previews_loaded {
+        editor.mark_dirty();
+    }
+    // Try to drain pending file results (cap per frame to avoid stalling)
+    let mut files_added = false;
+    for _ in 0..500 {
+        match file_rx.try_recv() {
+            Ok(result) => {
+                if let Some(picker) = editor.picker_mut() {
+                    picker.add_file_result(result);
+                    files_added = true;
+                }
+            }
+            Err(_) => break,
         }
+    }
+    if files_added {
+        editor.mark_dirty();
     }
     // Update file list cache from background task (if completed)
     update_file_list_cache_from_background(editor);
@@ -281,6 +294,8 @@ pub async fn run_event_loop(
                     }
                     Event::Resize(_, _) => {
                         // Terminal was resized - handled by dirty flag below
+                        // Startle the dashboard cat if it's on the logo
+                        editor.startle_cat();
                     }
                     Event::FocusGained => {
                         // Auto-reload file if changed externally while terminal was unfocused
