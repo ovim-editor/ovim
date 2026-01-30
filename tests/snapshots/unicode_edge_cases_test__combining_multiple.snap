@@ -1,10 +1,11 @@
 ---
 source: tests/unicode_edge_cases_test.rs
+assertion_line: 199
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:1
+Cursor: 0:0
 Lines: 1
 
 Buffer:
-a[̀]̃
+[a]̀̃
