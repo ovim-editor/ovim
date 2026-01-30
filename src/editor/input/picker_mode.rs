@@ -210,6 +210,15 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.mark_picker_selection_changed();
             }
         }
+        // Alt+F / Alt+B (Ghostty sends Alt+Right/Left as ESC+'f'/'b') - toggle field
+        KeyCode::Char('f') | KeyCode::Char('b')
+            if cfg!(target_os = "macos")
+                && key_event.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            if let Some(picker) = editor.picker_mut() {
+                picker.toggle_field();
+            }
+        }
         // Any other character - insert at cursor
         KeyCode::Char(ch) => {
             if let Some(picker) = editor.picker_mut() {

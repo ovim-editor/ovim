@@ -19,9 +19,21 @@ impl Editor {
         self.buffer_mut().redo();
     }
 
-    /// Repeats the last change
+    /// Repeats the last change with proper cursor position tracking.
+    ///
+    /// Records cursor_before/cursor_after so undo after dot-repeat restores
+    /// the cursor to where the repeat happened, not the original change.
     pub fn repeat_last_change(&mut self) {
-        self.buffer_mut().repeat_last_change();
+        let buf = self.buffer_mut();
+        if let Some(change) = buf.change_manager.last_change.clone() {
+            let mut repeated = change;
+            let before = (buf.cursor().line(), buf.cursor().col());
+            repeated.set_cursor_before(before);
+            repeated.repeat(buf);
+            let after = (buf.cursor().line(), buf.cursor().col());
+            repeated.set_cursor_after(after);
+            buf.change_manager.push_change(repeated);
+        }
     }
 
     /// Updates the . register with the last inserted text

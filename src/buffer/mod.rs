@@ -556,22 +556,6 @@ impl Buffer {
         }
     }
 
-    /// Repeats the last change
-    pub fn repeat_last_change(&mut self) -> bool {
-        // Clone the last change
-        if let Some(ref change) = self.change_manager.last_change {
-            let repeated_change = change.clone();
-            // Repeat it
-            repeated_change.repeat(self);
-            // Push to undo stack as a new change
-            self.change_manager.undo_stack.push(repeated_change.clone());
-            self.change_manager.redo_stack.clear();
-            self.change_manager.last_change = Some(repeated_change);
-            true
-        } else {
-            false
-        }
-    }
 }
 
 impl Default for Buffer {
