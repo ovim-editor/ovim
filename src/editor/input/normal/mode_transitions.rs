@@ -14,6 +14,30 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     match key_event.code {
+        // Escape - clear pending state, or dismiss diagnostic badge on double-Escape
+        KeyCode::Esc => {
+            let (errors, warnings, _, _) = editor.cached_diagnostic_count();
+            let badge_visible =
+                !editor.diagnostic_badge_dismissed() && (errors > 0 || warnings > 0);
+
+            if badge_visible {
+                if let Some(last) = editor.last_escape_time() {
+                    if last.elapsed() < std::time::Duration::from_millis(300) {
+                        editor.dismiss_diagnostic_badge();
+                        editor.clear_last_escape_time();
+                        return Ok(true);
+                    }
+                }
+            }
+
+            // Single Escape: record time, clear pending state
+            editor.set_last_escape_time(std::time::Instant::now());
+            editor.clear_count();
+            editor.clear_pending_operator();
+            editor.clear_pending_command();
+            editor.reset_input_state();
+            Ok(true)
+        }
         // i - insert before cursor
         KeyCode::Char('i') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             editor.clear_count();

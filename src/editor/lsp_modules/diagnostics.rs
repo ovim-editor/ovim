@@ -59,6 +59,9 @@ impl Editor {
 
         self.lsp_state.diagnostic_count = count;
 
+        // Reset badge dismissal if counts changed
+        self.on_diagnostic_counts_changed(count.0, count.1);
+
         // Also update the full diagnostics list for inline display
         if let Some(diagnostics) = self.get_current_file_diagnostics().await {
             self.lsp_state.current_file_diagnostics = diagnostics;
