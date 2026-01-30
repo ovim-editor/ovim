@@ -48,7 +48,7 @@ mod colors {
 }
 
 /// Renders the dashboard screen
-pub fn render_dashboard(frame: &mut Frame, editor: &Editor, area: Rect) {
+pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     let selected = editor.dashboard_selected();
 
     // Calculate vertical centering
@@ -214,6 +214,14 @@ pub fn render_dashboard(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
+
+    // Render cat animation overlay (if active)
+    let logo_y = area.y + vertical_offset as u16;
+    let logo_center_x = area.x + (area.width / 2);
+    if let Some(anim) = editor.cat_animation_mut() {
+        anim.set_layout(logo_y, logo_center_x, area.width, area.height);
+        anim.render(frame, area);
+    }
 }
 
 #[cfg(test)]
