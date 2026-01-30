@@ -63,7 +63,7 @@ impl NucleoMatcher {
     /// Drives the matcher forward. Returns `true` if results changed.
     /// Call this regularly from the event loop (e.g., every tick).
     pub fn tick(&mut self) -> bool {
-        let status = self.nucleo.tick(10); // 10ms timeout
+        let status = self.nucleo.tick(0); // non-blocking: just poll for ready results
         status.changed
     }
 
@@ -90,6 +90,19 @@ impl NucleoMatcher {
             .matched_items(0..take as u32)
             .map(|item| *item.data)
             .collect()
+    }
+
+    /// Returns the index (into `Picker::all_results`) of the item at the given rank.
+    /// O(1) lookup — no allocation. Returns `None` if rank is out of bounds.
+    pub fn get_item_at_rank(&self, rank: u32) -> Option<u32> {
+        let snapshot = self.nucleo.snapshot();
+        if rank >= snapshot.matched_item_count() {
+            return None;
+        }
+        snapshot
+            .matched_items(rank..rank + 1)
+            .next()
+            .map(|item| *item.data)
     }
 
     /// Returns true if the pattern is empty (all items match).

@@ -65,8 +65,8 @@ pub struct Picker {
     last_filtered_file_filter: String,
     /// Nucleo matcher for parallel fuzzy matching (FindFiles only)
     nucleo: Option<NucleoMatcher>,
-    /// Cached rank-ordered indices from last nucleo tick (into all_results)
-    nucleo_indices: Vec<u32>,
+    /// Number of matched items from last nucleo tick
+    nucleo_matched_count: usize,
 }
 
 impl Picker {
@@ -91,7 +91,7 @@ impl Picker {
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
             nucleo: Some(NucleoMatcher::new()),
-            nucleo_indices: Vec::new(),
+            nucleo_matched_count: 0,
         }
     }
 
@@ -114,7 +114,7 @@ impl Picker {
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
             nucleo: None,
-            nucleo_indices: Vec::new(),
+            nucleo_matched_count: 0,
         }
     }
 
@@ -150,7 +150,7 @@ impl Picker {
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
             nucleo: None,
-            nucleo_indices: Vec::new(),
+            nucleo_matched_count: 0,
         }
     }
 
@@ -186,7 +186,7 @@ impl Picker {
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
             nucleo: None,
-            nucleo_indices: Vec::new(),
+            nucleo_matched_count: 0,
         }
     }
 
@@ -223,7 +223,7 @@ impl Picker {
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
             nucleo: None,
-            nucleo_indices: Vec::new(),
+            nucleo_matched_count: 0,
         }
     }
 
@@ -247,7 +247,7 @@ impl Picker {
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
             nucleo: None,
-            nucleo_indices: Vec::new(),
+            nucleo_matched_count: 0,
         }
     }
 
@@ -607,23 +607,24 @@ impl Picker {
     /// Returns the number of filtered (matched) results.
     pub fn filtered_result_count(&self) -> usize {
         if self.nucleo.is_some() {
-            self.nucleo_indices.len()
+            self.nucleo_matched_count
         } else {
             self.filtered_results.len()
         }
     }
 
     /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
+    /// For nucleo mode, queries the snapshot on demand (O(1), no allocation).
     pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
-        if self.nucleo.is_some() {
-            let &all_idx = self.nucleo_indices.get(idx)?;
+        if let Some(ref nucleo) = self.nucleo {
+            let all_idx = nucleo.get_item_at_rank(idx as u32)?;
             self.all_results.get(all_idx as usize)
         } else {
             self.filtered_results.get(idx)
         }
     }
 
-    /// Drives the nucleo matcher forward and rebuilds cached indices.
+    /// Drives the nucleo matcher forward and updates matched count.
     /// Only relevant for nucleo modes (FindFiles). Non-nucleo modes use
     /// `apply_pending_filter()` via the debounce path in picker_manager.
     /// Returns `true` if results changed.
@@ -631,11 +632,10 @@ impl Picker {
         if let Some(ref mut nucleo) = self.nucleo {
             let changed = nucleo.tick();
             if changed {
-                let count = nucleo.matched_count() as usize;
-                self.nucleo_indices = nucleo.matched_indices(count);
+                self.nucleo_matched_count = nucleo.matched_count() as usize;
                 // Clamp selected_index
-                if !self.nucleo_indices.is_empty() {
-                    self.selected_index = self.selected_index.min(self.nucleo_indices.len() - 1);
+                if self.nucleo_matched_count > 0 {
+                    self.selected_index = self.selected_index.min(self.nucleo_matched_count - 1);
                 } else {
                     self.selected_index = 0;
                 }
