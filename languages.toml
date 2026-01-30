@@ -186,6 +186,19 @@ filenames = [".eslintrc", ".prettierrc", ".babelrc"]
 grammar = "tree-sitter-json"
 official = { crate = "tree_sitter_json", constant = "HIGHLIGHTS_QUERY" }
 
+[language.lsp]
+command = "vscode-json-language-server"
+args = ["--stdio"]
+root_markers = ["package.json", ".git"]
+install_hint = "Install with: npm install -g vscode-langservers-extracted"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "vscode-langservers-extracted", global = true }
+
+# ============================================================================
+# YAML
+# ============================================================================
+
 [[language]]
 id = "yaml"
 name = "YAML"
@@ -194,9 +207,20 @@ filenames = [".travis.yml", ".gitlab-ci.yml", "docker-compose.yml"]
 
 [language.syntax]
 grammar = "tree-sitter-yaml"
-# Note: tree-sitter-yaml may not have HIGHLIGHTS_QUERY constant
-# May need to create custom query file in Phase 2
 official = { crate = "tree_sitter_yaml", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "yaml-language-server"
+args = ["--stdio"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g yaml-language-server"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "yaml-language-server", global = true }
+
+# ============================================================================
+# HTML
+# ============================================================================
 
 [[language]]
 id = "html"
@@ -207,6 +231,19 @@ extensions = ["html", "htm"]
 grammar = "tree-sitter-html"
 official = { crate = "tree_sitter_html", constant = "HIGHLIGHTS_QUERY" }
 
+[language.lsp]
+command = "vscode-html-language-server"
+args = ["--stdio"]
+root_markers = ["package.json", ".git"]
+install_hint = "Install with: npm install -g vscode-langservers-extracted"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "vscode-langservers-extracted", global = true }
+
+# ============================================================================
+# CSS
+# ============================================================================
+
 [[language]]
 id = "css"
 name = "CSS"
@@ -215,6 +252,19 @@ extensions = ["css", "scss", "sass", "less"]
 [language.syntax]
 grammar = "tree-sitter-css"
 official = { crate = "tree_sitter_css", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "vscode-css-language-server"
+args = ["--stdio"]
+root_markers = ["package.json", ".git"]
+install_hint = "Install with: npm install -g vscode-langservers-extracted"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "vscode-langservers-extracted", global = true }
+
+# ============================================================================
+# Go
+# ============================================================================
 
 [[language]]
 id = "go"
@@ -226,6 +276,18 @@ filenames = ["go.mod", "go.sum"]
 grammar = "tree-sitter-go"
 official = { crate = "tree_sitter_go", constant = "HIGHLIGHTS_QUERY" }
 
+[language.lsp]
+command = "gopls"
+root_markers = ["go.mod", "go.sum", ".git"]
+install_hint = "Install with: go install golang.org/x/tools/gopls@latest"
+
+[language.lsp.auto_install]
+method = { type = "shell", command = "go install golang.org/x/tools/gopls@latest" }
+
+# ============================================================================
+# C
+# ============================================================================
+
 [[language]]
 id = "c"
 name = "C"
@@ -235,6 +297,15 @@ extensions = ["c", "h"]
 grammar = "tree-sitter-c"
 official = { crate = "tree_sitter_c", constant = "HIGHLIGHT_QUERY" }
 
+[language.lsp]
+command = "clangd"
+root_markers = ["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt", "Makefile"]
+install_hint = "Install with: brew install llvm (macOS) or apt install clangd (Linux)"
+
+# ============================================================================
+# C++
+# ============================================================================
+
 [[language]]
 id = "cpp"
 name = "C++"
@@ -243,6 +314,15 @@ extensions = ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"]
 [language.syntax]
 grammar = "tree-sitter-cpp"
 official = { crate = "tree_sitter_cpp", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "clangd"
+root_markers = ["compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt", "Makefile"]
+install_hint = "Install with: brew install llvm (macOS) or apt install clangd (Linux)"
+
+# ============================================================================
+# Ruby
+# ============================================================================
 
 [[language]]
 id = "ruby"
@@ -254,6 +334,16 @@ filenames = ["rakefile", "gemfile"]
 grammar = "tree-sitter-ruby"
 official = { crate = "tree_sitter_ruby", constant = "HIGHLIGHTS_QUERY" }
 
+[language.lsp]
+command = "solargraph"
+args = ["stdio"]
+root_markers = ["Gemfile", ".ruby-version", ".git"]
+install_hint = "Install with: gem install solargraph"
+
+# ============================================================================
+# Bash
+# ============================================================================
+
 [[language]]
 id = "bash"
 name = "Bash"
@@ -263,3 +353,75 @@ filenames = [".bashrc", ".bash_profile", ".zshrc"]
 [language.syntax]
 grammar = "tree-sitter-bash"
 official = { crate = "tree_sitter_bash", constant = "HIGHLIGHT_QUERY" }
+
+[language.lsp]
+command = "bash-language-server"
+args = ["start"]
+root_markers = [".git"]
+install_hint = "Install with: npm install -g bash-language-server"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "bash-language-server", global = true }
+
+# ============================================================================
+# TOML
+# ============================================================================
+
+[[language]]
+id = "toml"
+name = "TOML"
+extensions = ["toml"]
+filenames = ["Cargo.toml", "pyproject.toml"]
+
+[language.lsp]
+command = "taplo"
+args = ["lsp", "stdio"]
+root_markers = [".git"]
+install_hint = "Install with: cargo install taplo-cli --features lsp"
+
+[language.lsp.auto_install]
+method = { type = "cargo", package = "taplo-cli" }
+
+# ============================================================================
+# Zig
+# ============================================================================
+
+[[language]]
+id = "zig"
+name = "Zig"
+extensions = ["zig"]
+
+[language.lsp]
+command = "zls"
+root_markers = ["build.zig", "build.zig.zon"]
+install_hint = "Download from: https://github.com/zigtools/zls/releases"
+
+# ============================================================================
+# Lua
+# ============================================================================
+
+[[language]]
+id = "lua"
+name = "Lua"
+extensions = ["lua"]
+
+[language.lsp]
+command = "lua-language-server"
+root_markers = [".luarc.json", ".luarc.jsonc", ".git"]
+install_hint = "Download from: https://github.com/LuaLS/lua-language-server/releases"
+
+# ============================================================================
+# Elixir
+# ============================================================================
+
+[[language]]
+id = "elixir"
+name = "Elixir"
+extensions = ["ex", "exs"]
+filenames = ["mix.exs"]
+
+[language.lsp]
+command = "elixir-ls"
+fallback_commands = ["language_server.sh"]
+root_markers = ["mix.exs", ".git"]
+install_hint = "Download from: https://github.com/elixir-lsp/elixir-ls/releases"
