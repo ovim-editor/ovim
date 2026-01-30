@@ -836,6 +836,21 @@ impl Picker {
         self.active_field
     }
 
+    /// Sets the active input field (for mouse clicks)
+    pub fn set_active_field(&mut self, field: PickerField) {
+        if field == PickerField::FileFilter && !self.has_file_filter() {
+            return;
+        }
+        self.active_field = field;
+    }
+
+    /// Sets the selected index (for mouse clicks), clamped to valid range
+    pub fn set_selected_index(&mut self, index: usize) {
+        if !self.filtered_results.is_empty() {
+            self.selected_index = index.min(self.filtered_results.len() - 1);
+        }
+    }
+
     /// Adds a file result (for incremental loading)
     pub fn add_file_result(&mut self, result: PickerResult) {
         self.all_results.push(result.clone());

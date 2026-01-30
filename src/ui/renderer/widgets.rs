@@ -989,13 +989,38 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
             .split(body_area)
     };
 
-    render_picker_results(frame, picker, body_chunks[0]);
+    let results_area = body_chunks[0];
+    let scroll_offset = render_picker_results(frame, picker, results_area);
+
+    // Cache picker layout for mouse hit-testing
+    let has_filter = picker.has_file_filter();
+    let (query_field, filter_field) = if has_filter {
+        let total_width = query_row.width as usize;
+        let search_width = (total_width * 70 / 100).max(10) as u16;
+        let sep_width = 1u16;
+        let filter_x = query_row.x + search_width + sep_width;
+        let filter_width = query_row.width.saturating_sub(search_width + sep_width);
+        (
+            ratatui::layout::Rect::new(query_row.x, query_row.y, search_width, 1),
+            Some(ratatui::layout::Rect::new(filter_x, query_row.y, filter_width, 1)),
+        )
+    } else {
+        (query_row, None)
+    };
 
     // Get selected result (need to clone to release immutable borrow of picker)
     let selected_result = picker.selected_result().cloned();
 
     // Drop immutable borrow of picker before calling functions that need mutable borrow
     let _ = picker;
+
+    // Store cached layout on editor
+    editor.last_picker_layout = Some(crate::editor::PickerLayout {
+        query_field,
+        filter_field,
+        results_area,
+        results_scroll_offset: scroll_offset,
+    });
 
     // Render preview panel if enabled
     if show_preview {
@@ -1246,7 +1271,8 @@ fn build_highlighted_spans(
 }
 
 /// Renders the picker results list
-fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) {
+/// Returns the scroll offset used for rendering (needed for mouse hit-testing).
+fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) -> usize {
     let results = picker.filtered_results();
     let selected_idx = picker.selected_index();
     let max_results = area.height as usize;
@@ -1408,6 +1434,8 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     let results_paragraph =
         Paragraph::new(all_lines).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(results_paragraph, area);
+
+    scroll_offset
 }
 
 /// Renders the file preview for the picker

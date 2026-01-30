@@ -45,6 +45,7 @@ pub use completion::CompletionMenu;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::InputHandler;
+pub use input::mouse::handle_mouse_event;
 pub use input::shell_expansion;
 pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
@@ -292,6 +293,36 @@ pub struct Editor {
     file_list_cache: Option<(std::path::PathBuf, Vec<PickerResult>, std::time::Instant)>,
     /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
     wrap_map: Option<WrapMap>,
+    /// Mouse interaction state (dragging, drag origin)
+    pub(crate) mouse_state: MouseState,
+    /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
+    pub(crate) last_buffer_area: Option<ratatui::layout::Rect>,
+    /// Cached gutter width from last render
+    pub(crate) last_gutter_width: usize,
+    /// Cached picker layout rects from last render (for mouse hit-testing)
+    pub(crate) last_picker_layout: Option<PickerLayout>,
+}
+
+/// Cached picker layout rects for mouse hit-testing
+#[derive(Debug, Clone)]
+pub struct PickerLayout {
+    /// Search input area
+    pub query_field: ratatui::layout::Rect,
+    /// File filter area (LiveGrep only)
+    pub filter_field: Option<ratatui::layout::Rect>,
+    /// Results list area
+    pub results_area: ratatui::layout::Rect,
+    /// Scroll offset of results (for mapping row to result index)
+    pub results_scroll_offset: usize,
+}
+
+/// Tracks mouse interaction state for click and drag
+#[derive(Debug, Clone, Default)]
+pub struct MouseState {
+    /// Whether a drag is in progress
+    pub is_dragging: bool,
+    /// Buffer position where the drag started (line, col)
+    pub drag_origin: Option<(usize, usize)>,
 }
 
 /// State for tracking Replace mode for dot-repeat
@@ -312,6 +343,12 @@ pub struct PendingSemanticChange {
     pub object_type: Option<TextObjectType>,
     /// True if this is a word change (cw)
     pub is_word_change: bool,
+    /// True if this is a search match change (cgn)
+    pub is_search_match_change: bool,
+    /// Search pattern for cgn repeat
+    pub search_pattern: Option<String>,
+    /// Search direction for cgn repeat
+    pub search_forward: Option<bool>,
     /// The original text that was deleted
     pub old_text: String,
     /// The original range of the deletion
@@ -404,6 +441,10 @@ impl Editor {
             replace_mode_state: None,
             file_list_cache: None,
             wrap_map: None,
+            mouse_state: MouseState::default(),
+            last_buffer_area: None,
+            last_gutter_width: 0,
+            last_picker_layout: None,
         }
     }
 
@@ -465,6 +506,10 @@ impl Editor {
             replace_mode_state: None,
             file_list_cache: None,
             wrap_map: None,
+            mouse_state: MouseState::default(),
+            last_buffer_area: None,
+            last_gutter_width: 0,
+            last_picker_layout: None,
         }
     }
 
@@ -584,6 +629,12 @@ impl Editor {
     /// Sets the viewport height (called from UI layer)
     pub fn set_viewport_height(&mut self, height: usize) {
         self.viewport_height = height;
+    }
+
+    /// Caches the buffer layout from the last render (for mouse coordinate conversion)
+    pub fn set_last_layout(&mut self, buffer_area: ratatui::layout::Rect, gutter_width: usize) {
+        self.last_buffer_area = Some(buffer_area);
+        self.last_gutter_width = gutter_width;
     }
 
     /// Gets the viewport height

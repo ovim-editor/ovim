@@ -141,6 +141,7 @@ impl Editor {
         self.preview_cache.clear();
         self.last_picker_selection_change = None;
         self.prev_picker_selection_change = None;
+        self.last_picker_layout = None;
     }
 
     /// Gets preview from cache or loads it (async version)
