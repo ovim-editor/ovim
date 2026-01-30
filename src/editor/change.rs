@@ -1130,7 +1130,7 @@ impl ChangeManager {
     }
 
     /// Pushes a change to the undo stack
-    fn push_change(&mut self, change: Change) {
+    pub(crate) fn push_change(&mut self, change: Change) {
         self.undo_stack.push(change.clone());
         self.redo_stack.clear(); // Clear redo stack on new change
         self.last_change = Some(change);
@@ -1152,25 +1152,6 @@ impl ChangeManager {
         if let Some(change) = self.redo_stack.pop() {
             change.apply(buffer);
             self.undo_stack.push(change);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Repeats the last change at the current cursor position
-    pub fn repeat_last(&mut self, buffer: &mut Buffer) -> bool {
-        if let Some(ref change) = self.last_change {
-            let mut repeated_change = change.clone();
-            // Store the current cursor as this repeat's cursor_before so undo
-            // returns to the right place (not the original change's position).
-            let current_pos = (buffer.cursor().line(), buffer.cursor().col());
-            repeated_change.set_cursor_before(current_pos);
-            repeated_change.repeat(buffer);
-            // Record cursor_after for redo
-            let after_pos = (buffer.cursor().line(), buffer.cursor().col());
-            repeated_change.set_cursor_after(after_pos);
-            self.push_change(repeated_change);
             true
         } else {
             false
