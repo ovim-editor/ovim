@@ -308,6 +308,12 @@ pub struct Editor {
     cat_animation: Option<crate::ui::CatAnimation>,
     /// LSP Manager panel state
     lsp_manager_panel: Option<LspManagerPanel>,
+    /// Channel for receiving LSP install progress updates
+    install_progress_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lsp_manager_panel::InstallProgress>>,
+    /// Channel sender for LSP install progress (cloned into background tasks)
+    install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
+    /// Pending install requests to be picked up by the event loop
+    pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -454,6 +460,9 @@ impl Editor {
             last_picker_layout: None,
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
+            install_progress_rx: None,
+            install_progress_tx: None,
+            pending_installs: Vec::new(),
         }
     }
 
@@ -521,6 +530,9 @@ impl Editor {
             last_picker_layout: None,
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
+            install_progress_rx: None,
+            install_progress_tx: None,
+            pending_installs: Vec::new(),
         }
     }
 

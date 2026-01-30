@@ -393,6 +393,12 @@ impl Editor {
         let running = self.get_running_lsp_servers();
         self.lsp_manager_panel = Some(super::LspManagerPanel::new(running));
         self.mode = Mode::LspManager;
+        // Ensure install channel exists
+        if self.install_progress_tx.is_none() {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            self.install_progress_tx = Some(tx);
+            self.install_progress_rx = Some(rx);
+        }
     }
 
     pub fn close_lsp_manager(&mut self) {
@@ -400,9 +406,126 @@ impl Editor {
         self.mode = Mode::Normal;
     }
 
+    /// Trigger LSP server install for a language.
+    /// Enqueues a pending install request to be picked up by the event loop.
+    pub fn request_lsp_install(&mut self, language_id: &str) {
+        use crate::language_config::LanguageRegistry;
+        use super::lsp_manager_panel::{InstallStatus, PendingInstallRequest};
+
+        let Some(registry) = LanguageRegistry::try_get() else {
+            self.set_lsp_status("Language registry not initialized".to_string());
+            return;
+        };
+
+        let Some(lang) = registry.get_by_id(language_id) else {
+            self.set_lsp_status(format!("Unknown language: {language_id}"));
+            return;
+        };
+
+        let Some(lsp) = &lang.lsp else {
+            self.set_lsp_status(format!("No LSP configured for {}", lang.name));
+            return;
+        };
+
+        let Some(auto_install) = &lsp.auto_install else {
+            if let Some(hint) = &lsp.install_hint {
+                self.set_lsp_status(hint.clone());
+            } else {
+                self.set_lsp_status(format!("No install method for {}", lang.name));
+            }
+            return;
+        };
+
+        // Set installing status in panel
+        if let Some(panel) = &mut self.lsp_manager_panel {
+            panel.active_installs.insert(
+                language_id.to_string(),
+                InstallStatus::Installing("Starting...".to_string()),
+            );
+        }
+
+        // Queue the request for the event loop to spawn
+        self.pending_installs.push(PendingInstallRequest {
+            language_id: language_id.to_string(),
+            language_name: lang.name.clone(),
+            auto_install_config: auto_install.clone(),
+            lsp_command: lsp.command.clone(),
+        });
+    }
+
+    /// Trigger LSP server uninstall for a language
+    pub fn request_lsp_uninstall(&mut self, language_id: &str) {
+        use crate::language_config::LanguageRegistry;
+
+        let Some(registry) = LanguageRegistry::try_get() else { return };
+        let Some(lang) = registry.get_by_id(language_id) else { return };
+        let Some(lsp) = &lang.lsp else { return };
+
+        // Determine uninstall command based on auto_install config
+        let hint = if let Some(auto) = &lsp.auto_install {
+            match &auto.method {
+                crate::language_config::InstallMethod::Npm { package, global } => {
+                    let flag = if *global { " -g" } else { "" };
+                    format!("Run: npm uninstall{flag} {package}")
+                }
+                crate::language_config::InstallMethod::Cargo { package } => {
+                    format!("Run: cargo uninstall {package}")
+                }
+                crate::language_config::InstallMethod::Shell { command } => {
+                    format!("Installed via shell. Remove manually: {command}")
+                }
+                crate::language_config::InstallMethod::Github { install_path, .. } => {
+                    format!("Remove: {install_path}")
+                }
+            }
+        } else if let Some(hint) = &lsp.install_hint {
+            format!("Manual removal needed. Install method: {hint}")
+        } else {
+            format!("No uninstall method for {}", lang.name)
+        };
+
+        self.set_lsp_status(hint);
+    }
+
+    /// Poll install progress channel and update panel state
+    pub fn poll_install_progress(&mut self) -> bool {
+        use super::lsp_manager_panel::InstallStatus;
+
+        let Some(rx) = &mut self.install_progress_rx else {
+            return false;
+        };
+
+        let mut updated = false;
+        while let Ok(progress) = rx.try_recv() {
+            if let Some(panel) = &mut self.lsp_manager_panel {
+                panel.active_installs.insert(
+                    progress.language_id.clone(),
+                    progress.status.clone(),
+                );
+
+                // On success, rebuild entries to reflect new state
+                if matches!(progress.status, InstallStatus::Success) {
+                    let running = self.lsp_state.running_server_languages();
+                    panel.update_running_servers(running);
+                }
+            }
+            updated = true;
+        }
+        updated
+    }
+
+    /// Drain pending install requests (called by event loop)
+    pub fn take_pending_installs(&mut self) -> Vec<super::lsp_manager_panel::PendingInstallRequest> {
+        std::mem::take(&mut self.pending_installs)
+    }
+
+    /// Get the install progress sender (for spawning background tasks)
+    pub fn install_progress_tx(&self) -> Option<&tokio::sync::mpsc::UnboundedSender<super::lsp_manager_panel::InstallProgress>> {
+        self.install_progress_tx.as_ref()
+    }
+
     /// Get language IDs of currently running LSP servers
     fn get_running_lsp_servers(&self) -> Vec<String> {
-        // The LSP state tracks running servers - extract language IDs
         self.lsp_state.running_server_languages()
     }
 }

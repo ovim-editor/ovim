@@ -97,41 +97,35 @@ fn handle_filter_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
 }
 
 fn handle_install(editor: &mut Editor) {
-    let entry_info = editor
+    let lang_id = editor
         .lsp_manager_panel()
         .and_then(|p| p.selected_entry())
-        .map(|e| (e.language_id.clone(), e.has_auto_install, e.install_hint.clone()));
+        .map(|e| e.language_id.clone());
 
-    if let Some((_lang_id, has_auto, hint)) = entry_info {
-        if has_auto {
-            // Phase 3: trigger auto-install
-            editor.set_lsp_status("Install triggered (not yet implemented)".to_string());
-        } else if let Some(hint) = hint {
-            editor.set_lsp_status(hint);
-        } else {
-            editor.set_lsp_status("No install method available".to_string());
-        }
+    if let Some(lang_id) = lang_id {
+        editor.request_lsp_install(&lang_id);
     }
 }
 
 fn handle_uninstall(editor: &mut Editor) {
-    let entry_info = editor
+    let lang_id = editor
         .lsp_manager_panel()
         .and_then(|p| p.selected_entry())
-        .map(|e| e.language_name.clone());
+        .map(|e| e.language_id.clone());
 
-    if let Some(name) = entry_info {
-        editor.set_lsp_status(format!("Uninstall {name} (not yet implemented)"));
+    if let Some(lang_id) = lang_id {
+        editor.request_lsp_uninstall(&lang_id);
     }
 }
 
 fn handle_update(editor: &mut Editor) {
-    let entry_info = editor
+    // Update = reinstall
+    let lang_id = editor
         .lsp_manager_panel()
         .and_then(|p| p.selected_entry())
-        .map(|e| e.language_name.clone());
+        .map(|e| e.language_id.clone());
 
-    if let Some(name) = entry_info {
-        editor.set_lsp_status(format!("Update {name} (not yet implemented)"));
+    if let Some(lang_id) = lang_id {
+        editor.request_lsp_install(&lang_id);
     }
 }
