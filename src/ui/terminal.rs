@@ -3,7 +3,9 @@ use crossterm::{
     cursor::SetCursorStyle,
     event::{DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
+    },
 };
 use std::io::{self, Stdout};
 
@@ -46,7 +48,8 @@ impl Drop for Terminal {
             DisableFocusChange,
             DisableBracketedPaste,
             LeaveAlternateScreen,
-            SetCursorStyle::DefaultUserShape
+            SetCursorStyle::DefaultUserShape,
+            SetTitle("")
         );
     }
 }
