@@ -565,10 +565,9 @@ fn test_ctrl_w_delete_word() {
         ) // Delete word (deletes "test ")
         .press_esc();
 
-    // Ctrl-W deletes the previous word "test " leaving "hello"
-    // But looking at actual, it seems it deletes just " " not "test "
-    assert_eq!(test.buffer_content(), "testhello\n");
-    test.assert_cursor(0, 4); // Cursor at position 4 after Esc
+    // Ctrl-W deletes trailing whitespace + preceding word ("test ")
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
