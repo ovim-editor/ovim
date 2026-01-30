@@ -3,11 +3,13 @@ use crossterm::{
     cursor::SetCursorStyle,
     event::{
         DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
+        disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+        LeaveAlternateScreen, SetTitle,
     },
 };
 use std::io::{self, Stdout};
@@ -16,6 +18,7 @@ use std::io::{self, Stdout};
 pub struct Terminal {
     _stdout: Stdout,
     override_size: Option<(u16, u16)>,
+    keyboard_enhancement_enabled: bool,
 }
 
 impl Terminal {
@@ -30,9 +33,26 @@ impl Terminal {
             EnableFocusChange,
             EnableMouseCapture
         )?;
+
+        // Enable Kitty keyboard protocol if the terminal supports it.
+        // This lets us detect Super/Cmd modifier (e.g. Cmd+1 on macOS in Ghostty).
+        let keyboard_enhancement_enabled =
+            if supports_keyboard_enhancement().unwrap_or(false) {
+                execute!(
+                    stdout,
+                    PushKeyboardEnhancementFlags(
+                        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    )
+                )
+                .is_ok()
+            } else {
+                false
+            };
+
         Ok(Self {
             _stdout: stdout,
             override_size,
+            keyboard_enhancement_enabled,
         })
     }
 
@@ -52,6 +72,9 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         // Restore terminal state on drop
         let _ = disable_raw_mode();
+        if self.keyboard_enhancement_enabled {
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        }
         let _ = execute!(
             io::stdout(),
             DisableMouseCapture,
