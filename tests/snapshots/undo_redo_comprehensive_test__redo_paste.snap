@@ -3,8 +3,8 @@ source: tests/undo_redo_comprehensive_test.rs
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:16
+Cursor: 0:15
 Lines: 1
 
 Buffer:
-hello worldhello[ ]
+hello worldhell[o]
