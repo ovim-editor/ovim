@@ -319,50 +319,53 @@ curl http://127.0.0.1:PORT/custom | jq '.'
 
 **Goal**: Support a new LSP method (e.g., `textDocument/implementation`)
 
+The LSP integration is split across focused modules:
+- `src/editor/lsp_integration.rs` - Core: init, polling, document sync, action dispatcher, `LspRequestContext`
+- `src/editor/lsp_modules/hover.rs` - Hover display
+- `src/editor/lsp_modules/goto.rs` - Go-to-definition, implementation, type
+- `src/editor/lsp_modules/diagnostics.rs` - Diagnostics
+- `src/editor/lsp_modules/completion.rs` - Code completion
+- `src/editor/lsp_modules/actions.rs` - Formatting, code actions, rename, semantic tokens
+- `src/editor/lsp_modules/references.rs` - Find references, symbols, call/type hierarchy
+- `src/editor/lsp_modules/workspace_edits.rs` - Applying text/workspace edits
+
 **Steps**:
 
 1. **Add method to LspManager** in `src/lsp/mod.rs`:
 ```rust
 pub async fn goto_implementation(&mut self, uri: Url, pos: Position) -> Result<Vec<Location>> {
     let server = self.servers.get_mut(&language)?;
-
-    let params = GotoImplementationParams {
-        text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
-            position: pos,
-        },
-        work_done_progress_params: Default::default(),
-        partial_result_params: Default::default(),
-    };
-
+    let params = GotoImplementationParams { /* ... */ };
     let response = server.request::<GotoImplementationRequest>(params).await?;
     Ok(response.unwrap_or_default())
 }
 ```
 
-2. **Wire to Editor** in `src/editor/mod.rs`:
+2. **Add the `*_impl` function** in the appropriate `lsp_modules/` file (e.g., `goto.rs`):
 ```rust
-pub fn goto_implementation(&mut self) -> Result<()> {
-    let (uri, pos) = self.get_current_position_for_lsp()?;
-    self.lsp_manager.goto_implementation(uri, pos).await?;
-    Ok(())
+// Use prepare_lsp_request to eliminate boilerplate
+pub(in crate::editor) async fn my_feature_impl(&mut self) -> Result<bool> {
+    let ctx = self.prepare_lsp_request("my feature").await?;
+    self.set_lsp_status("Doing my feature...".to_string());
+    let result = ctx.lsp.my_feature(&ctx.uri, ctx.line, ctx.character, &ctx.language_id).await;
+    // Handle result...
+    Ok(true)
 }
 ```
 
-3. **Add keybinding** in `src/editor/input/mod.rs`:
-```rust
-KeyCode::Char('i') if key_event.modifiers == (KeyModifiers::CTRL | KeyModifiers::SHIFT) => {
-    editor.goto_implementation()?;
-}
-```
+3. **Add to action dispatcher** in `lsp_integration.rs`:
+   - Add variant to `PendingLspAction` enum
+   - Handle in `process_pending_lsp_actions()`
 
-4. **Test**:
+4. **Add keybinding** in `src/editor/input/mod.rs`
+
+5. **Test**:
 ```rust
 #[test]
-fn test_goto_implementation() {
-    let mut test = EditorTest::new_with_lsp("trait Foo { fn bar(); }\nimpl Foo { fn bar() {} }");
-    test.send_keys("gI");  // Jump to implementation
-    // Verify cursor moved to impl location
+fn test_my_lsp_feature() {
+    let mut test = EditorTest::new_with_lsp("...");
+    test.send_keys("gI");
+    // Verify behavior
 }
 ```
 
@@ -650,6 +653,6 @@ pub fn process(&mut self) -> Result<()> {
 
 ---
 
-**Last Updated**: 2025-10-26
+**Last Updated**: 2026-01-29
 **Difficulty**: Medium (assumes Rust knowledge)
 **Time**: 1-8 hours depending on complexity

@@ -142,6 +142,8 @@ UI Rendering
   - `motions.rs` - Word, line, paragraph movements
   - `textobjects.rs` - Inner/around text objects
   - `commands.rs` - Ex commands (`:w`, `:set`, etc)
+  - `lsp_integration.rs` - LSP core: init, polling, document sync, action dispatcher
+  - `lsp_modules/` - LSP feature implementations (hover, goto, diagnostics, completion, actions, references, workspace edits)
 - **Exports**: `Editor` struct, operation functions
 
 ### **Buffer** (`src/buffer/`)
@@ -468,6 +470,6 @@ vim.keymap.set('n', 'K', function() vim.lsp.buf.hover() end)
 
 ---
 
-**Last Updated**: 2025-10-26
+**Last Updated**: 2026-01-29
 **Architecture Status**: Stable
 **Test Coverage**: 55/55 unit tests passing ✅
