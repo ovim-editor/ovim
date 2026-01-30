@@ -931,7 +931,7 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
 
     // Build right-aligned result count for the title bar
     let result_count_title = {
-        let filtered = picker.filtered_results().len();
+        let filtered = picker.filtered_result_count();
         let total = picker.all_results_count();
         format!(" {}/{} ", filtered, total)
     };
@@ -1273,11 +1273,10 @@ fn build_highlighted_spans(
 /// Renders the picker results list
 /// Returns the scroll offset used for rendering (needed for mouse hit-testing).
 fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) -> usize {
-    let results = picker.filtered_results();
     let selected_idx = picker.selected_index();
     let max_results = area.height as usize;
     let result_width = area.width as usize;
-    let total = results.len();
+    let total = picker.filtered_result_count();
     let query = picker.query();
 
     // Center-scroll: keep selected item in the middle of visible area
@@ -1296,13 +1295,12 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
     let is_live_grep = matches!(picker.mode(), crate::editor::PickerMode::LiveGrep);
 
-    let visible_results: Vec<Line> = results
-        .iter()
-        .skip(scroll_offset)
-        .take(max_results)
-        .enumerate()
-        .map(|(idx, result)| {
-            let actual_idx = idx + scroll_offset;
+    let visible_results: Vec<Line> = (scroll_offset..total.min(scroll_offset + max_results))
+        .filter_map(|i| {
+            picker.filtered_result(i).map(|result| (i - scroll_offset, i, result))
+        })
+        .map(|(idx, actual_idx, result)| {
+            let _ = idx; // used only for position within visible window
             let is_selected = actual_idx == selected_idx;
 
             let max_display_len = result_width.saturating_sub(5);
@@ -1404,7 +1402,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
     let mut all_lines = visible_results;
 
-    if results.is_empty() {
+    if total == 0 {
         let text = "  󰍉 No matches found";
         let padding = result_width.saturating_sub(text.chars().count());
         all_lines.push(Line::from(vec![

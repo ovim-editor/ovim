@@ -52,6 +52,7 @@ shellexpand = "3.1"
 tempfile = "3.14"
 streaming-iterator = "0.1.9"
 tree-sitter-zig = "1.1.2"
+nucleo = "0.5"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }

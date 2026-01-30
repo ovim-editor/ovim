@@ -1,0 +1,159 @@
+//! Wrapper around the `nucleo` crate for parallel fuzzy matching.
+//!
+//! Used by FindFiles mode where the dataset is large (thousands of files).
+//! The matcher runs on a background threadpool and never blocks the UI thread.
+
+use nucleo::pattern::{CaseMatching, Normalization};
+use nucleo::{Config, Nucleo, Utf32String};
+use std::sync::Arc;
+
+/// Wraps `Nucleo<u32>` with a clean API for the picker.
+///
+/// `T = u32`: each item stores an index into the picker's `all_results` vec.
+/// Nucleo only holds the display string for matching; actual `PickerResult`
+/// data stays on the `Picker`.
+pub struct NucleoMatcher {
+    nucleo: Nucleo<u32>,
+    last_query: String,
+}
+
+impl NucleoMatcher {
+    /// Creates a new matcher with 1 column and automatic thread count.
+    pub fn new() -> Self {
+        let nucleo = Nucleo::new(
+            Config::DEFAULT.match_paths(),
+            Arc::new(|| {}),
+            None, // auto thread count
+            1,    // single column: the display string
+        );
+        Self {
+            nucleo,
+            last_query: String::new(),
+        }
+    }
+
+    /// Returns a cloneable `Injector` for pushing items from any thread.
+    pub fn injector(&self) -> nucleo::Injector<u32> {
+        self.nucleo.injector()
+    }
+
+    /// Pushes an item with its index and display text.
+    pub fn inject(&self, index: u32, display: &str) {
+        let injector = self.nucleo.injector();
+        let display_owned = display.to_string();
+        injector.push(index, |_data, cols| {
+            cols[0] = Utf32String::from(display_owned.as_str());
+        });
+    }
+
+    /// Updates the search pattern. Call this when the query changes.
+    /// This is instant and non-blocking — matching happens in background.
+    pub fn update_query(&mut self, query: &str) {
+        let append = query.starts_with(&self.last_query) && !self.last_query.is_empty();
+        self.nucleo.pattern.reparse(
+            0,
+            query,
+            CaseMatching::Ignore,
+            Normalization::Smart,
+            append,
+        );
+        self.last_query = query.to_string();
+    }
+
+    /// Drives the matcher forward. Returns `true` if results changed.
+    /// Call this regularly from the event loop (e.g., every tick).
+    pub fn tick(&mut self) -> bool {
+        let status = self.nucleo.tick(10); // 10ms timeout
+        status.changed
+    }
+
+    /// Returns the number of items that match the current pattern.
+    pub fn matched_count(&self) -> u32 {
+        self.nucleo.snapshot().matched_item_count()
+    }
+
+    /// Returns the total number of injected items.
+    pub fn total_count(&self) -> u32 {
+        self.nucleo.snapshot().item_count()
+    }
+
+    /// Returns rank-ordered indices for items in the given range.
+    /// The indices refer to positions in `Picker::all_results`.
+    pub fn matched_indices(&self, count: usize) -> Vec<u32> {
+        let snapshot = self.nucleo.snapshot();
+        let matched = snapshot.matched_item_count() as usize;
+        let take = count.min(matched);
+        if take == 0 {
+            return Vec::new();
+        }
+        snapshot
+            .matched_items(0..take as u32)
+            .map(|item| *item.data)
+            .collect()
+    }
+
+    /// Returns true if the pattern is empty (all items match).
+    pub fn is_empty_pattern(&self) -> bool {
+        self.nucleo.pattern.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_matching() {
+        let mut matcher = NucleoMatcher::new();
+
+        matcher.inject(0, "src/main.rs");
+        matcher.inject(1, "src/lib.rs");
+        matcher.inject(2, "Cargo.toml");
+
+        // Tick until items are processed
+        for _ in 0..50 {
+            matcher.tick();
+        }
+
+        // Empty query matches all
+        assert_eq!(matcher.matched_count(), 3);
+        assert_eq!(matcher.total_count(), 3);
+    }
+
+    #[test]
+    fn test_query_filtering() {
+        let mut matcher = NucleoMatcher::new();
+
+        matcher.inject(0, "src/main.rs");
+        matcher.inject(1, "src/lib.rs");
+        matcher.inject(2, "Cargo.toml");
+
+        // Process injections
+        for _ in 0..50 {
+            matcher.tick();
+        }
+
+        matcher.update_query("main");
+
+        // Tick until matching completes
+        for _ in 0..50 {
+            matcher.tick();
+        }
+
+        assert!(matcher.matched_count() >= 1);
+        let indices = matcher.matched_indices(10);
+        assert!(indices.contains(&0)); // "src/main.rs" should match
+    }
+
+    #[test]
+    fn test_empty_pattern_detection() {
+        let mut matcher = NucleoMatcher::new();
+        assert!(matcher.is_empty_pattern());
+
+        matcher.update_query("foo");
+        assert!(!matcher.is_empty_pattern());
+
+        matcher.update_query("");
+        assert!(matcher.is_empty_pattern());
+    }
+}
