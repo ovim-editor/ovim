@@ -20,6 +20,7 @@ mod motions;
 mod operators;
 pub(crate) mod path_completion;
 mod performance;
+pub mod nucleo_matcher;
 pub mod picker;
 mod picker_manager;
 mod quickfix;

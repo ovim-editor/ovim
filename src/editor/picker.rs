@@ -1,3 +1,4 @@
+use super::nucleo_matcher::NucleoMatcher;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,11 +63,16 @@ pub struct Picker {
     last_filtered_query: String,
     /// The last file filter that was actually filtered
     last_filtered_file_filter: String,
+    /// Nucleo matcher for parallel fuzzy matching (FindFiles only)
+    nucleo: Option<NucleoMatcher>,
+    /// Cached rank-ordered indices from last nucleo tick (into all_results)
+    nucleo_indices: Vec<u32>,
 }
 
 impl Picker {
     /// Creates a new file finder picker
     /// Files are loaded asynchronously - use add_file_result() to populate
+    /// Uses nucleo for parallel background fuzzy matching.
     pub fn new_file_finder(base_dir: PathBuf) -> Self {
         Self {
             mode: PickerMode::FindFiles,
@@ -84,6 +90,8 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
+            nucleo: Some(NucleoMatcher::new()),
+            nucleo_indices: Vec::new(),
         }
     }
 
@@ -105,6 +113,8 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
+            nucleo: None,
+            nucleo_indices: Vec::new(),
         }
     }
 
@@ -139,6 +149,8 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
+            nucleo: None,
+            nucleo_indices: Vec::new(),
         }
     }
 
@@ -173,6 +185,8 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
+            nucleo: None,
+            nucleo_indices: Vec::new(),
         }
     }
 
@@ -208,6 +222,8 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
+            nucleo: None,
+            nucleo_indices: Vec::new(),
         }
     }
 
@@ -230,6 +246,8 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
+            nucleo: None,
+            nucleo_indices: Vec::new(),
         }
     }
 
@@ -572,17 +590,73 @@ impl Picker {
         Some((total_score, all_positions))
     }
 
+    /// Returns whether this picker uses nucleo for matching.
+    pub fn uses_nucleo(&self) -> bool {
+        self.nucleo.is_some()
+    }
+
     /// Returns the total number of results (before filtering)
     pub fn all_results_count(&self) -> usize {
-        self.all_results.len()
+        if self.nucleo.is_some() {
+            self.nucleo.as_ref().unwrap().total_count() as usize
+        } else {
+            self.all_results.len()
+        }
+    }
+
+    /// Returns the number of filtered (matched) results.
+    pub fn filtered_result_count(&self) -> usize {
+        if self.nucleo.is_some() {
+            self.nucleo_indices.len()
+        } else {
+            self.filtered_results.len()
+        }
+    }
+
+    /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
+    pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
+        if self.nucleo.is_some() {
+            let &all_idx = self.nucleo_indices.get(idx)?;
+            self.all_results.get(all_idx as usize)
+        } else {
+            self.filtered_results.get(idx)
+        }
+    }
+
+    /// Drives the nucleo matcher forward and rebuilds cached indices.
+    /// Only relevant for nucleo modes (FindFiles). Non-nucleo modes use
+    /// `apply_pending_filter()` via the debounce path in picker_manager.
+    /// Returns `true` if results changed.
+    pub fn tick(&mut self) -> bool {
+        if let Some(ref mut nucleo) = self.nucleo {
+            let changed = nucleo.tick();
+            if changed {
+                let count = nucleo.matched_count() as usize;
+                self.nucleo_indices = nucleo.matched_indices(count);
+                // Clamp selected_index
+                if !self.nucleo_indices.is_empty() {
+                    self.selected_index = self.selected_index.min(self.nucleo_indices.len() - 1);
+                } else {
+                    self.selected_index = 0;
+                }
+            }
+            changed
+        } else {
+            false
+        }
     }
 
     /// Updates the query and refreshes filtered results
-    /// Note: For incremental typing, use mark_filter_pending() and apply_pending_filter()
-    /// to debounce the expensive filtering operation
+    /// For nucleo modes, immediately pushes the query (matching happens in background).
+    /// For non-nucleo modes with incremental typing, use mark_filter_pending() and
+    /// apply_pending_filter() to debounce.
     pub fn set_query(&mut self, query: String) {
         self.query = query;
-        self.apply_filter_internal();
+        if let Some(ref mut nucleo) = self.nucleo {
+            nucleo.update_query(&self.query);
+        } else {
+            self.apply_filter_internal();
+        }
     }
 
     /// Internal filter logic - called by both set_query and apply_pending_filter
@@ -645,9 +719,15 @@ impl Picker {
         self.pending_filter = false;
     }
 
-    /// Marks that filtering is pending (query changed but not yet filtered)
+    /// Marks that filtering is pending (query changed but not yet filtered).
+    /// For nucleo modes, immediately pushes the query update (matching happens in background).
     pub fn mark_filter_pending(&mut self) {
-        self.pending_filter = true;
+        if let Some(ref mut nucleo) = self.nucleo {
+            // Nucleo: push query immediately, background threads handle matching
+            nucleo.update_query(&self.query);
+        } else {
+            self.pending_filter = true;
+        }
     }
 
     /// Returns true if there's a pending filter operation
@@ -759,8 +839,9 @@ impl Picker {
 
     /// Moves selection down
     pub fn move_down(&mut self) {
-        if !self.filtered_results.is_empty() {
-            self.selected_index = (self.selected_index + 1).min(self.filtered_results.len() - 1);
+        let count = self.filtered_result_count();
+        if count > 0 {
+            self.selected_index = (self.selected_index + 1).min(count - 1);
         }
     }
 
@@ -773,7 +854,7 @@ impl Picker {
 
     /// Gets the currently selected result
     pub fn selected_result(&self) -> Option<&PickerResult> {
-        self.filtered_results.get(self.selected_index)
+        self.filtered_result(self.selected_index)
     }
 
     /// Gets the current query
@@ -846,26 +927,30 @@ impl Picker {
 
     /// Sets the selected index (for mouse clicks), clamped to valid range
     pub fn set_selected_index(&mut self, index: usize) {
-        if !self.filtered_results.is_empty() {
-            self.selected_index = index.min(self.filtered_results.len() - 1);
+        let count = self.filtered_result_count();
+        if count > 0 {
+            self.selected_index = index.min(count - 1);
         }
     }
 
     /// Adds a file result (for incremental loading)
     pub fn add_file_result(&mut self, result: PickerResult) {
+        let idx = self.all_results.len() as u32;
+        let display = result.display.clone();
         self.all_results.push(result.clone());
 
-        // If query is empty, add to filtered results too
-        if self.query.is_empty() {
-            self.filtered_results.push(result);
+        if let Some(ref nucleo) = self.nucleo {
+            // Inject into nucleo — matching happens in background
+            nucleo.inject(idx, &display);
         } else {
-            // Just check if it matches and append - don't try to maintain sort order
-            // The filter will be re-applied with proper sorting when the user stops typing
-            // This avoids O(n²) re-scoring of all existing results on each file addition
-            if Self::fuzzy_score(&self.query, &result.display).is_some() {
+            // Non-nucleo path (shouldn't happen for FindFiles, but keep for safety)
+            if self.query.is_empty() {
                 self.filtered_results.push(result);
-                // Mark that results need re-sorting (will happen on next filter apply)
-                self.pending_filter = true;
+            } else {
+                if Self::fuzzy_score(&self.query, &result.display).is_some() {
+                    self.filtered_results.push(result);
+                    self.pending_filter = true;
+                }
             }
         }
     }

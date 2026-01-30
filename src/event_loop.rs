@@ -91,7 +91,13 @@ async fn process_editor_tick(
     let _ = editor.process_lua_commands();
 
     if editor.mode() == Mode::Picker {
-        // Apply debounced filter (50ms debounce for responsive typing)
+        // Tick picker: drives nucleo matching (FindFiles) or applies debounced filter (other modes)
+        if let Some(picker) = editor.picker_mut() {
+            if picker.tick() {
+                editor.mark_dirty();
+            }
+        }
+        // Apply debounced filter for non-nucleo modes
         if editor.apply_pending_picker_filter(50) {
             editor.mark_dirty();
         }
@@ -811,9 +817,8 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
             editor::PickerMode::LspLocations => "LspLocations".to_string(),
         },
         query: p.query().to_string(),
-        results: p
-            .filtered_results()
-            .iter()
+        results: (0..p.filtered_result_count())
+            .filter_map(|i| p.filtered_result(i))
             .map(|r| PickerResultInfo {
                 display: r.display.clone(),
                 location: r.location.clone(),
