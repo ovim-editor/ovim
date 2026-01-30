@@ -285,24 +285,63 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
     let end_line = (start_line + count).min(editor.buffer().line_count());
 
-    let start_pos = (start_line, 0);
-    let end_pos = (end_line, 0);
+    // Get indentation from the current line before deleting
+    let indent = if let Some(line) = editor.buffer().line(start_line) {
+        let trimmed = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        line[..line.len() - trimmed.len()].to_string()
+    } else {
+        String::new()
+    };
 
-    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
-    let range = Range::new(start_pos, end_pos);
-    let change = Change::delete(range, deleted.clone(), cursor_before);
+    if count == 1 {
+        // Single line: clear content but preserve the line itself
+        if let Some(line) = editor.buffer().line(start_line) {
+            let content_len = line.trim_end_matches('\n').chars().count();
+            if content_len > 0 {
+                let deleted = editor.buffer_mut().delete_range(start_line, 0, start_line, content_len);
+                let range = Range::new((start_line, 0), (start_line, content_len));
+                let change = Change::delete(range, deleted.clone(), cursor_before);
+                editor.delete_to_register_with_type(deleted, RegisterType::Line);
+                editor.add_change(change);
+            }
+        }
 
-    editor.delete_to_register(deleted);
-    editor.add_change(change);
+        // Insert indentation
+        if !indent.is_empty() {
+            let indent_len = indent.chars().count();
+            editor.buffer_mut().insert_text_at(start_line, 0, &indent);
+            let change = Change::insert((start_line, 0), indent, cursor_before);
+            editor.add_change(change);
+            editor.buffer_mut().cursor_mut().set_position(start_line, indent_len);
+        } else {
+            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+        }
+    } else {
+        // Multi-line: delete all lines, insert a blank line with indent
+        let start_pos = (start_line, 0);
+        let end_pos = (end_line, 0);
+        let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
+        let range = Range::new(start_pos, end_pos);
+        let change = Change::delete(range, deleted.clone(), cursor_before);
+        editor.delete_to_register_with_type(deleted, RegisterType::Line);
+        editor.add_change(change);
+
+        // Insert a new line with indentation
+        let new_line_text = format!("{}\n", indent);
+        let indent_len = indent.chars().count();
+        editor.buffer_mut().insert_text_at(start_line, 0, &new_line_text);
+        let change = Change::insert((start_line, 0), new_line_text, cursor_before);
+        editor.add_change(change);
+        editor.buffer_mut().cursor_mut().set_position(start_line, indent_len);
+    }
+
     editor.clear_count();
-
-    let cursor_before = (
+    let insert_cursor = (
         editor.buffer().cursor().line(),
         editor.buffer().cursor().col(),
     );
-    editor.start_change_building(cursor_before);
+    editor.start_change_building(insert_cursor);
     editor.set_mode(Mode::Insert);
-    helpers::insert_line_above(editor)?;
     Ok(())
 }
 

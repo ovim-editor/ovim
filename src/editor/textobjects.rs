@@ -283,6 +283,7 @@ impl TextObjects {
     }
 
     /// Gets the range for parentheses, brackets, or braces
+    /// Searches across lines using the rope buffer, tracking depth.
     /// open_char: '(', '[', or '{'
     /// close_char: ')', ']', or '}'
     /// include_delimiters: true for "around", false for "inner"
@@ -293,73 +294,98 @@ impl TextObjects {
         include_delimiters: bool,
     ) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
+        let cursor_line = cursor.line();
+        let cursor_col = cursor.col();
+        let rope = buffer.rope();
+        let line_count = buffer.line_count();
 
-        if line_idx >= buffer.line_count() {
+        if cursor_line >= line_count {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
-        let chars: Vec<char> = line_text.chars().collect();
+        // Convert cursor position to absolute char offset in the rope
+        let cursor_char_offset = rope.line_to_char(cursor_line) + cursor_col;
 
-        if chars.is_empty() {
-            return None;
-        }
+        // Search backward from cursor for unmatched open delimiter
+        let mut open_pos = None;
+        let mut depth: i32 = 0;
 
-        // Find opening delimiter (search backward from cursor)
-        let mut start_col = None;
-        let mut depth = 0;
-        for i in (0..=col.min(chars.len().saturating_sub(1))).rev() {
-            if chars[i] == close_char {
-                depth += 1;
-            } else if chars[i] == open_char {
-                if depth == 0 {
-                    start_col = Some(i);
-                    break;
-                }
-                depth -= 1;
+        // Handle the case where cursor is ON an open delimiter
+        if cursor_char_offset < rope.len_chars() {
+            let ch = rope.char(cursor_char_offset);
+            if ch == open_char {
+                open_pos = Some(cursor_char_offset);
             }
         }
 
-        let start_col = start_col?;
+        if open_pos.is_none() {
+            // Search backward
+            for i in (0..cursor_char_offset).rev() {
+                let ch = rope.char(i);
+                if ch == close_char {
+                    depth += 1;
+                } else if ch == open_char {
+                    if depth == 0 {
+                        open_pos = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+        }
 
-        // Find closing delimiter (search forward from opening delimiter)
-        let mut end_col = None;
-        let mut depth = 0;
-        for (i, &ch) in chars.iter().enumerate().skip(start_col + 1) {
+        let open_offset = open_pos?;
+
+        // Search forward from open delimiter for matching close
+        let mut close_pos = None;
+        depth = 0;
+        for i in (open_offset + 1)..rope.len_chars() {
+            let ch = rope.char(i);
             if ch == open_char {
                 depth += 1;
             } else if ch == close_char {
                 if depth == 0 {
-                    end_col = Some(i);
+                    close_pos = Some(i);
                     break;
                 }
                 depth -= 1;
             }
         }
 
-        let end_col = end_col?;
+        let close_offset = close_pos?;
+
+        // Convert absolute offsets back to (line, col)
+        let open_line = rope.char_to_line(open_offset);
+        let open_col = open_offset - rope.line_to_char(open_line);
+        let close_line = rope.char_to_line(close_offset);
+        let close_col = close_offset - rope.line_to_char(close_line);
 
         if include_delimiters {
             // "around" - include the delimiters
             Some(TextObjectRange {
-                start_line: line_idx,
-                start_col,
-                end_line: line_idx,
-                end_col: end_col + 1,
+                start_line: open_line,
+                start_col: open_col,
+                end_line: close_line,
+                end_col: close_col + 1,
             })
         } else {
             // "inner" - exclude the delimiters
-            if start_col + 1 >= end_col {
+            // Start is one char after open delimiter
+            let inner_start_offset = open_offset + 1;
+            let inner_end_offset = close_offset;
+
+            if inner_start_offset >= inner_end_offset {
                 return None; // Empty content
             }
+
+            let start_line = rope.char_to_line(inner_start_offset);
+            let start_col = inner_start_offset - rope.line_to_char(start_line);
+
             Some(TextObjectRange {
-                start_line: line_idx,
-                start_col: start_col + 1,
-                end_line: line_idx,
-                end_col,
+                start_line,
+                start_col,
+                end_line: close_line,
+                end_col: close_col,
             })
         }
     }

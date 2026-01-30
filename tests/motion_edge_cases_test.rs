@@ -154,12 +154,12 @@ fn test_e_on_empty_line() {
     let mut test = EditorTest::new("hello\n\nworld");
 
     test.press('j') // Empty line
-        .press('e'); // Should move to start of "world" (next word boundary)
+        .press('e'); // Should move to end of next word "world"
 
     assert_eq!(test.buffer_content(), "hello\n\nworld\n");
 
-    // e from empty line moves to start of next word "world" (col 0)
-    test.assert_cursor(2, 0);
+    // e from empty line moves to end of next word "world" (col 4)
+    test.assert_cursor(2, 4);
 }
 
 #[test]

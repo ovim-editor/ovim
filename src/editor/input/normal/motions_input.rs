@@ -149,6 +149,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(target_line, 0);
+            Motions::first_non_blank(editor.buffer_mut());
             editor.add_jump();
             editor.clear_count();
             Ok(true)
