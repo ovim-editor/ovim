@@ -1009,6 +1009,28 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     };
 
     let results_area = body_chunks[0];
+    // NLL: original `picker` ref is no longer used after the shadow below,
+    // so the mutable borrow for prefetch is allowed.
+    // Prefetch visible range (single nucleo snapshot instead of per-item)
+    if let Some(picker_mut) = editor.picker_mut() {
+        let selected_idx = picker_mut.selected_index();
+        let total = picker_mut.filtered_result_count();
+        let max_results = results_area.height as usize;
+        let scroll_offset = if total <= max_results {
+            0
+        } else {
+            let half = max_results / 2;
+            if selected_idx < half {
+                0
+            } else if selected_idx + half >= total {
+                total.saturating_sub(max_results)
+            } else {
+                selected_idx.saturating_sub(half)
+            }
+        };
+        picker_mut.prefetch_visible_range(scroll_offset, max_results);
+    }
+    let picker = editor.picker().unwrap();
     let scroll_offset = render_picker_results(frame, picker, results_area);
 
     // Cache picker layout for mouse hit-testing

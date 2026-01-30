@@ -67,6 +67,10 @@ pub struct Picker {
     nucleo: Option<NucleoMatcher>,
     /// Number of matched items from last nucleo tick
     nucleo_matched_count: usize,
+    /// Cached visible indices from prefetch (nucleo mode only)
+    cached_visible_indices: Vec<u32>,
+    /// Start offset of the cached visible range
+    cached_visible_start: usize,
 }
 
 impl Picker {
@@ -92,6 +96,8 @@ impl Picker {
             last_filtered_file_filter: String::new(),
             nucleo: Some(NucleoMatcher::new()),
             nucleo_matched_count: 0,
+            cached_visible_indices: Vec::new(),
+            cached_visible_start: 0,
         }
     }
 
@@ -115,6 +121,8 @@ impl Picker {
             last_filtered_file_filter: String::new(),
             nucleo: None,
             nucleo_matched_count: 0,
+            cached_visible_indices: Vec::new(),
+            cached_visible_start: 0,
         }
     }
 
@@ -151,6 +159,8 @@ impl Picker {
             last_filtered_file_filter: String::new(),
             nucleo: None,
             nucleo_matched_count: 0,
+            cached_visible_indices: Vec::new(),
+            cached_visible_start: 0,
         }
     }
 
@@ -187,6 +197,8 @@ impl Picker {
             last_filtered_file_filter: String::new(),
             nucleo: None,
             nucleo_matched_count: 0,
+            cached_visible_indices: Vec::new(),
+            cached_visible_start: 0,
         }
     }
 
@@ -224,6 +236,8 @@ impl Picker {
             last_filtered_file_filter: String::new(),
             nucleo: None,
             nucleo_matched_count: 0,
+            cached_visible_indices: Vec::new(),
+            cached_visible_start: 0,
         }
     }
 
@@ -248,6 +262,8 @@ impl Picker {
             last_filtered_file_filter: String::new(),
             nucleo: None,
             nucleo_matched_count: 0,
+            cached_visible_indices: Vec::new(),
+            cached_visible_start: 0,
         }
     }
 
@@ -595,13 +611,11 @@ impl Picker {
         self.nucleo.is_some()
     }
 
-    /// Returns the total number of results (before filtering)
+    /// Returns the total number of results (before filtering).
+    /// Uses `all_results.len()` directly — accurate because `add_file_result()`
+    /// always pushes to both `all_results` and nucleo's injector.
     pub fn all_results_count(&self) -> usize {
-        if self.nucleo.is_some() {
-            self.nucleo.as_ref().unwrap().total_count() as usize
-        } else {
-            self.all_results.len()
-        }
+        self.all_results.len()
     }
 
     /// Returns the number of filtered (matched) results.
@@ -613,10 +627,30 @@ impl Picker {
         }
     }
 
+    /// Pre-fetches visible item indices in a single nucleo snapshot.
+    /// Call this once before iterating `filtered_result()` during render.
+    pub fn prefetch_visible_range(&mut self, start: usize, count: usize) {
+        if let Some(ref nucleo) = self.nucleo {
+            self.cached_visible_indices =
+                nucleo.get_items_in_range(start as u32, count as u32);
+            self.cached_visible_start = start;
+        }
+    }
+
     /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
-    /// For nucleo mode, queries the snapshot on demand (O(1), no allocation).
+    /// For nucleo mode, uses the prefetched cache when available, falling back
+    /// to a per-item snapshot call if out of range.
     pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
         if let Some(ref nucleo) = self.nucleo {
+            // Try the prefetched cache first
+            if idx >= self.cached_visible_start {
+                let cache_idx = idx - self.cached_visible_start;
+                if cache_idx < self.cached_visible_indices.len() {
+                    let all_idx = self.cached_visible_indices[cache_idx] as usize;
+                    return self.all_results.get(all_idx);
+                }
+            }
+            // Fallback: per-item snapshot (e.g., selected_result outside visible range)
             let all_idx = nucleo.get_item_at_rank(idx as u32)?;
             self.all_results.get(all_idx as usize)
         } else {

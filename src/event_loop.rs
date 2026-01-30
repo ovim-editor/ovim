@@ -177,9 +177,14 @@ fn process_picker_results(
     if previews_loaded {
         editor.mark_dirty();
     }
-    // Try to drain pending file results (cap per frame to avoid stalling)
+    // Drain pending file results with a time budget to avoid stalling input
     let mut files_added = false;
-    for _ in 0..500 {
+    let drain_start = std::time::Instant::now();
+    let drain_budget = std::time::Duration::from_millis(2);
+    loop {
+        if drain_start.elapsed() >= drain_budget {
+            break;
+        }
         match file_rx.try_recv() {
             Ok(result) => {
                 if let Some(picker) = editor.picker_mut() {
@@ -242,6 +247,7 @@ pub async fn run_event_loop(
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(200);
     let mut last_input_time: Option<Instant> = None;
+    let mut skip_render = false;
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
@@ -257,7 +263,7 @@ pub async fn run_event_loop(
             editor.mark_dirty();
         }
 
-        if editor.is_dirty() {
+        if editor.is_dirty() && !skip_render {
             let start = Instant::now();
             ui.renderer_mut().render(editor)?;
             editor.record_render_duration(start.elapsed().as_micros() as u64);
@@ -267,6 +273,7 @@ pub async fn run_event_loop(
                 editor.record_input_latency(input_time.elapsed().as_micros() as u64);
             }
         }
+        skip_render = false;
 
         if let Some(ref mut rx) = api_rx {
             while let Ok(request) = rx.try_recv() {
@@ -328,6 +335,12 @@ pub async fn run_event_loop(
             // This makes hover/goto/completion feel much snappier
             if !editor.has_pending_lsp_response() {
                 editor.process_pending_lsp_actions().await;
+            }
+
+            // If more input is already queued, skip the next render frame
+            // so keystrokes flow through without delay
+            if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                skip_render = true;
             }
         }
 
