@@ -17,10 +17,23 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.execute_search();
         }
         KeyCode::Backspace => {
-            // Remove last character from search buffer
-            editor.backspace_search_buffer();
-            // Incremental search: update highlighting after backspace
-            editor.execute_search();
+            if editor.search.search_buffer.is_empty() {
+                // Backspace on empty search buffer exits search mode (like Neovim)
+                editor.restore_search_start_position();
+                editor.clear_search_buffer();
+
+                if let Some(vss) = editor.take_visual_search_state() {
+                    editor.set_visual_start(vss.anchor.0, vss.anchor.1);
+                    editor.set_mode(vss.mode);
+                } else if editor.visual_start().is_some() {
+                    editor.set_mode(Mode::Visual);
+                } else {
+                    editor.set_mode(Mode::Normal);
+                }
+            } else {
+                editor.backspace_search_buffer();
+                editor.execute_search();
+            }
         }
         KeyCode::Enter => {
             // Execute the search and accept it
