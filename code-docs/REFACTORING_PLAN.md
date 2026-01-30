@@ -321,59 +321,46 @@ pub struct Editor {
 
 **Goal:** Break files exceeding 2K lines into logical submodules.
 
-### 2.1 Split `lsp_integration.rs` (2989 lines → 4 files ~750 lines each)
+### 2.1 Split `lsp_integration.rs` ✅ COMPLETED
 
-**Current structure:** Single `impl Editor` block with all LSP methods.
+**Result:** 2,489 lines → 851 lines in main file + 3 new submodules under `lsp_modules/`
 
-**New structure:**
+**Actual structure:**
 ```
-src/editor/lsp/
-├── mod.rs              (200 lines) - re-exports and shared types
-├── initialization.rs   (400 lines) - LSP init, enable_lsp, document sync
-├── actions.rs          (800 lines) - hover, goto_definition, completion, etc.
-├── workspace.rs        (600 lines) - workspace edits, formatting, organize imports
-└── diagnostics.rs      (500 lines) - diagnostic queries, navigation
+src/editor/lsp_modules/
+├── mod.rs              (17 lines)  - module declarations
+├── hover.rs            (180 lines) - hover display (K command)
+├── goto.rs             (289 lines) - go-to-definition, implementation, type
+├── diagnostics.rs      (160 lines) - error/warning diagnostics
+├── completion.rs       (118 lines) - code completion
+├── actions.rs          (331 lines) - formatting, code actions, rename, semantic tokens
+├── references.rs       (519 lines) - find references, document/workspace symbols, call/type hierarchy
+└── workspace_edits.rs  (208 lines) - text edit application, workspace edit handling
 ```
 
-**Split by functionality:**
+**Key abstractions introduced:**
 
-**`lsp/initialization.rs`:**
-- `enable_lsp()`
-- `lsp_manager()`
-- `lsp_command_sender()`
-- `close_current_file_lsp()`
-- `needs_lsp_init()`
-- `request_lsp_init()`
-- Document sync methods
+1. **`LspRequestContext` + `prepare_lsp_request()`** (in `lsp_integration.rs`):
+   - Eliminates ~30 lines of repeated boilerplate from each `*_impl` function
+   - Handles: LSP manager check, file path resolution, URI creation, cursor UTF-16 conversion, language detection, document sync flush
 
-**`lsp/actions.rs`:**
-- `lsp_hover()`
-- `lsp_goto_definition()`
-- `lsp_goto_implementation()`
-- `lsp_goto_type()`
-- `lsp_completion()`
-- `lsp_code_actions()`
-- `lsp_find_references()`
+2. **`poll_location_response()` helper** (in `lsp_integration.rs`):
+   - Replaces 4 near-identical match arms (~300 lines → ~60 lines)
+   - Parameterized by label, log tag, and new_tab flag
 
-**`lsp/workspace.rs`:**
-- `lsp_format_document()`
-- `lsp_organize_imports()`
-- `apply_workspace_edit()`
-- Rename methods
+3. **`extract_text_edits()` function** (in `workspace_edits.rs`):
+   - Deduplicates `OneOf<TextEdit, AnnotatedTextEdit>` → `TextEdit` conversion (was duplicated 3 times)
 
-**`lsp/diagnostics.rs`:**
-- `get_current_file_diagnostics()`
-- `update_diagnostics()`
-- `goto_next_diagnostic()`
-- `goto_prev_diagnostic()`
+**What stays in `lsp_integration.rs` (851 lines):**
+- Init/setup/getters
+- `poll_pending_lsp_responses` with `poll_location_response` helper
+- Server info & action queuing
+- Document sync
+- `process_pending_lsp_actions` dispatcher
+- UTF-16 helpers
+- `LspRequestContext` + `prepare_lsp_request`
 
-**Migration steps:**
-1. Create `src/editor/lsp/` directory
-2. Move methods to appropriate files with `impl Editor` blocks
-3. Update `src/editor/mod.rs` to include new modules
-4. Run `cargo test --lib` after each file split
-
-**Testing:** Full LSP integration tests
+**Net reduction:** ~577 lines eliminated through deduplication
 
 ---
 
@@ -469,7 +456,7 @@ src/buffer/
 ### Phase 2 Summary
 
 **Files affected:**
-- `src/editor/lsp_integration.rs` (2989L) → 4 files (~750L each)
+- `src/editor/lsp_integration.rs` (2489L) → 851L + 3 new submodules ✅ DONE
 - `src/lsp/mod.rs` (2834L) → 3 files (~950L each)
 - `src/buffer/mod.rs` (2026L) → 3 files (~675L each)
 
@@ -738,7 +725,7 @@ cargo test measure_editor_size -- --nocapture
 - All editor impl files (update field accesses)
 
 **Phase 2:**
-- `src/editor/lsp_integration.rs` → `src/editor/lsp/{mod,initialization,actions,workspace,diagnostics}.rs`
+- `src/editor/lsp_integration.rs` (2489→851L) + `src/editor/lsp_modules/{actions,references,workspace_edits}.rs` ✅ DONE
 - `src/lsp/mod.rs` → `src/lsp/{mod,manager,notifications,introspection}.rs`
 - `src/buffer/mod.rs` → `src/buffer/{mod,text_ops,syntax,git_integration}.rs`
 

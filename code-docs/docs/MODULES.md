@@ -39,7 +39,16 @@ src/
 │   ├── tabpage.rs                   # Tab page management
 │   ├── filetree.rs                  # File explorer
 │   ├── window.rs                    # Window/split management
-│   └── lsp_actions.rs               # LSP-related operations
+│   ├── lsp_integration.rs           # LSP core: init, polling, document sync, dispatcher
+│   └── lsp_modules/                 # LSP feature implementations
+│       ├── mod.rs                   # Module declarations
+│       ├── hover.rs                 # Hover display (K command)
+│       ├── goto.rs                  # Go-to-definition, implementation, type
+│       ├── diagnostics.rs           # Error/warning diagnostics
+│       ├── completion.rs            # Code completion
+│       ├── actions.rs               # Formatting, code actions, rename, semantic tokens
+│       ├── references.rs            # Find references, document/workspace symbols, call/type hierarchy
+│       └── workspace_edits.rs       # Text edit application, workspace edit handling
 ├── lsp/                             # Language Server Protocol
 │   ├── mod.rs                       # LspManager (main coordinator)
 │   ├── server.rs                    # LanguageServer (per-language instance)
@@ -316,8 +325,11 @@ main.rs
 | File | Lines | Status |
 |------|-------|--------|
 | editor/input/mod.rs | 5,824 | 🔴 Needs refactoring (too large) |
-| ui/renderer.rs | 1,758 | 🟡 Recently refactored (was single file) |
-| lsp/mod.rs | 2,287 | 🟢 OK |
+| editor/lsp_integration.rs | 851 | 🟢 Refactored (was 2,489) |
+| editor/lsp_modules/references.rs | 519 | 🟢 OK (extracted from lsp_integration) |
+| editor/lsp_modules/actions.rs | 331 | 🟢 OK (extracted from lsp_integration) |
+| editor/lsp_modules/workspace_edits.rs | 208 | 🟢 OK (extracted from lsp_integration) |
+| lsp/mod.rs | 2,287 | 🟡 Could benefit from split |
 | editor/mod.rs | 5,192 | 🟡 Large but manageable |
 | buffer/mod.rs | 1,047 | 🟢 OK |
 | lsp/server.rs | 1,407 | 🟢 OK |
@@ -405,10 +417,10 @@ API Request
 - Session management (robust with cleanup)
 - LSP integration (multi-language)
 - Buffer implementation (rope-based)
+- LSP integration refactoring (lsp_integration.rs 2,489→851 lines, extracted into lsp_modules/)
 
 ### 🟡 In Progress
 - input/mod.rs refactoring (needs split)
-- Workspace/applyEdit implementation
 
 ### 📋 Future
 - Plugin system (Lua hooks)
@@ -418,7 +430,7 @@ API Request
 
 ---
 
-**Last Updated**: 2025-10-26
+**Last Updated**: 2026-01-29
 **Module Count**: 40+ modules
 **Total Lines**: ~50K lines of Rust code
 **Test Coverage**: 55+ unit tests, 40+ integration tests
