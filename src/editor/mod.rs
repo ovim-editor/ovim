@@ -314,6 +314,12 @@ pub struct Editor {
     install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
     /// Pending install requests to be picked up by the event loop
     pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
+    /// Whether the diagnostic badge overlay has been dismissed (double-Escape)
+    diagnostic_badge_dismissed: bool,
+    /// Last diagnostic count when badge state was set (for detecting changes)
+    diagnostic_badge_last_count: (usize, usize),
+    /// Last time Escape was pressed in normal mode (for double-Escape detection)
+    last_escape_time: Option<std::time::Instant>,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -463,6 +469,9 @@ impl Editor {
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
+            diagnostic_badge_dismissed: false,
+            diagnostic_badge_last_count: (0, 0),
+            last_escape_time: None,
         }
     }
 
@@ -533,6 +542,9 @@ impl Editor {
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
+            diagnostic_badge_dismissed: false,
+            diagnostic_badge_last_count: (0, 0),
+            last_escape_time: None,
         }
     }
 
@@ -627,6 +639,13 @@ impl Editor {
     /// Returns a mutable reference to the cat animation (if active).
     pub fn cat_animation_mut(&mut self) -> Option<&mut crate::ui::CatAnimation> {
         self.cat_animation.as_mut()
+    }
+
+    /// Startle the cat (e.g. on terminal resize while it's on the logo).
+    pub fn startle_cat(&mut self) {
+        if let Some(ref mut anim) = self.cat_animation {
+            anim.startle();
+        }
     }
 
     /// Tick the cat animation. Returns true if a frame advanced (needs redraw).
@@ -1149,15 +1168,24 @@ impl Editor {
 
     /// Yanks text to the appropriate register with explicit type
     pub fn yank_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
-        let had_explicit_register = self.input.pending_register.is_some();
         if let Some(reg) = self.input.pending_register {
-            self.registers.set_with_type(Some(reg), text.clone(), reg_type);
             self.input.pending_register = None;
+            match reg {
+                '_' => return, // black hole register: discard
+                '+' | '*' => {
+                    self.registers.set_clipboard(text.clone());
+                    self.registers.set_with_type(Some(reg), text, reg_type);
+                    return;
+                }
+                _ => {
+                    self.registers.set_with_type(Some(reg), text.clone(), reg_type);
+                }
+            }
         } else {
             self.registers.yank_with_type(text.clone(), reg_type);
         }
         // Sync to system clipboard when clipboard option is set and no explicit register was used
-        if !had_explicit_register && !self.options.clipboard.is_empty() {
+        if !self.options.clipboard.is_empty() {
             self.registers.set_clipboard(text);
         }
     }
@@ -1169,15 +1197,24 @@ impl Editor {
 
     /// Deletes text and stores in the appropriate register with explicit type
     pub fn delete_to_register_with_type(&mut self, text: String, reg_type: RegisterType) {
-        let had_explicit_register = self.input.pending_register.is_some();
         if let Some(reg) = self.input.pending_register {
-            self.registers.set_with_type(Some(reg), text.clone(), reg_type);
             self.input.pending_register = None;
+            match reg {
+                '_' => return, // black hole register: discard
+                '+' | '*' => {
+                    self.registers.set_clipboard(text.clone());
+                    self.registers.set_with_type(Some(reg), text, reg_type);
+                    return;
+                }
+                _ => {
+                    self.registers.set_with_type(Some(reg), text.clone(), reg_type);
+                }
+            }
         } else {
             self.registers.delete_with_type(text.clone(), reg_type);
         }
         // Sync to system clipboard when clipboard option is set and no explicit register was used
-        if !had_explicit_register && !self.options.clipboard.is_empty() {
+        if !self.options.clipboard.is_empty() {
             self.registers.set_clipboard(text);
         }
     }
@@ -1185,7 +1222,11 @@ impl Editor {
     /// Gets text from the appropriate register (pending_register or default)
     pub fn get_from_register(&mut self) -> String {
         let text = if let Some(reg) = self.input.pending_register {
-            self.registers.get(Some(reg))
+            match reg {
+                '_' => String::new(), // black hole register: always empty
+                '+' | '*' => self.registers.get_clipboard(),
+                _ => self.registers.get(Some(reg)),
+            }
         } else if !self.options.clipboard.is_empty() {
             // When clipboard option is set, read from system clipboard
             self.registers.get_clipboard()
@@ -1199,7 +1240,14 @@ impl Editor {
     /// Gets text and type from the appropriate register (pending_register or default)
     pub fn get_from_register_with_type(&mut self) -> (String, RegisterType) {
         let (text, reg_type) = if let Some(reg) = self.input.pending_register {
-            self.registers.get_with_type(Some(reg))
+            match reg {
+                '_' => (String::new(), RegisterType::Character), // black hole: always empty
+                '+' | '*' => {
+                    let clipboard_text = self.registers.get_clipboard();
+                    (clipboard_text, RegisterType::Character)
+                }
+                _ => self.registers.get_with_type(Some(reg)),
+            }
         } else if !self.options.clipboard.is_empty() {
             // When clipboard option is set, read from system clipboard
             // Use Character type since system clipboard doesn't carry type info
@@ -1323,6 +1371,40 @@ impl Editor {
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
     pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
         self.lsp_state.diagnostic_count
+    }
+
+    /// Whether the diagnostic badge has been dismissed by double-Escape
+    pub fn diagnostic_badge_dismissed(&self) -> bool {
+        self.diagnostic_badge_dismissed
+    }
+
+    /// Dismiss the diagnostic badge (called on double-Escape)
+    pub fn dismiss_diagnostic_badge(&mut self) {
+        self.diagnostic_badge_dismissed = true;
+    }
+
+    /// Called when diagnostic counts change to potentially un-dismiss the badge
+    pub fn on_diagnostic_counts_changed(&mut self, errors: usize, warnings: usize) {
+        let new_count = (errors, warnings);
+        if new_count != self.diagnostic_badge_last_count {
+            self.diagnostic_badge_last_count = new_count;
+            self.diagnostic_badge_dismissed = false;
+        }
+    }
+
+    /// Get last escape time for double-Escape detection
+    pub fn last_escape_time(&self) -> Option<std::time::Instant> {
+        self.last_escape_time
+    }
+
+    /// Set last escape time
+    pub fn set_last_escape_time(&mut self, time: std::time::Instant) {
+        self.last_escape_time = Some(time);
+    }
+
+    /// Clear last escape time
+    pub fn clear_last_escape_time(&mut self) {
+        self.last_escape_time = None;
     }
 
     /// Gets a reference to the last change

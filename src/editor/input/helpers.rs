@@ -114,10 +114,19 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
 pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
-    let position = (cursor.line(), cursor.col());
+    let line_idx = cursor.line();
+    let position = (line_idx, cursor.col());
 
-    // Create and apply the change
-    let change = Change::insert(position, "\n".to_string(), cursor_before);
+    // Get indentation from current line
+    let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+    let indent: String = line_text
+        .chars()
+        .take_while(|c| c.is_whitespace() && *c != '\n')
+        .collect();
+
+    // Insert newline + indentation
+    let text_to_insert = format!("\n{}", indent);
+    let change = Change::insert(position, text_to_insert, cursor_before);
     change.apply(editor.buffer_mut());
     editor.add_change(change);
 
@@ -631,7 +640,7 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                 let range = Range::new(start_pos, end_pos);
                 let change = Change::delete(range, deleted.clone(), cursor_before);
                 editor.add_change(change);
-                editor.delete_to_register(deleted);
+                editor.delete_to_register_with_type(deleted, RegisterType::Line);
 
                 // Position cursor at start of selection
                 let new_line = start_line.min(editor.buffer().line_count().saturating_sub(1));
@@ -676,7 +685,7 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                 // Record as composite change for proper undo
                 let composite = Change::composite(changes, cursor_before, cursor_before);
                 editor.add_change(composite);
-                editor.delete_to_register(deleted);
+                editor.delete_to_register_with_type(deleted, RegisterType::Block);
 
                 // Position cursor at start of block, clamped to line length
                 let line_len = if let Some(line) = editor.buffer().line(start_line) {

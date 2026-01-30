@@ -286,23 +286,50 @@ impl Motions {
     }
 
     fn word_end_forward_once(buffer: &mut Buffer, big_word: bool) {
-        let rope = buffer.rope();
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
+        let line_idx;
+        let col;
+        let total_lines;
+        let line_string;
+        {
+            let rope = buffer.rope();
+            let cursor = buffer.cursor();
+            line_idx = cursor.line();
+            col = cursor.col();
+            total_lines = rope.len_lines();
 
-        if line_idx >= rope.len_lines() {
-            return;
+            if line_idx >= total_lines {
+                return;
+            }
+
+            line_string = rope.line(line_idx).to_string();
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
+        let line = line_string.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
 
         if chars.is_empty() {
-            if line_idx + 1 < rope.len_lines() {
-                buffer.cursor_mut().set_position(line_idx + 1, 0);
+            // Skip consecutive blank lines to find next non-empty line
+            let mut next_line = line_idx + 1;
+            while next_line < total_lines {
+                let next = buffer.rope().line(next_line).to_string();
+                let next_trimmed = next.trim_end_matches('\n');
+                if !next_trimmed.is_empty() {
+                    // Find end of first word on this line using char_class
+                    let next_chars: Vec<char> = next_trimmed.chars().collect();
+                    let first_class = char_class(next_chars[0]);
+                    let mut end_col = 0;
+                    if first_class != CharClass::Whitespace {
+                        while end_col + 1 < next_chars.len() && char_class(next_chars[end_col + 1]) == first_class {
+                            end_col += 1;
+                        }
+                    }
+                    buffer.cursor_mut().set_position(next_line, end_col);
+                    return;
+                }
+                next_line += 1;
             }
+            // All remaining lines are blank, go to last line
+            buffer.cursor_mut().set_position(total_lines.saturating_sub(1), 0);
             return;
         }
 
@@ -319,7 +346,7 @@ impl Motions {
         }
 
         if new_col >= chars.len() {
-            if line_idx + 1 < rope.len_lines() {
+            if line_idx + 1 < total_lines {
                 buffer.cursor_mut().set_position(line_idx + 1, 0);
                 Self::word_end_forward_once(buffer, big_word);
             }
@@ -798,12 +825,22 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let mut line_idx = cursor.line();
+        let total_lines = rope.len_lines();
 
-        // Skip current paragraph (non-blank lines) and stop at the first blank line
-        while line_idx < rope.len_lines() {
+        // First skip any blank lines at/after cursor
+        while line_idx < total_lines {
             if let Some(line) = buffer.line(line_idx) {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
+                if !line.trim().is_empty() {
+                    break;
+                }
+            }
+            line_idx += 1;
+        }
+
+        // Then skip non-blank lines to find the next blank line boundary
+        while line_idx < total_lines {
+            if let Some(line) = buffer.line(line_idx) {
+                if line.trim().is_empty() {
                     break;
                 }
             }
@@ -811,7 +848,7 @@ impl Motions {
         }
 
         // Clamp to buffer bounds
-        line_idx = line_idx.min(rope.len_lines().saturating_sub(1));
+        line_idx = line_idx.min(total_lines.saturating_sub(1));
         buffer.cursor_mut().set_position(line_idx, 0);
     }
 

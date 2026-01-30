@@ -318,8 +318,12 @@ fn apply_case_operator(
         let insert_change = Change::insert((range.start_line, range.start_col), transformed, cursor_before);
         insert_change.apply(editor.buffer_mut());
 
-        editor.add_change(delete_change);
-        editor.add_change(insert_change);
+        let cursor_after = (
+            editor.buffer().cursor().line(),
+            editor.buffer().cursor().col(),
+        );
+        let composite = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_after);
+        editor.add_change(composite);
     }
 
     Ok(())

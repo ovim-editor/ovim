@@ -132,7 +132,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // viw - visual inner word
                 if let Some(range) = TextObjects::inner_word(editor.buffer()) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -140,7 +140,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vaw - visual around word
                 if let Some(range) = TextObjects::around_word(editor.buffer()) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -168,7 +168,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 };
                 if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, false) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -180,7 +180,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 };
                 if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, true) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -188,7 +188,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vi( vi) vib - visual inner parentheses
                 if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', false) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -196,7 +196,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // va( va) vab - visual around parentheses
                 if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', true) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -204,7 +204,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vi[ vi] - visual inner brackets
                 if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', false) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -212,7 +212,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // va[ va] - visual around brackets
                 if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', true) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -220,7 +220,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vi{ vi} viB - visual inner braces
                 if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', false) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -228,7 +228,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // va{ va} vaB - visual around braces
                 if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', true) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }

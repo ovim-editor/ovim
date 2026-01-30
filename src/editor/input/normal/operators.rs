@@ -442,12 +442,16 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
     editor.clear_pending_operator();
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
-    let end_line = if editor.count().is_some() {
+    let cursor_line = cursor.line();
+    let target_line = if editor.count().is_some() {
         count.saturating_sub(1)
     } else {
         editor.buffer().line_count().saturating_sub(1)
     };
+
+    // Normalize so start_line <= end_line
+    let start_line = cursor_line.min(target_line);
+    let end_line = cursor_line.max(target_line);
 
     match operator {
         Operator::Indent => {
@@ -510,7 +514,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             let change = Change::delete(range, deleted.clone(), cursor_before);
             editor.add_change(change);
             editor.mark_buffer_modified();
-            editor.delete_to_register(deleted);
+            editor.delete_to_register_with_type(deleted, RegisterType::Line);
             helpers::clamp_cursor_to_buffer(editor);
 
             let insert_cursor = (
@@ -533,13 +537,17 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
     editor.clear_pending_operator();
     editor.clear_pending_command();
 
-    let end_line = editor.buffer().cursor().line();
-    let cursor_before = (end_line, editor.buffer().cursor().col());
-    let start_line = if editor.count().is_some() {
+    let cursor_line = editor.buffer().cursor().line();
+    let cursor_before = (cursor_line, editor.buffer().cursor().col());
+    let target_line = if editor.count().is_some() {
         count.saturating_sub(1)
     } else {
         0
     };
+
+    // Normalize so start_line <= end_line
+    let start_line = cursor_line.min(target_line);
+    let end_line = cursor_line.max(target_line);
 
     match operator {
         Operator::Delete => {
@@ -604,7 +612,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             let range = Range::new((start_line, 0), (end_line + 1, 0));
             let change = Change::delete(range, deleted.clone(), cursor_before);
 
-            editor.delete_to_register(deleted);
+            editor.delete_to_register_with_type(deleted, RegisterType::Line);
             editor.add_change(change);
             editor.mark_buffer_modified();
 
@@ -820,7 +828,7 @@ fn handle_dj(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new((start_line, 0), (end_line, 0));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
@@ -838,7 +846,7 @@ fn handle_dk(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new((start_line, 0), (end_line, 0));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
@@ -863,7 +871,7 @@ fn handle_d_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
@@ -887,7 +895,7 @@ fn handle_d_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     let range = Range::new((start_line, start_col), (end_line, end_col));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
     helpers::clamp_cursor_to_buffer(editor);
@@ -1024,7 +1032,7 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
         }
     }
 
-    editor.yank_to_register(yanked);
+    editor.yank_to_register_with_type(yanked, RegisterType::Line);
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
     editor.clear_count();
     Ok(())
@@ -1053,7 +1061,7 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
         }
     }
 
-    editor.yank_to_register(yanked);
+    editor.yank_to_register_with_type(yanked, RegisterType::Line);
     editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
     editor.clear_count();
     Ok(())
@@ -1221,7 +1229,7 @@ fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new((start_line, 0), (end_line, 0));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
 
@@ -1249,7 +1257,7 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new((start_line, 0), (end_line, 0));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
 
@@ -1284,7 +1292,7 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
     editor.set_mode(Mode::Insert);
@@ -1307,7 +1315,7 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     let range = Range::new((start_line, start_col), (end_line, end_col));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.delete_to_register(deleted);
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
     editor.set_mode(Mode::Insert);
