@@ -1,15 +1,53 @@
 use crate::buffer::Buffer;
 use crate::unicode::grapheme_count;
 
+/// Character classification for word motions.
+/// CJK ideographs are treated as individual words (each char = one word),
+/// matching Vim's behavior.
+#[derive(PartialEq, Eq)]
+enum CharClass {
+    Word,        // ASCII alphanumeric + underscore
+    Cjk,         // CJK ideographs, Hiragana, Katakana, Hangul, Bopomofo
+    Punctuation, // everything else that's not whitespace
+    Whitespace,
+}
+
+fn char_class(c: char) -> CharClass {
+    if c.is_whitespace() {
+        CharClass::Whitespace
+    } else if is_cjk_ideograph(c) {
+        CharClass::Cjk
+    } else if c.is_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else {
+        CharClass::Punctuation
+    }
+}
+
+fn is_cjk_ideograph(c: char) -> bool {
+    matches!(c as u32,
+        0x4E00..=0x9FFF       // CJK Unified Ideographs
+        | 0x3400..=0x4DBF     // CJK Extension A
+        | 0x20000..=0x2A6DF   // CJK Extension B
+        | 0x2A700..=0x2B73F   // CJK Extension C
+        | 0x2B740..=0x2B81F   // CJK Extension D
+        | 0x2B820..=0x2CEAF   // CJK Extension E
+        | 0x2CEB0..=0x2EBEF   // CJK Extension F
+        | 0x30000..=0x3134F   // CJK Extension G
+        | 0x3100..=0x312F     // Bopomofo
+        | 0x31A0..=0x31BF     // Bopomofo Extended
+        | 0x3040..=0x309F     // Hiragana
+        | 0x30A0..=0x30FF     // Katakana
+        | 0x31F0..=0x31FF     // Katakana Phonetic Extensions
+        | 0xAC00..=0xD7AF     // Hangul Syllables
+        | 0x1100..=0x11FF     // Hangul Jamo
+    )
+}
+
 /// Utilities for cursor motions
 pub struct Motions;
 
 impl Motions {
-    /// Checks if a character is a word character (alphanumeric or underscore)
-    fn is_word_char(c: char) -> bool {
-        c.is_alphanumeric() || c == '_'
-    }
-
     /// Checks if a character is whitespace
     fn is_whitespace(c: char) -> bool {
         c.is_whitespace()
@@ -71,20 +109,26 @@ impl Motions {
                 new_col += 1;
             }
         } else {
-            // Skip current word
-            if Self::is_word_char(current_char) {
-                // In a word
-                while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
+            // Skip current word/CJK/punctuation
+            let class = char_class(current_char);
+            match class {
+                CharClass::Cjk => {
+                    // Each CJK char is its own word — skip exactly one
                     new_col += 1;
                 }
-            } else if !Self::is_whitespace(current_char) {
-                // In punctuation
-                while new_col < chars.len()
-                    && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col])
-                {
-                    new_col += 1;
+                CharClass::Word => {
+                    while new_col < chars.len() && char_class(chars[new_col]) == CharClass::Word {
+                        new_col += 1;
+                    }
                 }
+                CharClass::Punctuation => {
+                    while new_col < chars.len()
+                        && char_class(chars[new_col]) == CharClass::Punctuation
+                    {
+                        new_col += 1;
+                    }
+                }
+                CharClass::Whitespace => {}
             }
             // Skip whitespace
             while new_col < chars.len() && Self::is_whitespace(chars[new_col]) {
@@ -202,19 +246,23 @@ impl Motions {
             }
         } else {
             let target_char = chars[new_col - 1];
-            if Self::is_word_char(target_char) {
-                // Move back through word
-                while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
+            let class = char_class(target_char);
+            match class {
+                CharClass::Cjk => {
+                    // Each CJK char is its own word — back exactly one
                     new_col -= 1;
                 }
-            } else {
-                // Move back through punctuation
-                while new_col > 0
-                    && !Self::is_word_char(chars[new_col - 1])
-                    && !Self::is_whitespace(chars[new_col - 1])
-                {
-                    new_col -= 1;
+                CharClass::Word => {
+                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Word {
+                        new_col -= 1;
+                    }
                 }
+                CharClass::Punctuation => {
+                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Punctuation {
+                        new_col -= 1;
+                    }
+                }
+                CharClass::Whitespace => {}
             }
         }
 
@@ -285,19 +333,25 @@ impl Motions {
             }
         } else {
             let start_char = chars[new_col];
-            if Self::is_word_char(start_char) {
-                // Move through word
-                while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
+            let class = char_class(start_char);
+            match class {
+                CharClass::Cjk => {
+                    // Each CJK char is its own word — advance exactly one
                     new_col += 1;
                 }
-            } else {
-                // Move through punctuation
-                while new_col < chars.len()
-                    && !Self::is_word_char(chars[new_col])
-                    && !Self::is_whitespace(chars[new_col])
-                {
-                    new_col += 1;
+                CharClass::Word => {
+                    while new_col < chars.len() && char_class(chars[new_col]) == CharClass::Word {
+                        new_col += 1;
+                    }
                 }
+                CharClass::Punctuation => {
+                    while new_col < chars.len()
+                        && char_class(chars[new_col]) == CharClass::Punctuation
+                    {
+                        new_col += 1;
+                    }
+                }
+                CharClass::Whitespace => {}
             }
         }
 
@@ -390,32 +444,39 @@ impl Motions {
                 new_col += 1;
             }
             new_col = new_col.saturating_sub(1);
-        } else if Self::is_word_char(target_char) {
-            // Move back through word characters
-            while new_col > 0 && Self::is_word_char(chars[new_col - 1]) {
-                new_col -= 1;
-            }
-            // Now find the end of this word
-            while new_col < chars.len() && Self::is_word_char(chars[new_col]) {
-                new_col += 1;
-            }
-            new_col = new_col.saturating_sub(1);
         } else {
-            // Move back through punctuation
-            while new_col > 0
-                && !Self::is_word_char(chars[new_col - 1])
-                && !Self::is_whitespace(chars[new_col - 1])
-            {
-                new_col -= 1;
+            let class = char_class(target_char);
+            match class {
+                CharClass::Cjk => {
+                    // Each CJK char is its own word — already on it, stay
+                    // (new_col is already pointing at the CJK char)
+                }
+                CharClass::Word => {
+                    // Move back through word characters
+                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Word {
+                        new_col -= 1;
+                    }
+                    // Now find the end of this word
+                    while new_col < chars.len() && char_class(chars[new_col]) == CharClass::Word {
+                        new_col += 1;
+                    }
+                    new_col = new_col.saturating_sub(1);
+                }
+                CharClass::Punctuation => {
+                    // Move back through punctuation
+                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Punctuation {
+                        new_col -= 1;
+                    }
+                    // Now find the end of this punctuation sequence
+                    while new_col < chars.len()
+                        && char_class(chars[new_col]) == CharClass::Punctuation
+                    {
+                        new_col += 1;
+                    }
+                    new_col = new_col.saturating_sub(1);
+                }
+                CharClass::Whitespace => {}
             }
-            // Now find the end of this punctuation sequence
-            while new_col < chars.len()
-                && !Self::is_word_char(chars[new_col])
-                && !Self::is_whitespace(chars[new_col])
-            {
-                new_col += 1;
-            }
-            new_col = new_col.saturating_sub(1);
         }
 
         buffer.cursor_mut().set_col(new_col);

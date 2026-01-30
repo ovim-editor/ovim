@@ -3,8 +3,8 @@ source: tests/unicode_edge_cases_test.rs
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:9
+Cursor: 0:7
 Lines: 1
 
 Buffer:
-hello 世界 [t]est
+hello 世[界] test

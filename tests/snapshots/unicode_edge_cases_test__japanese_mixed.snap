@@ -3,8 +3,8 @@ source: tests/unicode_edge_cases_test.rs
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:12
+Cursor: 0:7
 Lines: 1
 
 Buffer:
-Hello こんにちは [W]orld
+Hello こ[ん]にちは World

@@ -3,8 +3,8 @@ source: tests/unicode_edge_cases_test.rs
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 1:0
+Cursor: 0:3
 Lines: 1
 
 Buffer:
-a世b界c
+a世b[界]c
