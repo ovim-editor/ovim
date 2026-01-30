@@ -90,6 +90,12 @@ async fn process_editor_tick(
 
     let _ = editor.process_lua_commands();
 
+    // Process LSP install requests from the LSP Manager panel
+    spawn_pending_installs(editor);
+    if editor.poll_install_progress() {
+        editor.mark_dirty();
+    }
+
     if editor.mode() == Mode::Picker {
         // Tick picker: drives nucleo matching (FindFiles) or applies debounced filter (other modes)
         if let Some(picker) = editor.picker_mut() {
@@ -107,6 +113,53 @@ async fn process_editor_tick(
 
     editor.send_lsp_changes_if_modified().await;
     editor.send_lsp_save_if_needed().await;
+}
+
+/// Spawn background tasks for pending LSP install requests
+fn spawn_pending_installs(editor: &mut Editor) {
+    use ovim::editor::lsp_manager_panel::{InstallProgress, InstallStatus};
+
+    let pending = editor.take_pending_installs();
+    if pending.is_empty() {
+        return;
+    }
+
+    let tx = editor.install_progress_tx().cloned();
+    let Some(tx) = tx else { return };
+
+    for request in pending {
+        let tx = tx.clone();
+        let lang_name = request.language_name.clone();
+        let lang_id = request.language_id.clone();
+        let config = request.auto_install_config.clone();
+        let command = request.lsp_command.clone();
+
+        tokio::spawn(async move {
+            let _ = tx.send(InstallProgress {
+                language_id: lang_id.clone(),
+                status: InstallStatus::Installing(format!("Installing {lang_name}...")),
+            });
+
+            let result = crate::lsp_init::auto_install::attempt_auto_install(
+                &lang_name,
+                &command,
+                &config,
+            )
+            .await;
+
+            let status = match result {
+                crate::lsp_init::auto_install::InstallResult::Success(_) => InstallStatus::Success,
+                crate::lsp_init::auto_install::InstallResult::Failed(msg) => InstallStatus::Failed(msg),
+                crate::lsp_init::auto_install::InstallResult::PrerequisitesMissing(msg) => InstallStatus::Failed(msg),
+                crate::lsp_init::auto_install::InstallResult::Declined => InstallStatus::Failed("Declined".to_string()),
+            };
+
+            let _ = tx.send(InstallProgress {
+                language_id: lang_id,
+                status,
+            });
+        });
+    }
 }
 
 /// Helper to process preview and file picker results
@@ -185,6 +238,11 @@ pub async fn run_event_loop(
 
         // Drain pending picker results
         process_picker_results(editor, &mut preview_rx, &mut file_rx);
+
+        // Tick dashboard cat animation
+        if editor.tick_cat_animation() {
+            editor.mark_dirty();
+        }
 
         if editor.is_dirty() {
             let start = Instant::now();

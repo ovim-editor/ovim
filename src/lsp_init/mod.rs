@@ -1,4 +1,4 @@
-mod auto_install;
+pub mod auto_install;
 mod java;
 
 use auto_install::{attempt_auto_install, InstallResult};

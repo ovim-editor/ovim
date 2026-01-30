@@ -2,6 +2,22 @@ use std::collections::HashMap;
 
 use crate::language_config::{self, LanguageConfig, LanguageRegistry};
 
+/// Message sent from background install task to the editor
+#[derive(Debug, Clone)]
+pub struct InstallProgress {
+    pub language_id: String,
+    pub status: InstallStatus,
+}
+
+/// A pending install request to be picked up by the event loop
+#[derive(Debug, Clone)]
+pub struct PendingInstallRequest {
+    pub language_id: String,
+    pub language_name: String,
+    pub auto_install_config: crate::language_config::AutoInstallConfig,
+    pub lsp_command: String,
+}
+
 /// Section groupings in the LSP Manager panel
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LspSection {
