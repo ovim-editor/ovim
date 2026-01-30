@@ -378,4 +378,31 @@ impl Editor {
         self.substitute_pattern = None;
         self.mode = Mode::Normal;
     }
+
+    // ==================== LSP Manager Panel ====================
+
+    pub fn lsp_manager_panel(&self) -> Option<&super::LspManagerPanel> {
+        self.lsp_manager_panel.as_ref()
+    }
+
+    pub fn lsp_manager_panel_mut(&mut self) -> Option<&mut super::LspManagerPanel> {
+        self.lsp_manager_panel.as_mut()
+    }
+
+    pub fn open_lsp_manager(&mut self) {
+        let running = self.get_running_lsp_servers();
+        self.lsp_manager_panel = Some(super::LspManagerPanel::new(running));
+        self.mode = Mode::LspManager;
+    }
+
+    pub fn close_lsp_manager(&mut self) {
+        self.lsp_manager_panel = None;
+        self.mode = Mode::Normal;
+    }
+
+    /// Get language IDs of currently running LSP servers
+    fn get_running_lsp_servers(&self) -> Vec<String> {
+        // The LSP state tracks running servers - extract language IDs
+        self.lsp_state.running_server_languages()
+    }
 }

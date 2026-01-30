@@ -1309,6 +1309,14 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 } else {
                     execute_shell_command_with_expansion(editor, shell_cmd.trim())
                 }
+            // Handle :LspInstall / :LspManager - open LSP manager panel
+            } else if command == "LspInstall" || command == "LspManager" {
+                editor.open_lsp_manager();
+                ApiResponse::Success(SuccessResponse {
+                    success: true,
+                    message: None,
+                    line_count: None,
+                })
             // Handle line number command (e.g., :48 to go to line 48)
             } else if let Ok(line_num) = command.parse::<usize>() {
                 let target_line = line_num.saturating_sub(1); // 1-indexed to 0-indexed

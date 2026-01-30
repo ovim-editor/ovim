@@ -224,6 +224,11 @@ impl LspState {
             hover_content_type: HoverContentType::default(),
         }
     }
+
+    /// Get language IDs of currently active/running LSP servers
+    pub fn running_server_languages(&self) -> Vec<String> {
+        self.active_lsp_servers.keys().cloned().collect()
+    }
 }
 
 impl Default for LspState {

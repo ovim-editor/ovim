@@ -66,6 +66,10 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
         }
 
         // Multi-key sequences - accumulate the key
+        'l' => {
+            // <Space>l... - LSP manager prefix
+            editor.set_input_state(InputState::Leader { keys: vec!['l'] });
+        }
         't' => {
             // <Space>t... - Type hierarchy prefix
             editor.set_input_state(InputState::Leader { keys: vec!['t'] });
@@ -91,6 +95,13 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
 /// Handles subsequent keys in a leader sequence.
 fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) -> Result<()> {
     match (keys, next_key) {
+        // <Space>l... sequences
+        (&['l'], 'm') => {
+            // <Space>lm - LSP Manager panel
+            editor.open_lsp_manager();
+            editor.reset_input_state();
+        }
+
         // <Space>t... sequences
         (&['t'], 'h') => {
             // <Space>th - Type hierarchy

@@ -30,6 +30,8 @@ pub enum Mode {
     SubstituteConfirm,
     /// Dashboard mode - startup screen with menu
     Dashboard,
+    /// LspManager mode - browse and install language servers
+    LspManager,
 }
 
 impl Mode {
@@ -50,6 +52,7 @@ impl Mode {
             Mode::FileTree => "FILETREE",
             Mode::SubstituteConfirm => "SUBSTITUTE",
             Mode::Dashboard => "DASHBOARD",
+            Mode::LspManager => "LSP MANAGER",
         }
     }
 

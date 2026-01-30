@@ -1,7 +1,7 @@
 use crate::editor::{Editor, InputState};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
 /// Command handling submodule
 mod commands;
@@ -45,6 +45,9 @@ mod substitute_mode;
 /// Dashboard mode handler
 mod dashboard_mode;
 
+/// LSP Manager mode handler
+mod lsp_manager_mode;
+
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
@@ -81,6 +84,15 @@ impl InputHandler {
             editor.record_macro_event(key_event);
         }
 
+        // Global keybindings (work in any mode)
+        // Cmd+1 - toggle file tree
+        if key_event.code == KeyCode::Char('1')
+            && key_event.modifiers.contains(KeyModifiers::SUPER)
+        {
+            editor.toggle_file_tree();
+            return Ok(());
+        }
+
         let result = match editor.mode() {
             Mode::Normal => Self::handle_normal_mode(editor, key_event),
             Mode::Insert => insert_mode::handle_insert_mode(editor, key_event),
@@ -102,6 +114,7 @@ impl InputHandler {
             Mode::FileTree => filetree_mode::handle_filetree_mode(editor, key_event),
             Mode::SubstituteConfirm => substitute_mode::handle_substitute_confirm_mode(editor, key_event),
             Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
+            Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
         };
 
         // Update scroll offset to keep cursor visible with scrolloff margin

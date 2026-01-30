@@ -9,6 +9,7 @@ mod fold;
 mod input;
 mod input_context;
 mod input_state;
+pub mod lsp_manager_panel;
 mod keymap;
 mod lsp_state;
 mod lsp_integration;
@@ -68,6 +69,7 @@ pub use textobjects::{TextObjectRange, TextObjects};
 pub use undo::UndoManager;
 pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
+pub use lsp_manager_panel::LspManagerPanel;
 pub use wrap_map::WrapMap;
 
 /// Editor options and settings
@@ -302,6 +304,10 @@ pub struct Editor {
     pub(crate) last_gutter_width: usize,
     /// Cached picker layout rects from last render (for mouse hit-testing)
     pub(crate) last_picker_layout: Option<PickerLayout>,
+    /// Dashboard cat animation state
+    cat_animation: Option<crate::ui::CatAnimation>,
+    /// LSP Manager panel state
+    lsp_manager_panel: Option<LspManagerPanel>,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -446,6 +452,8 @@ impl Editor {
             last_buffer_area: None,
             last_gutter_width: 0,
             last_picker_layout: None,
+            cat_animation: Some(crate::ui::CatAnimation::new()),
+            lsp_manager_panel: None,
         }
     }
 
@@ -511,6 +519,8 @@ impl Editor {
             last_buffer_area: None,
             last_gutter_width: 0,
             last_picker_layout: None,
+            cat_animation: Some(crate::ui::CatAnimation::new()),
+            lsp_manager_panel: None,
         }
     }
 
@@ -600,6 +610,23 @@ impl Editor {
     /// Dashboard is shown when: no file loaded AND buffer is empty/default
     pub fn should_show_dashboard(&self) -> bool {
         self.mode == Mode::Dashboard
+    }
+
+    /// Returns a mutable reference to the cat animation (if active).
+    pub fn cat_animation_mut(&mut self) -> Option<&mut crate::ui::CatAnimation> {
+        self.cat_animation.as_mut()
+    }
+
+    /// Tick the cat animation. Returns true if a frame advanced (needs redraw).
+    pub fn tick_cat_animation(&mut self) -> bool {
+        if let Some(ref mut anim) = self.cat_animation {
+            if anim.is_active() {
+                return anim.tick();
+            }
+            // Animation finished — drop it
+            self.cat_animation = None;
+        }
+        false
     }
 
     /// Gets the pending command
