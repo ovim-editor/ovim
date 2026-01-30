@@ -1163,6 +1163,12 @@ impl Editor {
                 // Insert text into search buffer
                 self.search.search_buffer.push_str(text);
             }
+            Mode::Picker => {
+                if let Some(picker) = self.picker_mut() {
+                    picker.insert_text(text);
+                }
+                self.mark_picker_query_changed();
+            }
             _ => {
                 // Visual modes: treat like normal mode paste
                 self.registers.set(None, text.to_string());

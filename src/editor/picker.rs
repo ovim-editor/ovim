@@ -688,6 +688,15 @@ impl Picker {
         self.mark_filter_pending();
     }
 
+    /// Inserts a string at the cursor position in the active field
+    pub fn insert_text(&mut self, s: &str) {
+        let (text, cursor) = self.active_field_mut();
+        let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor);
+        text.insert_str(byte_pos, s);
+        *cursor += s.chars().count();
+        self.mark_filter_pending();
+    }
+
     /// Appends a character to the query (legacy method, inserts at cursor)
     pub fn append_query(&mut self, ch: char) {
         self.insert_char(ch);
@@ -1096,6 +1105,39 @@ mod tests {
         picker.backspace_query();
         assert_eq!(picker.file_filter(), "a");
         assert_eq!(picker.file_filter_cursor(), 1);
+    }
+
+    #[test]
+    fn test_insert_text_into_query() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        picker.insert_text("hello");
+        assert_eq!(picker.query(), "hello");
+        assert_eq!(picker.query_cursor(), 5);
+
+        // Insert more text at cursor
+        picker.insert_text(" world");
+        assert_eq!(picker.query(), "hello world");
+        assert_eq!(picker.query_cursor(), 11);
+    }
+
+    #[test]
+    fn test_insert_text_at_cursor_midpoint() {
+        let mut picker = Picker::new_file_finder(PathBuf::from("."));
+        picker.insert_text("ac");
+        picker.move_cursor_left(); // cursor before 'c'
+        picker.insert_text("b");
+        assert_eq!(picker.query(), "abc");
+        assert_eq!(picker.query_cursor(), 2);
+    }
+
+    #[test]
+    fn test_insert_text_into_file_filter() {
+        let mut picker = Picker::new_live_grep(PathBuf::from("."));
+        picker.toggle_field();
+        picker.insert_text("*.rs");
+        assert_eq!(picker.file_filter(), "*.rs");
+        assert_eq!(picker.file_filter_cursor(), 4);
+        assert_eq!(picker.query(), "");
     }
 
     #[test]
