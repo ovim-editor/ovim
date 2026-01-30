@@ -243,6 +243,10 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
         let range = Range::new((line_idx, start_col), (line_idx, col));
         let change = Change::delete(range, deleted, cursor_before);
         editor.add_change(change);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line_idx, start_col);
     }
 
     Ok(())
