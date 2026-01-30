@@ -105,6 +105,21 @@ impl NucleoMatcher {
             .map(|item| *item.data)
     }
 
+    /// Returns rank-ordered indices for a visible range, using a single snapshot.
+    /// Much cheaper than calling `get_item_at_rank()` per item during render.
+    pub fn get_items_in_range(&self, start: u32, count: u32) -> Vec<u32> {
+        let snapshot = self.nucleo.snapshot();
+        let matched = snapshot.matched_item_count();
+        if start >= matched {
+            return Vec::new();
+        }
+        let end = (start + count).min(matched);
+        snapshot
+            .matched_items(start..end)
+            .map(|item| *item.data)
+            .collect()
+    }
+
     /// Returns true if the pattern is empty (all items match).
     pub fn is_empty_pattern(&self) -> bool {
         self.nucleo.pattern.is_empty()
