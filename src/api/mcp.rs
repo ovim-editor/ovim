@@ -378,6 +378,19 @@ pub fn get_tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "get_diagnostics".to_string(),
+            description: "Get LSP diagnostics (errors, warnings) for the current file".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Optional: specify which session to use"
+                    }
+                }
+            }),
+        },
+        Tool {
             name: "get_context_window".to_string(),
             description: "Get a 21-line context window around cursor (10 above, current, 10 below) with line numbers and cursor position".to_string(),
             input_schema: json!({

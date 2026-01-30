@@ -48,7 +48,7 @@ fn test_yiw_yank_inner_word() {
 
     // "hello" is pasted after the 'd'
     assert_eq!(test.buffer_content(), "hello worldhello\n");
-    test.assert_cursor(0, 16); // At end of pasted text
+    test.assert_cursor(0, 15); // At end of pasted text
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn test_yaw_yank_around_word() {
 
     // "hello " is pasted after 't'
     assert_eq!(test.buffer_content(), "hello world testhello \n");
-    test.assert_cursor(0, 22); // At end of pasted text
+    test.assert_cursor(0, 21); // At end of pasted text
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn test_yi_double_quote() {
     test.keys("f\"").keys("yi\"").keys("$").press('p');
 
     assert_eq!(test.buffer_content(), "copy \"this text\" herethis text\n");
-    test.assert_cursor(0, 30);
+    test.assert_cursor(0, 29);
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn test_yi_paren() {
     test.keys("f(").keys("yi(").keys("$").press('p');
 
     assert_eq!(test.buffer_content(), "func(args) endargs\n");
-    test.assert_cursor(0, 18);
+    test.assert_cursor(0, 17);
 }
 
 #[test]
@@ -599,7 +599,7 @@ fn test_y3aw_yank_three_words() {
 
     // With current implementation, y3aw yanks just "one "
     assert_eq!(test.buffer_content(), "one two three four fiveone \n");
-    test.assert_cursor(0, 27); // Cursor after pasted text
+    test.assert_cursor(0, 26); // Cursor after pasted text
 }
 
 // ============================================================================

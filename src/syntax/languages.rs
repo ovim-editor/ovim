@@ -21,6 +21,7 @@ pub enum Language {
     Css,
     Toml,
     Markdown,
+    Zig,
 }
 
 /// Registry for language detection and grammar access
@@ -101,6 +102,9 @@ impl LanguageRegistry {
 
             // Markdown
             "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdx" => Some(Language::Markdown),
+
+            // Zig
+            "zig" | "zon" => Some(Language::Zig),
 
             _ => None,
         }
@@ -205,6 +209,7 @@ impl LanguageRegistry {
             // Use JSON for highlighting fallback (similar key-value structure)
             Language::Toml => tree_sitter_json::LANGUAGE.into(),
             Language::Markdown => tree_sitter_md::LANGUAGE.into(),
+            Language::Zig => tree_sitter_zig::LANGUAGE.into(),
         }
     }
 
@@ -236,6 +241,7 @@ impl LanguageRegistry {
             // Custom queries for languages without good official ones
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
+            Language::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY,
         }
     }
 
@@ -261,6 +267,7 @@ impl LanguageRegistry {
             Language::Css => "css",
             Language::Toml => "toml",
             Language::Markdown => "markdown",
+            Language::Zig => "zig",
         })
     }
 
@@ -326,6 +333,9 @@ impl LanguageRegistry {
 
             // Markdown (nested markdown in code blocks)
             "markdown" | "md" => Some(Language::Markdown),
+
+            // Zig
+            "zig" => Some(Language::Zig),
 
             _ => None,
         }

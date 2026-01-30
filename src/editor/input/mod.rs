@@ -45,6 +45,9 @@ mod substitute_mode;
 /// Dashboard mode handler
 mod dashboard_mode;
 
+/// Mouse event handler (click, drag, scroll)
+pub mod mouse;
+
 /// Insert mode handler
 mod insert_mode;
 

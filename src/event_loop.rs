@@ -7,12 +7,13 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration, Instant};
 
 use ovim::api::{
-    parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, EditorSnapshot,
-    ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo,
-    PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
+    parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DiagnosticCounts,
+    DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem,
+    LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse,
+    VisualSelection,
 };
 use ovim::commands;
-use ovim::editor::{self, Editor, InputHandler};
+use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim::session::SessionInfo;
 use ovim::syntax::LanguageRegistry;
@@ -226,8 +227,12 @@ pub async fn run_event_loop(
                             }
                         }
                     }
+                    Event::Mouse(mouse_event) => {
+                        handle_mouse_event(editor, mouse_event)?;
+                        last_edit = Instant::now();
+                    }
                     _ => {
-                        // Ignore other events (mouse, focus lost, etc.)
+                        // Ignore other events (focus lost, etc.)
                     }
                 }
             }
@@ -528,6 +533,50 @@ async fn handle_api_request(
         ApiRequest::GetTrace(tx) => {
             let info = editor.get_trace().await;
             let _ = tx.send(ApiResponse::Trace(info));
+        }
+        ApiRequest::GetDiagnostics(tx) => {
+            let file = editor.buffer().file_path().map(|s| s.to_string());
+            let raw_diagnostics = editor.all_diagnostics();
+            let (errors, warnings, info_count, hints) = editor.cached_diagnostic_count();
+
+            let diagnostics: Vec<DiagnosticItem> = raw_diagnostics
+                .iter()
+                .map(|d| {
+                    let severity = match d.severity {
+                        Some(lsp_types::DiagnosticSeverity::ERROR) => "error",
+                        Some(lsp_types::DiagnosticSeverity::WARNING) => "warning",
+                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => "info",
+                        Some(lsp_types::DiagnosticSeverity::HINT) => "hint",
+                        _ => "unknown",
+                    };
+                    let code = d.code.as_ref().map(|c| match c {
+                        lsp_types::NumberOrString::Number(n) => n.to_string(),
+                        lsp_types::NumberOrString::String(s) => s.clone(),
+                    });
+                    DiagnosticItem {
+                        line: d.range.start.line as usize + 1,
+                        column: d.range.start.character as usize + 1,
+                        end_line: d.range.end.line as usize + 1,
+                        end_column: d.range.end.character as usize + 1,
+                        severity: severity.to_string(),
+                        message: d.message.clone(),
+                        source: d.source.clone(),
+                        code,
+                    }
+                })
+                .collect();
+
+            let info = DiagnosticsInfo {
+                file,
+                diagnostics,
+                counts: DiagnosticCounts {
+                    errors,
+                    warnings,
+                    info: info_count,
+                    hints,
+                },
+            };
+            let _ = tx.send(ApiResponse::Diagnostics(info));
         }
         ApiRequest::GetContextWindow(tx) => {
             let buffer = editor.buffer();

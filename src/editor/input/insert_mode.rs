@@ -97,6 +97,16 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                             pending.old_text,
                             pending.old_range,
                         )
+                    } else if pending.is_search_match_change {
+                        Change::change_search_match(
+                            pending.search_pattern.unwrap_or_default(),
+                            pending.search_forward.unwrap_or(true),
+                            inserted_text,
+                            pending.cursor_before,
+                            cursor_after,
+                            pending.old_text,
+                            pending.old_range,
+                        )
                     } else if let Some(obj_type) = pending.object_type {
                         Change::change_text_object(
                             obj_type,

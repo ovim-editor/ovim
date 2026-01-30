@@ -389,6 +389,23 @@ pub async fn get_trace(State(state): State<ApiState>) -> Response {
     }
 }
 
+/// Handler for GET /diagnostics
+pub async fn get_diagnostics(State(state): State<ApiState>) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    let (tx, rx) = oneshot::channel();
+
+    if state.tx.send(ApiRequest::GetDiagnostics(tx)).is_err() {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to get diagnostics"),
+    }
+}
+
 /// Helper function to create error responses
 fn error_response(message: &str) -> Response {
     (

@@ -877,11 +877,11 @@ fn cmd_symbols(session_name: Option<String>) -> Result<()> {
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    // Use MCP to call get_symbols tool
+    // Use MCP to call get_outline tool (provides document symbols)
     let response = client.send_mcp_request(
         "tools/call",
         json!({
-            "name": "get_symbols",
+            "name": "get_outline",
             "arguments": {}
         }),
         1,

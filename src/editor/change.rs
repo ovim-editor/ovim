@@ -1,4 +1,5 @@
 use crate::buffer::Buffer;
+use crate::editor::search::Search;
 use crate::editor::textobjects::TextObjects;
 use anyhow::Result;
 
@@ -139,6 +140,18 @@ pub enum Change {
         old_text: String,
         old_range: Range,
     },
+    /// Semantic search match change (cgn) - stores the replacement and search pattern
+    /// On repeat, finds the next search match and replaces it
+    ChangeSearchMatch {
+        search_pattern: String,
+        search_forward: bool,
+        replacement: String,
+        cursor_before: Position,
+        cursor_after: Position,
+        // Store original for undo
+        old_text: String,
+        old_range: Range,
+    },
 }
 
 impl Change {
@@ -255,6 +268,27 @@ impl Change {
         old_range: Range,
     ) -> Self {
         Self::ChangeWord {
+            replacement,
+            cursor_before,
+            cursor_after,
+            old_text,
+            old_range,
+        }
+    }
+
+    /// Creates a ChangeSearchMatch change (for cgn)
+    pub fn change_search_match(
+        search_pattern: String,
+        search_forward: bool,
+        replacement: String,
+        cursor_before: Position,
+        cursor_after: Position,
+        old_text: String,
+        old_range: Range,
+    ) -> Self {
+        Self::ChangeSearchMatch {
+            search_pattern,
+            search_forward,
             replacement,
             cursor_before,
             cursor_after,
@@ -403,6 +437,19 @@ impl Change {
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacements);
+                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+            }
+            Self::ChangeSearchMatch {
+                old_range,
+                replacement,
+                cursor_after,
+                ..
+            } => {
+                // Delete old match and insert replacement
+                let (start_line, start_col) = old_range.start;
+                let (end_line, end_col) = old_range.end;
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.insert_text_at(start_line, start_col, replacement);
                 buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
             }
         }
@@ -561,6 +608,20 @@ impl Change {
                 // To undo: delete the replacements and restore old text
                 let (start_line, start_col) = old_range.start;
                 let replacement_end = Self::calculate_end_position((start_line, start_col), replacements);
+                buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
+                buffer.insert_text_at(start_line, start_col, old_text);
+                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+            }
+            Self::ChangeSearchMatch {
+                cursor_before,
+                old_range,
+                old_text,
+                replacement,
+                ..
+            } => {
+                // To undo: delete the replacement and restore old match text
+                let (start_line, start_col) = old_range.start;
+                let replacement_end = Self::calculate_end_position((start_line, start_col), replacement);
                 buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
                 buffer.insert_text_at(start_line, start_col, old_text);
                 buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
@@ -810,6 +871,32 @@ impl Change {
                     buffer.cursor_mut().set_position(line_idx, final_col);
                 }
             }
+            Self::ChangeSearchMatch { search_pattern, search_forward, replacement, .. } => {
+                // Find the next search match from current cursor and replace it
+                let line_idx = buffer.cursor().line();
+                let col = buffer.cursor().col();
+
+                let mut search = Search::new_with_options(
+                    search_pattern.clone(),
+                    *search_forward,
+                    true, // ignorecase
+                    true, // smartcase
+                );
+
+                if let Some((match_line, match_col, match_text)) = search.find_next(buffer, line_idx, col) {
+                    let match_len = match_text.chars().count();
+                    let match_end_col = match_col + match_len;
+
+                    // Delete the match
+                    buffer.delete_range(match_line, match_col, match_line, match_end_col);
+                    // Insert replacement
+                    buffer.insert_text_at(match_line, match_col, replacement);
+                    // Position cursor at end of inserted text (minus 1 for normal mode)
+                    let end_pos = Self::calculate_end_position((match_line, match_col), replacement);
+                    let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
+                    buffer.cursor_mut().set_position(end_pos.0, final_col);
+                }
+            }
         }
     }
 
@@ -868,6 +955,7 @@ impl Change {
             Self::DeleteTextObject { .. } => String::new(),
             Self::ChangeWord { replacement, .. } => replacement.clone(),
             Self::ReplaceMode { replacements, .. } => replacements.clone(),
+            Self::ChangeSearchMatch { replacement, .. } => replacement.clone(),
         }
     }
 
@@ -883,6 +971,7 @@ impl Change {
             Self::DeleteTextObject { cursor_before, .. } => *cursor_before,
             Self::ChangeWord { cursor_before, .. } => *cursor_before,
             Self::ReplaceMode { cursor_before, .. } => *cursor_before,
+            Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before,
         }
     }
 
@@ -898,6 +987,7 @@ impl Change {
             Self::DeleteTextObject { cursor_before, .. } => *cursor_before = pos,
             Self::ChangeWord { cursor_before, .. } => *cursor_before = pos,
             Self::ReplaceMode { cursor_before, .. } => *cursor_before = pos,
+            Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before = pos,
         }
     }
 
@@ -913,6 +1003,7 @@ impl Change {
             Self::DeleteTextObject { cursor_after, .. } => *cursor_after = pos,
             Self::ChangeWord { cursor_after, .. } => *cursor_after = pos,
             Self::ReplaceMode { cursor_after, .. } => *cursor_after = pos,
+            Self::ChangeSearchMatch { cursor_after, .. } => *cursor_after = pos,
         }
     }
 }

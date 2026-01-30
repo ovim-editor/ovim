@@ -412,6 +412,22 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 Err(_) => Err(JsonRpcError::internal_error("Failed to get trace")),
             }
         }
+        "get_diagnostics" => {
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetDiagnostics(tx))
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+
+            match rx.await {
+                Ok(super::state::ApiResponse::Diagnostics(info)) => {
+                    let json_str = serde_json::to_string_pretty(&info)
+                        .unwrap_or_else(|_| "{}".to_string());
+                    Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
+                }
+                _ => Err(JsonRpcError::internal_error("Failed to get diagnostics")),
+            }
+        }
         "get_context_window" => {
             let (tx, rx) = oneshot::channel();
             state

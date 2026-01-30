@@ -11,6 +11,7 @@ pub use state::{
     EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, MetricsInfo,
     ModeInfo, OutlineInfo, OutlineSymbol, PickerInfo, PickerResultInfo, RenderInfo, SendKeysResult,
     SuccessResponse, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode, VisualSelection,
+    DiagnosticsInfo, DiagnosticItem, DiagnosticCounts,
 };
 
 use anyhow::Result;

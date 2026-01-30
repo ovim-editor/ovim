@@ -4,7 +4,7 @@
 //! g*, z*, Z*, "*, m*, '*, `*, q*, @*, f/F/t/T, [*, ]*, W* (Ctrl-W), r*
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, FindDirection, FindType, Motions, Operator};
+use crate::editor::{Editor, FindDirection, FindType, Motions, Operator, PendingSemanticChange, Range};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -603,10 +603,48 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
             helpers::exit_visual_mode_to_normal(editor);
         }
         Operator::Change => {
+            // Capture cursor and search info before deletion
+            let cursor_before_delete = (
+                editor.buffer().cursor().line(),
+                editor.buffer().cursor().col(),
+            );
+            let search_info = editor.current_search().map(|s| {
+                (s.pattern().to_string(), s.is_forward())
+            });
+
             helpers::delete_visual_selection(editor)?;
+
+            // Pop the delete change to get deletion info for semantic change
+            let delete_change = editor.pop_last_change();
+
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
-            editor.start_change_building(cursor_before);
+            let cursor_after_delete = (cursor.line(), cursor.col());
+
+            // Set up pending semantic change for cgn dot-repeat
+            if let (Some(change), Some((pattern, forward))) = (delete_change, search_info) {
+                let (old_text, old_range) = match &change {
+                    crate::editor::Change::DeleteText { deleted_text, range, .. } => {
+                        (deleted_text.clone(), range.clone())
+                    }
+                    _ => {
+                        // Fallback: reconstruct from cursor positions
+                        (String::new(), Range::default())
+                    }
+                };
+
+                editor.set_pending_semantic_change(PendingSemanticChange {
+                    object_type: None,
+                    is_word_change: false,
+                    is_search_match_change: true,
+                    search_pattern: Some(pattern),
+                    search_forward: Some(forward),
+                    old_text,
+                    old_range,
+                    cursor_before: cursor_before_delete,
+                });
+            }
+
+            editor.start_change_building(cursor_after_delete);
             helpers::save_and_clear_visual(editor);
             editor.set_mode(Mode::Insert);
         }
