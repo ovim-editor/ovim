@@ -222,6 +222,13 @@ fn render_overlays(
     ctx: &OverlayContext,
     status_chunk: Rect,
 ) {
+    // LSP Manager overlay
+    if editor.mode() == crate::mode::Mode::LspManager {
+        if let Some(panel) = editor.lsp_manager_panel() {
+            super::lsp_manager::render_lsp_manager(frame, panel);
+        }
+    }
+
     // Picker overlay
     if editor.mode() == crate::mode::Mode::Picker {
         render_picker(frame, editor);
@@ -270,6 +277,19 @@ fn set_cursor_position(
     let cursor_pos = editor.buffer().cursor();
     let cursor_line = cursor_pos.line();
     let cursor_col = cursor_pos.col();
+
+    if editor.mode() == crate::mode::Mode::LspManager {
+        if let Some(panel) = editor.lsp_manager_panel() {
+            if panel.filter_focused {
+                let mgr_area = super::lsp_manager::get_lsp_manager_area(frame.area());
+                let inner_x = mgr_area.x + 1;
+                let inner_y = mgr_area.y + 1;
+                let cursor_x = inner_x + 2 + panel.filter_query.len() as u16;
+                frame.set_cursor_position((cursor_x, inner_y));
+            }
+        }
+        return;
+    }
 
     if editor.mode() == crate::mode::Mode::Picker {
         if let Some(picker) = editor.picker() {
@@ -529,7 +549,8 @@ impl Renderer {
         let areas = match compute_frame_layout(frame, editor) {
             Some(areas) => areas,
             None => {
-                render_dashboard(frame, editor, frame.area());
+                let area = frame.area();
+                render_dashboard(frame, editor, area);
                 return;
             }
         };
