@@ -50,6 +50,7 @@ mod visual_mode;
 mod window;
 mod window_viewport;
 mod wrap_map;
+mod yank_flash;
 
 pub use change::{Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType};
 pub use command_context::CommandContext;
@@ -257,6 +258,8 @@ pub struct Editor {
     metrics: PerformanceMetrics,
     /// Cached rendering state (mouse, layout geometry)
     pub(crate) render_cache: RenderCache,
+    /// Transient yank flash highlight
+    pub(crate) yank_flash: Option<yank_flash::YankFlash>,
     /// UI panels (file tree, quickfix, path completion, dashboard, diagnostic badge)
     pub(crate) ui_panels: UiPanels,
     /// LSP UI panel state (manager panel and install progress)
@@ -375,6 +378,7 @@ impl Editor {
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
             render_cache: RenderCache::default(),
+            yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
         }
@@ -412,6 +416,7 @@ impl Editor {
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
             render_cache: RenderCache::default(),
+            yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
         }
@@ -533,6 +538,35 @@ impl Editor {
         if let Some(ref mut anim) = self.ui_panels.cat_animation {
             anim.startle();
         }
+    }
+
+    /// Set a yank flash for a linewise region (e.g. `yy`, `yj`, `yk`).
+    pub fn set_yank_flash_lines(&mut self, start_line: usize, end_line: usize) {
+        self.yank_flash = Some(yank_flash::YankFlash::lines(start_line, end_line));
+    }
+
+    /// Set a yank flash for a character-wise region (e.g. `yw`, `y$`).
+    pub fn set_yank_flash_range(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    ) {
+        self.yank_flash = Some(yank_flash::YankFlash::range(
+            start_line, start_col, end_line, end_col,
+        ));
+    }
+
+    /// Tick the yank flash. Returns true if it just expired (needs redraw to clear).
+    pub fn tick_yank_flash(&mut self) -> bool {
+        if let Some(ref flash) = self.yank_flash {
+            if flash.is_expired() {
+                self.yank_flash = None;
+                return true;
+            }
+        }
+        false
     }
 
     /// Tick the cat animation. Returns true if a frame advanced (needs redraw).

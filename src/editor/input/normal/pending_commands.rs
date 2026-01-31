@@ -601,7 +601,10 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
             helpers::exit_visual_mode_to_normal(editor);
         }
         Operator::Yank => {
-            helpers::yank_visual_selection(editor)?;
+            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                helpers::yank_visual_selection(editor)?;
+                editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+            }
             helpers::exit_visual_mode_to_normal(editor);
         }
         Operator::Change => {

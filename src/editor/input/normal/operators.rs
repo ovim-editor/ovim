@@ -129,20 +129,31 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Yank operations
         // =====================================================================
         (Operator::Yank, KeyCode::Char('y')) => {
+            let start_line = editor.buffer().cursor().line();
+            let end_line = (start_line + count).min(editor.buffer().line_count()) - 1;
             let yanked = helpers::yank_line(editor.buffer(), count)?;
             editor.yank_to_register_with_type(yanked, RegisterType::Line);
+            editor.set_yank_flash_lines(start_line, end_line);
             editor.clear_count();
             true
         }
         (Operator::Yank, KeyCode::Char('w')) => {
+            let start_line = editor.buffer().cursor().line();
+            let start_col = editor.buffer().cursor().col();
             let yanked = helpers::yank_word(editor.buffer_mut(), count)?;
+            let end_col = start_col + yanked.chars().count().saturating_sub(1);
             editor.yank_to_register(yanked);
+            editor.set_yank_flash_range(start_line, start_col, start_line, end_col);
             editor.clear_count();
             true
         }
         (Operator::Yank, KeyCode::Char('$')) => {
+            let line = editor.buffer().cursor().line();
+            let start_col = editor.buffer().cursor().col();
             let yanked = helpers::yank_to_end_of_line(editor.buffer())?;
+            let end_col = start_col + yanked.chars().count().saturating_sub(1);
             editor.yank_to_register(yanked);
+            editor.set_yank_flash_range(line, start_col, line, end_col);
             editor.clear_count();
             true
         }
@@ -496,6 +507,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
                 }
             }
             editor.yank_to_register_with_type(yanked, RegisterType::Line);
+            editor.set_yank_flash_lines(start_line, end_line);
             // Cursor stays at original position for yank
         }
         Operator::Fold => {
@@ -577,6 +589,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                 }
             }
             editor.yank_to_register_with_type(yanked, RegisterType::Line);
+            editor.set_yank_flash_lines(start_line, end_line);
             // Cursor stays at original position for yank
         }
         Operator::Indent => {
@@ -990,6 +1003,7 @@ fn handle_yj(editor: &mut Editor, count: usize) -> Result<()> {
         }
     }
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
+    editor.set_yank_flash_lines(start_line, end_line.saturating_sub(1));
     editor.clear_count();
     Ok(())
 }
@@ -1005,6 +1019,7 @@ fn handle_yk(editor: &mut Editor, count: usize) -> Result<()> {
         }
     }
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
+    editor.set_yank_flash_lines(start_line, end_line.saturating_sub(1));
     editor.clear_count();
     Ok(())
 }
@@ -1036,6 +1051,7 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     }
 
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
+    editor.set_yank_flash_lines(start_line, end_line);
     editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
     editor.clear_count();
     Ok(())
@@ -1065,6 +1081,7 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     }
 
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
+    editor.set_yank_flash_lines(start_line, end_line);
     editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
     editor.clear_count();
     Ok(())
