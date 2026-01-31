@@ -139,6 +139,10 @@ impl PickerState {
 
     /// Closes the picker
     pub fn close_picker(&mut self) {
+        // Cancel any in-flight grep search before dropping
+        if let Some(picker) = self.picker.as_mut() {
+            picker.cancel_grep();
+        }
         self.picker = None;
         // Clear preview cache when closing picker to free memory
         self.preview_cache.clear();

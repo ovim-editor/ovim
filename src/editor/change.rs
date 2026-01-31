@@ -69,6 +69,10 @@ pub enum Change {
         range: Range,
         deleted_text: String, // Stored for undo
         cursor_before: Position,
+        /// True when the deletion went backward from cursor (e.g. X command).
+        /// Used by repeat() to determine direction — stored explicitly so it
+        /// doesn't depend on the value of cursor_before.
+        backwards: bool,
     },
     /// A composite of multiple changes (e.g., all changes during insert mode)
     Composite {
@@ -164,12 +168,23 @@ impl Change {
         }
     }
 
-    /// Creates a DeleteText change
+    /// Creates a forward DeleteText change
     pub fn delete(range: Range, deleted_text: String, cursor_before: Position) -> Self {
         Self::DeleteText {
             range,
             deleted_text,
             cursor_before,
+            backwards: false,
+        }
+    }
+
+    /// Creates a backward DeleteText change (e.g. X command)
+    pub fn delete_backward(range: Range, deleted_text: String, cursor_before: Position) -> Self {
+        Self::DeleteText {
+            range,
+            deleted_text,
+            cursor_before,
+            backwards: true,
         }
     }
 
@@ -491,6 +506,7 @@ impl Change {
                 range,
                 deleted_text,
                 cursor_before,
+                ..
             } => {
                 // To undo a delete, re-insert the deleted text
                 let (line, col) = range.start;
@@ -630,7 +646,7 @@ impl Change {
     }
 
     /// Repeats this change at the current cursor position
-    pub fn repeat(&self, buffer: &mut Buffer) {
+    pub fn repeat(&mut self, buffer: &mut Buffer) {
         match self {
             Self::InsertText { text, .. } => {
                 // Insert the same text at current position
@@ -643,7 +659,7 @@ impl Change {
                 }
                 .apply(buffer);
             }
-            Self::DeleteText { range, cursor_before, .. } => {
+            Self::DeleteText { range, deleted_text, backwards, .. } => {
                 // Apply the same deletion pattern from current position
                 let cursor_pos = (buffer.cursor().line(), buffer.cursor().col());
                 let offset_line = range.end.0 - range.start.0;
@@ -653,9 +669,7 @@ impl Change {
                     range.end.1
                 };
 
-                // Detect if this was a backwards deletion (like X command)
-                // where cursor_before was at the end of the range
-                let is_backwards = cursor_before == &range.end;
+                let is_backwards = *backwards;
 
                 let (start_line, start_col, end_line, end_col) = if is_backwards {
                     // For backwards deletion (X), treat current cursor as the END
@@ -677,7 +691,13 @@ impl Change {
                     (cursor_pos.0, cursor_pos.1, new_end.0, new_end.1)
                 };
 
-                let _deleted = buffer.delete_range(start_line, start_col, end_line, end_col);
+                let actual_deleted = buffer.delete_range(start_line, start_col, end_line, end_col);
+
+                // Update range and deleted_text so undo reverses the actual
+                // deletion, not the original one.
+                *range = Range::new((start_line, start_col), (end_line, end_col));
+                *deleted_text = actual_deleted;
+
                 // Position cursor at the start of the deletion
                 // For backwards deletion (X), cursor should be one position before the deletion
                 let final_col = if is_backwards && start_col > 0 {
@@ -737,7 +757,7 @@ impl Change {
                             buffer.cursor_mut().set_position(line_idx + 1, indent.chars().count());
                         }
                         // Replay remaining sub-changes (skip first which was the newline)
-                        for change in changes.iter().skip(1) {
+                        for change in changes.iter_mut().skip(1) {
                             change.repeat(buffer);
                         }
                         let cursor = buffer.cursor_mut();
@@ -762,7 +782,7 @@ impl Change {
                             buffer.cursor_mut().set_position(line_idx, indent.chars().count());
                         }
                         // Replay remaining sub-changes (skip first which was the newline)
-                        for change in changes.iter().skip(1) {
+                        for change in changes.iter_mut().skip(1) {
                             change.repeat(buffer);
                         }
                         let cursor = buffer.cursor_mut();
@@ -774,7 +794,7 @@ impl Change {
                 }
 
                 // For non-o/O modes: replay all sub-changes at repositioned cursor
-                for change in changes {
+                for change in changes.iter_mut() {
                     change.repeat(buffer);
                 }
                 // Move cursor back by 1 to match Esc behavior
@@ -795,7 +815,7 @@ impl Change {
                         find_number_at_or_after(line_text, col)
                     {
                         if let Ok((mut value, base, prefix_len)) = parse_number(&number_str) {
-                            value += delta;
+                            value += *delta;
                             let new_number_str = format_number(value, base, prefix_len);
 
                             // Delete old number and insert new one

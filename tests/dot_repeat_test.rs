@@ -557,6 +557,26 @@ fn test_dot_after_undo_redo() {
 }
 
 // ============================================================================
+// Dot repeat + undo interaction
+// ============================================================================
+
+#[test]
+fn test_dot_repeat_X_undo_restores_correctly() {
+    // Regression: $X.uu was turning "hello" into "helll" because the repeated
+    // change had stale range/deleted_text from the original X, not the repeat.
+    let mut test = EditorTest::new("hello");
+
+    test.keys("$") // Cursor on 'o' (col 4)
+        .press('X') // Delete 'l' before cursor → "helo"
+        .press('.') // Repeat X → "heo"
+        .press('u') // Undo repeat → "helo"
+        .press('u'); // Undo original X → "hello"
+
+    assert_eq!(test.buffer_content(), "hello\n");
+    test.assert_cursor(0, 4);
+}
+
+// ============================================================================
 // Dot with search motions
 // ============================================================================
 
