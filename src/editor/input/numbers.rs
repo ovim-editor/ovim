@@ -166,14 +166,48 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
     // First, check if we're currently inside a number by searching backward
     let cursor_col = col.min(chars.len().saturating_sub(1));
 
-    // If we're on a digit, search backward to find the start of the number
-    if cursor_col < chars.len() && chars[cursor_col].is_ascii_digit() {
+    // Check if we're on a digit or hex digit that's part of a hex number
+    let on_digit = cursor_col < chars.len() && chars[cursor_col].is_ascii_digit();
+    let on_hex_digit = cursor_col < chars.len()
+        && chars[cursor_col].is_ascii_hexdigit()
+        && !chars[cursor_col].is_ascii_digit();
+
+    // If we're on a hex digit (a-f/A-F), check if we're inside a hex number
+    let in_hex_number = if on_hex_digit {
+        // Search backward for 0x prefix
+        let mut check = cursor_col;
+        let mut found_hex = false;
+        while check > 0 {
+            let prev = chars[check - 1];
+            if prev.is_ascii_hexdigit() || prev.is_ascii_digit() {
+                check -= 1;
+            } else if check >= 2 && prev == 'x' && chars[check - 2] == '0' {
+                found_hex = true;
+                break;
+            } else if check >= 2 && (prev == 'X') && chars[check - 2] == '0' {
+                found_hex = true;
+                break;
+            } else {
+                break;
+            }
+        }
+        found_hex
+    } else {
+        false
+    };
+
+    // If we're on a digit (or hex digit within a hex number), search backward to find the start
+    if on_digit || in_hex_number {
         let mut start_col = cursor_col;
 
         // Search backward to find the start of the number
         while start_col > 0 {
             let prev_ch = chars[start_col - 1];
             if prev_ch.is_ascii_digit() {
+                start_col -= 1;
+            } else if prev_ch.is_ascii_hexdigit() {
+                // Only allow hex digits if we're in a hex number context
+                // Check if there's a 0x prefix further back
                 start_col -= 1;
             } else if prev_ch == '-' || prev_ch == '+' {
                 // Check if this sign is part of the number
@@ -187,7 +221,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                 }
                 start_col -= 1;
                 break;
-            } else if start_col >= 2 && prev_ch == 'x' && chars[start_col - 2] == '0' {
+            } else if start_col >= 2 && (prev_ch == 'x' || prev_ch == 'X') && chars[start_col - 2] == '0' {
                 // Hex prefix
                 start_col -= 2;
                 break;
@@ -203,64 +237,29 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
             }
         }
 
+        // Determine if this is a hex number (check for 0x prefix in collected range)
+        let is_hex = start_col + 1 < chars.len()
+            && chars[start_col] == '0'
+            && (chars[start_col + 1] == 'x' || chars[start_col + 1] == 'X');
+
         // Now find the end of the number
         let mut end_col = cursor_col + 1;
-        while end_col < chars.len() && chars[end_col].is_ascii_digit() {
-            end_col += 1;
+        while end_col < chars.len() {
+            let ch = chars[end_col];
+            if is_hex && ch.is_ascii_hexdigit() {
+                end_col += 1;
+            } else if ch.is_ascii_digit() {
+                end_col += 1;
+            } else {
+                break;
+            }
         }
 
         let number_str: String = chars[start_col..end_col].iter().collect();
         return Some((start_col, end_col, number_str));
     }
 
-    // Not on a digit, so search backward first, then forward
-    // This matches Vim behavior: search backward on current line, then forward
-
-    // Try searching backward from cursor
-    if cursor_col > 0 {
-        let mut back_col = cursor_col;
-        while back_col > 0 {
-            back_col -= 1;
-            if chars[back_col].is_ascii_digit() {
-                // Found a digit backward, now find the start and end of this number
-                let mut start_col = back_col;
-                while start_col > 0 {
-                    let prev_ch = chars[start_col - 1];
-                    if prev_ch.is_ascii_digit() {
-                        start_col -= 1;
-                    } else if prev_ch == '-' || prev_ch == '+' {
-                        if start_col > 1
-                            && !chars[start_col - 2].is_whitespace()
-                            && chars[start_col - 2] != '('
-                            && chars[start_col - 2] != '['
-                        {
-                            break;
-                        }
-                        start_col -= 1;
-                        break;
-                    } else if start_col >= 2
-                        && (prev_ch == 'x' || prev_ch == 'b' || prev_ch == 'o')
-                        && chars[start_col - 2] == '0'
-                    {
-                        start_col -= 2;
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-
-                let mut end_col = back_col + 1;
-                while end_col < chars.len() && chars[end_col].is_ascii_digit() {
-                    end_col += 1;
-                }
-
-                let number_str: String = chars[start_col..end_col].iter().collect();
-                return Some((start_col, end_col, number_str));
-            }
-        }
-    }
-
-    // No number found backward, search forward from cursor position
+    // Not on a digit — search forward only (matches Vim behavior)
     let mut search_col = col;
 
     // Skip non-digit/non-hex characters to find start of number
@@ -387,24 +386,30 @@ pub fn parse_number(s: &str) -> Result<(i64, u32, usize)> {
 pub fn format_number(value: i64, base: u32, prefix_len: usize) -> String {
     match base {
         16 => {
+            let abs = value.unsigned_abs();
+            let sign = if value < 0 { "-" } else { "" };
             if prefix_len > 0 {
-                format!("0x{:x}", value)
+                format!("{sign}0x{abs:x}")
             } else {
-                format!("{:x}", value)
+                format!("{sign}{abs:x}")
             }
         }
         2 => {
+            let abs = value.unsigned_abs();
+            let sign = if value < 0 { "-" } else { "" };
             if prefix_len > 0 {
-                format!("0b{:b}", value)
+                format!("{sign}0b{abs:b}")
             } else {
-                format!("{:b}", value)
+                format!("{sign}{abs:b}")
             }
         }
         8 => {
+            let abs = value.unsigned_abs();
+            let sign = if value < 0 { "-" } else { "" };
             if prefix_len > 0 {
-                format!("0o{:o}", value)
+                format!("{sign}0o{abs:o}")
             } else {
-                format!("{:o}", value)
+                format!("{sign}{abs:o}")
             }
         }
         _ => format!("{}", value),
