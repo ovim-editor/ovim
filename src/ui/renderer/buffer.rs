@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::helpers::expand_tabs_with_mapping;
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
-use super::styles::{get_git_sign_style, get_line_number_style, remap_highlights};
+use super::styles::{get_diagnostic_sign_style, get_git_sign_style, get_line_number_style, remap_highlights};
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
 
@@ -207,8 +207,9 @@ fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usi
     }
 }
 
-/// Builds a gutter line for a logical line (line number + git sign).
+/// Builds a gutter line for a logical line (line number + git sign / diagnostic sign).
 /// If `is_continuation` is true, produces a blank gutter row.
+/// Diagnostic signs take priority over git signs when both are present.
 fn build_gutter_line(
     editor: &Editor,
     buffer: &crate::buffer::Buffer,
@@ -216,6 +217,7 @@ fn build_gutter_line(
     line_num_width: usize,
     cursor_line: usize,
     is_continuation: bool,
+    line_diagnostics: &[&lsp_types::Diagnostic],
 ) -> Line<'static> {
     if is_continuation {
         // Blank gutter for wrap continuation rows
@@ -236,8 +238,14 @@ fn build_gutter_line(
         "  ".to_string()
     };
 
-    let git_status = buffer.git_status().get_line_status(line_idx);
-    let (sign_text, sign_color) = get_git_sign_style(git_status);
+    // Diagnostic signs take priority over git signs
+    let (sign_text, sign_color) = if !line_diagnostics.is_empty() {
+        let severity = line_diagnostics[0].severity;
+        get_diagnostic_sign_style(severity)
+    } else {
+        let git_status = buffer.git_status().get_line_status(line_idx);
+        get_git_sign_style(git_status)
+    };
     let line_num_style = get_line_number_style(line_idx == cursor_line);
 
     let sign_span = Span::styled(
@@ -487,6 +495,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                     editor.mode(),
                     &search_matches,
                     &syntax_highlights,
+                    &line_diagnostics,
                 );
 
                 // Add diagnostic virtual text if present (only on first visual row in wrap mode)
@@ -510,7 +519,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                         msg.to_string()
                     };
                     line.spans.push(Span::styled(
-                        format!(" // {}", msg),
+                        format!(" ■ {}", msg),
                         Style::default().fg(diag_color).add_modifier(Modifier::ITALIC),
                     ));
                 }
@@ -540,7 +549,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
                                 editor, buffer, line_idx, line_num_width,
-                                cursor_line_idx, row_idx > 0,
+                                cursor_line_idx, row_idx > 0, &line_diagnostics,
                             ));
                         }
                         lines.push(row);
@@ -556,7 +565,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
                             editor, buffer, line_idx, line_num_width,
-                            cursor_line_idx, false,
+                            cursor_line_idx, false, &line_diagnostics,
                         ));
                     }
                     lines.push(line);
@@ -570,7 +579,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
                                 editor, buffer, line_idx, line_num_width,
-                                cursor_line_idx, false,
+                                cursor_line_idx, false, &[],
                             ));
                         }
                         lines.push(Line::from(" ".repeat(text_width)));
@@ -583,7 +592,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
                                     editor, buffer, line_idx, line_num_width,
-                                    cursor_line_idx, chunk_idx > 0,
+                                    cursor_line_idx, chunk_idx > 0, &[],
                                 ));
                             }
                             let text: String = chunk.iter().collect();
@@ -602,7 +611,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
                             editor, buffer, line_idx, line_num_width,
-                            cursor_line_idx, false,
+                            cursor_line_idx, false, &[],
                         ));
                     }
                     let line_len = line_text.chars().count();
@@ -643,7 +652,7 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
     start_line
 }
 
-/// Renders a single line with all highlighting (syntax, visual selection, search)
+/// Renders a single line with all highlighting (syntax, visual selection, search, diagnostics)
 pub fn render_line_with_highlights(
     theme: &Theme,
     line_text: &str,
@@ -652,6 +661,7 @@ pub fn render_line_with_highlights(
     mode: crate::mode::Mode,
     search_matches: &[(usize, usize)],
     syntax_highlights: &[(std::ops::Range<usize>, crate::syntax::HighlightGroup)],
+    diagnostics: &[&lsp_types::Diagnostic],
 ) -> Line<'static> {
     let chars: Vec<char> = line_text.chars().collect();
     let mut spans = Vec::new();
@@ -709,6 +719,23 @@ pub fn render_line_with_highlights(
             .min_by_key(|(range, _)| range.end - range.start)
             .map(|(_, group)| *group);
 
+        // Check if this character falls within a diagnostic range (underline)
+        let diag_underline_color = diagnostics.iter().find_map(|d| {
+            let start = d.range.start.character as usize;
+            let end = d.range.end.character as usize;
+            if col_idx >= start && col_idx < end {
+                Some(match d.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
+                    Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                    Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
+                    _ => Color::Red,
+                })
+            } else {
+                None
+            }
+        });
+
         // Determine how many characters share the same styling
         let mut end_col = col_idx + 1;
         while end_col < chars.len() {
@@ -753,10 +780,28 @@ pub fn render_line_with_highlights(
                 .min_by_key(|(range, _)| range.end - range.start)
                 .map(|(_, group)| *group);
 
+            // Check diagnostic underline for next character
+            let next_diag_underline_color = diagnostics.iter().find_map(|d| {
+                let start = d.range.start.character as usize;
+                let end = d.range.end.character as usize;
+                if end_col >= start && end_col < end {
+                    Some(match d.severity {
+                        Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
+                        Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
+                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                        Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
+                        _ => Color::Red,
+                    })
+                } else {
+                    None
+                }
+            });
+
             // If styling changes, break
             if next_selected != is_selected
                 || next_search_match != is_search_match
                 || next_syntax_group != syntax_group
+                || next_diag_underline_color != diag_underline_color
             {
                 break;
             }
@@ -768,7 +813,7 @@ pub fn render_line_with_highlights(
         let text: String = chars[col_idx..end_col].iter().collect();
 
         // Apply styling based on priority: visual selection > search match > syntax > normal
-        let style = if is_selected {
+        let mut style = if is_selected {
             Style::default().bg(Color::Blue).fg(Color::White)
         } else if is_search_match {
             Style::default().bg(Color::Yellow).fg(Color::Black)
@@ -793,6 +838,11 @@ pub fn render_line_with_highlights(
         } else {
             Style::default()
         };
+
+        // Apply diagnostic underline (additive — works on top of any style)
+        if let Some(underline_color) = diag_underline_color {
+            style = style.fg(underline_color).add_modifier(Modifier::UNDERLINED);
+        }
 
         spans.push(Span::styled(text, style));
         col_idx = end_col;

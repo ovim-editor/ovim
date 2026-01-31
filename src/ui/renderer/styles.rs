@@ -69,3 +69,15 @@ pub fn get_git_sign_style(status: Option<crate::LineStatus>) -> (&'static str, C
         None => ("  ", Color::DarkGray),
     }
 }
+
+/// Returns the sign text and color for diagnostic severity in the gutter
+pub fn get_diagnostic_sign_style(severity: Option<lsp_types::DiagnosticSeverity>) -> (&'static str, Color) {
+    use lsp_types::DiagnosticSeverity;
+    match severity {
+        Some(DiagnosticSeverity::ERROR) => ("● ", Color::Red),
+        Some(DiagnosticSeverity::WARNING) => ("▲ ", Color::Yellow),
+        Some(DiagnosticSeverity::INFORMATION) => ("■ ", Color::Cyan),
+        Some(DiagnosticSeverity::HINT) => ("○ ", Color::Gray),
+        _ => ("● ", Color::Red), // Default to error style
+    }
+}
