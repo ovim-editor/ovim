@@ -170,8 +170,8 @@ fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool>
             });
             Ok(true)
         }
-        // Leader key
-        KeyCode::Char(' ') => {
+        // Leader key (configurable via vim.g.mapleader, default: space)
+        KeyCode::Char(c) if c == editor.leader_key() => {
             editor.set_input_state(InputState::Leader { keys: vec![] });
             Ok(true)
         }

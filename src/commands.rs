@@ -1661,6 +1661,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
             }
             "wrap" => format!("  {}wrap", if opts.wrap { "" } else { "no" }),
             "filetreereveal" => format!("  {}filetreereveal", if opts.file_tree_reveal { "" } else { "no" }),
+            "mapleader" => format!("  mapleader={}", editor.leader_key()),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -1938,6 +1939,21 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                     error: format!("Invalid number: {}", value),
                 }),
             },
+            "mapleader" => {
+                let chars: Vec<char> = value.chars().collect();
+                if chars.len() == 1 {
+                    editor.set_leader_key(chars[0]);
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  mapleader={}", chars[0])),
+                        line_count: None,
+                    })
+                } else {
+                    ApiResponse::Error(ErrorResponse {
+                        error: "mapleader must be a single character".to_string(),
+                    })
+                }
+            }
             "clipboard" | "cb" => {
                 match value {
                     "unnamedplus" | "unnamed" | "" => {
