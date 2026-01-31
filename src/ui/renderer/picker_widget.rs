@@ -1,3 +1,4 @@
+use crate::editor::fuzzy::rematch_positions;
 use crate::editor::Editor;
 use crate::syntax::HighlightGroup;
 use ratatui::{
@@ -415,50 +416,6 @@ fn render_picker_separator(frame: &mut Frame, area: Rect) {
     let separator_paragraph =
         Paragraph::new(separator_line).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(separator_paragraph, area);
-}
-
-/// Lightweight re-match of query against (possibly truncated) display string.
-/// Returns character indices of matched characters, for highlighting purposes.
-fn rematch_positions(query: &str, display: &str) -> Vec<usize> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let mut positions = Vec::new();
-    let query_lower: Vec<char> = query.to_lowercase().chars().collect();
-    let display_lower: Vec<char> = display.to_lowercase().chars().collect();
-
-    // Handle space-separated tokens: each token must match independently
-    let token_ranges: Vec<(usize, usize)> = {
-        let mut ranges = Vec::new();
-        let mut start = 0;
-        for (i, &c) in query_lower.iter().enumerate() {
-            if c == ' ' {
-                if i > start {
-                    ranges.push((start, i));
-                }
-                start = i + 1;
-            }
-        }
-        if start < query_lower.len() {
-            ranges.push((start, query_lower.len()));
-        }
-        ranges
-    };
-
-    for (token_start, token_end) in token_ranges {
-        let token = &query_lower[token_start..token_end];
-        let mut qi = 0;
-        for (di, &dc) in display_lower.iter().enumerate() {
-            if qi < token.len() && token[qi] == dc {
-                positions.push(di);
-                qi += 1;
-            }
-        }
-    }
-
-    positions.sort_unstable();
-    positions.dedup();
-    positions
 }
 
 /// Builds spans for a display string with matched positions highlighted.
