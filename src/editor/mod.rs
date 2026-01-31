@@ -691,7 +691,10 @@ impl Editor {
         let cursor_line = self.buffer().cursor().line();
         let visible_lines = self.viewport.viewport_height;
         let current_offset = self.scroll_offset();
-        let scrolloff = self.options.scrolloff;
+        // Clamp scrolloff so top and bottom margins don't overlap.
+        // When scrolloff >= ceil(visible_lines/2), both margins would claim
+        // the same lines, causing the viewport to oscillate on every movement.
+        let scrolloff = self.options.scrolloff.min(visible_lines.saturating_sub(1) / 2);
 
         // Calculate new scroll offset
         let new_offset;
@@ -729,11 +732,7 @@ impl Editor {
                     new_offset = new_line;
                 } else if cursor_visual_row + scrolloff >= viewport_visual_start + visible_lines {
                     // Cursor below viewport bottom margin — scroll down
-                    let target_visual = if visible_lines > scrolloff + 1 {
-                        cursor_visual_row.saturating_sub(visible_lines - scrolloff - 1)
-                    } else {
-                        cursor_visual_row.saturating_sub(visible_lines / 2)
-                    };
+                    let target_visual = cursor_visual_row + scrolloff + 1 - visible_lines;
                     let (new_line, _) = wrap_map.visual_to_logical(target_visual);
                     new_offset = new_line;
                 } else {
@@ -784,7 +783,9 @@ impl Editor {
         }
     }
 
-    /// Computes scroll offset using logical line counting (non-wrap path)
+    /// Computes scroll offset using logical line counting (non-wrap path).
+    /// Caller is responsible for clamping scrolloff so top/bottom margins
+    /// don't overlap (scrolloff <= (visible_lines - 1) / 2).
     fn compute_logical_scroll_offset(
         cursor_line: usize,
         current_offset: usize,
@@ -794,11 +795,7 @@ impl Editor {
         if cursor_line < current_offset + scrolloff {
             cursor_line.saturating_sub(scrolloff)
         } else if cursor_line + scrolloff >= current_offset + visible_lines {
-            if visible_lines > scrolloff + 1 {
-                cursor_line.saturating_sub(visible_lines - scrolloff - 1)
-            } else {
-                cursor_line.saturating_sub(visible_lines / 2)
-            }
+            cursor_line + scrolloff + 1 - visible_lines
         } else {
             current_offset
         }

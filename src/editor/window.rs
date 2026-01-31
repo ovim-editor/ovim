@@ -87,6 +87,8 @@ impl Window {
     pub fn ensure_cursor_visible(&mut self, buffer: &Buffer, scrolloff: usize) {
         let cursor_line = self.cursor.line();
         let visible_lines = self.height as usize;
+        // Clamp scrolloff so top and bottom margins don't overlap
+        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
 
         // Ensure cursor line is within buffer bounds
         let max_line = buffer.line_count().saturating_sub(1);
@@ -101,7 +103,7 @@ impl Window {
         }
         // Scroll down if cursor is too close to bottom
         else if cursor_line + scrolloff >= self.scroll_offset + visible_lines {
-            self.scroll_offset = cursor_line + scrolloff + 1 - visible_lines.min(cursor_line + scrolloff + 1);
+            self.scroll_offset = cursor_line + scrolloff + 1 - visible_lines;
         }
     }
 
@@ -213,7 +215,8 @@ impl Window {
     /// Respects scrolloff by positioning cursor scrolloff lines from the actual top
     pub fn move_cursor_to_top(&mut self, scrolloff: usize) {
         let cursor_line = self.cursor.line();
-        // Position cursor scrolloff lines from top to respect scrolloff setting
+        let visible_lines = self.height as usize;
+        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
         self.scroll_offset = cursor_line.saturating_sub(scrolloff);
     }
 
@@ -222,6 +225,7 @@ impl Window {
     pub fn move_cursor_to_bottom(&mut self, scrolloff: usize) {
         let cursor_line = self.cursor.line();
         let visible_lines = self.height as usize;
+        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
         // Position cursor scrolloff lines from bottom
         // Formula: cursor_line - (viewport_height - 1 - scrolloff)
         let bottom_position = visible_lines.saturating_sub(1).saturating_sub(scrolloff);
