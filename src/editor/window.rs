@@ -735,11 +735,7 @@ impl WindowManager {
         let height = self.layout_height;
         self.focus_directional(width, height, |current, candidate| {
             // Candidate must be to the left (right edge <= current left edge)
-            if candidate.right() > current.x {
-                return false;
-            }
-            // Prefer windows with vertical overlap
-            current.vertical_overlap(candidate) > 0 || true // Accept any window to the left
+            candidate.right() <= current.x
         })
     }
 
@@ -750,11 +746,7 @@ impl WindowManager {
         let height = self.layout_height;
         self.focus_directional(width, height, |current, candidate| {
             // Candidate must be to the right (left edge >= current right edge)
-            if candidate.x < current.right() {
-                return false;
-            }
-            // Prefer windows with vertical overlap
-            current.vertical_overlap(candidate) > 0 || true // Accept any window to the right
+            candidate.x >= current.right()
         })
     }
 
@@ -765,11 +757,7 @@ impl WindowManager {
         let height = self.layout_height;
         self.focus_directional(width, height, |current, candidate| {
             // Candidate must be above (bottom edge <= current top edge)
-            if candidate.bottom() > current.y {
-                return false;
-            }
-            // Prefer windows with horizontal overlap
-            current.horizontal_overlap(candidate) > 0 || true // Accept any window above
+            candidate.bottom() <= current.y
         })
     }
 
@@ -780,11 +768,7 @@ impl WindowManager {
         let height = self.layout_height;
         self.focus_directional(width, height, |current, candidate| {
             // Candidate must be below (top edge >= current bottom edge)
-            if candidate.y < current.bottom() {
-                return false;
-            }
-            // Prefer windows with horizontal overlap
-            current.horizontal_overlap(candidate) > 0 || true // Accept any window below
+            candidate.y >= current.bottom()
         })
     }
 

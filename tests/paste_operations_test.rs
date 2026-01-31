@@ -135,7 +135,8 @@ fn test_P_linewise_first_line() {
         .keys("P"); // Paste before
 
     assert_eq!(test.buffer_content(), "line 2\nline 1\nline 2\nline 3\n");
-    test.assert_cursor(1, 0);
+    // Vim: cursor on first non-blank of pasted line (line 0)
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -392,8 +393,8 @@ fn test_paste_multiple_lines() {
 
     // Linewise paste of 3 lines below the last line
     assert_eq!(test.buffer_content(), "a\nb\nc\nd\ne\na\nb\nc\n");
-    // Cursor on last pasted line (line 7)
-    test.assert_cursor(7, 0);
+    // Vim: cursor on first non-blank of first pasted line
+    test.assert_cursor(5, 0);
 }
 
 // ============================================================================
@@ -410,7 +411,8 @@ fn test_paste_indented_line() {
 
     // Linewise paste creates a new line below with the original indentation
     assert_eq!(test.buffer_content(), "    indented\nplain\n    indented\n");
-    test.assert_cursor(2, 0);
+    // Vim: cursor on first non-blank of pasted line
+    test.assert_cursor(2, 4);
 }
 
 #[test]

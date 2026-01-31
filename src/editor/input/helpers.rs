@@ -498,6 +498,22 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
             let change = Change::insert(position, text, cursor_before);
             change.apply(editor.buffer_mut());
             editor.add_change(change);
+
+            // Vim: cursor on first non-blank of the new line
+            let new_line = line_idx + 1;
+            let first_non_blank = editor
+                .buffer()
+                .line(new_line)
+                .map(|l| {
+                    l.chars()
+                        .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+                        .count()
+                })
+                .unwrap_or(0);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(new_line, first_non_blank);
         }
         RegisterType::Character => {
             // Character paste - insert after cursor
@@ -599,6 +615,22 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
             let change = Change::insert(position, text, cursor_before);
             change.apply(editor.buffer_mut());
             editor.add_change(change);
+
+            // Vim: cursor on first non-blank of the pasted line
+            let pasted_line = line_idx; // Text was inserted before current line
+            let first_non_blank = editor
+                .buffer()
+                .line(pasted_line)
+                .map(|l| {
+                    l.chars()
+                        .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+                        .count()
+                })
+                .unwrap_or(0);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(pasted_line, first_non_blank);
         }
         RegisterType::Character => {
             // Character paste before cursor
