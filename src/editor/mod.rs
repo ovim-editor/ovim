@@ -1348,9 +1348,14 @@ impl Editor {
         self.pending_semantic_change.take()
     }
 
-    /// Gets the leader key
+    /// Gets the leader key (default: space)
     pub fn leader_key(&self) -> char {
         self.input.leader_key
+    }
+
+    /// Sets the leader key
+    pub fn set_leader_key(&mut self, key: char) {
+        self.input.leader_key = key;
     }
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
