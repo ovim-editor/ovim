@@ -173,8 +173,8 @@ impl Editor {
         }
 
         // Skip automatic scroll update - we explicitly set the scroll position
-        self.skip_scroll_update = true;
-        self.viewport_command_active = true;
+        self.viewport.skip_scroll_update = true;
+        self.viewport.viewport_command_active = true;
     }
 
     /// Moves cursor line to top of viewport
@@ -199,8 +199,8 @@ impl Editor {
         }
 
         // Skip automatic scroll update - we explicitly set the scroll position
-        self.skip_scroll_update = true;
-        self.viewport_command_active = true;
+        self.viewport.skip_scroll_update = true;
+        self.viewport.viewport_command_active = true;
     }
 
     /// Moves cursor line to bottom of viewport
@@ -225,8 +225,8 @@ impl Editor {
         }
 
         // Skip automatic scroll update - we explicitly set the scroll position
-        self.skip_scroll_update = true;
-        self.viewport_command_active = true;
+        self.viewport.skip_scroll_update = true;
+        self.viewport.viewport_command_active = true;
     }
 
     /// Scrolls down half a page (both viewport and cursor)

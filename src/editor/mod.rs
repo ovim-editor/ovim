@@ -7,6 +7,7 @@ mod completion;
 mod filetree;
 mod fold;
 pub(crate) mod fuzzy;
+pub(crate) mod grep;
 mod input;
 mod input_context;
 mod input_state;
@@ -38,6 +39,7 @@ mod theme;
 mod ui_features;
 mod undo;
 mod visual_context;
+mod viewport_state;
 mod visual_mode;
 mod window;
 mod window_viewport;
@@ -73,6 +75,7 @@ pub use undo::UndoManager;
 pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use lsp_manager_panel::LspManagerPanel;
+pub use viewport_state::ViewportState;
 pub use wrap_map::WrapMap;
 
 /// Editor options and settings
@@ -244,10 +247,8 @@ pub struct Editor {
     color_scheme_registry: ColorSchemeRegistry,
     /// Editor options and settings
     pub options: EditorOptions,
-    /// Viewport height (rows) - updated from UI layer
-    viewport_height: usize,
-    /// Scroll offset (top visible line) - maintained with scrolloff
-    scroll_offset: usize,
+    /// Viewport and scroll state
+    pub(crate) viewport: ViewportState,
     /// Current color scheme name
     current_color_scheme: String,
     /// File tree explorer
@@ -270,11 +271,6 @@ pub struct Editor {
     tab_page_manager: TabPageManager,
     /// Performance metrics
     metrics: PerformanceMetrics,
-    /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
-    skip_scroll_update: bool,
-    /// Viewport command active - tracks if a viewport command was recently used
-    /// When true, scrolloff is only applied if cursor moves outside current viewport
-    viewport_command_active: bool,
     /// Dashboard menu selected index (0-5)
     dashboard_selected: usize,
     /// Pending semantic change operation (for ci", cw, etc.)
@@ -282,8 +278,6 @@ pub struct Editor {
     pending_semantic_change: Option<PendingSemanticChange>,
     /// Replace mode tracking for dot-repeat
     replace_mode_state: Option<ReplaceModeState>,
-    /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
-    wrap_map: Option<WrapMap>,
     /// Mouse interaction state (dragging, drag origin)
     pub(crate) mouse_state: MouseState,
     /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
@@ -425,8 +419,7 @@ impl Editor {
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
-            viewport_height: 24,
-            scroll_offset: 0,
+            viewport: ViewportState::default(),
             file_tree: FileTree::new(),
             quickfix_list: QuickfixList::new(),
             location_list: LocationList::new(),
@@ -437,12 +430,9 @@ impl Editor {
             substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
-            skip_scroll_update: false,
-            viewport_command_active: false,
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
-            wrap_map: None,
             mouse_state: MouseState::default(),
             last_buffer_area: None,
             last_gutter_width: 0,
@@ -492,8 +482,7 @@ impl Editor {
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
-            viewport_height: 24,
-            scroll_offset: 0,
+            viewport: ViewportState::default(),
             file_tree: FileTree::new(),
             quickfix_list: QuickfixList::new(),
             location_list: LocationList::new(),
@@ -504,12 +493,9 @@ impl Editor {
             substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
-            skip_scroll_update: false,
-            viewport_command_active: false,
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
-            wrap_map: None,
             mouse_state: MouseState::default(),
             last_buffer_area: None,
             last_gutter_width: 0,
@@ -683,7 +669,7 @@ impl Editor {
 
     /// Sets the viewport height (called from UI layer)
     pub fn set_viewport_height(&mut self, height: usize) {
-        self.viewport_height = height;
+        self.viewport.viewport_height = height;
     }
 
     /// Caches the buffer layout from the last render (for mouse coordinate conversion)
@@ -694,7 +680,7 @@ impl Editor {
 
     /// Gets the viewport height
     pub fn viewport_height(&self) -> usize {
-        self.viewport_height
+        self.viewport.viewport_height
     }
 
     /// Gets the scroll offset (top visible line)
@@ -707,19 +693,19 @@ impl Editor {
             }
         }
         // Fall back to editor-level scroll offset for headless/test mode
-        self.scroll_offset
+        self.viewport.scroll_offset
     }
 
     /// Gets a reference to the wrap map (if available)
     pub fn wrap_map(&self) -> Option<&WrapMap> {
-        self.wrap_map.as_ref()
+        self.viewport.wrap_map.as_ref()
     }
 
     /// Ensures the wrap map is built and up-to-date for the current buffer.
     /// Called from the rendering layer before drawing wrapped lines.
     pub fn ensure_wrap_map(&mut self, text_width: usize) {
         if !self.options.wrap {
-            self.wrap_map = None;
+            self.viewport.wrap_map = None;
             return;
         }
         let width = text_width.max(1);
@@ -728,7 +714,7 @@ impl Editor {
         let buf_version = self.buffer().version();
 
         // Check if existing map is up to date or can be incrementally updated
-        let needs_action = if let Some(ref map) = self.wrap_map {
+        let needs_action = if let Some(ref map) = self.viewport.wrap_map {
             if map.buffer_version() == buf_version && map.wrap_width() == width && map.line_count() == line_count {
                 return; // Already up to date
             }
@@ -742,7 +728,7 @@ impl Editor {
             None // no map yet
         };
 
-        // Extract data needed for closures before mutably borrowing self.wrap_map
+        // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let cursor_line = self.buffer().cursor().line();
         let rope = self.buffer().rope().clone();
         let make_line_len = |line_idx: usize| -> usize {
@@ -759,19 +745,19 @@ impl Editor {
         match needs_action {
             Some(true) => {
                 // Incremental: only invalidate cursor line
-                let map = self.wrap_map.as_mut().unwrap();
+                let map = self.viewport.wrap_map.as_mut().unwrap();
                 map.invalidate_line(cursor_line, make_line_len);
                 map.set_buffer_version(buf_version);
             }
             Some(false) => {
                 // Full rebuild (width or line count changed)
-                let map = self.wrap_map.as_mut().unwrap();
+                let map = self.viewport.wrap_map.as_mut().unwrap();
                 map.rebuild(line_count, width, tab_width, buf_version, make_line_len);
             }
             None => {
                 // Build from scratch
                 let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_len);
-                self.wrap_map = Some(map);
+                self.viewport.wrap_map = Some(map);
             }
         }
     }
@@ -793,12 +779,12 @@ impl Editor {
     /// Viewport commands (zt, zz, zb) can override this by setting skip_scroll_update.
     pub fn update_scroll_offset(&mut self) {
         // Skip if viewport command just ran - it has full control over positioning
-        if self.skip_scroll_update {
+        if self.viewport.skip_scroll_update {
             return;
         }
 
         let cursor_line = self.buffer().cursor().line();
-        let visible_lines = self.viewport_height;
+        let visible_lines = self.viewport.viewport_height;
         let current_offset = self.scroll_offset();
         let scrolloff = self.options.scrolloff;
 
@@ -811,12 +797,12 @@ impl Editor {
         // return 0 for the new line, jumping the viewport to the top.
         let wrap_map_usable = self.options.wrap
             && self
-                .wrap_map
+                .viewport.wrap_map
                 .as_ref()
                 .is_some_and(|m| m.line_count() >= self.buffer().rope().len_lines());
 
         if wrap_map_usable {
-            if let Some(ref wrap_map) = self.wrap_map {
+            if let Some(ref wrap_map) = self.viewport.wrap_map {
                 // Wrap-aware scrolling: work in visual rows
                 let cursor_col = self.buffer().cursor().col();
                 // Get the display column for proper sub-line calculation
@@ -867,7 +853,7 @@ impl Editor {
         let new_offset = new_offset.min(raw_last_line);
 
         // Update both editor-level and window-level scroll offsets
-        self.scroll_offset = new_offset;
+        self.viewport.scroll_offset = new_offset;
 
         // Extract cursor column and options before mutably borrowing window_manager
         let cursor_col = self.buffer().cursor().col();
@@ -918,7 +904,7 @@ impl Editor {
     pub fn half_page_scroll(&self) -> usize {
         self.options
             .scroll
-            .unwrap_or(self.viewport_height / 2)
+            .unwrap_or(self.viewport.viewport_height / 2)
     }
 
     /// Clears the pending command
