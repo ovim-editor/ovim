@@ -214,6 +214,8 @@ pub struct Editor {
     mode: Mode,
     /// Whether the editor should quit
     should_quit: bool,
+    /// Exit code to use when quitting (0 = success, non-zero = error, used by :cq))
+    exit_code: i32,
     /// Input context (counts, operators, pending commands, registers, input state machine)
     input: InputContext,
     /// Register manager for yank/delete operations
@@ -356,6 +358,7 @@ impl Editor {
             window_manager: None, // Will be initialized when viewport size is known
             mode: Mode::Dashboard,
             should_quit: false,
+            exit_code: 0,
             input: InputContext::new(),
             registers: RegisterManager::new(),
             visual: VisualContext::new(),
