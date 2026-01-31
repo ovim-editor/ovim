@@ -149,7 +149,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
             );
-            editor.replace_mode_state = Some(crate::editor::ReplaceModeState {
+            editor.editing.replace_mode_state = Some(crate::editor::ReplaceModeState {
                 start_position: cursor_before,
                 replacements: String::new(),
                 old_text: String::new(),

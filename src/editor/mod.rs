@@ -4,6 +4,7 @@ mod change_tracking;
 mod command_context;
 mod command_history;
 mod completion;
+mod editing_state;
 mod filetree;
 mod fold;
 pub(crate) mod fuzzy;
@@ -77,6 +78,7 @@ pub use undo::UndoManager;
 pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use lsp_manager_panel::LspManagerPanel;
+pub use editing_state::EditingState;
 pub use render_cache::RenderCache;
 pub use theme_state::ThemeState;
 pub use viewport_state::ViewportState;
@@ -240,8 +242,8 @@ pub struct Editor {
     lua_context: Option<LuaContext>,
     /// Bridge for Lua-Editor communication (optional)
     editor_bridge: Option<crate::lua::EditorBridge>,
-    /// Last insert position (line, col) for gi command
-    last_insert_position: Option<(usize, usize)>,
+    /// Editing operation state (insert, replace, substitute, rename)
+    pub(crate) editing: EditingState,
     /// Completion menu popup (LSP)
     completion_menu: CompletionMenu,
     /// Path completion state for command-line mode
@@ -262,23 +264,12 @@ pub struct Editor {
     quickfix_window_open: bool,
     /// Whether location list window is open
     location_window_open: bool,
-    /// Substitute confirmation state: matches to confirm (line, start_col, end_col, replacement)
-    substitute_matches: Vec<(usize, usize, usize, String)>,
-    /// Current match index for substitute confirmation
-    substitute_match_index: usize,
-    /// Regex pattern for substitute confirmation (for highlighting)
-    substitute_pattern: Option<regex::Regex>,
     /// Tab page manager
     tab_page_manager: TabPageManager,
     /// Performance metrics
     metrics: PerformanceMetrics,
     /// Dashboard menu selected index (0-5)
     dashboard_selected: usize,
-    /// Pending semantic change operation (for ci", cw, etc.)
-    /// When Some, insert mode exit will create a semantic change instead of composite
-    pending_semantic_change: Option<PendingSemanticChange>,
-    /// Replace mode tracking for dot-repeat
-    replace_mode_state: Option<ReplaceModeState>,
     /// Cached rendering state (mouse, layout geometry)
     pub(crate) render_cache: RenderCache,
     /// Dashboard cat animation state
@@ -291,10 +282,6 @@ pub struct Editor {
     install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
     /// Pending install requests to be picked up by the event loop
     pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
-    /// Rename input buffer (for LSP rename mode)
-    rename_buffer: String,
-    /// Cursor position within the rename input buffer
-    rename_cursor: usize,
     /// Whether the diagnostic badge overlay has been dismissed (double-Escape)
     diagnostic_badge_dismissed: bool,
     /// Last diagnostic count when badge state was set (for detecting changes)
@@ -410,7 +397,7 @@ impl Editor {
             lsp_command_rx: None,
             lua_context: None,
             editor_bridge: None,
-            last_insert_position: None,
+            editing: EditingState::default(),
             completion_menu: CompletionMenu::new(),
             path_completion: PathCompletionState::new(),
             theme: ThemeState::default(),
@@ -421,22 +408,15 @@ impl Editor {
             location_list: LocationList::new(),
             quickfix_window_open: false,
             location_window_open: false,
-            substitute_matches: Vec::new(),
-            substitute_match_index: 0,
-            substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
             dashboard_selected: 0,
-            pending_semantic_change: None,
-            replace_mode_state: None,
             render_cache: RenderCache::default(),
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
-            rename_buffer: String::new(),
-            rename_cursor: 0,
             diagnostic_badge_dismissed: false,
             diagnostic_badge_last_count: (0, 0),
             last_escape_time: None,
@@ -470,7 +450,7 @@ impl Editor {
             lsp_command_rx: None,
             lua_context: None,
             editor_bridge: None,
-            last_insert_position: None,
+            editing: EditingState::default(),
             completion_menu: CompletionMenu::new(),
             path_completion: PathCompletionState::new(),
             theme: ThemeState::default(),
@@ -481,22 +461,15 @@ impl Editor {
             location_list: LocationList::new(),
             quickfix_window_open: false,
             location_window_open: false,
-            substitute_matches: Vec::new(),
-            substitute_match_index: 0,
-            substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
             dashboard_selected: 0,
-            pending_semantic_change: None,
-            replace_mode_state: None,
             render_cache: RenderCache::default(),
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
-            rename_buffer: String::new(),
-            rename_cursor: 0,
             diagnostic_badge_dismissed: false,
             diagnostic_badge_last_count: (0, 0),
             last_escape_time: None,
@@ -527,19 +500,19 @@ impl Editor {
     // ==================== Rename Input ====================
 
     pub fn rename_buffer(&self) -> &str {
-        &self.rename_buffer
+        &self.editing.rename_buffer
     }
 
     pub fn rename_cursor(&self) -> usize {
-        self.rename_cursor
+        self.editing.rename_cursor
     }
 
     pub fn set_rename_buffer(&mut self, s: String) {
-        self.rename_buffer = s;
+        self.editing.rename_buffer = s;
     }
 
     pub fn set_rename_cursor(&mut self, pos: usize) {
-        self.rename_cursor = pos;
+        self.editing.rename_cursor = pos;
     }
 
     // ==================== Core Editor Methods ====================
@@ -1318,12 +1291,12 @@ impl Editor {
 
     /// Sets a pending semantic change operation
     pub fn set_pending_semantic_change(&mut self, pending: PendingSemanticChange) {
-        self.pending_semantic_change = Some(pending);
+        self.editing.pending_semantic_change = Some(pending);
     }
 
     /// Takes and clears the pending semantic change operation
     pub fn take_pending_semantic_change(&mut self) -> Option<PendingSemanticChange> {
-        self.pending_semantic_change.take()
+        self.editing.pending_semantic_change.take()
     }
 
     /// Gets the leader key (default: space)

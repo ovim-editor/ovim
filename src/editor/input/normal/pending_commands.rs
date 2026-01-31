@@ -100,7 +100,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         ('g', KeyCode::Char('i')) => {
             // gi - go to last insert position and enter insert mode
-            if let Some((line, col)) = editor.last_insert_position {
+            if let Some((line, col)) = editor.editing.last_insert_position {
                 editor.buffer_mut().cursor_mut().set_position(line, col);
             }
             let cursor_before = (
