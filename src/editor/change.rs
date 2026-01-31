@@ -14,7 +14,11 @@ pub enum TextObjectType {
     /// Quoted string with specific quote char (i"/a", i'/a', i`/a`)
     Quote { char: char, inner: bool },
     /// Paired delimiters (i(/a(, i[/a[, i{/a{, i</a<)
-    Paired { open: char, close: char, inner: bool },
+    Paired {
+        open: char,
+        close: char,
+        inner: bool,
+    },
 }
 
 /// Range in the buffer
@@ -402,7 +406,9 @@ impl Change {
                     buffer.join_lines_no_space(*count)
                 };
                 // Position cursor at the final position
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
             Self::ChangeTextObject {
                 old_range,
@@ -415,7 +421,9 @@ impl Change {
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacement);
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
             Self::DeleteTextObject {
                 old_range,
@@ -426,7 +434,9 @@ impl Change {
                 let (start_line, start_col) = old_range.start;
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
             Self::ChangeWord {
                 old_range,
@@ -439,7 +449,9 @@ impl Change {
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacement);
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
             Self::ReplaceMode {
                 old_range,
@@ -452,7 +464,9 @@ impl Change {
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacements);
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
             Self::ChangeSearchMatch {
                 old_range,
@@ -465,7 +479,9 @@ impl Change {
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacement);
-                buffer.cursor_mut().set_position(cursor_after.0, cursor_after.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
             }
         }
     }
@@ -584,10 +600,13 @@ impl Change {
                 // To undo: delete the replacement and restore old text
                 let (start_line, start_col) = old_range.start;
                 // Calculate where replacement ends
-                let replacement_end = Self::calculate_end_position((start_line, start_col), replacement);
+                let replacement_end =
+                    Self::calculate_end_position((start_line, start_col), replacement);
                 buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
                 buffer.insert_text_at(start_line, start_col, old_text);
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
             Self::DeleteTextObject {
                 cursor_before,
@@ -598,7 +617,9 @@ impl Change {
                 // To undo: re-insert the deleted text
                 let (start_line, start_col) = old_range.start;
                 buffer.insert_text_at(start_line, start_col, old_text);
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
             Self::ChangeWord {
                 cursor_before,
@@ -609,10 +630,13 @@ impl Change {
             } => {
                 // To undo: delete the replacement and restore old word
                 let (start_line, start_col) = old_range.start;
-                let replacement_end = Self::calculate_end_position((start_line, start_col), replacement);
+                let replacement_end =
+                    Self::calculate_end_position((start_line, start_col), replacement);
                 buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
                 buffer.insert_text_at(start_line, start_col, old_text);
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
             Self::ReplaceMode {
                 cursor_before,
@@ -623,10 +647,13 @@ impl Change {
             } => {
                 // To undo: delete the replacements and restore old text
                 let (start_line, start_col) = old_range.start;
-                let replacement_end = Self::calculate_end_position((start_line, start_col), replacements);
+                let replacement_end =
+                    Self::calculate_end_position((start_line, start_col), replacements);
                 buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
                 buffer.insert_text_at(start_line, start_col, old_text);
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
             Self::ChangeSearchMatch {
                 cursor_before,
@@ -637,10 +664,13 @@ impl Change {
             } => {
                 // To undo: delete the replacement and restore old match text
                 let (start_line, start_col) = old_range.start;
-                let replacement_end = Self::calculate_end_position((start_line, start_col), replacement);
+                let replacement_end =
+                    Self::calculate_end_position((start_line, start_col), replacement);
                 buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
                 buffer.insert_text_at(start_line, start_col, old_text);
-                buffer.cursor_mut().set_position(cursor_before.0, cursor_before.1);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
             }
         }
     }
@@ -659,7 +689,12 @@ impl Change {
                 }
                 .apply(buffer);
             }
-            Self::DeleteText { range, deleted_text, backwards, .. } => {
+            Self::DeleteText {
+                range,
+                deleted_text,
+                backwards,
+                ..
+            } => {
                 // Apply the same deletion pattern from current position
                 let cursor_pos = (buffer.cursor().line(), buffer.cursor().col());
                 let offset_line = range.end.0 - range.start.0;
@@ -707,7 +742,11 @@ impl Change {
                 };
                 buffer.cursor_mut().set_position(start_line, final_col);
             }
-            Self::Composite { changes, entry_mode, .. } => {
+            Self::Composite {
+                changes,
+                entry_mode,
+                ..
+            } => {
                 // Position cursor according to how insert mode was originally entered.
                 match entry_mode {
                     InsertEntryMode::Insert => {
@@ -723,7 +762,10 @@ impl Change {
                         let line_idx = buffer.cursor().line();
                         if let Some(line) = buffer.line(line_idx) {
                             let content = line.trim_end_matches('\n');
-                            let col = content.chars().position(|c| !c.is_whitespace()).unwrap_or(0);
+                            let col = content
+                                .chars()
+                                .position(|c| !c.is_whitespace())
+                                .unwrap_or(0);
                             buffer.cursor_mut().set_col(col);
                         }
                     }
@@ -754,7 +796,9 @@ impl Change {
                             };
 
                             buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
-                            buffer.cursor_mut().set_position(line_idx + 1, indent.chars().count());
+                            buffer
+                                .cursor_mut()
+                                .set_position(line_idx + 1, indent.chars().count());
                         }
                         // Replay remaining sub-changes (skip first which was the newline)
                         for change in changes.iter_mut().skip(1) {
@@ -779,7 +823,9 @@ impl Change {
 
                             let text = format!("{}\n", indent);
                             buffer.insert_text_at(line_idx, 0, &text);
-                            buffer.cursor_mut().set_position(line_idx, indent.chars().count());
+                            buffer
+                                .cursor_mut()
+                                .set_position(line_idx, indent.chars().count());
                         }
                         // Replay remaining sub-changes (skip first which was the newline)
                         for change in changes.iter_mut().skip(1) {
@@ -829,7 +875,9 @@ impl Change {
                     }
                 }
             }
-            Self::JoinLines { count, add_space, .. } => {
+            Self::JoinLines {
+                count, add_space, ..
+            } => {
                 // For dot-repeat, execute the join operation at current cursor
                 let _ = if *add_space {
                     buffer.join_lines(*count)
@@ -837,15 +885,27 @@ impl Change {
                     buffer.join_lines_no_space(*count)
                 };
             }
-            Self::ChangeTextObject { object_type, replacement, .. } => {
+            Self::ChangeTextObject {
+                object_type,
+                replacement,
+                ..
+            } => {
                 // Re-evaluate the text object at current cursor and apply replacement
                 if let Some(range) = Self::find_text_object(buffer, object_type) {
                     // Delete the text object content
-                    buffer.delete_range(range.start_line, range.start_col, range.end_line, range.end_col);
+                    buffer.delete_range(
+                        range.start_line,
+                        range.start_col,
+                        range.end_line,
+                        range.end_col,
+                    );
                     // Insert replacement
                     buffer.insert_text_at(range.start_line, range.start_col, replacement);
                     // Position cursor at end of inserted text (minus 1 for normal mode)
-                    let end_pos = Self::calculate_end_position((range.start_line, range.start_col), replacement);
+                    let end_pos = Self::calculate_end_position(
+                        (range.start_line, range.start_col),
+                        replacement,
+                    );
                     let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
                     buffer.cursor_mut().set_position(end_pos.0, final_col);
                 }
@@ -853,17 +913,32 @@ impl Change {
             Self::DeleteTextObject { object_type, .. } => {
                 // Re-evaluate the text object at current cursor and delete it
                 if let Some(range) = Self::find_text_object(buffer, object_type) {
-                    buffer.delete_range(range.start_line, range.start_col, range.end_line, range.end_col);
-                    buffer.cursor_mut().set_position(range.start_line, range.start_col);
+                    buffer.delete_range(
+                        range.start_line,
+                        range.start_col,
+                        range.end_line,
+                        range.end_col,
+                    );
+                    buffer
+                        .cursor_mut()
+                        .set_position(range.start_line, range.start_col);
                 }
             }
             Self::ChangeWord { replacement, .. } => {
                 // Find word at current cursor and replace it
                 if let Some(range) = TextObjects::inner_word(buffer) {
-                    buffer.delete_range(range.start_line, range.start_col, range.end_line, range.end_col);
+                    buffer.delete_range(
+                        range.start_line,
+                        range.start_col,
+                        range.end_line,
+                        range.end_col,
+                    );
                     buffer.insert_text_at(range.start_line, range.start_col, replacement);
                     // Position cursor at end of inserted text (minus 1 for normal mode)
-                    let end_pos = Self::calculate_end_position((range.start_line, range.start_col), replacement);
+                    let end_pos = Self::calculate_end_position(
+                        (range.start_line, range.start_col),
+                        replacement,
+                    );
                     let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
                     buffer.cursor_mut().set_position(end_pos.0, final_col);
                 }
@@ -891,7 +966,12 @@ impl Change {
                     buffer.cursor_mut().set_position(line_idx, final_col);
                 }
             }
-            Self::ChangeSearchMatch { search_pattern, search_forward, replacement, .. } => {
+            Self::ChangeSearchMatch {
+                search_pattern,
+                search_forward,
+                replacement,
+                ..
+            } => {
                 // Find the next search match from current cursor and replace it
                 let line_idx = buffer.cursor().line();
                 let col = buffer.cursor().col();
@@ -903,7 +983,9 @@ impl Change {
                     true, // smartcase
                 );
 
-                if let Some((match_line, match_col, match_text)) = search.find_next(buffer, line_idx, col) {
+                if let Some((match_line, match_col, match_text)) =
+                    search.find_next(buffer, line_idx, col)
+                {
                     let match_len = match_text.chars().count();
                     let match_end_col = match_col + match_len;
 
@@ -912,7 +994,8 @@ impl Change {
                     // Insert replacement
                     buffer.insert_text_at(match_line, match_col, replacement);
                     // Position cursor at end of inserted text (minus 1 for normal mode)
-                    let end_pos = Self::calculate_end_position((match_line, match_col), replacement);
+                    let end_pos =
+                        Self::calculate_end_position((match_line, match_col), replacement);
                     let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
                     buffer.cursor_mut().set_position(end_pos.0, final_col);
                 }
@@ -921,7 +1004,10 @@ impl Change {
     }
 
     /// Finds a text object range at current cursor position based on type
-    fn find_text_object(buffer: &Buffer, object_type: &TextObjectType) -> Option<crate::editor::textobjects::TextObjectRange> {
+    fn find_text_object(
+        buffer: &Buffer,
+        object_type: &TextObjectType,
+    ) -> Option<crate::editor::textobjects::TextObjectRange> {
         match object_type {
             TextObjectType::Word { inner } => {
                 if *inner {
@@ -1067,7 +1153,10 @@ impl ChangeBuilder {
         if self.changes.is_empty() {
             None
         } else if self.changes.len() == 1
-            && !matches!(self.entry_mode, InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove)
+            && !matches!(
+                self.entry_mode,
+                InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove
+            )
         {
             // Unwrap single changes for most entry modes. OpenBelow/OpenAbove need
             // the Composite wrapper to preserve entry_mode for dot-repeat.

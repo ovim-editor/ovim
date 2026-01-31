@@ -250,13 +250,17 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
                 // Find all matches in this line
                 if global {
                     for mat in regex.find_iter(line_text) {
-                        let replacement_text = regex.replace(mat.as_str(), replacement.as_str()).to_string();
+                        let replacement_text = regex
+                            .replace(mat.as_str(), replacement.as_str())
+                            .to_string();
                         matches.push((line_idx, mat.start(), mat.end(), replacement_text));
                     }
                 } else {
                     // Only first match per line
                     if let Some(mat) = regex.find(line_text) {
-                        let replacement_text = regex.replace(mat.as_str(), replacement.as_str()).to_string();
+                        let replacement_text = regex
+                            .replace(mat.as_str(), replacement.as_str())
+                            .to_string();
                         matches.push((line_idx, mat.start(), mat.end(), replacement_text));
                     }
                 }
@@ -267,7 +271,10 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
             editor.set_lsp_status("Pattern not found".to_string());
         } else {
             let count = matches.len();
-            editor.set_lsp_status(format!("replace with {} ({} matches) (y/n/a/q/l)", replacement, count));
+            editor.set_lsp_status(format!(
+                "replace with {} ({} matches) (y/n/a/q/l)",
+                replacement, count
+            ));
             editor.start_substitute_confirm(matches, regex);
         }
 
@@ -287,7 +294,9 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
             // Perform the substitution
             let new_text = if global {
                 // Replace all occurrences
-                regex.replace_all(line_text, replacement.as_str()).to_string()
+                regex
+                    .replace_all(line_text, replacement.as_str())
+                    .to_string()
             } else {
                 // Replace first occurrence
                 regex.replace(line_text, replacement.as_str()).to_string()
@@ -733,10 +742,7 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                     }
 
                     // Position cursor at start of filtered range
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(start_line, 0);
+                    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
 
                     // Record change for undo using composite of delete + insert
                     let range = Range::new((start_line, 0), (end_line + 1, 0));
@@ -873,10 +879,17 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 editor.add_change(change);
 
                 // Position cursor at start of inserted text
-                editor.buffer_mut().cursor_mut().set_position(insert_line, 0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(insert_line, 0);
 
                 let line_count = text.lines().count();
-                editor.set_lsp_status(format!("{} line{} inserted", line_count, if line_count == 1 { "" } else { "s" }));
+                editor.set_lsp_status(format!(
+                    "{} line{} inserted",
+                    line_count,
+                    if line_count == 1 { "" } else { "s" }
+                ));
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
@@ -956,7 +969,11 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
                 let line_count = content.lines().count();
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let msg = if stdout.trim().is_empty() {
-                    format!("{} line{} written", line_count, if line_count == 1 { "" } else { "s" })
+                    format!(
+                        "{} line{} written",
+                        line_count,
+                        if line_count == 1 { "" } else { "s" }
+                    )
                 } else {
                     // Show command output if any
                     let trimmed = stdout.trim();
@@ -1213,10 +1230,16 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             if numeric {
                 // Sort by leading number
                 lines.sort_by(|a, b| {
-                    let num_a: i64 = a.split_whitespace().next()
-                        .and_then(|s| s.parse().ok()).unwrap_or(0);
-                    let num_b: i64 = b.split_whitespace().next()
-                        .and_then(|s| s.parse().ok()).unwrap_or(0);
+                    let num_a: i64 = a
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    let num_b: i64 = b
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
                     num_a.cmp(&num_b)
                 });
             } else if ignore_case {
@@ -1235,7 +1258,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             }
 
             // Replace the range with sorted lines
-            let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+            let cursor_before = (
+                editor.buffer().cursor().line(),
+                editor.buffer().cursor().col(),
+            );
 
             // Get the char positions for the range
             let start_char = editor.buffer().rope().line_to_char(start_line);
@@ -1246,7 +1272,11 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             };
 
             // Store original text for undo
-            let original_text = editor.buffer().rope().slice(start_char..end_char).to_string();
+            let original_text = editor
+                .buffer()
+                .rope()
+                .slice(start_char..end_char)
+                .to_string();
 
             // Remove old lines
             editor.buffer_mut().rope_mut().remove(start_char..end_char);
@@ -1275,8 +1305,15 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle :copy or :t command (copy lines to destination)
     // Format: :[range]copy {address} or :[range]t {address}
-    if cmd_part.starts_with("copy ") || cmd_part.starts_with("t ") || cmd_part == "copy" || cmd_part == "t" {
-        let dest_str = cmd_part.strip_prefix("copy ").or_else(|| cmd_part.strip_prefix("t ")).unwrap_or("");
+    if cmd_part.starts_with("copy ")
+        || cmd_part.starts_with("t ")
+        || cmd_part == "copy"
+        || cmd_part == "t"
+    {
+        let dest_str = cmd_part
+            .strip_prefix("copy ")
+            .or_else(|| cmd_part.strip_prefix("t "))
+            .unwrap_or("");
         let dest_str = dest_str.trim();
 
         if dest_str.is_empty() {
@@ -1298,7 +1335,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
                 // Insert after destination line
                 let insert_line = dest_line + 1;
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
 
                 let insert_char = if insert_line < editor.buffer().line_count() {
                     editor.buffer().rope().line_to_char(insert_line)
@@ -1307,11 +1347,12 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 };
 
                 // Add newline if we're at end of file
-                let text = if insert_line >= editor.buffer().line_count() && !text_to_insert.is_empty() {
-                    format!("\n{}", text_to_insert.trim_end_matches('\n'))
-                } else {
-                    text_to_insert.clone()
-                };
+                let text =
+                    if insert_line >= editor.buffer().line_count() && !text_to_insert.is_empty() {
+                        format!("\n{}", text_to_insert.trim_end_matches('\n'))
+                    } else {
+                        text_to_insert.clone()
+                    };
 
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
@@ -1320,10 +1361,17 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 editor.add_change(change);
 
                 // Move cursor to first copied line
-                editor.buffer_mut().cursor_mut().set_position(insert_line, 0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(insert_line, 0);
 
                 let count = lines_to_copy.len();
-                editor.set_lsp_status(format!("{} line{} copied", count, if count == 1 { "" } else { "s" }));
+                editor.set_lsp_status(format!(
+                    "{} line{} copied",
+                    count,
+                    if count == 1 { "" } else { "s" }
+                ));
                 return Ok(());
             } else {
                 editor.set_lsp_status("E14: Invalid address".to_string());
@@ -1334,8 +1382,15 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle :move or :m command (move lines to destination)
     // Format: :[range]move {address} or :[range]m {address}
-    if cmd_part.starts_with("move ") || cmd_part.starts_with("m ") || cmd_part == "move" || cmd_part == "m" {
-        let dest_str = cmd_part.strip_prefix("move ").or_else(|| cmd_part.strip_prefix("m ")).unwrap_or("");
+    if cmd_part.starts_with("move ")
+        || cmd_part.starts_with("m ")
+        || cmd_part == "move"
+        || cmd_part == "m"
+    {
+        let dest_str = cmd_part
+            .strip_prefix("move ")
+            .or_else(|| cmd_part.strip_prefix("m "))
+            .unwrap_or("");
         let dest_str = dest_str.trim();
 
         if dest_str.is_empty() {
@@ -1353,7 +1408,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     return Ok(());
                 }
 
-                let cursor_before = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
+                let cursor_before = (
+                    editor.buffer().cursor().line(),
+                    editor.buffer().cursor().col(),
+                );
 
                 // Collect lines to move
                 let mut lines_to_move: Vec<String> = Vec::new();
@@ -1388,11 +1446,12 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 };
 
                 // Add newline if we're at end of file
-                let text = if insert_line >= editor.buffer().line_count() && !text_to_move.is_empty() {
-                    format!("\n{}", text_to_move.trim_end_matches('\n'))
-                } else {
-                    text_to_move.clone()
-                };
+                let text =
+                    if insert_line >= editor.buffer().line_count() && !text_to_move.is_empty() {
+                        format!("\n{}", text_to_move.trim_end_matches('\n'))
+                    } else {
+                        text_to_move.clone()
+                    };
 
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
@@ -1409,9 +1468,16 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 editor.add_change(change);
 
                 // Move cursor to first moved line
-                editor.buffer_mut().cursor_mut().set_position(insert_line, 0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(insert_line, 0);
 
-                editor.set_lsp_status(format!("{} line{} moved", line_count, if line_count == 1 { "" } else { "s" }));
+                editor.set_lsp_status(format!(
+                    "{} line{} moved",
+                    line_count,
+                    if line_count == 1 { "" } else { "s" }
+                ));
                 return Ok(());
             } else {
                 editor.set_lsp_status("E14: Invalid address".to_string());

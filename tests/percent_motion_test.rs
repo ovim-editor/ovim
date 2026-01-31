@@ -350,4 +350,3 @@ fn d_percent_from_closing_brace_multiline() {
     // Should delete everything from '{' through '}'
     assert_eq!(test.buffer_content(), "\n");
 }
-

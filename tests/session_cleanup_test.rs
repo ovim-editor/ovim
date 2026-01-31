@@ -238,10 +238,13 @@ fn test_cleanup_dry_run() -> Result<()> {
 
     // Create a fake stale session with unique name
     let fake_pid = 999997;
-    let session_name = format!("dry_run_test_{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis());
+    let session_name = format!(
+        "dry_run_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
 
     let path = create_fake_session(&session_name, fake_pid, 8084, 0)?;
 
@@ -268,7 +271,10 @@ fn test_cleanup_dry_run() -> Result<()> {
 
     // In dry run, count might be 0 if the session was already cleaned up during listing
     // The key test is that dry_run doesn't crash and returns valid results
-    assert!(result.total_removed() < 100, "Dry run should return reasonable results");
+    assert!(
+        result.total_removed() < 100,
+        "Dry run should return reasonable results"
+    );
 
     // Clean up for real
     cleanup_stale_sessions(None, false)?;
@@ -288,7 +294,10 @@ fn test_cleanup_no_stale_sessions() -> Result<()> {
     let result = cleanup_stale_sessions(None, false)?;
 
     // Just verify it doesn't crash (we can't guarantee 0 because other tests might leave files)
-    assert!(result.total_removed() < 100, "Cleanup should not remove an unreasonable number");
+    assert!(
+        result.total_removed() < 100,
+        "Cleanup should not remove an unreasonable number"
+    );
 
     Ok(())
 }

@@ -58,8 +58,7 @@ impl Editor {
             }
         };
 
-        let uri = uri_from_file_path(&abs_path)
-            .ok_or_else(|| anyhow!("Invalid file path"))?;
+        let uri = uri_from_file_path(&abs_path).ok_or_else(|| anyhow!("Invalid file path"))?;
 
         // Get cursor position
         let cursor = self.buffer().cursor();
@@ -86,8 +85,13 @@ impl Editor {
         );
 
         // Cancel any existing pending definition request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::Definition(old)) = self.lsp_state.pending_lsp_response.take() {
-            crate::lsp_debug!("LSP-DEFINITION", "Aborting previous pending definition request");
+        if let Some(crate::editor::lsp_state::PendingLspResponse::Definition(old)) =
+            self.lsp_state.pending_lsp_response.take()
+        {
+            crate::lsp_debug!(
+                "LSP-DEFINITION",
+                "Aborting previous pending definition request"
+            );
             old.task.abort();
         }
 
@@ -106,9 +110,11 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = if server_ids.len() > 1 {
-                lsp.goto_definition_multi(&uri, line, character, &server_ids).await
+                lsp.goto_definition_multi(&uri, line, character, &server_ids)
+                    .await
             } else {
-                lsp.goto_definition(&uri, line, character, language_id).await
+                lsp.goto_definition(&uri, line, character, language_id)
+                    .await
             };
             let _ = tx.send(result);
             Ok(None)
@@ -184,8 +190,13 @@ impl Editor {
         };
 
         // Cancel any existing pending implementation request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::Implementation(old)) = self.lsp_state.pending_lsp_response.take() {
-            crate::lsp_debug!("LSP-IMPLEMENTATION", "Aborting previous pending implementation request");
+        if let Some(crate::editor::lsp_state::PendingLspResponse::Implementation(old)) =
+            self.lsp_state.pending_lsp_response.take()
+        {
+            crate::lsp_debug!(
+                "LSP-IMPLEMENTATION",
+                "Aborting previous pending implementation request"
+            );
             old.task.abort();
         }
 
@@ -203,14 +214,15 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response =
-            Some(crate::editor::lsp_state::PendingLspResponse::Implementation(
+        self.lsp_state.pending_lsp_response = Some(
+            crate::editor::lsp_state::PendingLspResponse::Implementation(
                 crate::editor::lsp_state::PendingLspRequest {
                     task,
                     receiver: rx,
                     started: std::time::Instant::now(),
-                }
-            ));
+                },
+            ),
+        );
 
         // Show loading status
         self.set_lsp_status("Jumping to implementation...".to_string());
@@ -260,8 +272,13 @@ impl Editor {
         };
 
         // Cancel any existing pending type definition request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(old)) = self.lsp_state.pending_lsp_response.take() {
-            crate::lsp_debug!("LSP-TYPE", "Aborting previous pending type definition request");
+        if let Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(old)) =
+            self.lsp_state.pending_lsp_response.take()
+        {
+            crate::lsp_debug!(
+                "LSP-TYPE",
+                "Aborting previous pending type definition request"
+            );
             old.task.abort();
         }
 
@@ -273,20 +290,23 @@ impl Editor {
         // Spawn type definition request in background (non-blocking)
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = lsp.type_definition(&uri, line, character, language_id).await;
+            let result = lsp
+                .type_definition(&uri, line, character, language_id)
+                .await;
             let _ = tx.send(result); // Send to receiver (ignore if dropped)
             Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response =
-            Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(
+        self.lsp_state.pending_lsp_response = Some(
+            crate::editor::lsp_state::PendingLspResponse::TypeDefinition(
                 crate::editor::lsp_state::PendingLspRequest {
                     task,
                     receiver: rx,
                     started: std::time::Instant::now(),
-                }
-            ));
+                },
+            ),
+        );
 
         // Show loading status
         self.set_lsp_status("Jumping to type definition...".to_string());

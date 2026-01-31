@@ -33,7 +33,8 @@ fn main() {
                         key.code, key.modifiers, key.kind, key.state
                     );
                     if key.code == crossterm::event::KeyCode::Char('c')
-                        && key.modifiers
+                        && key
+                            .modifiers
                             .contains(crossterm::event::KeyModifiers::CONTROL)
                     {
                         break;

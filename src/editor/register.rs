@@ -17,7 +17,9 @@ use std::sync::Mutex;
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
 
 /// Initialize the global clipboard handle (best-effort, never panics).
-fn with_clipboard<T>(f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>) -> Option<T> {
+fn with_clipboard<T>(
+    f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
+) -> Option<T> {
     let mut guard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
     // Lazily initialize on first use.
     if guard.is_none() {

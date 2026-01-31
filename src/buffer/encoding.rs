@@ -76,25 +76,21 @@ impl FileEncoding {
         let bytes = &bytes[bom_offset..];
 
         match self {
-            FileEncoding::Utf8 | FileEncoding::Utf8Bom => {
-                String::from_utf8(bytes.to_vec())
-                    .map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e))
-            }
+            FileEncoding::Utf8 | FileEncoding::Utf8Bom => String::from_utf8(bytes.to_vec())
+                .map_err(|e| anyhow::anyhow!("Invalid UTF-8: {}", e)),
             FileEncoding::Utf16Le => {
                 let u16_vec: Vec<u16> = bytes
                     .chunks_exact(2)
                     .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
                     .collect();
-                String::from_utf16(&u16_vec)
-                    .map_err(|e| anyhow::anyhow!("Invalid UTF-16LE: {}", e))
+                String::from_utf16(&u16_vec).map_err(|e| anyhow::anyhow!("Invalid UTF-16LE: {}", e))
             }
             FileEncoding::Utf16Be => {
                 let u16_vec: Vec<u16> = bytes
                     .chunks_exact(2)
                     .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
                     .collect();
-                String::from_utf16(&u16_vec)
-                    .map_err(|e| anyhow::anyhow!("Invalid UTF-16BE: {}", e))
+                String::from_utf16(&u16_vec).map_err(|e| anyhow::anyhow!("Invalid UTF-16BE: {}", e))
             }
             _ => {
                 // Use encoding_rs for other encodings

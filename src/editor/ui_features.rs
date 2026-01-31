@@ -1,6 +1,9 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
-use super::{Change, CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry, QuickfixList, Range};
+use super::{
+    Change, CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState,
+    QuickfixEntry, QuickfixList, Range,
+};
 
 impl Editor {
     /// Gets a reference to the completion menu
@@ -112,11 +115,7 @@ impl Editor {
                     // Fallback: use language-specific markers
                     find_project_root(
                         path,
-                        &[
-                            "Cargo.toml".into(),
-                            "package.json".into(),
-                            ".git".into(),
-                        ],
+                        &["Cargo.toml".into(), "package.json".into(), ".git".into()],
                     )
                 }
             } else {
@@ -146,7 +145,9 @@ impl Editor {
             }
             if self.options.file_tree_reveal {
                 if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
-                    self.ui_panels.file_tree.reveal_path(std::path::Path::new(&path));
+                    self.ui_panels
+                        .file_tree
+                        .reveal_path(std::path::Path::new(&path));
                 }
             }
             self.set_mode(Mode::FileTree);
@@ -307,7 +308,9 @@ impl Editor {
 
     /// Gets the current substitute match info (line, start_col, end_col, replacement)
     pub fn current_substitute_match(&self) -> Option<&(usize, usize, usize, String)> {
-        self.editing.substitute_matches.get(self.editing.substitute_match_index)
+        self.editing
+            .substitute_matches
+            .get(self.editing.substitute_match_index)
     }
 
     /// Gets the substitute pattern for highlighting
@@ -317,19 +320,25 @@ impl Editor {
 
     /// Confirms the current substitution and moves to the next
     pub fn confirm_substitute(&mut self) {
-        if let Some((line, start_col, end_col, replacement)) =
-            self.editing.substitute_matches.get(self.editing.substitute_match_index).cloned()
+        if let Some((line, start_col, end_col, replacement)) = self
+            .editing
+            .substitute_matches
+            .get(self.editing.substitute_match_index)
+            .cloned()
         {
             // Perform the substitution
             let cursor_before = (self.buffer().cursor().line(), self.buffer().cursor().col());
 
             // Delete the matched text
-            let deleted = self.buffer_mut().delete_range(line, start_col, line, end_col);
+            let deleted = self
+                .buffer_mut()
+                .delete_range(line, start_col, line, end_col);
             let delete_range = Range::new((line, start_col), (line, end_col));
             let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
             // Insert the replacement
-            let insert_change = Change::insert((line, start_col), replacement.clone(), cursor_before);
+            let insert_change =
+                Change::insert((line, start_col), replacement.clone(), cursor_before);
             insert_change.apply(self.buffer_mut());
 
             self.add_change(delete_change);
@@ -340,8 +349,11 @@ impl Editor {
                 self.end_substitute_confirm();
             } else {
                 // Move cursor to next match
-                let (next_line, next_col, _, _) = self.editing.substitute_matches[self.editing.substitute_match_index];
-                self.buffer_mut().cursor_mut().set_position(next_line, next_col);
+                let (next_line, next_col, _, _) =
+                    self.editing.substitute_matches[self.editing.substitute_match_index];
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(next_line, next_col);
             }
         }
     }
@@ -353,7 +365,8 @@ impl Editor {
             self.end_substitute_confirm();
         } else {
             // Move cursor to next match
-            let (line, col, _, _) = self.editing.substitute_matches[self.editing.substitute_match_index];
+            let (line, col, _, _) =
+                self.editing.substitute_matches[self.editing.substitute_match_index];
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
@@ -409,8 +422,8 @@ impl Editor {
     /// Trigger LSP server install for a language.
     /// Enqueues a pending install request to be picked up by the event loop.
     pub fn request_lsp_install(&mut self, language_id: &str) {
-        use crate::language_config::LanguageRegistry;
         use super::lsp_manager_panel::{InstallStatus, PendingInstallRequest};
+        use crate::language_config::LanguageRegistry;
 
         let Some(registry) = LanguageRegistry::try_get() else {
             self.set_lsp_status("Language registry not initialized".to_string());
@@ -457,8 +470,12 @@ impl Editor {
     pub fn request_lsp_uninstall(&mut self, language_id: &str) {
         use crate::language_config::LanguageRegistry;
 
-        let Some(registry) = LanguageRegistry::try_get() else { return };
-        let Some(lang) = registry.get_by_id(language_id) else { return };
+        let Some(registry) = LanguageRegistry::try_get() else {
+            return;
+        };
+        let Some(lang) = registry.get_by_id(language_id) else {
+            return;
+        };
         let Some(lsp) = &lang.lsp else { return };
 
         // Determine uninstall command based on auto_install config
@@ -498,10 +515,9 @@ impl Editor {
         let mut updated = false;
         while let Ok(progress) = rx.try_recv() {
             if let Some(panel) = &mut self.lsp_ui.lsp_manager_panel {
-                panel.active_installs.insert(
-                    progress.language_id.clone(),
-                    progress.status.clone(),
-                );
+                panel
+                    .active_installs
+                    .insert(progress.language_id.clone(), progress.status.clone());
 
                 // On success, rebuild entries to reflect new state
                 if matches!(progress.status, InstallStatus::Success) {
@@ -515,12 +531,17 @@ impl Editor {
     }
 
     /// Drain pending install requests (called by event loop)
-    pub fn take_pending_installs(&mut self) -> Vec<super::lsp_manager_panel::PendingInstallRequest> {
+    pub fn take_pending_installs(
+        &mut self,
+    ) -> Vec<super::lsp_manager_panel::PendingInstallRequest> {
         std::mem::take(&mut self.lsp_ui.pending_installs)
     }
 
     /// Get the install progress sender (for spawning background tasks)
-    pub fn install_progress_tx(&self) -> Option<&tokio::sync::mpsc::UnboundedSender<super::lsp_manager_panel::InstallProgress>> {
+    pub fn install_progress_tx(
+        &self,
+    ) -> Option<&tokio::sync::mpsc::UnboundedSender<super::lsp_manager_panel::InstallProgress>>
+    {
         self.lsp_ui.install_progress_tx.as_ref()
     }
 

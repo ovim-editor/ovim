@@ -8,7 +8,7 @@
 mod lsp_modules;
 
 use super::*;
-use crate::lsp::{LspManager, uri_from_file_path};
+use crate::lsp::{uri_from_file_path, LspManager};
 
 use anyhow::{anyhow, Result};
 use lsp_types::Location;
@@ -91,7 +91,11 @@ impl Editor {
     /// Marks a document as having sent didOpen notification
     /// Used by LSP pre-warming to prevent duplicate didOpen
     pub fn mark_document_opened(&mut self, file_path: &str) {
-        let state = self.lsp_state.document_sync.entry(file_path.to_string()).or_default();
+        let state = self
+            .lsp_state
+            .document_sync
+            .entry(file_path.to_string())
+            .or_default();
         state.did_open_sent = true;
     }
 
@@ -145,18 +149,20 @@ impl Editor {
                         let file_path = self.buffer().file_path().unwrap_or("").to_string();
 
                         // Cache the hover result
-                        self.lsp_state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
-                            file_path,
-                            cursor_line,
-                            cursor_col,
-                            buffer_version,
-                            hover_text.clone(),
-                        ));
+                        self.lsp_state.hover_cache =
+                            Some(crate::editor::lsp_state::HoverCache::new(
+                                file_path,
+                                cursor_line,
+                                cursor_col,
+                                buffer_version,
+                                hover_text.clone(),
+                            ));
 
                         self.lsp_state.hover_info = Some(hover_text);
                         self.lsp_state.hover_scroll = 0;
                         self.lsp_state.hover_position = Some((cursor_line, cursor_col));
-                        self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
+                        self.lsp_state.hover_content_type =
+                            crate::editor::lsp_state::HoverContentType::LspHover;
                         self.mode = crate::mode::Mode::HoverPreview;
                         self.mark_dirty();
                         self.set_lsp_status(String::new());
@@ -177,7 +183,10 @@ impl Editor {
                     Err(TryRecvError::Empty) => {
                         // Check for timeout
                         if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!("LSP-HOVER", "Hover request timed out, aborting task");
+                            crate::lsp_debug!(
+                                "LSP-HOVER",
+                                "Hover request timed out, aborting task"
+                            );
                             pending.task.abort();
                             self.set_lsp_status("Hover request timed out".to_string());
                             return false;
@@ -258,7 +267,9 @@ impl Editor {
                 }
 
                 let target_col = self.utf16_to_col(target_line, target_character);
-                self.buffer_mut().cursor_mut().set_position(target_line, target_col);
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, target_col);
                 self.buffer_mut().validate_cursor_position();
                 self.center_cursor_in_viewport();
                 let actual_col = self.buffer().cursor().col();
@@ -266,7 +277,8 @@ impl Editor {
                 let suffix = if new_tab { " (new tab)" } else { "" };
                 self.set_lsp_status(format!(
                     "{}{}: {}:{}:{}",
-                    label, suffix,
+                    label,
+                    suffix,
                     path.file_name().unwrap_or_default().to_string_lossy(),
                     target_line + 1,
                     actual_col + 1
@@ -402,7 +414,6 @@ impl Editor {
         self.lsp_state.lsp_action_retry_count = 0;
     }
 
-
     /// Request document format
     pub fn request_format_document(&mut self) {
         self.queue_lsp_action(LspAction::FormatDocument);
@@ -510,18 +521,23 @@ impl Editor {
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            {
                 Some(id) => id,
                 None => return,
             };
 
             // Get old content for incremental sync
-            let old_content = self.lsp_state.document_sync
+            let old_content = self
+                .lsp_state
+                .document_sync
                 .get(&state_key)
                 .and_then(|state| state.last_synced_content.clone());
 
             // Send the didChange notification to all servers for this language
-            let _ = lsp.did_change_broadcast(uri, language_id, content.clone(), old_content).await;
+            let _ = lsp
+                .did_change_broadcast(uri, language_id, content.clone(), old_content)
+                .await;
 
             // Mark as sent AFTER sending and store the synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -559,13 +575,16 @@ impl Editor {
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            {
                 Some(id) => id,
                 None => return,
             };
 
             // Send the didSave notification to all servers for this language
-            let _ = lsp.did_save_broadcast(uri, language_id, Some(content)).await;
+            let _ = lsp
+                .did_save_broadcast(uri, language_id, Some(content))
+                .await;
 
             // Mark as sent AFTER sending
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -618,7 +637,11 @@ impl Editor {
                 .await;
 
             // Mark didOpen as sent
-            let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
+            let state = self
+                .lsp_state
+                .document_sync
+                .entry(state_key.clone())
+                .or_default();
             state.did_open_sent = true;
             state.mark_change_sent(content.clone());
             return true; // We sent didOpen (includes content flush)
@@ -633,12 +656,16 @@ impl Editor {
 
         if needs_flush {
             // Get old content for incremental sync
-            let old_content = self.lsp_state.document_sync
+            let old_content = self
+                .lsp_state
+                .document_sync
                 .get(&state_key)
                 .and_then(|state| state.last_synced_content.clone());
 
             // Send the didChange notification immediately (bypass debouncing) to all servers
-            let _ = lsp.did_change_broadcast(uri, language_id, content.clone(), old_content).await;
+            let _ = lsp
+                .did_change_broadcast(uri, language_id, content.clone(), old_content)
+                .await;
 
             // Mark as sent and store synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -853,5 +880,4 @@ impl Editor {
             server_ids,
         })
     }
-
 }

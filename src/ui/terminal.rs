@@ -36,18 +36,15 @@ impl Terminal {
 
         // Enable Kitty keyboard protocol if the terminal supports it.
         // This lets us detect Super/Cmd modifier (e.g. Cmd+1 on macOS in Ghostty).
-        let keyboard_enhancement_enabled =
-            if supports_keyboard_enhancement().unwrap_or(false) {
-                execute!(
-                    stdout,
-                    PushKeyboardEnhancementFlags(
-                        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    )
-                )
-                .is_ok()
-            } else {
-                false
-            };
+        let keyboard_enhancement_enabled = if supports_keyboard_enhancement().unwrap_or(false) {
+            execute!(
+                stdout,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )
+            .is_ok()
+        } else {
+            false
+        };
 
         Ok(Self {
             _stdout: stdout,

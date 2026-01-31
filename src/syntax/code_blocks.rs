@@ -149,7 +149,10 @@ impl CodeBlockCache {
     ///
     /// Returns None if the line is not inside any code block.
     /// The returned highlights are ready to use (column ranges are correct).
-    pub fn highlights_for_line(&self, line_idx: usize) -> Option<&Vec<(Range<usize>, HighlightGroup)>> {
+    pub fn highlights_for_line(
+        &self,
+        line_idx: usize,
+    ) -> Option<&Vec<(Range<usize>, HighlightGroup)>> {
         for block in &self.blocks {
             if line_idx >= block.line_start && line_idx < block.line_end {
                 let block_line_idx = line_idx - block.line_start;

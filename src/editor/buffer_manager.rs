@@ -274,8 +274,7 @@ impl Editor {
             let start_col =
                 Self::utf16_to_col_for_buffer(buffer, start_line, edit.range.start.character);
             let end_line = edit.range.end.line as usize;
-            let end_col =
-                Self::utf16_to_col_for_buffer(buffer, end_line, edit.range.end.character);
+            let end_col = Self::utf16_to_col_for_buffer(buffer, end_line, edit.range.end.character);
 
             // Delete the range
             if start_line != end_line || start_col != end_col {

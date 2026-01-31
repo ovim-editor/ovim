@@ -47,7 +47,10 @@ pub fn handle_char_motion(
         CharMotion::FindBack => handle_find_backward(editor, target, count, operator),
         CharMotion::TillBack => handle_till_backward(editor, target, count, operator),
         // Mark and replace operations - delegate to legacy handler for now
-        CharMotion::Replace | CharMotion::Mark | CharMotion::JumpMarkLine | CharMotion::JumpMarkExact => {
+        CharMotion::Replace
+        | CharMotion::Mark
+        | CharMotion::JumpMarkLine
+        | CharMotion::JumpMarkExact => {
             // These will be handled by the legacy pending_command system for now
             // TODO: Migrate these to new state machine
         }

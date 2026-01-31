@@ -299,11 +299,20 @@ mod tests {
 
     #[test]
     fn test_extract_path_from_command() {
-        assert_eq!(extract_path_from_command("e src/main.rs"), Some("src/main.rs"));
+        assert_eq!(
+            extract_path_from_command("e src/main.rs"),
+            Some("src/main.rs")
+        );
         assert_eq!(extract_path_from_command("edit foo.txt"), Some("foo.txt"));
         assert_eq!(extract_path_from_command("tabe bar"), Some("bar"));
-        assert_eq!(extract_path_from_command("w new_file.txt"), Some("new_file.txt"));
-        assert_eq!(extract_path_from_command("saveas backup.rs"), Some("backup.rs"));
+        assert_eq!(
+            extract_path_from_command("w new_file.txt"),
+            Some("new_file.txt")
+        );
+        assert_eq!(
+            extract_path_from_command("saveas backup.rs"),
+            Some("backup.rs")
+        );
         assert_eq!(extract_path_from_command("sp file"), Some("file"));
         assert_eq!(extract_path_from_command("vsp file"), Some("file"));
         // No match

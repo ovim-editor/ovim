@@ -129,11 +129,12 @@ impl GitStatus {
                     // Check if there's a removal nearby
                     for offset in 1..=3 {
                         if line >= offset
-                            && line_status.get(&(line - offset)) == Some(&LineStatus::Removed) {
-                                // Likely a modification
-                                line_status.insert(line, LineStatus::Modified);
-                                break;
-                            }
+                            && line_status.get(&(line - offset)) == Some(&LineStatus::Removed)
+                        {
+                            // Likely a modification
+                            line_status.insert(line, LineStatus::Modified);
+                            break;
+                        }
                         if line_status.get(&(line + offset)) == Some(&LineStatus::Removed) {
                             line_status.insert(line, LineStatus::Modified);
                             break;

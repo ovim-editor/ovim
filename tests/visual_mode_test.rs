@@ -689,10 +689,7 @@ fn test_gn_normal_mode_selects_next_match() {
     let mut test = EditorTest::new("foo bar foo baz");
 
     // Search for "foo" and then use gn to select first match
-    test.press('/')
-        .type_text("foo")
-        .press_enter()
-        .keys("gn"); // Should select first "foo"
+    test.press('/').type_text("foo").press_enter().keys("gn"); // Should select first "foo"
 
     assert_eq!(test.editor.mode(), Mode::Visual);
     test.assert_cursor(0, 2); // End of "foo" (inclusive)
@@ -794,10 +791,7 @@ fn test_gn_multiline_search() {
     let mut test = EditorTest::new("foo\nbar\nfoo\nbaz");
 
     // Search for "foo" across lines
-    test.press('/')
-        .type_text("foo")
-        .press_enter()
-        .keys("gn"); // Select first "foo"
+    test.press('/').type_text("foo").press_enter().keys("gn"); // Select first "foo"
 
     assert_eq!(test.editor.mode(), Mode::Visual);
     test.assert_cursor(0, 2); // End of "foo" on line 0
@@ -812,10 +806,7 @@ fn test_gn_wraps_around_buffer() {
 
     // Search for "baz", then gn should select current match (baz)
     // After executing the search, cursor is at start of "baz" (within the match)
-    test.press('/')
-        .type_text("baz")
-        .press_enter()
-        .keys("gn"); // Should select current "baz" since cursor is within it
+    test.press('/').type_text("baz").press_enter().keys("gn"); // Should select current "baz" since cursor is within it
 
     assert_eq!(test.editor.mode(), Mode::Visual);
     test.assert_cursor(0, 10); // End of "baz"
@@ -875,10 +866,7 @@ fn test_dgn_delete_next_match() {
     let mut test = EditorTest::new("foo bar foo baz");
 
     // Search for "foo" and delete next match
-    test.press('/')
-        .type_text("foo")
-        .press_enter()
-        .keys("dgn"); // Delete next match
+    test.press('/').type_text("foo").press_enter().keys("dgn"); // Delete next match
 
     assert_eq!(test.buffer_content(), " bar foo baz\n");
     test.assert_cursor(0, 0); // At start where "foo" was
@@ -954,10 +942,7 @@ fn test_gn_respects_smartcase() {
     let mut test = EditorTest::new("Foo bar foo baz");
 
     // Search for lowercase "foo" (should match both with smartcase)
-    test.press('/')
-        .type_text("foo")
-        .press_enter()
-        .keys("gn");
+    test.press('/').type_text("foo").press_enter().keys("gn");
 
     // Should select first match (smartcase makes it case-insensitive for lowercase pattern)
     assert_eq!(test.editor.mode(), Mode::Visual);
@@ -967,10 +952,7 @@ fn test_gn_respects_smartcase() {
 fn test_gn_empty_buffer_does_nothing() {
     let mut test = EditorTest::new("");
 
-    test.press('/')
-        .type_text("foo")
-        .press_enter()
-        .keys("gn");
+    test.press('/').type_text("foo").press_enter().keys("gn");
 
     // Should stay in normal mode
     assert_eq!(test.editor.mode(), Mode::Normal);

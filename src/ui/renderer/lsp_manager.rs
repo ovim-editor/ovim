@@ -31,7 +31,9 @@ mod colors {
 
 pub fn get_lsp_manager_area(full_area: Rect) -> Rect {
     let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
-    let height = ((full_area.height * 75) / 100).max(15).min(full_area.height);
+    let height = ((full_area.height * 75) / 100)
+        .max(15)
+        .min(full_area.height);
     let x = full_area.width.saturating_sub(width) / 2;
     let y = full_area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width, height)
@@ -44,11 +46,7 @@ pub fn render_lsp_manager(frame: &mut Frame, panel: &LspManagerPanel) {
     frame.render_widget(Clear, area);
 
     let (running, installed, available, _syntax_only) = panel.section_counts();
-    let header_right = format!(
-        " {} running, {} available ",
-        running,
-        installed + available
-    );
+    let header_right = format!(" {} running, {} available ", running, installed + available);
 
     let block = Block::default()
         .title_top(Line::from(Span::styled(
@@ -81,7 +79,7 @@ pub fn render_lsp_manager(frame: &mut Frame, panel: &LspManagerPanel) {
         .constraints([
             Constraint::Length(1), // filter
             Constraint::Length(1), // separator
-            Constraint::Min(1),   // content
+            Constraint::Min(1),    // content
             Constraint::Length(1), // hint bar
         ])
         .split(inner);
@@ -154,10 +152,7 @@ fn render_filter_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
         colors::BG
     };
 
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().bg(bg)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(text).style(Style::default().bg(bg)), area);
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {
@@ -220,14 +215,12 @@ fn render_entry_list(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
                 .iter()
                 .filter(|(_, e)| e.section == entry.section)
                 .count();
-            let header = Line::from(vec![
-                Span::styled(
-                    format!("  {} ({count})", entry.section.label()),
-                    Style::default()
-                        .fg(colors::SECTION_HEADER)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]);
+            let header = Line::from(vec![Span::styled(
+                format!("  {} ({count})", entry.section.label()),
+                Style::default()
+                    .fg(colors::SECTION_HEADER)
+                    .add_modifier(Modifier::BOLD),
+            )]);
             lines.push((header, true, *idx));
         }
 
@@ -267,14 +260,9 @@ fn render_entry_list(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
         if let Some(cmd) = &entry.lsp_command {
             let padding = area
                 .width
-                .saturating_sub(
-                    4 + entry.language_name.len() as u16 + cmd.len() as u16 + 2,
-                )
+                .saturating_sub(4 + entry.language_name.len() as u16 + cmd.len() as u16 + 2)
                 .max(2);
-            spans.push(Span::styled(
-                " ".repeat(padding as usize),
-                Style::default(),
-            ));
+            spans.push(Span::styled(" ".repeat(padding as usize), Style::default()));
             spans.push(Span::styled(
                 cmd.as_str(),
                 Style::default().fg(colors::TEXT_MUTED),
@@ -470,10 +458,7 @@ fn detail_line(label: &str, value: &str) -> Line<'static> {
             format!("  {label}: "),
             Style::default().fg(colors::TEXT_MUTED),
         ),
-        Span::styled(
-            value.to_string(),
-            Style::default().fg(colors::TEXT),
-        ),
+        Span::styled(value.to_string(), Style::default().fg(colors::TEXT)),
     ])
 }
 
@@ -498,16 +483,9 @@ fn render_hint_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
 
     // Build hint spans
     let hints = if panel.filter_focused {
-        vec![
-            ("Esc", "cancel"),
-            ("Enter", "apply"),
-        ]
+        vec![("Esc", "cancel"), ("Enter", "apply")]
     } else {
-        let mut h = vec![
-            ("j/k", "navigate"),
-            ("/", "filter"),
-            ("K", "details"),
-        ];
+        let mut h = vec![("j/k", "navigate"), ("/", "filter"), ("K", "details")];
         if let Some(entry) = panel.selected_entry() {
             match entry.section {
                 LspSection::Available => {

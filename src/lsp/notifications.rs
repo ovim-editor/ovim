@@ -129,14 +129,21 @@ impl LspManager {
                 } else {
                     // No changes detected or identical content
                     if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        eprintln!("[LSP-SYNC] No changes detected (identical content) | File: {}", uri.path());
+                        eprintln!(
+                            "[LSP-SYNC] No changes detected (identical content) | File: {}",
+                            uri.path()
+                        );
                     }
                     return Ok(());
                 }
             } else {
                 // Fallback to full sync
                 if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                    eprintln!("[LSP-SYNC] Full sync (no old_text): {} bytes | File: {}", full_doc_size, uri.path());
+                    eprintln!(
+                        "[LSP-SYNC] Full sync (no old_text): {} bytes | File: {}",
+                        full_doc_size,
+                        uri.path()
+                    );
                 }
                 vec![TextDocumentContentChangeEvent {
                     range: None,
@@ -152,7 +159,12 @@ impl LspManager {
                 "no old_text provided"
             };
             if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                eprintln!("[LSP-SYNC] Full sync ({}): {} bytes | File: {}", reason, full_doc_size, uri.path());
+                eprintln!(
+                    "[LSP-SYNC] Full sync ({}): {} bytes | File: {}",
+                    reason,
+                    full_doc_size,
+                    uri.path()
+                );
             }
             vec![TextDocumentContentChangeEvent {
                 range: None,
@@ -211,19 +223,30 @@ impl LspManager {
             // This is critical for operations like hover/goto_definition that flush before requesting
             match tokio::time::timeout(
                 Duration::from_secs(5),
-                self.send_did_change_immediate(uri.clone(), &language_id, text, old_text)
-            ).await {
+                self.send_did_change_immediate(uri.clone(), &language_id, text, old_text),
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     // Success: change sent to LSP server
                 }
                 Ok(Err(e)) => {
                     // LSP send failed (server might be down)
-                    lsp_error!("Manager", "Failed to flush changes for {}: {}", uri.as_str(), e);
+                    lsp_error!(
+                        "Manager",
+                        "Failed to flush changes for {}: {}",
+                        uri.as_str(),
+                        e
+                    );
                     // Don't propagate error - allow operation to continue with stale data
                 }
                 Err(_) => {
                     // Timeout: LSP server is hanging
-                    lsp_error!("Manager", "Timeout flushing changes for {} (5s)", uri.as_str());
+                    lsp_error!(
+                        "Manager",
+                        "Timeout flushing changes for {} (5s)",
+                        uri.as_str()
+                    );
                     // Don't propagate error - allow operation to continue with stale data
                 }
             }
@@ -407,7 +430,11 @@ impl LspManager {
     }
 
     /// Flushes pending changes and broadcasts to all servers for the language
-    pub async fn flush_pending_changes_broadcast(&self, uri: &Uri, language_id: &str) -> Result<()> {
+    pub async fn flush_pending_changes_broadcast(
+        &self,
+        uri: &Uri,
+        language_id: &str,
+    ) -> Result<()> {
         // First, remove the debouncer to get pending text
         if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
             let mut debouncer = debouncer_arc.lock().await;
@@ -423,7 +450,12 @@ impl LspManager {
             for sid in &server_ids {
                 if let Err(e) = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    self.send_did_change_immediate(uri.clone(), sid, text.clone(), old_text.clone()),
+                    self.send_did_change_immediate(
+                        uri.clone(),
+                        sid,
+                        text.clone(),
+                        old_text.clone(),
+                    ),
                 )
                 .await
                 {
@@ -515,10 +547,17 @@ impl LspManager {
                             lsp_info!(
                                 "LSP-WORKSPACE",
                                 "Queuing workspace edit with {} document changes",
-                                edit.document_changes.as_ref().map(|changes| match changes {
-                                    lsp_types::DocumentChanges::Edits(edits) => edits.len(),
-                                    lsp_types::DocumentChanges::Operations(ops) => ops.len(),
-                                }).unwrap_or_else(|| edit.changes.as_ref().map(|c| c.len()).unwrap_or(0))
+                                edit.document_changes
+                                    .as_ref()
+                                    .map(|changes| match changes {
+                                        lsp_types::DocumentChanges::Edits(edits) => edits.len(),
+                                        lsp_types::DocumentChanges::Operations(ops) => ops.len(),
+                                    })
+                                    .unwrap_or_else(|| edit
+                                        .changes
+                                        .as_ref()
+                                        .map(|c| c.len())
+                                        .unwrap_or(0))
                             );
 
                             // Send to channel for Editor to process
@@ -535,8 +574,11 @@ impl LspManager {
                                         if let Some(server) = self.servers.get(server_id) {
                                             match serde_json::to_value(response) {
                                                 Ok(value) => {
-                                                    let response_msg = JsonRpcMessage::response(id, value);
-                                                    if let Err(e) = server.send_response(response_msg).await {
+                                                    let response_msg =
+                                                        JsonRpcMessage::response(id, value);
+                                                    if let Err(e) =
+                                                        server.send_response(response_msg).await
+                                                    {
                                                         lsp_error!(
                                                             "LSP-SERVER-REQUEST",
                                                             "Failed to send workspace/applyEdit response: {}",
@@ -574,7 +616,8 @@ impl LspManager {
                                             let response_msg =
                                                 JsonRpcMessage::error_response(id, error_response);
 
-                                            if let Err(e) = server.send_response(response_msg).await {
+                                            if let Err(e) = server.send_response(response_msg).await
+                                            {
                                                 lsp_error!(
                                                     "LSP-SERVER-REQUEST",
                                                     "Failed to send error response: {}",
@@ -649,8 +692,7 @@ impl LspManager {
                 // Always acknowledge success
                 if let Some(id) = request_id {
                     if let Some(server) = self.servers.get(server_id) {
-                        let response_msg =
-                            JsonRpcMessage::response(id, serde_json::Value::Null);
+                        let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
                                 "LSP-SERVER-REQUEST",
@@ -691,8 +733,7 @@ impl LspManager {
                 // Always acknowledge success
                 if let Some(id) = request_id {
                     if let Some(server) = self.servers.get(server_id) {
-                        let response_msg =
-                            JsonRpcMessage::response(id, serde_json::Value::Null);
+                        let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
                                 "LSP-SERVER-REQUEST",
@@ -768,8 +809,12 @@ impl LspManager {
                         let params_clone = params.clone();
                         match serde_json::from_value::<PublishDiagnosticsParams>(params) {
                             Ok(diag_params) => {
-                                self.set_diagnostics(diag_params.uri, server_id, diag_params.diagnostics)
-                                    .await;
+                                self.set_diagnostics(
+                                    diag_params.uri,
+                                    server_id,
+                                    diag_params.diagnostics,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 // ERROR: Failed to parse publishDiagnostics - this is critical for user feedback
@@ -960,7 +1005,12 @@ impl LspManager {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
                 if let Err(e) = self.flush_pending_changes(&uri).await {
-                    lsp_error!("Debounce", "Error flushing changes for {}: {}", uri.as_str(), e);
+                    lsp_error!(
+                        "Debounce",
+                        "Error flushing changes for {}: {}",
+                        uri.as_str(),
+                        e
+                    );
                 }
                 count += 1;
             }
@@ -1027,7 +1077,10 @@ impl LspManager {
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 // Manager dropped, stop listening
-                                lsp_error!("Listener", "Notification channel closed, stopping listener");
+                                lsp_error!(
+                                    "Listener",
+                                    "Notification channel closed, stopping listener"
+                                );
                                 break;
                             }
                         }

@@ -128,7 +128,11 @@ pub fn render_hover_window(
         (true, crate::editor::HoverContentType::Diagnostic) => " Diagnostic ".to_string(),
         (true, crate::editor::HoverContentType::LspHover) => " K: navigate ".to_string(),
         (false, _) if total_lines > content_height => {
-            format!(" {}/{} j/k:scroll q:close ", clamped_scroll + 1, total_lines)
+            format!(
+                " {}/{} j/k:scroll q:close ",
+                clamped_scroll + 1,
+                total_lines
+            )
         }
         _ => " q to close ".to_string(),
     };
@@ -197,11 +201,7 @@ pub fn render_hover_window(
 }
 
 /// Renders the completion menu popup
-pub fn render_completion_menu(
-    frame: &mut Frame,
-    editor: &Editor,
-    ctx: &OverlayContext,
-) {
+pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayContext) {
     let layout = ctx.layout;
     let viewport_start = ctx.viewport_start;
     let buffer_area = layout.buffer_area;

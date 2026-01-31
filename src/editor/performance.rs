@@ -262,7 +262,8 @@ impl Editor {
 
     /// Performance metrics: record diagnostic query duration
     pub fn record_diagnostic_query_duration(&mut self, duration_micros: u64) {
-        self.metrics.record_diagnostic_query_duration(duration_micros);
+        self.metrics
+            .record_diagnostic_query_duration(duration_micros);
     }
 
     /// Performance metrics: get last diagnostic query duration

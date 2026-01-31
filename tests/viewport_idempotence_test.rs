@@ -4,7 +4,10 @@ use helpers::EditorTest;
 #[test]
 fn test_zt_is_idempotent() {
     // Create a buffer with 50 lines
-    let content = (1..=50).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+    let content = (1..=50)
+        .map(|i| format!("Line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut test = EditorTest::new(&content);
 
     // Initialize window manager with a known viewport size
@@ -17,8 +20,14 @@ fn test_zt_is_idempotent() {
 
     // Verify we're on line 24 (0-indexed)
     assert_eq!(test.editor.buffer().cursor().line(), 24);
-    eprintln!("Starting position: line {}", test.editor.buffer().cursor().line());
-    eprintln!("Starting Editor.scroll_offset: {}", test.editor.scroll_offset());
+    eprintln!(
+        "Starting position: line {}",
+        test.editor.buffer().cursor().line()
+    );
+    eprintln!(
+        "Starting Editor.scroll_offset: {}",
+        test.editor.scroll_offset()
+    );
     if let Some(wm) = test.editor.window_manager() {
         if let Some(window) = wm.focused_window() {
             eprintln!("Starting Window.scroll_offset: {}", window.scroll_offset());
@@ -29,10 +38,16 @@ fn test_zt_is_idempotent() {
     // First zt - should position line 24 at top
     eprintln!("\n=== FIRST ZT ===");
     test.press('z');
-    eprintln!("After 'z': Editor.scroll_offset = {}", test.editor.scroll_offset());
+    eprintln!(
+        "After 'z': Editor.scroll_offset = {}",
+        test.editor.scroll_offset()
+    );
     if let Some(wm) = test.editor.window_manager() {
         if let Some(window) = wm.focused_window() {
-            eprintln!("After 'z': Window.scroll_offset = {}", window.scroll_offset());
+            eprintln!(
+                "After 'z': Window.scroll_offset = {}",
+                window.scroll_offset()
+            );
         }
     }
 
@@ -44,7 +59,10 @@ fn test_zt_is_idempotent() {
     // Get window scroll offset
     if let Some(wm) = test.editor.window_manager() {
         if let Some(window) = wm.focused_window() {
-            eprintln!("After 't': Window.scroll_offset = {}", window.scroll_offset());
+            eprintln!(
+                "After 't': Window.scroll_offset = {}",
+                window.scroll_offset()
+            );
             eprintln!("After 't': Window.cursor = {:?}", window.cursor());
         }
     }
@@ -52,10 +70,16 @@ fn test_zt_is_idempotent() {
     // Second zt - should be no-op (idempotent)
     eprintln!("\n=== SECOND ZT ===");
     test.press('z');
-    eprintln!("After 'z': Editor.scroll_offset = {}", test.editor.scroll_offset());
+    eprintln!(
+        "After 'z': Editor.scroll_offset = {}",
+        test.editor.scroll_offset()
+    );
     if let Some(wm) = test.editor.window_manager() {
         if let Some(window) = wm.focused_window() {
-            eprintln!("After 'z': Window.scroll_offset = {}", window.scroll_offset());
+            eprintln!(
+                "After 'z': Window.scroll_offset = {}",
+                window.scroll_offset()
+            );
         }
     }
 
@@ -66,7 +90,10 @@ fn test_zt_is_idempotent() {
     // Get window scroll offset again
     if let Some(wm) = test.editor.window_manager() {
         if let Some(window) = wm.focused_window() {
-            eprintln!("After 't': Window.scroll_offset = {}", window.scroll_offset());
+            eprintln!(
+                "After 't': Window.scroll_offset = {}",
+                window.scroll_offset()
+            );
             eprintln!("After 't': Window.cursor = {:?}", window.cursor());
         }
     }
@@ -80,7 +107,10 @@ fn test_zt_is_idempotent() {
 #[test]
 fn test_zz_is_idempotent() {
     // Create a buffer with 50 lines
-    let content = (1..=50).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+    let content = (1..=50)
+        .map(|i| format!("Line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut test = EditorTest::new(&content);
 
     // Initialize window manager with a known viewport size
@@ -113,7 +143,10 @@ fn test_zz_is_idempotent() {
 #[test]
 fn test_zb_is_idempotent() {
     // Create a buffer with 50 lines
-    let content = (1..=50).map(|i| format!("Line {}", i)).collect::<Vec<_>>().join("\n");
+    let content = (1..=50)
+        .map(|i| format!("Line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut test = EditorTest::new(&content);
 
     // Initialize window manager with a known viewport size

@@ -298,7 +298,10 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
         if let Some(line) = editor.buffer().line(start_line) {
             let content_len = line.trim_end_matches('\n').chars().count();
             if content_len > 0 {
-                let deleted = editor.buffer_mut().delete_range(start_line, 0, start_line, content_len);
+                let deleted =
+                    editor
+                        .buffer_mut()
+                        .delete_range(start_line, 0, start_line, content_len);
                 let range = Range::new((start_line, 0), (start_line, content_len));
                 let change = Change::delete(range, deleted.clone(), cursor_before);
                 editor.delete_to_register_with_type(deleted, RegisterType::Line);
@@ -312,7 +315,10 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
             editor.buffer_mut().insert_text_at(start_line, 0, &indent);
             let change = Change::insert((start_line, 0), indent, cursor_before);
             editor.add_change(change);
-            editor.buffer_mut().cursor_mut().set_position(start_line, indent_len);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(start_line, indent_len);
         } else {
             editor.buffer_mut().cursor_mut().set_position(start_line, 0);
         }
@@ -329,10 +335,15 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
         // Insert a new line with indentation
         let new_line_text = format!("{}\n", indent);
         let indent_len = indent.chars().count();
-        editor.buffer_mut().insert_text_at(start_line, 0, &new_line_text);
+        editor
+            .buffer_mut()
+            .insert_text_at(start_line, 0, &new_line_text);
         let change = Change::insert((start_line, 0), new_line_text, cursor_before);
         editor.add_change(change);
-        editor.buffer_mut().cursor_mut().set_position(start_line, indent_len);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(start_line, indent_len);
     }
 
     editor.clear_count();

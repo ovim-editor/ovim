@@ -100,7 +100,9 @@ fn find_highlight_at_byte(
 /// Calculates the picker overlay area (centered, takes up 80% of screen)
 pub fn get_picker_area(full_area: Rect) -> Rect {
     let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
-    let height = ((full_area.height * 60) / 100).max(15).min(full_area.height);
+    let height = ((full_area.height * 60) / 100)
+        .max(15)
+        .min(full_area.height);
     let x = full_area.width.saturating_sub(width) / 2;
     let y = full_area.height.saturating_sub(height) / 2;
 
@@ -122,7 +124,12 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
 
     let picker_area = get_picker_area(frame.area());
     let show_preview = should_show_preview(picker_area)
-        && matches!(picker.mode(), crate::editor::PickerMode::FindFiles | crate::editor::PickerMode::LiveGrep | crate::editor::PickerMode::LspLocations);
+        && matches!(
+            picker.mode(),
+            crate::editor::PickerMode::FindFiles
+                | crate::editor::PickerMode::LiveGrep
+                | crate::editor::PickerMode::LspLocations
+        );
 
     // Clear underlying content, then fill with picker background
     frame.render_widget(ratatui::widgets::Clear, picker_area);
@@ -150,10 +157,13 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
                 .fg(picker_colors::TITLE)
                 .add_modifier(Modifier::BOLD),
         )))
-        .title_top(Line::from(Span::styled(
-            result_count_title,
-            Style::default().fg(picker_colors::TEXT_MUTED),
-        )).alignment(Alignment::Right))
+        .title_top(
+            Line::from(Span::styled(
+                result_count_title,
+                Style::default().fg(picker_colors::TEXT_MUTED),
+            ))
+            .alignment(Alignment::Right),
+        )
         .borders(Borders::ALL)
         .border_style(Style::default().fg(picker_colors::BORDER))
         .border_type(ratatui::widgets::BorderType::Rounded)
@@ -231,7 +241,12 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
         let filter_width = query_row.width.saturating_sub(search_width + sep_width);
         (
             ratatui::layout::Rect::new(query_row.x, query_row.y, search_width, 1),
-            Some(ratatui::layout::Rect::new(filter_x, query_row.y, filter_width, 1)),
+            Some(ratatui::layout::Rect::new(
+                filter_x,
+                query_row.y,
+                filter_width,
+                1,
+            )),
         )
     } else {
         (query_row, None)
@@ -318,9 +333,15 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
 
     // Search field
     let search_active = active == PickerField::Query;
-    let search_icon_color = if search_active { picker_colors::GREEN } else { picker_colors::TEXT_MUTED };
+    let search_icon_color = if search_active {
+        picker_colors::GREEN
+    } else {
+        picker_colors::TEXT_MUTED
+    };
     let search_text_style = if search_active {
-        Style::default().fg(picker_colors::TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(picker_colors::TEXT_BRIGHT)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(picker_colors::TEXT_MUTED)
     };
@@ -332,7 +353,9 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
     let mut spans = vec![
         Span::styled(
             search_icon,
-            Style::default().fg(search_icon_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(search_icon_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
         Span::styled(query_text.to_string(), search_text_style),
@@ -348,22 +371,32 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
     // Separator
     spans.push(Span::styled(
         "\u{2502}",
-        Style::default().fg(picker_colors::SEPARATOR).bg(picker_colors::BG),
+        Style::default()
+            .fg(picker_colors::SEPARATOR)
+            .bg(picker_colors::BG),
     ));
 
     // File filter field
     let filter_active = active == PickerField::FileFilter;
     let filter_icon = " ";
-    let filter_icon_color = if filter_active { picker_colors::GREEN } else { picker_colors::TEXT_MUTED };
+    let filter_icon_color = if filter_active {
+        picker_colors::GREEN
+    } else {
+        picker_colors::TEXT_MUTED
+    };
     let filter_text_style = if filter_active {
-        Style::default().fg(picker_colors::TEXT_BRIGHT).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(picker_colors::TEXT_BRIGHT)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(picker_colors::TEXT_MUTED)
     };
 
     spans.push(Span::styled(
         filter_icon,
-        Style::default().fg(filter_icon_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(filter_icon_color)
+            .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(" ", Style::default()));
 
@@ -378,7 +411,9 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
         let hint_padding = filter_width.saturating_sub(hint_len);
         spans.push(Span::styled(
             hint.to_string(),
-            Style::default().fg(picker_colors::TEXT_MUTED).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(picker_colors::TEXT_MUTED)
+                .add_modifier(Modifier::ITALIC),
         ));
         if hint_padding > 0 {
             spans.push(Span::styled(
@@ -399,8 +434,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
     }
 
     let query_line = Line::from(spans);
-    let query_paragraph =
-        Paragraph::new(query_line).style(Style::default().bg(picker_colors::BG));
+    let query_paragraph = Paragraph::new(query_line).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(query_paragraph, area);
 }
 
@@ -444,10 +478,20 @@ fn build_highlighted_spans(
                 .fg(picker_colors::GREEN)
                 .bg(bg_color)
                 .add_modifier(Modifier::UNDERLINED)
-                .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() })
+                .add_modifier(if is_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                })
         } else {
-            Style::default().fg(text_color).bg(bg_color)
-                .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() })
+            Style::default()
+                .fg(text_color)
+                .bg(bg_color)
+                .add_modifier(if is_selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                })
         };
         spans.push(Span::styled(segment, style));
     }
@@ -482,7 +526,9 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
     let visible_results: Vec<Line> = (scroll_offset..total.min(scroll_offset + max_results))
         .filter_map(|i| {
-            picker.filtered_result(i).map(|result| (i - scroll_offset, i, result))
+            picker
+                .filtered_result(i)
+                .map(|result| (i - scroll_offset, i, result))
         })
         .map(|(idx, actual_idx, result)| {
             let _ = idx; // used only for position within visible window
@@ -500,13 +546,28 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
             };
 
             let (icon_color, text_color, bg_color) = if is_selected {
-                (picker_colors::GREEN, picker_colors::TEXT_BRIGHT, picker_colors::SELECTED)
+                (
+                    picker_colors::GREEN,
+                    picker_colors::TEXT_BRIGHT,
+                    picker_colors::SELECTED,
+                )
             } else {
-                (picker_colors::TEXT_MUTED, picker_colors::TEXT, picker_colors::BG)
+                (
+                    picker_colors::TEXT_MUTED,
+                    picker_colors::TEXT,
+                    picker_colors::BG,
+                )
             };
 
-            let icon_style = Style::default().fg(icon_color).bg(bg_color)
-                .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() });
+            let icon_style =
+                Style::default()
+                    .fg(icon_color)
+                    .bg(bg_color)
+                    .add_modifier(if is_selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    });
 
             let prefix = if is_selected { " \u{25b8} " } else { "   " };
 
@@ -514,8 +575,14 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                 Span::styled(icon.to_string(), icon_style),
                 Span::styled(
                     prefix.to_string(),
-                    Style::default().fg(text_color).bg(bg_color)
-                        .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() }),
+                    Style::default()
+                        .fg(text_color)
+                        .bg(bg_color)
+                        .add_modifier(if is_selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ),
             ];
 
@@ -525,7 +592,11 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                     // - filename in blue (prominent anchor)
                     // - :line in muted (navigation metadata)
                     // - content in normal text with green match highlights
-                    let bold = if is_selected { Modifier::BOLD } else { Modifier::empty() };
+                    let bold = if is_selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    };
 
                     // Extract just the filename (basename) from the absolute path
                     let basename = std::path::Path::new(&result.location)
@@ -536,9 +607,13 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                     let line_num = format!(":{}", result.line + 1);
 
                     let filename_style = Style::default()
-                        .fg(picker_colors::FILENAME).bg(bg_color).add_modifier(bold);
+                        .fg(picker_colors::FILENAME)
+                        .bg(bg_color)
+                        .add_modifier(bold);
                     let linenum_style = Style::default()
-                        .fg(picker_colors::TEXT_MUTED).bg(bg_color).add_modifier(bold);
+                        .fg(picker_colors::TEXT_MUTED)
+                        .bg(bg_color)
+                        .add_modifier(bold);
 
                     spans.push(Span::styled(basename.clone(), filename_style));
                     spans.push(Span::styled(line_num.clone(), linenum_style));
@@ -552,32 +627,61 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
                     // Match highlights on the content (user searches content, not filenames)
                     let positions = rematch_positions(query, &truncated_content);
-                    spans.extend(build_highlighted_spans(&truncated_content, &positions, text_color, bg_color, is_selected));
+                    spans.extend(build_highlighted_spans(
+                        &truncated_content,
+                        &positions,
+                        text_color,
+                        bg_color,
+                        is_selected,
+                    ));
 
                     let total_len = used + truncated_content.chars().count();
                     let padding = result_width.saturating_sub(total_len);
                     if padding > 0 {
-                        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+                        spans.push(Span::styled(
+                            " ".repeat(padding),
+                            Style::default().bg(bg_color),
+                        ));
                     }
                 } else {
                     // Fallback: no content field, render display as-is
                     let positions = rematch_positions(query, &display);
-                    spans.extend(build_highlighted_spans(&display, &positions, text_color, bg_color, is_selected));
-                    let content_len = icon.chars().count() + prefix.chars().count() + display.chars().count();
+                    spans.extend(build_highlighted_spans(
+                        &display,
+                        &positions,
+                        text_color,
+                        bg_color,
+                        is_selected,
+                    ));
+                    let content_len =
+                        icon.chars().count() + prefix.chars().count() + display.chars().count();
                     let padding = result_width.saturating_sub(content_len);
                     if padding > 0 {
-                        spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+                        spans.push(Span::styled(
+                            " ".repeat(padding),
+                            Style::default().bg(bg_color),
+                        ));
                     }
                 }
             } else {
                 // Standard display with fuzzy match highlighting
                 let positions = rematch_positions(query, &display);
-                spans.extend(build_highlighted_spans(&display, &positions, text_color, bg_color, is_selected));
+                spans.extend(build_highlighted_spans(
+                    &display,
+                    &positions,
+                    text_color,
+                    bg_color,
+                    is_selected,
+                ));
 
-                let content_len = icon.chars().count() + prefix.chars().count() + display.chars().count();
+                let content_len =
+                    icon.chars().count() + prefix.chars().count() + display.chars().count();
                 let padding = result_width.saturating_sub(content_len);
                 if padding > 0 {
-                    spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg_color)));
+                    spans.push(Span::styled(
+                        " ".repeat(padding),
+                        Style::default().bg(bg_color),
+                    ));
                 }
             }
 
@@ -597,10 +701,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                     .fg(Color::Rgb(240, 120, 120))
                     .bg(picker_colors::BG),
             ),
-            Span::styled(
-                " ".repeat(padding),
-                Style::default().bg(picker_colors::BG),
-            ),
+            Span::styled(" ".repeat(padding), Style::default().bg(picker_colors::BG)),
         ]));
     }
     // Result count is shown in the title bar — no footer needed
@@ -614,8 +715,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
         )]));
     }
 
-    let results_paragraph =
-        Paragraph::new(all_lines).style(Style::default().bg(picker_colors::BG));
+    let results_paragraph = Paragraph::new(all_lines).style(Style::default().bg(picker_colors::BG));
     frame.render_widget(results_paragraph, area);
 
     scroll_offset
@@ -756,9 +856,9 @@ fn render_preview_with_syntax(
         // Cache highlights for the visible range
         let mut cache = preview.highlighted_lines.borrow_mut();
         for line_idx in start_line..end_line {
-            cache.entry(line_idx).or_insert_with(|| {
-                highlighter.highlights_for_line(line_idx, &preview.content)
-            });
+            cache
+                .entry(line_idx)
+                .or_insert_with(|| highlighter.highlights_for_line(line_idx, &preview.content));
         }
     }
 
@@ -785,7 +885,8 @@ fn render_preview_with_syntax(
             .cloned()
             .unwrap_or_default();
         let highlights = remap_highlights(&original_highlights, &tab_mapping);
-        let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
+        let is_target_line =
+            result.line > 0 && result.line < total_lines && line_idx == result.line;
 
         // Build the line with syntax highlighting
         let mut spans = Vec::new();
@@ -887,7 +988,8 @@ fn render_plain_preview(
         let content_width = area.width.saturating_sub(7) as usize;
         let line_text = truncate_to_width(&line_text, content_width);
 
-        let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
+        let is_target_line =
+            result.line > 0 && result.line < total_lines && line_idx == result.line;
 
         let line_num = format!("{:>4} \u{2502} ", line_idx + 1);
         let line_num_style = if is_target_line {
@@ -899,7 +1001,9 @@ fn render_plain_preview(
         };
 
         let text_style = if is_target_line {
-            Style::default().fg(Color::White).bg(picker_colors::SELECTED)
+            Style::default()
+                .fg(Color::White)
+                .bg(picker_colors::SELECTED)
         } else {
             Style::default().fg(picker_colors::TEXT)
         };

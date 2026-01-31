@@ -2,7 +2,6 @@
 ///
 /// These tests reproduce the reported issue: "When I `j` to the bottom of the
 /// buffer and type `zb` it 'scrolls up' by one"
-
 mod helpers;
 
 use helpers::{EditorTest, ViewportAssertion};
@@ -39,7 +38,11 @@ fn test_zb_at_end_of_file() {
     // Viewport height 20, so lines 30-49 should be visible
     // scroll_offset = 49 - 19 = 30
     assert_eq!(after.cursor_line(), 49, "Cursor should be on line 49");
-    assert_eq!(after.scroll_offset(), 30, "Scroll offset should be 30 (49 - 19)");
+    assert_eq!(
+        after.scroll_offset(),
+        30,
+        "Scroll offset should be 30 (49 - 19)"
+    );
 
     let bottom_pos = test.editor.viewport_height().saturating_sub(1);
     assert_eq!(
@@ -68,8 +71,14 @@ fn test_zb_then_j_at_end() {
 
     let cursor_after_48g = test.editor.buffer().cursor();
     println!("Buffer line count: {}", test.editor.buffer().line_count());
-    println!("After 48G: cursor at 0-indexed line {}", cursor_after_48g.line());
-    println!("Line content: {:?}", test.editor.buffer().line(cursor_after_48g.line()));
+    println!(
+        "After 48G: cursor at 0-indexed line {}",
+        cursor_after_48g.line()
+    );
+    println!(
+        "Line content: {:?}",
+        test.editor.buffer().line(cursor_after_48g.line())
+    );
     println!("At line {}, before zb:", cursor_after_48g.line());
     println!("{}", ViewportAssertion::new(&test.editor).debug_display());
 
@@ -87,13 +96,24 @@ fn test_zb_then_j_at_end() {
             println!("Window cursor: {:?}", window.cursor());
         }
     }
-    println!("Editor scroll_offset (fallback): {}", test.editor.scroll_offset());
+    println!(
+        "Editor scroll_offset (fallback): {}",
+        test.editor.scroll_offset()
+    );
 
     // 48G moves to 0-indexed line 47 (display line 48)
     // zb should position line 47 at bottom of viewport
     // scroll_offset = 47 - 19 = 28
-    assert_eq!(viewport_after_zb.cursor_line(), 47, "Cursor should be at line 47 after 48G");
-    assert_eq!(viewport_after_zb.scroll_offset(), 28, "Scroll should be 47 - 19 = 28");
+    assert_eq!(
+        viewport_after_zb.cursor_line(),
+        47,
+        "Cursor should be at line 47 after 48G"
+    );
+    assert_eq!(
+        viewport_after_zb.scroll_offset(),
+        28,
+        "Scroll should be 47 - 19 = 28"
+    );
 
     // Now move down to line 48
     test.keys("j");
@@ -107,7 +127,11 @@ fn test_zb_then_j_at_end() {
     // Line 48 is still within viewport (lines 28-47 visible)
     // So scroll should adjust to 48 - 19 = 29
     assert_eq!(viewport.cursor_line(), 48);
-    assert_eq!(viewport.scroll_offset(), 29, "Should scroll to keep cursor visible");
+    assert_eq!(
+        viewport.scroll_offset(),
+        29,
+        "Should scroll to keep cursor visible"
+    );
 }
 
 #[test]
@@ -130,7 +154,10 @@ fn test_zb_when_line_in_middle_of_viewport() {
     println!("BEFORE zb (at line 29 via 30G):");
     println!("{}", before.debug_display());
     if before.scroll_offset() <= 29 {
-        println!("Line 29 visible position in viewport: {}", 29 - before.scroll_offset());
+        println!(
+            "Line 29 visible position in viewport: {}",
+            29 - before.scroll_offset()
+        );
     }
 
     // Press zb - should position line 29 at bottom
@@ -139,16 +166,27 @@ fn test_zb_when_line_in_middle_of_viewport() {
     let after = ViewportAssertion::new(&test.editor);
     println!("\nAFTER zb:");
     println!("{}", after.debug_display());
-    println!("Line 29 visible position in viewport: {}", 29 - after.scroll_offset());
+    println!(
+        "Line 29 visible position in viewport: {}",
+        29 - after.scroll_offset()
+    );
 
     // 30G goes to 0-indexed line 29
     // zb should position line 29 at bottom of viewport (position 19 in viewport)
     // scroll_offset = 29 - 19 = 10
     assert_eq!(after.cursor_line(), 29, "Cursor should be at line 29");
-    assert_eq!(after.scroll_offset(), 10, "Scroll should be 10 to position line 29 at bottom");
+    assert_eq!(
+        after.scroll_offset(),
+        10,
+        "Scroll should be 10 to position line 29 at bottom"
+    );
 
     // Verify line 29 is at position 19 (bottom) in viewport
-    assert_eq!(29 - after.scroll_offset(), 19, "Line 29 should be at viewport position 19 (bottom)");
+    assert_eq!(
+        29 - after.scroll_offset(),
+        19,
+        "Line 29 should be at viewport position 19 (bottom)"
+    );
 }
 
 #[test]
@@ -176,7 +214,11 @@ fn test_zb_user_bug_report_reproduction() {
         let v = ViewportAssertion::new(&test.editor);
         println!("BEFORE zb (at last line 49, after j-ing to bottom):");
         println!("{}", v.debug_display());
-        println!("Visible lines: {}-{}", v.scroll_offset(), v.scroll_offset() + 19);
+        println!(
+            "Visible lines: {}-{}",
+            v.scroll_offset(),
+            v.scroll_offset() + 19
+        );
         v.scroll_offset()
     };
 
@@ -187,26 +229,43 @@ fn test_zb_user_bug_report_reproduction() {
         let v = ViewportAssertion::new(&test.editor);
         println!("\nAFTER zb:");
         println!("{}", v.debug_display());
-        println!("Visible lines: {}-{}", v.scroll_offset(), v.scroll_offset() + 19);
+        println!(
+            "Visible lines: {}-{}",
+            v.scroll_offset(),
+            v.scroll_offset() + 19
+        );
         v.scroll_offset()
     };
 
     // Check if scroll changed (user said "scrolls up by one")
     if scroll_before != scroll_after {
-        println!("\nBUG REPRODUCED! Scroll changed from {} to {}",
-                 scroll_before, scroll_after);
-        println!("This is 'scrolling up by {}' (showing earlier lines)",
-                 scroll_before - scroll_after);
+        println!(
+            "\nBUG REPRODUCED! Scroll changed from {} to {}",
+            scroll_before, scroll_after
+        );
+        println!(
+            "This is 'scrolling up by {}' (showing earlier lines)",
+            scroll_before - scroll_after
+        );
     }
 
     let final_viewport = ViewportAssertion::new(&test.editor);
-    assert_eq!(final_viewport.cursor_line(), 49, "Cursor should still be on line 49");
+    assert_eq!(
+        final_viewport.cursor_line(),
+        49,
+        "Cursor should still be on line 49"
+    );
 
     // Expected: line 49 at bottom = scroll 30 (shows lines 30-49)
     // Should be idempotent!
-    assert_eq!(scroll_after, scroll_before,
-               "zb should be idempotent when line is already at bottom");
-    assert_eq!(scroll_after, 30, "Scroll should be 30 to position line 49 at bottom");
+    assert_eq!(
+        scroll_after, scroll_before,
+        "zb should be idempotent when line is already at bottom"
+    );
+    assert_eq!(
+        scroll_after, 30,
+        "Scroll should be 30 to position line 49 at bottom"
+    );
 }
 
 #[test]
@@ -268,7 +327,11 @@ fn test_zb_with_file_smaller_than_viewport() {
     // Line 9 at bottom: scroll = 9 - 19 = saturates to 0
     // Can't scroll negative, so viewport shows lines 0-9 (all lines)
     assert_eq!(viewport.cursor_line(), 9);
-    assert_eq!(viewport.scroll_offset(), 0, "Can't scroll negative for small files");
+    assert_eq!(
+        viewport.scroll_offset(),
+        0,
+        "Can't scroll negative for small files"
+    );
 }
 
 #[test]
@@ -287,15 +350,25 @@ fn test_g_command_line_numbering() {
 
     let cursor = test.editor.buffer().cursor();
     println!("After 48G: cursor at line {} (0-indexed)", cursor.line());
-    println!("Buffer line content: {:?}", test.editor.buffer().line(cursor.line()));
+    println!(
+        "Buffer line content: {:?}",
+        test.editor.buffer().line(cursor.line())
+    );
 
     // Move to last line with G
     test.keys("G");
 
     let cursor = test.editor.buffer().cursor();
     println!("After G: cursor at line {} (0-indexed)", cursor.line());
-    println!("Buffer line content: {:?}", test.editor.buffer().line(cursor.line()));
+    println!(
+        "Buffer line content: {:?}",
+        test.editor.buffer().line(cursor.line())
+    );
     println!("Expected: line 49 (0-indexed)");
 
-    assert_eq!(cursor.line(), 49, "G should move to last line (49 in 0-indexed)");
+    assert_eq!(
+        cursor.line(),
+        49,
+        "G should move to last line (49 in 0-indexed)"
+    );
 }

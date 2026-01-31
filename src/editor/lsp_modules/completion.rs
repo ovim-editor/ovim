@@ -99,7 +99,8 @@ impl Editor {
         // Query all servers for this language (primary + companions)
         let server_ids = lsp.servers_for_language(language_id);
         let result = if server_ids.len() > 1 {
-            lsp.completion_multi(&uri, line, character, &server_ids).await
+            lsp.completion_multi(&uri, line, character, &server_ids)
+                .await
         } else {
             lsp.completion(&uri, line, character, language_id).await
         };

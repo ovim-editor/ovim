@@ -244,13 +244,7 @@ impl CatAnimation {
     }
 
     /// Update layout info from the dashboard renderer.
-    pub fn set_layout(
-        &mut self,
-        logo_y: u16,
-        logo_center_x: u16,
-        screen_w: u16,
-        screen_h: u16,
-    ) {
+    pub fn set_layout(&mut self, logo_y: u16, logo_center_x: u16, screen_w: u16, screen_h: u16) {
         self.logo_y = logo_y;
         self.logo_center_x = logo_center_x;
         self.screen_w = screen_w;
@@ -401,10 +395,7 @@ impl CatAnimation {
                 height: 1,
             };
 
-            frame.render_widget(
-                ratatui::widgets::Paragraph::new(vec![cat_line]),
-                rect,
-            );
+            frame.render_widget(ratatui::widgets::Paragraph::new(vec![cat_line]), rect);
         }
     }
 
@@ -446,13 +437,13 @@ impl CatAnimation {
                 let cycle = self.idle_index % 24;
                 let sprite = match cycle {
                     0..=5 => SIT,
-                    6 => SIT_ALERT,       // slow blink: eyes open
-                    7..=8 => SIT,         // slow blink: eyes close
-                    9..=12 => SIT_ALERT,  // alert, looking around
-                    13..=16 => LICK,      // grooming
+                    6 => SIT_ALERT,        // slow blink: eyes open
+                    7..=8 => SIT,          // slow blink: eyes close
+                    9..=12 => SIT_ALERT,   // alert, looking around
+                    13..=16 => LICK,       // grooming
                     17..=18 => LOGO_WALK1, // little pace
                     19..=20 => LOGO_WALK2,
-                    _ => SIT,             // settle back down
+                    _ => SIT, // settle back down
                 };
                 let y = logo_top_y.saturating_sub(sprite.len() as u16);
                 (sprite, y)
@@ -489,10 +480,8 @@ impl CatAnimation {
 
             Phase::JumpDown => {
                 let sprite = JUMP_UP;
-                let from =
-                    logo_top_y.saturating_sub(sprite.len() as u16) as f32;
-                let to =
-                    ground_y.saturating_sub(sprite.len() as u16) as f32;
+                let from = logo_top_y.saturating_sub(sprite.len() as u16) as f32;
+                let to = ground_y.saturating_sub(sprite.len() as u16) as f32;
                 let t = self.frame as f32 / 3.0;
                 let y = (from + (to - from) * t).max(0.0) as u16;
                 (sprite, y)

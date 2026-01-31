@@ -166,8 +166,7 @@ fn test_ygg_cursor_stays_at_position() {
 fn test_ygg_single_line_file() {
     let mut test = EditorTest::new("only line");
 
-    test.keys("ygg")
-        .press('p'); // Paste
+    test.keys("ygg").press('p'); // Paste
 
     // Should yank and paste the single line
     assert_eq!(test.buffer_content(), "only line\nonly line\n");
@@ -253,7 +252,10 @@ fn test_ygg_with_register() {
         .keys("\"ap"); // Paste from register 'a'
 
     // Should paste lines 1-2 after line 3
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\nline 2\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 2\nline 3\nline 1\nline 2\n"
+    );
 }
 
 #[test]
@@ -330,7 +332,10 @@ fn test_yG_still_works() {
         .keys("yG") // Yank from line 1 to end
         .press('p'); // Paste
 
-    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\nline 3\nline 2\nline 3\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 1\nline 2\nline 3\nline 2\nline 3\n"
+    );
 }
 
 #[test]

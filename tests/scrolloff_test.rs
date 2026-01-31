@@ -183,7 +183,11 @@ fn test_bug1_scrolloff_larger_than_viewport() {
     let viewport = ViewportAssertion::new(&test.editor);
 
     // Should center cursor when scrolloff > viewport/2
-    assert_eq!(viewport.cursor_line(), 4, "Should be on last line (index 4)");
+    assert_eq!(
+        viewport.cursor_line(),
+        4,
+        "Should be on last line (index 4)"
+    );
     // scroll_offset should center the file, not be negative
     assert!(
         viewport.scroll_offset() == 0,

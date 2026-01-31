@@ -2,7 +2,6 @@
 ///
 /// These tests verify that viewport commands (zt, zz, zb) properly maintain
 /// scroll position after cursor movements.
-
 mod helpers;
 
 use helpers::{EditorTest, ViewportAssertion};

@@ -4,7 +4,9 @@
 //! g*, z*, Z*, "*, m*, '*, `*, q*, @*, f/F/t/T, [*, ]*, W* (Ctrl-W), r*
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, FindDirection, FindType, Motions, Operator, PendingSemanticChange, Range};
+use crate::editor::{
+    Editor, FindDirection, FindType, Motions, Operator, PendingSemanticChange, Range,
+};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -128,10 +130,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             // g; - jump to last change position
             if let Some(change) = editor.last_change() {
                 let pos = change.cursor_before();
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(pos.0, pos.1);
+                editor.buffer_mut().cursor_mut().set_position(pos.0, pos.1);
             }
             editor.clear_count();
         }
@@ -193,7 +192,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .line(line)
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
-                let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+                let disp_col =
+                    crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
 
                 let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col);
                 let target_row = visual_row + count;
@@ -201,13 +201,18 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     target_row.min(wrap_map.total_visual_lines().saturating_sub(1)),
                 );
                 // Compute target display col and convert back to char col
-                let target_disp_col = sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
+                let target_disp_col =
+                    sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
                 let new_line_text = editor
                     .buffer()
                     .line(new_line)
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
-                let new_col = crate::display::display_col_to_char_col(&new_line_text, target_disp_col, tab_width);
+                let new_col = crate::display::display_col_to_char_col(
+                    &new_line_text,
+                    target_disp_col,
+                    tab_width,
+                );
                 // Clamp col to line length
                 let max_col = new_line_text.chars().count().saturating_sub(1);
                 editor
@@ -236,18 +241,24 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .line(line)
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
-                let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+                let disp_col =
+                    crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
 
                 let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col);
                 let target_row = visual_row.saturating_sub(count);
                 let (new_line, sub_line) = wrap_map.visual_to_logical(target_row);
-                let target_disp_col = sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
+                let target_disp_col =
+                    sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
                 let new_line_text = editor
                     .buffer()
                     .line(new_line)
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
-                let new_col = crate::display::display_col_to_char_col(&new_line_text, target_disp_col, tab_width);
+                let new_col = crate::display::display_col_to_char_col(
+                    &new_line_text,
+                    target_disp_col,
+                    tab_width,
+                );
                 let max_col = new_line_text.chars().count().saturating_sub(1);
                 editor
                     .buffer_mut()
@@ -378,7 +389,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // '"' - Register selection
         // =====================================================================
-        ('"', KeyCode::Char(ch)) if ch.is_ascii_alphanumeric() || ch == '"' || ch == '_' || ch == '+' || ch == '*' => {
+        ('"', KeyCode::Char(ch))
+            if ch.is_ascii_alphanumeric() || ch == '"' || ch == '_' || ch == '+' || ch == '*' =>
+        {
             editor.set_pending_register(ch);
         }
 
@@ -601,7 +614,8 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
             helpers::exit_visual_mode_to_normal(editor);
         }
         Operator::Yank => {
-            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection()
+            {
                 helpers::yank_visual_selection(editor)?;
                 editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
             }
@@ -613,9 +627,9 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
             );
-            let search_info = editor.current_search().map(|s| {
-                (s.pattern().to_string(), s.is_forward())
-            });
+            let search_info = editor
+                .current_search()
+                .map(|s| (s.pattern().to_string(), s.is_forward()));
 
             helpers::delete_visual_selection(editor)?;
 
@@ -628,9 +642,11 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
             // Set up pending semantic change for cgn dot-repeat
             if let (Some(change), Some((pattern, forward))) = (delete_change, search_info) {
                 let (old_text, old_range) = match &change {
-                    crate::editor::Change::DeleteText { deleted_text, range, .. } => {
-                        (deleted_text.clone(), range.clone())
-                    }
+                    crate::editor::Change::DeleteText {
+                        deleted_text,
+                        range,
+                        ..
+                    } => (deleted_text.clone(), range.clone()),
                     _ => {
                         // Fallback: reconstruct from cursor positions
                         (String::new(), Range::default())
@@ -694,7 +710,11 @@ fn handle_replace_char(editor: &mut Editor, ch: char) -> Result<()> {
 
             let delete_change = Change::delete(range, deleted, cursor_before);
             let insert_change = Change::insert((line_idx, col), replacement, cursor_before);
-            let change = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_before);
+            let change = Change::composite(
+                vec![delete_change, insert_change],
+                cursor_before,
+                cursor_before,
+            );
 
             editor.add_change(change);
         }

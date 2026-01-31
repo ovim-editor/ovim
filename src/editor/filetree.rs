@@ -222,7 +222,9 @@ impl FileTree {
         }
         // Clamp selected_index after rebuild
         if !self.flattened.is_empty() {
-            self.selected_index = self.selected_index.min(self.flattened.len().saturating_sub(1));
+            self.selected_index = self
+                .selected_index
+                .min(self.flattened.len().saturating_sub(1));
         } else {
             self.selected_index = 0;
         }

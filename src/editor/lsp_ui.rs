@@ -6,9 +6,11 @@ pub struct LspUi {
     /// LSP Manager panel state
     pub lsp_manager_panel: Option<LspManagerPanel>,
     /// Channel for receiving LSP install progress updates
-    pub install_progress_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lsp_manager_panel::InstallProgress>>,
+    pub install_progress_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<lsp_manager_panel::InstallProgress>>,
     /// Channel sender for LSP install progress (cloned into background tasks)
-    pub install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
+    pub install_progress_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
     /// Pending install requests to be picked up by the event loop
     pub pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
 }

@@ -220,17 +220,32 @@ fn test_lsp_file_type_detection() {
     // Rust file
     let mut test_rs = EditorTest::empty();
     test_rs.set_file_path("/tmp/test.rs".to_string());
-    assert!(test_rs.editor.buffer().file_path().unwrap().ends_with("/tmp/test.rs"));
+    assert!(test_rs
+        .editor
+        .buffer()
+        .file_path()
+        .unwrap()
+        .ends_with("/tmp/test.rs"));
 
     // JavaScript file
     let mut test_js = EditorTest::empty();
     test_js.set_file_path("/tmp/test.js".to_string());
-    assert!(test_js.editor.buffer().file_path().unwrap().ends_with("/tmp/test.js"));
+    assert!(test_js
+        .editor
+        .buffer()
+        .file_path()
+        .unwrap()
+        .ends_with("/tmp/test.js"));
 
     // Python file
     let mut test_py = EditorTest::empty();
     test_py.set_file_path("/tmp/test.py".to_string());
-    assert!(test_py.editor.buffer().file_path().unwrap().ends_with("/tmp/test.py"));
+    assert!(test_py
+        .editor
+        .buffer()
+        .file_path()
+        .unwrap()
+        .ends_with("/tmp/test.py"));
 }
 
 /// Test snapshot of code with LSP-relevant syntax

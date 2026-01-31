@@ -2,7 +2,6 @@
 ///
 /// These tests verify that jumps (as opposed to incremental movements)
 /// center the cursor in the viewport, matching Vim/Neovim behavior.
-
 mod helpers;
 
 use helpers::{EditorTest, ViewportAssertion};
@@ -136,7 +135,7 @@ fn test_jump_list_forward_centers_cursor() {
 
     // Create jump entries
     test.keys("30G"); // Jump to line 30
-    test.keys("gg");  // Jump to line 1
+    test.keys("gg"); // Jump to line 1
 
     // Jump back
     test.press_with(

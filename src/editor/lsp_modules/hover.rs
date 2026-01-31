@@ -4,7 +4,7 @@
 //! It includes hover request, caching, scrolling, and display management.
 
 use super::super::Editor;
-use crate::lsp::{uri_from_file_path};
+use crate::lsp::uri_from_file_path;
 use anyhow::{anyhow, Result};
 
 impl Editor {
@@ -96,7 +96,8 @@ impl Editor {
                 self.lsp_state.hover_info = Some(cache.hover_text.clone());
                 self.lsp_state.hover_scroll = 0;
                 self.lsp_state.hover_position = Some((cursor_line, cursor_col));
-                self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
+                self.lsp_state.hover_content_type =
+                    crate::editor::lsp_state::HoverContentType::LspHover;
                 self.mode = crate::mode::Mode::HoverPreview;
                 self.mark_dirty();
                 self.set_lsp_status(String::new());
@@ -105,7 +106,9 @@ impl Editor {
         }
 
         // Cancel any existing pending hover request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::Hover(old)) = self.lsp_state.pending_lsp_response.take() {
+        if let Some(crate::editor::lsp_state::PendingLspResponse::Hover(old)) =
+            self.lsp_state.pending_lsp_response.take()
+        {
             crate::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
             old.task.abort();
         }
@@ -170,13 +173,14 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response = Some(crate::editor::lsp_state::PendingLspResponse::Hover(
-            crate::editor::lsp_state::PendingLspRequest {
-                task,
-                receiver: rx,
-                started: std::time::Instant::now(),
-            }
-        ));
+        self.lsp_state.pending_lsp_response =
+            Some(crate::editor::lsp_state::PendingLspResponse::Hover(
+                crate::editor::lsp_state::PendingLspRequest {
+                    task,
+                    receiver: rx,
+                    started: std::time::Instant::now(),
+                },
+            ));
 
         // Show loading status
         self.set_lsp_status("Loading hover...".to_string());

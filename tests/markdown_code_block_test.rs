@@ -20,8 +20,12 @@ fn main() {
 
     // Line 3: "fn main() {" - should have Rust highlights
     let highlights = buffer.highlights_for_line(3);
-    let has_keyword = highlights.iter().any(|(_, g)| *g == HighlightGroup::Keyword);
-    let has_function = highlights.iter().any(|(_, g)| *g == HighlightGroup::Function);
+    let has_keyword = highlights
+        .iter()
+        .any(|(_, g)| *g == HighlightGroup::Keyword);
+    let has_function = highlights
+        .iter()
+        .any(|(_, g)| *g == HighlightGroup::Function);
     assert!(
         has_keyword || has_function,
         "Line 3 should have Rust keyword or function highlights, got: {:?}",
@@ -30,7 +34,9 @@ fn main() {
 
     // Line 4: "    let x = 42;" - should have keyword and number/constant
     let highlights = buffer.highlights_for_line(4);
-    let has_keyword = highlights.iter().any(|(_, g)| *g == HighlightGroup::Keyword);
+    let has_keyword = highlights
+        .iter()
+        .any(|(_, g)| *g == HighlightGroup::Keyword);
     // Rust tree-sitter uses Constant for integer literals, not Number
     let has_number_or_constant = highlights
         .iter()
@@ -89,7 +95,9 @@ def hello():
 
     // Line 3: "def hello():" - should have keyword highlight
     let highlights = buffer.highlights_for_line(3);
-    let has_keyword = highlights.iter().any(|(_, g)| *g == HighlightGroup::Keyword);
+    let has_keyword = highlights
+        .iter()
+        .any(|(_, g)| *g == HighlightGroup::Keyword);
     assert!(
         has_keyword,
         "Line 3 should have 'def' keyword highlight, got: {:?}",
@@ -112,7 +120,9 @@ some code here
 
     // Line 3: "some code here" - should have MarkupRaw (green) from base markdown
     let highlights = buffer.highlights_for_line(3);
-    let has_markup_raw = highlights.iter().any(|(_, g)| *g == HighlightGroup::MarkupRaw);
+    let has_markup_raw = highlights
+        .iter()
+        .any(|(_, g)| *g == HighlightGroup::MarkupRaw);
     assert!(
         has_markup_raw,
         "Unknown language should fall back to MarkupRaw highlight, got: {:?}",

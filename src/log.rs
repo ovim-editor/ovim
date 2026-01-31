@@ -78,11 +78,7 @@ pub fn write_log(level: &str, context: &str, message: &str) {
     // Fallback: open file on-demand if handle is not available or write failed
     if should_use_fallback {
         let log_path = get_log_path();
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
             let _ = file.write_all(log_line.as_bytes());
             let _ = file.flush();
         }

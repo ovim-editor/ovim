@@ -12,17 +12,16 @@ use unicode_width::UnicodeWidthChar;
 
 use super::helpers::expand_tabs_with_mapping;
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
-use super::styles::{get_diagnostic_sign_style, get_diagnostic_virtual_text_style, get_git_sign_style, get_line_number_style, remap_highlights};
+use super::styles::{
+    get_diagnostic_sign_style, get_diagnostic_virtual_text_style, get_git_sign_style,
+    get_line_number_style, remap_highlights,
+};
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
 
 /// Slices a line for horizontal viewport with visual indicators
 /// Returns (sliced_text, precedes_indicator, extends_indicator)
-fn slice_horizontal_viewport(
-    line: &str,
-    h_offset: usize,
-    width: usize,
-) -> (String, bool, bool) {
+fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (String, bool, bool) {
     // Safety check: if width is 0 or too small, return empty or minimal content
     if width == 0 {
         return (String::new(), false, false);
@@ -308,7 +307,12 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
     let total_width: usize = line
         .spans
         .iter()
-        .map(|s| s.content.chars().map(|c| c.width().unwrap_or(1)).sum::<usize>())
+        .map(|s| {
+            s.content
+                .chars()
+                .map(|c| c.width().unwrap_or(1))
+                .sum::<usize>()
+        })
         .sum();
 
     if total_width <= width {
@@ -380,7 +384,12 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
 }
 
 /// Renders the buffer content and returns the viewport start line
-pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: &BufferLayout) -> usize {
+pub fn render_buffer(
+    frame: &mut Frame,
+    editor: &Editor,
+    theme: &Theme,
+    layout: &BufferLayout,
+) -> usize {
     let area = layout.buffer_area;
     let buffer = editor.buffer();
     let rope = buffer.rope();
@@ -425,7 +434,8 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
 
     // Find matching bracket position if showmatch is enabled
     let bracket_positions: Option<((usize, usize), (usize, usize))> = if editor.options.showmatch {
-        find_matching_bracket_position(buffer).map(|matching_pos| ((cursor.line(), cursor.col()), matching_pos))
+        find_matching_bracket_position(buffer)
+            .map(|matching_pos| ((cursor.line(), cursor.col()), matching_pos))
     } else {
         None
     };
@@ -554,22 +564,29 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                 if has_diagnostics {
                     // Get the first (most severe) diagnostic
                     let diag = line_diagnostics[0];
-                    let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
+                    let (icon, fg_color, bg_color) =
+                        get_diagnostic_virtual_text_style(diag.severity);
                     // Truncate message to fit on screen
                     let max_msg_len = text_width.saturating_sub(line_text.chars().count() + 4);
                     let msg = diag.message.lines().next().unwrap_or("");
                     let msg = if msg.chars().count() > max_msg_len {
-                        format!("{}...", msg.chars().take(max_msg_len.saturating_sub(3)).collect::<String>())
+                        format!(
+                            "{}...",
+                            msg.chars()
+                                .take(max_msg_len.saturating_sub(3))
+                                .collect::<String>()
+                        )
                     } else {
                         msg.to_string()
                     };
-                    let vtext_style = Style::default().fg(fg_color).bg(bg_color).add_modifier(Modifier::ITALIC);
+                    let vtext_style = Style::default()
+                        .fg(fg_color)
+                        .bg(bg_color)
+                        .add_modifier(Modifier::ITALIC);
                     // Plain gap between code and diagnostic (no background)
                     line.spans.push(Span::raw("  "));
-                    line.spans.push(Span::styled(
-                        format!("{} {}", icon, msg),
-                        vtext_style,
-                    ));
+                    line.spans
+                        .push(Span::styled(format!("{} {}", icon, msg), vtext_style));
                 }
 
                 // Apply cursorline background if this is the cursor line
@@ -614,8 +631,13 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                         }
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
-                                editor, buffer, line_idx, line_num_width,
-                                cursor_line_idx, row_idx > 0, &line_diagnostics,
+                                editor,
+                                buffer,
+                                line_idx,
+                                line_num_width,
+                                cursor_line_idx,
+                                row_idx > 0,
+                                &line_diagnostics,
                             ));
                         }
                         lines.push(row);
@@ -623,15 +645,21 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                     }
                 } else {
                     // No wrap: pad and push single line
-                    let line_len: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    let line_len: usize =
+                        line.spans.iter().map(|s| s.content.chars().count()).sum();
                     if line_len < text_width {
                         line.spans
                             .push(Span::raw(" ".repeat(text_width - line_len)));
                     }
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
-                            editor, buffer, line_idx, line_num_width,
-                            cursor_line_idx, false, &line_diagnostics,
+                            editor,
+                            buffer,
+                            line_idx,
+                            line_num_width,
+                            cursor_line_idx,
+                            false,
+                            &line_diagnostics,
                         ));
                     }
                     lines.push(line);
@@ -644,8 +672,13 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                     if chars.is_empty() {
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
-                                editor, buffer, line_idx, line_num_width,
-                                cursor_line_idx, false, &[],
+                                editor,
+                                buffer,
+                                line_idx,
+                                line_num_width,
+                                cursor_line_idx,
+                                false,
+                                &[],
                             ));
                         }
                         lines.push(Line::from(" ".repeat(text_width)));
@@ -657,8 +690,13 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                             }
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
-                                    editor, buffer, line_idx, line_num_width,
-                                    cursor_line_idx, chunk_idx > 0, &[],
+                                    editor,
+                                    buffer,
+                                    line_idx,
+                                    line_num_width,
+                                    cursor_line_idx,
+                                    chunk_idx > 0,
+                                    &[],
                                 ));
                             }
                             let text: String = chunk.iter().collect();
@@ -676,8 +714,13 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                     // No wrap: pad simple lines too
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
-                            editor, buffer, line_idx, line_num_width,
-                            cursor_line_idx, false, &[],
+                            editor,
+                            buffer,
+                            line_idx,
+                            line_num_width,
+                            cursor_line_idx,
+                            false,
+                            &[],
                         ));
                     }
                     let line_len = line_text.chars().count();

@@ -105,6 +105,32 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                 })
             }
         }
+        "cq" | "cquit" => {
+            // Quit with non-zero exit code (like vim's :cq)
+            editor.quit_with_code(1);
+            ApiResponse::Success(SuccessResponse {
+                success: true,
+                message: Some("Quitting with error code 1".to_string()),
+                line_count: None,
+            })
+        }
+        cmd if cmd.starts_with("cq ") || cmd.starts_with("cquit ") => {
+            // :cq N - quit with specific exit code
+            let code_str = cmd.split_whitespace().nth(1).unwrap_or("1");
+            match code_str.parse::<i32>() {
+                Ok(code) => {
+                    editor.quit_with_code(code);
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Quitting with error code {}", code)),
+                        line_count: None,
+                    })
+                }
+                Err(_) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Invalid exit code: {}", code_str),
+                }),
+            }
+        }
         "qa" | "qall" => {
             // Quit all - same as quit for single buffer
             if editor.is_modified() {
@@ -631,10 +657,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             // Switch to next buffer
             editor.next_buffer();
             let buffer_index = editor.current_buffer_index() + 1; // 1-indexed for display
-            let buffer_name = editor.buffer().file_path()
-                .map(|p| std::path::Path::new(p).file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("[No Name]"))
+            let buffer_name = editor
+                .buffer()
+                .file_path()
+                .map(|p| {
+                    std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("[No Name]")
+                })
                 .unwrap_or("[No Name]");
             ApiResponse::Success(SuccessResponse {
                 success: true,
@@ -646,10 +677,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
             // Switch to previous buffer
             editor.prev_buffer();
             let buffer_index = editor.current_buffer_index() + 1; // 1-indexed for display
-            let buffer_name = editor.buffer().file_path()
-                .map(|p| std::path::Path::new(p).file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("[No Name]"))
+            let buffer_name = editor
+                .buffer()
+                .file_path()
+                .map(|p| {
+                    std::path::Path::new(p)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("[No Name]")
+                })
                 .unwrap_or("[No Name]");
             ApiResponse::Success(SuccessResponse {
                 success: true,
@@ -742,23 +778,23 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
         "checktime" => {
             // Check if file has been modified externally and reload if so
             match editor.buffer().check_external_modification() {
-                Ok(true) => {
-                    match editor.buffer_mut().reload_if_changed_sync() {
-                        Ok(true) => ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some("File reloaded from disk (external changes detected)".to_string()),
-                            line_count: None,
-                        }),
-                        Ok(false) => ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some("No external changes detected".to_string()),
-                            line_count: None,
-                        }),
-                        Err(e) => ApiResponse::Error(ErrorResponse {
-                            error: format!("Failed to reload: {}", e),
-                        }),
-                    }
-                }
+                Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
+                    Ok(true) => ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(
+                            "File reloaded from disk (external changes detected)".to_string(),
+                        ),
+                        line_count: None,
+                    }),
+                    Ok(false) => ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("No external changes detected".to_string()),
+                        line_count: None,
+                    }),
+                    Err(e) => ApiResponse::Error(ErrorResponse {
+                        error: format!("Failed to reload: {}", e),
+                    }),
+                },
                 Ok(false) => ApiResponse::Success(SuccessResponse {
                     success: true,
                     message: Some("No external changes detected".to_string()),
@@ -858,7 +894,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     }
                     Err(e) => {
                         // Check if error is because file doesn't exist
-                        if e.to_string().contains("Failed to read file") || e.to_string().contains("No such file") {
+                        if e.to_string().contains("Failed to read file")
+                            || e.to_string().contains("No such file")
+                        {
                             // Create a new empty buffer with the given filename
                             use crate::buffer::Buffer;
                             let mut new_buffer = Buffer::new();
@@ -879,7 +917,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             let tab_index = editor.current_tab_index() + 1;
                             ApiResponse::Success(SuccessResponse {
                                 success: true,
-                                message: Some(format!("Created new file {} in tab {}", filename, tab_index)),
+                                message: Some(format!(
+                                    "Created new file {} in tab {}",
+                                    filename, tab_index
+                                )),
                                 line_count: None,
                             })
                         } else {
@@ -1021,7 +1062,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                     }),
                 }
             // Handle :source - load and execute a Lua file
-            } else if let Some(file) = command.strip_prefix("source ").or_else(|| command.strip_prefix("so ")) {
+            } else if let Some(file) = command
+                .strip_prefix("source ")
+                .or_else(|| command.strip_prefix("so "))
+            {
                 let file = file.trim();
                 if let Some(context) = editor.lua_context_mut() {
                     let path = std::path::PathBuf::from(file);
@@ -1030,7 +1074,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                             // Process any commands from the sourced file using the public API
                             let commands = editor.get_lua_commands();
                             for cmd in commands {
-                                let _ = crate::editor::InputHandler::execute_command_string(editor, &cmd);
+                                let _ = crate::editor::InputHandler::execute_command_string(
+                                    editor, &cmd,
+                                );
                             }
                             ApiResponse::Success(SuccessResponse {
                                 success: true,
@@ -1145,12 +1191,13 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> ApiResponse {
                         } else {
                             " "
                         };
-                        let modified =
-                            if i < editor.buffer_count() && !editor.buffers[i].change_manager().is_at_save_point() {
-                                "+"
-                            } else {
-                                " "
-                            };
+                        let modified = if i < editor.buffer_count()
+                            && !editor.buffers[i].change_manager().is_at_save_point()
+                        {
+                            "+"
+                        } else {
+                            " "
+                        };
                         format!("{} {}  {}", marker, modified, name)
                     })
                     .collect();
@@ -1342,8 +1389,18 @@ fn is_map_command(cmd: &str) -> bool {
     let cmd_word = cmd.split_whitespace().next().unwrap_or("");
     matches!(
         cmd_word,
-        "map" | "nmap" | "imap" | "vmap" | "xmap" | "cmap"
-            | "noremap" | "nnoremap" | "inoremap" | "vnoremap" | "xnoremap" | "cnoremap"
+        "map"
+            | "nmap"
+            | "imap"
+            | "vmap"
+            | "xmap"
+            | "cmap"
+            | "noremap"
+            | "nnoremap"
+            | "inoremap"
+            | "vnoremap"
+            | "xnoremap"
+            | "cnoremap"
     )
 }
 
@@ -1444,7 +1501,9 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> ApiResponse {
     let lhs = KeyMapManager::parse_key_notation(parts[1]);
     let rhs = KeyMapManager::parse_key_notation(parts[2]);
 
-    editor.keymaps_mut().add_mapping(mode, lhs.clone(), rhs, noremap);
+    editor
+        .keymaps_mut()
+        .add_mapping(mode, lhs.clone(), rhs, noremap);
 
     ApiResponse::Success(SuccessResponse {
         success: true,
@@ -1646,9 +1705,13 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                     .map(|w| w.to_string())
                     .unwrap_or_else(|| "0".to_string())
             ),
-            "ignorecase" | "ic" => format!("  {}ignorecase", if opts.ignorecase { "" } else { "no" }),
+            "ignorecase" | "ic" => {
+                format!("  {}ignorecase", if opts.ignorecase { "" } else { "no" })
+            }
             "smartcase" | "scs" => format!("  {}smartcase", if opts.smartcase { "" } else { "no" }),
-            "cursorline" | "cul" => format!("  {}cursorline", if opts.cursorline { "" } else { "no" }),
+            "cursorline" | "cul" => {
+                format!("  {}cursorline", if opts.cursorline { "" } else { "no" })
+            }
             "showmatch" | "sm" => format!("  {}showmatch", if opts.showmatch { "" } else { "no" }),
             "swapfile" | "swf" => format!("  {}swapfile", if opts.swapfile { "" } else { "no" }),
             "backup" | "bk" => format!("  {}backup", if opts.backup { "" } else { "no" }),
@@ -1660,7 +1723,10 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                 }
             }
             "wrap" => format!("  {}wrap", if opts.wrap { "" } else { "no" }),
-            "filetreereveal" => format!("  {}filetreereveal", if opts.file_tree_reveal { "" } else { "no" }),
+            "filetreereveal" => format!(
+                "  {}filetreereveal",
+                if opts.file_tree_reveal { "" } else { "no" }
+            ),
             "mapleader" => format!("  mapleader={}", editor.leader_key()),
             _ => {
                 return ApiResponse::Error(ErrorResponse {
@@ -1954,25 +2020,26 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> ApiResponse {
                     })
                 }
             }
-            "clipboard" | "cb" => {
-                match value {
-                    "unnamedplus" | "unnamed" | "" => {
-                        editor.options.clipboard = value.to_string();
-                        ApiResponse::Success(SuccessResponse {
-                            success: true,
-                            message: Some(if value.is_empty() {
-                                "  clipboard=".to_string()
-                            } else {
-                                format!("  clipboard={}", value)
-                            }),
-                            line_count: None,
-                        })
-                    }
-                    _ => ApiResponse::Error(ErrorResponse {
-                        error: format!("Invalid clipboard value: {} (use 'unnamedplus', 'unnamed', or '')", value),
-                    }),
+            "clipboard" | "cb" => match value {
+                "unnamedplus" | "unnamed" | "" => {
+                    editor.options.clipboard = value.to_string();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(if value.is_empty() {
+                            "  clipboard=".to_string()
+                        } else {
+                            format!("  clipboard={}", value)
+                        }),
+                        line_count: None,
+                    })
                 }
-            }
+                _ => ApiResponse::Error(ErrorResponse {
+                    error: format!(
+                        "Invalid clipboard value: {} (use 'unnamedplus', 'unnamed', or '')",
+                        value
+                    ),
+                }),
+            },
             _ => ApiResponse::Error(ErrorResponse {
                 error: format!("Unknown option: {}", opt_name),
             }),

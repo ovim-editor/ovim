@@ -160,7 +160,8 @@ fn create_g_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
             if let GlobalValue::String(ref s) = global_value {
                 if s.len() == 1 || s == " " {
                     let ch = if s == " " { " " } else { s.as_str() };
-                    bridge_clone.execute_command(format!("set mapleader={}", ch))
+                    bridge_clone
+                        .execute_command(format!("set mapleader={}", ch))
                         .map_err(|e| mlua::Error::external(e.to_string()))?;
                 } else {
                     return Err(mlua::Error::external(
@@ -168,9 +169,7 @@ fn create_g_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     ));
                 }
             } else {
-                return Err(mlua::Error::external(
-                    "vim.g.mapleader must be a string",
-                ));
+                return Err(mlua::Error::external("vim.g.mapleader must be a string"));
             }
         }
         bridge_clone.set_global(key, global_value);

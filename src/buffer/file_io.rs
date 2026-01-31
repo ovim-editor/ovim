@@ -284,19 +284,20 @@ impl Buffer {
 
     /// Checks if a swap file exists for this buffer
     pub fn has_swap_file(&self) -> bool {
-        self.swap_file_path()
-            .map(|p| p.exists())
-            .unwrap_or(false)
+        self.swap_file_path().map(|p| p.exists()).unwrap_or(false)
     }
 
     /// Writes the current buffer content to the swap file
     pub fn write_swap_file(&self) -> Result<()> {
-        let swap_path = self.swap_file_path()
+        let swap_path = self
+            .swap_file_path()
             .context("Cannot write swap file: no file path set")?;
 
         let content = self.rope.to_string();
-        std::fs::write(&swap_path, &content)
-            .context(format!("Failed to write swap file: {}", swap_path.display()))?;
+        std::fs::write(&swap_path, &content).context(format!(
+            "Failed to write swap file: {}",
+            swap_path.display()
+        ))?;
 
         Ok(())
     }
@@ -305,8 +306,10 @@ impl Buffer {
     pub fn delete_swap_file(&self) -> Result<()> {
         if let Some(swap_path) = self.swap_file_path() {
             if swap_path.exists() {
-                std::fs::remove_file(&swap_path)
-                    .context(format!("Failed to delete swap file: {}", swap_path.display()))?;
+                std::fs::remove_file(&swap_path).context(format!(
+                    "Failed to delete swap file: {}",
+                    swap_path.display()
+                ))?;
             }
         }
         Ok(())
@@ -314,15 +317,20 @@ impl Buffer {
 
     /// Creates a backup of the original file before saving
     pub fn create_backup_file(&self) -> Result<()> {
-        let file_path = self.file_path.as_ref()
+        let file_path = self
+            .file_path
+            .as_ref()
             .context("Cannot create backup: no file path set")?;
-        let backup_path = self.backup_file_path()
+        let backup_path = self
+            .backup_file_path()
             .context("Cannot create backup path")?;
 
         let source = Path::new(file_path);
         if source.exists() {
-            std::fs::copy(source, &backup_path)
-                .context(format!("Failed to create backup: {}", backup_path.display()))?;
+            std::fs::copy(source, &backup_path).context(format!(
+                "Failed to create backup: {}",
+                backup_path.display()
+            ))?;
         }
 
         Ok(())
@@ -379,8 +387,7 @@ impl Buffer {
     /// Checks if the file has been modified externally since we loaded/saved it
     /// Returns Ok(true) if file changed, Ok(false) if unchanged, Err if can't determine
     pub fn check_external_modification(&self) -> Result<bool> {
-        let file_path = self.file_path.as_ref()
-            .context("No file path set")?;
+        let file_path = self.file_path.as_ref().context("No file path set")?;
 
         let path = Path::new(file_path);
         if !path.exists() {
@@ -406,8 +413,7 @@ impl Buffer {
             return Ok(false);
         }
 
-        let file_path = self.file_path.clone()
-            .context("No file path set")?;
+        let file_path = self.file_path.clone().context("No file path set")?;
 
         // Read file content
         let bytes = tokio::fs::read(&file_path)
@@ -425,7 +431,10 @@ impl Buffer {
 
         // Validate UTF-8
         let content = String::from_utf8(bytes).map_err(|e| {
-            anyhow::anyhow!("File contains invalid UTF-8 at byte {}", e.utf8_error().valid_up_to())
+            anyhow::anyhow!(
+                "File contains invalid UTF-8 at byte {}",
+                e.utf8_error().valid_up_to()
+            )
         })?;
 
         // Normalize CRLF
@@ -459,16 +468,15 @@ impl Buffer {
     /// Used by :e and :e! commands to reload.
     /// Preserves cursor position (clamped to new file bounds).
     pub fn reload_from_disk(&mut self) -> Result<()> {
-        let file_path = self.file_path.clone()
-            .context("No file path set")?;
+        let file_path = self.file_path.clone().context("No file path set")?;
 
         // Save cursor position before reload
         let old_line = self.cursor.line();
         let old_col = self.cursor.col();
 
         // Read file content synchronously
-        let bytes = std::fs::read(&file_path)
-            .context(format!("Failed to read file: {}", file_path))?;
+        let bytes =
+            std::fs::read(&file_path).context(format!("Failed to read file: {}", file_path))?;
 
         // Update mtime
         self.file_mtime = std::fs::metadata(&file_path)
@@ -480,7 +488,10 @@ impl Buffer {
 
         // Validate UTF-8
         let content = String::from_utf8(bytes).map_err(|e| {
-            anyhow::anyhow!("File contains invalid UTF-8 at byte {}", e.utf8_error().valid_up_to())
+            anyhow::anyhow!(
+                "File contains invalid UTF-8 at byte {}",
+                e.utf8_error().valid_up_to()
+            )
         })?;
 
         // Normalize CRLF
@@ -504,7 +515,11 @@ impl Buffer {
         let max_line = self.rope.len_lines().saturating_sub(1);
         let line = old_line.min(max_line);
         let line_len = self.rope.line(line).len_chars();
-        let max_col = if line_len > 0 { line_len.saturating_sub(1) } else { 0 };
+        let max_col = if line_len > 0 {
+            line_len.saturating_sub(1)
+        } else {
+            0
+        };
         let col = old_col.min(max_col);
         self.cursor.set_position(line, col);
 

@@ -48,15 +48,15 @@ fn test_search_backward_repeat() {
 
     // Press 'n' to find previous (going backward)
     test.keys("n");
-    assert_eq!(
-        test.cursor(),
-        (0, 0),
-        "Should find first 'hello' at (0, 0)"
-    );
+    assert_eq!(test.cursor(), (0, 0), "Should find first 'hello' at (0, 0)");
 
     // Press 'n' again - wraps around
     test.keys("n");
-    assert_eq!(test.cursor(), (2, 0), "Should wrap to last 'hello' at (2, 0)");
+    assert_eq!(
+        test.cursor(),
+        (2, 0),
+        "Should wrap to last 'hello' at (2, 0)"
+    );
 }
 
 #[test]

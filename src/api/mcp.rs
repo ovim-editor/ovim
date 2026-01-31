@@ -142,8 +142,8 @@ pub struct ResourceContent {
 
 /// Handle MCP initialize request
 pub fn handle_initialize(params: Value) -> Result<Value, JsonRpcError> {
-    let _init_params: InitializeParams = serde_json::from_value(params)
-        .map_err(|e| JsonRpcError::invalid_params(&e.to_string()))?;
+    let _init_params: InitializeParams =
+        serde_json::from_value(params).map_err(|e| JsonRpcError::invalid_params(&e.to_string()))?;
 
     // Return server capabilities
     Ok(json!({
@@ -418,7 +418,10 @@ pub fn get_resources(file_path: Option<&str>) -> Vec<Resource> {
         Resource {
             uri: "ovim://context-window".to_string(),
             name: "Context Window".to_string(),
-            description: Some("21-line context around cursor (10 above, current, 10 below) - AI-optimized".to_string()),
+            description: Some(
+                "21-line context around cursor (10 above, current, 10 below) - AI-optimized"
+                    .to_string(),
+            ),
             mime_type: Some("text/plain".to_string()),
         },
         Resource {
@@ -430,7 +433,9 @@ pub fn get_resources(file_path: Option<&str>) -> Vec<Resource> {
         Resource {
             uri: "ovim://snapshot".to_string(),
             name: "Editor Snapshot".to_string(),
-            description: Some("Complete editor state including buffer, cursor, mode, registers".to_string()),
+            description: Some(
+                "Complete editor state including buffer, cursor, mode, registers".to_string(),
+            ),
             mime_type: Some("application/json".to_string()),
         },
         Resource {

@@ -27,7 +27,12 @@ impl Search {
     }
 
     /// Creates a new search with case sensitivity options
-    pub fn new_with_options(pattern: String, forward: bool, ignorecase: bool, smartcase: bool) -> Self {
+    pub fn new_with_options(
+        pattern: String,
+        forward: bool,
+        ignorecase: bool,
+        smartcase: bool,
+    ) -> Self {
         // Determine if we should be case-insensitive
         let case_insensitive = if ignorecase {
             // If smartcase is on and pattern has uppercase, be case-sensitive

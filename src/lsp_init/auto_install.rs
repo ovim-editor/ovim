@@ -57,19 +57,13 @@ pub async fn attempt_auto_install(
         InstallMethod::Npm { package, global } => {
             install_via_npm(language_name, package, *global).await
         }
-        InstallMethod::Cargo { package } => {
-            install_via_cargo(language_name, package).await
-        }
+        InstallMethod::Cargo { package } => install_via_cargo(language_name, package).await,
         InstallMethod::Github {
             repo,
             asset_pattern,
             install_path,
-        } => {
-            install_via_github(language_name, repo, asset_pattern, install_path).await
-        }
-        InstallMethod::Shell { command } => {
-            install_via_shell(language_name, command).await
-        }
+        } => install_via_github(language_name, repo, asset_pattern, install_path).await,
+        InstallMethod::Shell { command } => install_via_shell(language_name, command).await,
     }
 }
 

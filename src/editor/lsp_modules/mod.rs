@@ -8,11 +8,11 @@
 //! - `actions`: Code actions, formatting, refactoring
 
 // Submodules extend Editor with LSP functionality
-mod hover;
-mod goto;
-mod diagnostics;
-mod completion;
 mod actions;
-mod references;
+mod completion;
+mod diagnostics;
+mod goto;
+mod hover;
 pub(in crate::editor) mod navigation;
+mod references;
 pub(in crate::editor) mod workspace_edits;

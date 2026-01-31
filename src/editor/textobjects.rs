@@ -59,11 +59,17 @@ impl TextObjects {
         // If cursor is on punctuation (not word char, not whitespace), select punctuation sequence
         if !is_word_char(chars[col]) {
             let mut start_col = col;
-            while start_col > 0 && !is_word_char(chars[start_col - 1]) && !chars[start_col - 1].is_whitespace() {
+            while start_col > 0
+                && !is_word_char(chars[start_col - 1])
+                && !chars[start_col - 1].is_whitespace()
+            {
                 start_col -= 1;
             }
             let mut end_col = col;
-            while end_col < chars.len() && !is_word_char(chars[end_col]) && !chars[end_col].is_whitespace() {
+            while end_col < chars.len()
+                && !is_word_char(chars[end_col])
+                && !chars[end_col].is_whitespace()
+            {
                 end_col += 1;
             }
             return Some(TextObjectRange {

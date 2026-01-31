@@ -182,7 +182,10 @@ fn test_n_wrap_around() {
         .press('n') // Third at 2:0
         .press('n'); // Wrap to first at 0:0
 
-    assert_eq!(test.buffer_content(), "hello world\nhello test\nhello end\n");
+    assert_eq!(
+        test.buffer_content(),
+        "hello world\nhello test\nhello end\n"
+    );
     test.assert_cursor(0, 0);
 }
 
@@ -238,7 +241,10 @@ fn test_N_wrap_around() {
 
     test.press('/').type_text("hello").press_enter().press('N'); // Backward wrap to last
 
-    assert_eq!(test.buffer_content(), "hello world\nhello test\nhello end\n");
+    assert_eq!(
+        test.buffer_content(),
+        "hello world\nhello test\nhello end\n"
+    );
     // From first match (0:0), N goes backward which wraps to last match (2:0)
     test.assert_cursor(2, 0);
 }

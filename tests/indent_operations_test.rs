@@ -64,7 +64,10 @@ fn test_shift_right_4j() {
 
     test.keys(">4j"); // Indent 5 lines (current + 4 down)
 
-    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\nf\n");
+    assert_eq!(
+        test.buffer_content(),
+        "    a\n    b\n    c\n    d\n    e\nf\n"
+    );
     test.assert_cursor(4, 4);
 }
 
@@ -467,7 +470,10 @@ fn test_2_shift_right_3j() {
 
     test.keys("2>3j"); // Count 2, indent, motion 3j - indents all 6 lines
 
-    assert_eq!(test.buffer_content(), "    a\n    b\n    c\n    d\n    e\n    f\n");
+    assert_eq!(
+        test.buffer_content(),
+        "    a\n    b\n    c\n    d\n    e\n    f\n"
+    );
     test.assert_cursor(5, 4);
 }
 

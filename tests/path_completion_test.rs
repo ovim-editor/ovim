@@ -1,6 +1,6 @@
 mod helpers;
-use helpers::EditorTest;
 use crossterm::event::KeyCode;
+use helpers::EditorTest;
 use ovim::mode::Mode;
 use std::fs;
 use tempfile::TempDir;
@@ -483,8 +483,7 @@ fn test_empty_directory_no_entries() {
     t.type_text(&format!("e {}/", empty_dir.display()));
 
     assert!(
-        !t.editor.path_completion().is_visible()
-            || t.editor.path_completion().entries().is_empty(),
+        !t.editor.path_completion().is_visible() || t.editor.path_completion().entries().is_empty(),
         "Empty directory should show no completion entries"
     );
 }

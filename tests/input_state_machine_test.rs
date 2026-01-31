@@ -47,7 +47,11 @@ mod find_motion {
         test.keys("0");
 
         test.keys("2fo"); // Find second 'o'
-        assert_eq!(test.cursor(), (0, 7), "2fo should find second 'o' at column 7");
+        assert_eq!(
+            test.cursor(),
+            (0, 7),
+            "2fo should find second 'o' at column 7"
+        );
     }
 
     #[test]
@@ -56,7 +60,11 @@ mod find_motion {
         test.keys("0");
 
         test.keys("fz"); // 'z' doesn't exist
-        assert_eq!(test.cursor(), (0, 0), "f with no match should not move cursor");
+        assert_eq!(
+            test.cursor(),
+            (0, 0),
+            "f with no match should not move cursor"
+        );
     }
 
     #[test]
@@ -78,7 +86,11 @@ mod till_motion {
         test.keys("0");
 
         test.keys("to"); // Till 'o'
-        assert_eq!(test.cursor(), (0, 3), "t should move one BEFORE 'o' (column 3)");
+        assert_eq!(
+            test.cursor(),
+            (0, 3),
+            "t should move one BEFORE 'o' (column 3)"
+        );
     }
 
     #[test]
@@ -87,7 +99,11 @@ mod till_motion {
         test.keys("0");
 
         test.keys("2to"); // Till second 'o'
-        assert_eq!(test.cursor(), (0, 6), "2to should stop before second 'o' at column 6");
+        assert_eq!(
+            test.cursor(),
+            (0, 6),
+            "2to should stop before second 'o' at column 6"
+        );
     }
 
     #[test]
@@ -96,7 +112,11 @@ mod till_motion {
         test.keys("0");
 
         test.keys("tz"); // 'z' doesn't exist
-        assert_eq!(test.cursor(), (0, 0), "t with no match should not move cursor");
+        assert_eq!(
+            test.cursor(),
+            (0, 0),
+            "t with no match should not move cursor"
+        );
     }
 
     #[test]
@@ -105,8 +125,8 @@ mod till_motion {
         test.keys("0"); // At 'h'
 
         test.keys("te"); // 'e' is at column 1, cursor would go to 0 (where we are)
-        // This is an edge case - if we're already at the "till" position, behavior varies
-        // Document actual vim behavior here
+                         // This is an edge case - if we're already at the "till" position, behavior varies
+                         // Document actual vim behavior here
         let cursor = test.cursor();
         assert!(cursor.1 <= 1, "t to adjacent char should handle edge case");
     }
@@ -130,7 +150,11 @@ mod find_backward_motion {
         test.keys("$"); // End of line
 
         test.keys("Fo"); // Find 'o' backward
-        assert_eq!(test.cursor(), (0, 7), "F should move TO 'o' at column 7 (searching backward)");
+        assert_eq!(
+            test.cursor(),
+            (0, 7),
+            "F should move TO 'o' at column 7 (searching backward)"
+        );
     }
 
     #[test]
@@ -139,7 +163,11 @@ mod find_backward_motion {
         test.keys("$");
 
         test.keys("2Fo"); // Find second 'o' backward
-        assert_eq!(test.cursor(), (0, 4), "2Fo should find second 'o' backward at column 4");
+        assert_eq!(
+            test.cursor(),
+            (0, 4),
+            "2Fo should find second 'o' backward at column 4"
+        );
     }
 
     #[test]
@@ -149,7 +177,11 @@ mod find_backward_motion {
         let start = test.cursor();
 
         test.keys("Fz"); // 'z' doesn't exist
-        assert_eq!(test.cursor(), start, "F with no match should not move cursor");
+        assert_eq!(
+            test.cursor(),
+            start,
+            "F with no match should not move cursor"
+        );
     }
 }
 
@@ -162,7 +194,11 @@ mod till_backward_motion {
         test.keys("$"); // End of line
 
         test.keys("To"); // Till 'o' backward
-        assert_eq!(test.cursor(), (0, 8), "T should move one AFTER 'o' (column 8) searching backward");
+        assert_eq!(
+            test.cursor(),
+            (0, 8),
+            "T should move one AFTER 'o' (column 8) searching backward"
+        );
     }
 
     #[test]
@@ -171,7 +207,11 @@ mod till_backward_motion {
         test.keys("$");
 
         test.keys("2To"); // Till second 'o' backward
-        assert_eq!(test.cursor(), (0, 5), "2To should stop after second 'o' backward at column 5");
+        assert_eq!(
+            test.cursor(),
+            (0, 5),
+            "2To should stop after second 'o' backward at column 5"
+        );
     }
 
     #[test]
@@ -181,7 +221,11 @@ mod till_backward_motion {
         let start = test.cursor();
 
         test.keys("Tz"); // 'z' doesn't exist
-        assert_eq!(test.cursor(), start, "T with no match should not move cursor");
+        assert_eq!(
+            test.cursor(),
+            start,
+            "T with no match should not move cursor"
+        );
     }
 }
 
@@ -234,7 +278,10 @@ mod find_repeat {
         assert_eq!(after_t, (0, 5), "Tt from end should position cursor at 5");
 
         test.keys(","); // Reverse - till 't' forward - should find 't' at 10, position at 9
-        assert!(test.cursor().1 > after_t.1, ", should reverse T motion direction");
+        assert!(
+            test.cursor().1 > after_t.1,
+            ", should reverse T motion direction"
+        );
     }
 
     #[test]
@@ -243,7 +290,11 @@ mod find_repeat {
         test.keys("0");
 
         test.keys(";"); // No previous find
-        assert_eq!(test.cursor(), (0, 0), "; with no previous find should not move");
+        assert_eq!(
+            test.cursor(),
+            (0, 0),
+            "; with no previous find should not move"
+        );
     }
 }
 
@@ -263,7 +314,7 @@ mod leader_sequences {
         test.keys("0");
 
         test.keys(" "); // Just space
-        // Space enters Leader state, but doesn't move cursor
+                        // Space enters Leader state, but doesn't move cursor
         test.assert_mode(Mode::Normal);
     }
 
@@ -274,7 +325,11 @@ mod leader_sequences {
 
         test.keys(" z"); // Space + invalid key
         test.assert_mode(Mode::Normal);
-        assert_eq!(test.cursor(), (0, 0), "Invalid leader sequence should cancel cleanly");
+        assert_eq!(
+            test.cursor(),
+            (0, 0),
+            "Invalid leader sequence should cancel cleanly"
+        );
     }
 
     // Note: These tests verify the leader sequences exist but don't test LSP functionality
@@ -371,7 +426,11 @@ mod no_collisions {
 
         // f motion should work
         test.keys("fo");
-        assert_eq!(test.cursor(), (0, 4), "f motion should work after leader sequence");
+        assert_eq!(
+            test.cursor(),
+            (0, 4),
+            "f motion should work after leader sequence"
+        );
     }
 
     #[test]
@@ -573,7 +632,11 @@ mod g_prefix {
         test.keys("w"); // Go to 'world'
 
         test.keys("ge"); // End of previous word
-        assert_eq!(test.cursor(), (0, 4), "ge should go to end of previous word");
+        assert_eq!(
+            test.cursor(),
+            (0, 4),
+            "ge should go to end of previous word"
+        );
     }
 
     #[test]
@@ -673,7 +736,11 @@ mod marks {
         test.keys("0"); // Go to start
         test.keys("`a"); // Jump to exact position
 
-        assert_eq!(test.cursor(), (0, 6), "` should jump to exact marked position");
+        assert_eq!(
+            test.cursor(),
+            (0, 6),
+            "` should jump to exact marked position"
+        );
     }
 
     #[test]
@@ -793,8 +860,8 @@ mod state_invariants {
         assert_eq!(test.cursor(), (0, 7));
 
         test.keys("fo"); // fo (without count) should find next 'o'
-        // If there's no next 'o', cursor stays
-        // The important thing is count was cleared
+                         // If there's no next 'o', cursor stays
+                         // The important thing is count was cleared
     }
 
     #[test]
@@ -806,7 +873,7 @@ mod state_invariants {
         assert_eq!(test.buffer_content(), "world\n");
 
         test.keys("w"); // Just motion (not dw again)
-        // Cursor should move, not delete
+                        // Cursor should move, not delete
         test.assert_mode(Mode::Normal);
     }
 }
@@ -831,7 +898,11 @@ mod edge_cases {
         test.keys("0");
 
         test.keys("fa");
-        assert_eq!(test.cursor(), (0, 0), "f on current char should stay or find next");
+        assert_eq!(
+            test.cursor(),
+            (0, 0),
+            "f on current char should stay or find next"
+        );
     }
 
     #[test]

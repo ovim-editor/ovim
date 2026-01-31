@@ -11,8 +11,8 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Change, CharMotion, Editor, InputState, Motions, Operator, PendingSemanticChange,
-    Range, RegisterType,
+    Change, CharMotion, Editor, InputState, Motions, Operator, PendingSemanticChange, Range,
+    RegisterType,
 };
 use crate::mode::Mode;
 use anyhow::Result;
@@ -56,7 +56,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         && editor.pending_command() != Some('g')
         && matches!(
             operator,
-            Operator::Indent | Operator::Dedent | Operator::Fold | Operator::Change | Operator::Delete | Operator::Yank
+            Operator::Indent
+                | Operator::Dedent
+                | Operator::Fold
+                | Operator::Change
+                | Operator::Delete
+                | Operator::Yank
         )
     {
         editor.set_pending_command('g');
@@ -270,8 +275,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (Operator::Fold, KeyCode::Char('j')) => {
             let start_line = editor.buffer().cursor().line();
-            let end_line =
-                (start_line + count).min(editor.buffer().line_count().saturating_sub(1));
+            let end_line = (start_line + count).min(editor.buffer().line_count().saturating_sub(1));
             editor
                 .buffer_mut()
                 .fold_manager_mut()
@@ -325,7 +329,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+            helpers::indent_lines_with_tracking(
+                editor,
+                start_line,
+                end_line,
+                tab_width,
+                cursor_before,
+            )?;
             editor.clear_count();
             true
         }
@@ -335,7 +345,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+            helpers::indent_lines_with_tracking(
+                editor,
+                start_line,
+                end_line,
+                tab_width,
+                cursor_before,
+            )?;
             editor.clear_count();
             true
         }
@@ -346,7 +362,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
             let tab_width = editor.options.tab_width;
-            helpers::indent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+            helpers::indent_lines_with_tracking(
+                editor,
+                start_line,
+                end_line,
+                tab_width,
+                cursor_before,
+            )?;
             editor.clear_count();
             true
         }
@@ -360,7 +382,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+            helpers::dedent_lines_with_tracking(
+                editor,
+                start_line,
+                end_line,
+                tab_width,
+                cursor_before,
+            )?;
             editor.clear_count();
             true
         }
@@ -370,7 +398,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+            helpers::dedent_lines_with_tracking(
+                editor,
+                start_line,
+                end_line,
+                tab_width,
+                cursor_before,
+            )?;
             editor.clear_count();
             true
         }
@@ -381,7 +415,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
             let tab_width = editor.options.tab_width;
-            helpers::dedent_lines_with_tracking(editor, start_line, end_line, tab_width, cursor_before)?;
+            helpers::dedent_lines_with_tracking(
+                editor,
+                start_line,
+                end_line,
+                tab_width,
+                cursor_before,
+            )?;
             editor.clear_count();
             true
         }
@@ -426,16 +466,36 @@ fn try_handle_char_motion_with_operator(
     key_event: KeyEvent,
 ) -> Result<Option<bool>> {
     let motion = match key_event.code {
-        KeyCode::Char('f') if matches!(operator, Operator::Delete | Operator::Change | Operator::Yank) => {
+        KeyCode::Char('f')
+            if matches!(
+                operator,
+                Operator::Delete | Operator::Change | Operator::Yank
+            ) =>
+        {
             CharMotion::Find
         }
-        KeyCode::Char('t') if matches!(operator, Operator::Delete | Operator::Change | Operator::Yank) => {
+        KeyCode::Char('t')
+            if matches!(
+                operator,
+                Operator::Delete | Operator::Change | Operator::Yank
+            ) =>
+        {
             CharMotion::Till
         }
-        KeyCode::Char('F') if matches!(operator, Operator::Delete | Operator::Change | Operator::Yank) => {
+        KeyCode::Char('F')
+            if matches!(
+                operator,
+                Operator::Delete | Operator::Change | Operator::Yank
+            ) =>
+        {
             CharMotion::FindBack
         }
-        KeyCode::Char('T') if matches!(operator, Operator::Delete | Operator::Change | Operator::Yank) => {
+        KeyCode::Char('T')
+            if matches!(
+                operator,
+                Operator::Delete | Operator::Change | Operator::Yank
+            ) =>
+        {
             CharMotion::TillBack
         }
         _ => return Ok(None),
@@ -641,15 +701,23 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                     if !last_line_text.ends_with('\n') {
                         // Add newline to last line first
                         let line_len = last_line_text.chars().count();
-                        editor.buffer_mut().insert_text_at(last_line, line_len, "\n");
+                        editor
+                            .buffer_mut()
+                            .insert_text_at(last_line, line_len, "\n");
                     }
                 }
                 // Now insert the blank line
                 editor.buffer_mut().insert_text_at(actual_line, 0, "\n");
-                editor.buffer_mut().cursor_mut().set_position(actual_line, 0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(actual_line, 0);
             } else {
                 // Insert at existing line position
-                editor.buffer_mut().cursor_mut().set_position(actual_line, 0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(actual_line, 0);
                 helpers::insert_line_above(editor)?;
             }
 
@@ -693,12 +761,10 @@ fn handle_dd(editor: &mut Editor, count: usize) -> Result<()> {
     let start_pos = (delete_start_line, delete_start_col);
     let end_pos = (end_line, 0);
 
-    let deleted = editor.buffer_mut().delete_range(
-        delete_start_line,
-        delete_start_col,
-        end_line,
-        0,
-    );
+    let deleted =
+        editor
+            .buffer_mut()
+            .delete_range(delete_start_line, delete_start_col, end_line, 0);
     let range = Range::new(start_pos, end_pos);
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
@@ -708,7 +774,10 @@ fn handle_dd(editor: &mut Editor, count: usize) -> Result<()> {
     helpers::clamp_cursor_to_buffer(editor);
 
     let current_line = editor.buffer().cursor().line();
-    editor.buffer_mut().cursor_mut().set_position(current_line, 0);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(current_line, 0);
     editor.clear_count();
 
     Ok(())
@@ -738,7 +807,10 @@ fn handle_dl(editor: &mut Editor, count: usize) -> Result<()> {
             editor.delete_to_register(deleted);
             editor.add_change(change);
             editor.mark_buffer_modified();
-            editor.buffer_mut().cursor_mut().set_position(line_idx, start_col);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(line_idx, start_col);
             helpers::clamp_cursor_to_buffer(editor);
         }
     }
@@ -774,7 +846,8 @@ fn handle_dw(editor: &mut Editor, count: usize) -> Result<()> {
                 // Motion didn't move — last word on last line.
                 // Vim deletes to end of line in this case.
                 end_col = line_len;
-            } else if line_len > 0 && end_col == line_len.saturating_sub(1) && end_col >= start_col {
+            } else if line_len > 0 && end_col == line_len.saturating_sub(1) && end_col >= start_col
+            {
                 // Handle end-of-line clamping: when word_forward lands at the last character
                 // of the line (clamped from past-end), extend to include the last character
                 let at_end_of_file = end_line + 1 >= editor.buffer().line_count();
@@ -794,7 +867,10 @@ fn handle_dw(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new(start_pos, end_pos);
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.delete_to_register(deleted);
     editor.add_change(change);
     editor.mark_buffer_modified();
@@ -886,7 +962,10 @@ fn handle_d_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new((start_line, start_col), (end_line, end_col));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();
@@ -981,7 +1060,10 @@ fn handle_d_percent(editor: &mut Editor) -> Result<()> {
         let range = Range::new((start_line, start_col), (end_line, end_col));
         let change = Change::delete(range, deleted.clone(), cursor_before);
 
-        editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(start_line, start_col);
         editor.delete_to_register(deleted);
         editor.add_change(change);
         editor.mark_buffer_modified();
@@ -1052,7 +1134,10 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
 
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
     editor.set_yank_flash_lines(start_line, end_line);
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.clear_count();
     Ok(())
 }
@@ -1082,7 +1167,10 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
     editor.set_yank_flash_lines(start_line, end_line);
-    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(end_line, end_col);
     editor.clear_count();
     Ok(())
 }
@@ -1137,7 +1225,10 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
         .delete_range(start_line, start_col, end_line, end_col);
     let change_range = Range::new(start_pos, end_pos);
 
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.delete_to_register(deleted.clone());
 
     editor.set_pending_semantic_change(PendingSemanticChange {
@@ -1228,7 +1319,10 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
             editor.delete_to_register(deleted);
             editor.add_change(change);
             editor.mark_buffer_modified();
-            editor.buffer_mut().cursor_mut().set_position(line_idx, start_col);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(line_idx, start_col);
 
             editor.clear_count();
             editor.set_mode(Mode::Insert);
@@ -1311,7 +1405,10 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let range = Range::new((start_line, start_col), (end_line, end_col));
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.add_change(change);
     editor.mark_buffer_modified();

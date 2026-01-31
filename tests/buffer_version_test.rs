@@ -20,7 +20,11 @@ fn test_buffer_version_increments_on_delete() {
     let version_after_insert = buffer.version();
 
     buffer.delete_range(0, 0, 0, 1);
-    assert_eq!(buffer.version(), version_after_insert + 1, "Version should increment after delete");
+    assert_eq!(
+        buffer.version(),
+        version_after_insert + 1,
+        "Version should increment after delete"
+    );
 }
 
 #[test]
@@ -34,7 +38,11 @@ fn test_buffer_version_does_not_increment_on_read() {
     let _ = buffer.rope();
     let _ = buffer.version();
 
-    assert_eq!(buffer.version(), version, "Version should not change on reads");
+    assert_eq!(
+        buffer.version(),
+        version,
+        "Version should not change on reads"
+    );
 }
 
 #[test]
@@ -44,5 +52,9 @@ fn test_buffer_version_increments_on_replace_all() {
     let version_after_insert = buffer.version();
 
     buffer.replace_all("replaced");
-    assert_eq!(buffer.version(), version_after_insert + 1, "Version should increment after replace_all");
+    assert_eq!(
+        buffer.version(),
+        version_after_insert + 1,
+        "Version should increment after replace_all"
+    );
 }

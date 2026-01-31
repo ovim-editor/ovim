@@ -13,9 +13,9 @@ use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::char_motion;
 use super::helpers;
 use super::numbers;
-use super::char_motion;
 use crate::editor::input_state::InputState;
 
 /// Handles input in Visual mode (Visual, VisualLine, VisualBlock)
@@ -35,17 +35,13 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     if let Some(pending) = editor.pending_command() {
         editor.clear_pending_command();
         match (pending, key_event.code) {
-            ('g', KeyCode::Char('a'))
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            ('g', KeyCode::Char('a')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 // g Ctrl-A: Sequential increment in visual selection
                 numbers::sequential_modify_numbers(editor, 1)?;
                 helpers::exit_visual_mode_to_normal(editor);
                 return Ok(());
             }
-            ('g', KeyCode::Char('x'))
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
+            ('g', KeyCode::Char('x')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
                 // g Ctrl-X: Sequential decrement in visual selection
                 numbers::sequential_modify_numbers(editor, -1)?;
                 helpers::exit_visual_mode_to_normal(editor);
@@ -101,10 +97,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                                     // Track change
                                     let delete_change = Change::delete(
-                                        Range::new(
-                                            (line_idx, line_start),
-                                            (line_idx, line_end),
-                                        ),
+                                        Range::new((line_idx, line_start), (line_idx, line_end)),
                                         deleted,
                                         cursor_before,
                                     );
@@ -132,7 +125,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // viw - visual inner word
                 if let Some(range) = TextObjects::inner_word(editor.buffer()) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -140,7 +136,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vaw - visual around word
                 if let Some(range) = TextObjects::around_word(editor.buffer()) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -148,7 +147,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vip - visual inner paragraph
                 if let Some(range) = TextObjects::inner_paragraph(editor.buffer()) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col);
                 }
                 return Ok(());
             }
@@ -156,7 +158,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // vap - visual around paragraph
                 if let Some(range) = TextObjects::around_paragraph(editor.buffer()) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col);
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col);
                 }
                 return Ok(());
             }
@@ -168,7 +173,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 };
                 if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, false) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -180,55 +188,85 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 };
                 if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, true) {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
             ('i', KeyCode::Char('(')) | ('i', KeyCode::Char(')')) | ('i', KeyCode::Char('b')) => {
                 // vi( vi) vib - visual inner parentheses
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', false) {
+                if let Some(range) =
+                    TextObjects::paired_delimiters(editor.buffer(), '(', ')', false)
+                {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
             ('a', KeyCode::Char('(')) | ('a', KeyCode::Char(')')) | ('a', KeyCode::Char('b')) => {
                 // va( va) vab - visual around parentheses
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', true) {
+                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', true)
+                {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
             ('i', KeyCode::Char('[')) | ('i', KeyCode::Char(']')) => {
                 // vi[ vi] - visual inner brackets
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', false) {
+                if let Some(range) =
+                    TextObjects::paired_delimiters(editor.buffer(), '[', ']', false)
+                {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
             ('a', KeyCode::Char('[')) | ('a', KeyCode::Char(']')) => {
                 // va[ va] - visual around brackets
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', true) {
+                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', true)
+                {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
             ('i', KeyCode::Char('{')) | ('i', KeyCode::Char('}')) | ('i', KeyCode::Char('B')) => {
                 // vi{ vi} viB - visual inner braces
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', false) {
+                if let Some(range) =
+                    TextObjects::paired_delimiters(editor.buffer(), '{', '}', false)
+                {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
             ('a', KeyCode::Char('{')) | ('a', KeyCode::Char('}')) | ('a', KeyCode::Char('B')) => {
                 // va{ va} vaB - visual around braces
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', true) {
+                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', true)
+                {
                     editor.set_visual_start(range.start_line, range.start_col);
-                    editor.buffer_mut().cursor_mut().set_position(range.end_line, range.end_col.saturating_sub(1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(range.end_line, range.end_col.saturating_sub(1));
                 }
                 return Ok(());
             }
@@ -451,10 +489,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Yank selection
         KeyCode::Char('y') => {
             // Move cursor to start of selection before yanking (Vim behavior)
-            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection()
+            {
                 let mode = editor.mode();
                 helpers::yank_visual_selection(editor)?;
-                editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(start_line, start_col);
                 // Flash the yanked region
                 if mode == Mode::VisualLine {
                     editor.set_yank_flash_lines(start_line, end_line);
@@ -600,9 +642,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('I') => {
             if editor.mode() == Mode::VisualBlock {
                 // Insert at beginning of block on each line
-                if let Some(((start_line, start_col), (end_line, _))) =
-                    editor.visual_selection()
-                {
+                if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
                     let cursor_before = (start_line, start_col);
                     editor
                         .buffer_mut()
@@ -632,8 +672,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('A') => {
             if editor.mode() == Mode::VisualBlock {
                 // Append at end of block on each line
-                if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection()
-                {
+                if let Some(((start_line, _), (end_line, end_col))) = editor.visual_selection() {
                     // Get actual end column - clamp to line length to avoid overflow
                     let line_len = editor
                         .buffer()
@@ -728,11 +767,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                     deleted,
                                     cursor_before,
                                 );
-                                let insert_change = Change::insert(
-                                    (line_idx, line_start),
-                                    toggled,
-                                    cursor_before,
-                                );
+                                let insert_change =
+                                    Change::insert((line_idx, line_start), toggled, cursor_before);
                                 let change = Change::composite(
                                     vec![delete_change, insert_change],
                                     cursor_before,
@@ -782,11 +818,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                     deleted,
                                     cursor_before,
                                 );
-                                let insert_change = Change::insert(
-                                    (start_line, start_col),
-                                    toggled,
-                                    cursor_before,
-                                );
+                                let insert_change =
+                                    Change::insert((start_line, start_col), toggled, cursor_before);
                                 let change = Change::composite(
                                     vec![delete_change, insert_change],
                                     cursor_before,

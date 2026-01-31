@@ -22,7 +22,13 @@ pub struct WrapMap {
 
 impl WrapMap {
     /// Creates a new WrapMap by computing visual line counts for all lines.
-    pub fn new<F>(line_count: usize, wrap_width: usize, tab_width: usize, buffer_version: usize, line_len: F) -> Self
+    pub fn new<F>(
+        line_count: usize,
+        wrap_width: usize,
+        tab_width: usize,
+        buffer_version: usize,
+        line_len: F,
+    ) -> Self
     where
         F: Fn(usize) -> usize,
     {
@@ -89,7 +95,8 @@ impl WrapMap {
             Ok(idx) => idx,
             Err(idx) => idx.saturating_sub(1),
         };
-        let sub_line = visual_row.saturating_sub(self.visual_offsets.get(line).copied().unwrap_or(0));
+        let sub_line =
+            visual_row.saturating_sub(self.visual_offsets.get(line).copied().unwrap_or(0));
         (line, sub_line)
     }
 
@@ -131,8 +138,14 @@ impl WrapMap {
     }
 
     /// Rebuild the entire map (e.g., after resize or wrap toggle).
-    pub fn rebuild<F>(&mut self, line_count: usize, wrap_width: usize, tab_width: usize, buffer_version: usize, line_len: F)
-    where
+    pub fn rebuild<F>(
+        &mut self,
+        line_count: usize,
+        wrap_width: usize,
+        tab_width: usize,
+        buffer_version: usize,
+        line_len: F,
+    ) where
         F: Fn(usize) -> usize,
     {
         let width = wrap_width.max(1);
@@ -169,7 +182,10 @@ impl WrapMap {
         let end = if end_line >= self.visual_counts.len() {
             self.total_visual_lines
         } else {
-            self.visual_offsets.get(end_line).copied().unwrap_or(self.total_visual_lines)
+            self.visual_offsets
+                .get(end_line)
+                .copied()
+                .unwrap_or(self.total_visual_lines)
         };
         end.saturating_sub(start)
     }

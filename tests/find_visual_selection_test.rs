@@ -17,7 +17,11 @@ fn test_simple_visual_find() {
     assert_eq!(test.mode(), Mode::Visual);
 
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 0), (0, 4))), "Should select from a to e");
+    assert_eq!(
+        selection,
+        Some(((0, 0), (0, 4))),
+        "Should select from a to e"
+    );
 }
 
 #[test]
@@ -33,7 +37,11 @@ fn test_fvf_selects_string() {
 
     // Should select from first quote to second quote (inclusive)
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 8), (0, 20))), "Should select from opening to closing quote");
+    assert_eq!(
+        selection,
+        Some(((0, 8), (0, 20))),
+        "Should select from opening to closing quote"
+    );
 
     // Yank should copy the selected text including quotes
     test.type_text("y");
@@ -55,7 +63,11 @@ fn test_fvf_selects_parentheses() {
     assert_eq!(test.mode(), Mode::Visual);
 
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 8), (0, 19))), "Should select parentheses and contents");
+    assert_eq!(
+        selection,
+        Some(((0, 8), (0, 19))),
+        "Should select parentheses and contents"
+    );
 
     test.type_text("y");
     let yanked = test.get_register_content('"');
@@ -74,7 +86,11 @@ fn test_fvf_selects_brackets() {
     assert_eq!(test.mode(), Mode::Visual);
 
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 10), (0, 18))), "Should select brackets and contents");
+    assert_eq!(
+        selection,
+        Some(((0, 10), (0, 18))),
+        "Should select brackets and contents"
+    );
 
     test.type_text("y");
     let yanked = test.get_register_content('"');
@@ -93,7 +109,11 @@ fn test_fvf_selects_braces() {
     assert_eq!(test.mode(), Mode::Visual);
 
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 11), (0, 20))), "Should select braces and contents");
+    assert_eq!(
+        selection,
+        Some(((0, 11), (0, 20))),
+        "Should select braces and contents"
+    );
 
     test.type_text("y");
     let yanked = test.get_register_content('"');
@@ -113,7 +133,11 @@ fn test_tvt_selects_until_char() {
 
     let selection = test.get_visual_selection();
     // t= moves to column 5 (space before =), then vt; selects till before semicolon
-    assert_eq!(selection, Some(((0, 5), (0, 12))), "Should select between = and ;");
+    assert_eq!(
+        selection,
+        Some(((0, 5), (0, 12))),
+        "Should select between = and ;"
+    );
 }
 
 #[test]
@@ -129,7 +153,11 @@ fn test_fvf_backward_then_forward() {
 
     let selection = test.get_visual_selection();
     // Quotes are at: 8, 14, 18, 24. From position 20, F" finds 18, v anchors, f" finds 24
-    assert_eq!(selection, Some(((0, 18), (0, 24))), "Should select from opening quote of 'world' to closing quote");
+    assert_eq!(
+        selection,
+        Some(((0, 18), (0, 24))),
+        "Should select from opening quote of 'world' to closing quote"
+    );
 }
 
 #[test]
@@ -141,7 +169,11 @@ fn test_fvf_multiple_occurrences() {
     // From position 0 (first "), f" finds position 6, v anchors there, f" finds position 8
     test.type_text(r#"f"vf""#);
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 6), (0, 8))), "Should select from first closing quote to second opening quote");
+    assert_eq!(
+        selection,
+        Some(((0, 6), (0, 8))),
+        "Should select from first closing quote to second opening quote"
+    );
 
     // Escape and try selecting second string completely
     test.press_esc(); // ESC
@@ -149,7 +181,11 @@ fn test_fvf_multiple_occurrences() {
 
     test.type_text(r#"f"vf""#);
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 8), (0, 15))), "Should select from opening to closing quote of second string");
+    assert_eq!(
+        selection,
+        Some(((0, 8), (0, 15))),
+        "Should select from opening to closing quote of second string"
+    );
 }
 
 #[test]
@@ -200,7 +236,11 @@ fn test_fvf_with_count() {
     let selection = test.get_visual_selection();
     // Quotes at positions: 0, 2, 4, 6, 8, 10, 12, 14
     // 2f" from 0 finds positions 2 (1st) and 4 (2nd), anchors at 4, f" finds 6
-    assert_eq!(selection, Some(((0, 4), (0, 6))), "Should select opening to closing quote of 'b'");
+    assert_eq!(
+        selection,
+        Some(((0, 4), (0, 6))),
+        "Should select opening to closing quote of 'b'"
+    );
 }
 
 #[test]
@@ -246,7 +286,11 @@ fn test_tilde_visual_selection_case_toggle() {
     test.type_text(r#"f"lvf"h"#);
 
     let selection = test.get_visual_selection();
-    assert_eq!(selection, Some(((0, 9), (0, 19))), "Should select string contents");
+    assert_eq!(
+        selection,
+        Some(((0, 9), (0, 19))),
+        "Should select string contents"
+    );
 
     // Toggle case with ~
     test.type_text("~");

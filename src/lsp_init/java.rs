@@ -107,7 +107,9 @@ pub async fn initialize_hyperion_lsp_background(
             bin
         }
         None => {
-            send_java_status("Hyperion LSP not found. Install it or build from source.".to_string());
+            send_java_status(
+                "Hyperion LSP not found. Install it or build from source.".to_string(),
+            );
             return;
         }
     };

@@ -189,7 +189,13 @@ fn apply_delete_operator(
 
     let change = if let Some(obj_type) = object_type {
         let cursor_after = (range.start_line, range.start_col);
-        Change::delete_text_object(obj_type, cursor_before, cursor_after, deleted.clone(), change_range)
+        Change::delete_text_object(
+            obj_type,
+            cursor_before,
+            cursor_after,
+            deleted.clone(),
+            change_range,
+        )
     } else {
         Change::delete(change_range, deleted.clone(), cursor_before)
     };
@@ -217,7 +223,12 @@ fn apply_yank_operator(
     if reg_type == RegisterType::Line {
         editor.set_yank_flash_lines(range.start_line, range.end_line);
     } else {
-        editor.set_yank_flash_range(range.start_line, range.start_col, range.end_line, range.end_col);
+        editor.set_yank_flash_range(
+            range.start_line,
+            range.start_col,
+            range.end_line,
+            range.end_col,
+        );
     }
     Ok(())
 }
@@ -280,11 +291,7 @@ enum CaseOp {
     Toggle,
 }
 
-fn apply_case_operator(
-    editor: &mut Editor,
-    range: TextObjectRange,
-    case_op: CaseOp,
-) -> Result<()> {
+fn apply_case_operator(editor: &mut Editor, range: TextObjectRange, case_op: CaseOp) -> Result<()> {
     let cursor_before = (
         editor.buffer().cursor().line(),
         editor.buffer().cursor().col(),
@@ -320,14 +327,22 @@ fn apply_case_operator(
         );
         let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
-        let insert_change = Change::insert((range.start_line, range.start_col), transformed, cursor_before);
+        let insert_change = Change::insert(
+            (range.start_line, range.start_col),
+            transformed,
+            cursor_before,
+        );
         insert_change.apply(editor.buffer_mut());
 
         let cursor_after = (
             editor.buffer().cursor().line(),
             editor.buffer().cursor().col(),
         );
-        let composite = Change::composite(vec![delete_change, insert_change], cursor_before, cursor_after);
+        let composite = Change::composite(
+            vec![delete_change, insert_change],
+            cursor_before,
+            cursor_after,
+        );
         editor.add_change(composite);
     }
 

@@ -145,13 +145,8 @@ pub fn modify_number(editor: &mut Editor, delta: i64) -> Result<()> {
             let cursor_after = (line_idx, new_end_col);
 
             // Create a NumberOperation change for proper dot-repeat behavior
-            let number_op = Change::number_operation(
-                delta,
-                cursor_before,
-                cursor_after,
-                old_text,
-                old_range,
-            );
+            let number_op =
+                Change::number_operation(delta, cursor_before, cursor_after, old_text, old_range);
             editor.add_change(number_op);
         }
     }
@@ -312,13 +307,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
     // Check for hex (0x), binary (0b), or octal (0o) prefix
     if chars[end_col] == '0' && end_col + 1 < chars.len() {
         let next = chars[end_col + 1];
-        if next == 'x'
-            || next == 'X'
-            || next == 'b'
-            || next == 'B'
-            || next == 'o'
-            || next == 'O'
-        {
+        if next == 'x' || next == 'X' || next == 'b' || next == 'B' || next == 'o' || next == 'O' {
             end_col += 2;
 
             // Collect hex/binary/octal digits

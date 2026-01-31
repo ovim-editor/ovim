@@ -11,8 +11,8 @@
 
 use super::super::picker::PickerResult;
 use super::super::Editor;
-use crate::lsp::uri_to_file_path;
 use crate::lsp::uri_from_file_path;
+use crate::lsp::uri_to_file_path;
 use anyhow::Result;
 use lsp_types::Location;
 
@@ -69,13 +69,7 @@ impl Editor {
                         let line = sym.range.start.line as usize;
                         let col = self.utf16_to_col(line, sym.range.start.character);
                         PickerResult {
-                            display: format!(
-                                "{}:{}:{} {}",
-                                file_path,
-                                line + 1,
-                                col + 1,
-                                sym.name
-                            ),
+                            display: format!("{}:{}:{} {}", file_path, line + 1, col + 1, sym.name),
                             location: file_path.to_string(),
                             line,
                             col,
@@ -120,14 +114,11 @@ impl Editor {
                     .filter_map(|sym| {
                         let path = uri_to_file_path(&sym.location.uri)?;
                         let line = sym.location.range.start.line as usize;
-                        let col =
-                            self.utf16_to_col(line, sym.location.range.start.character);
+                        let col = self.utf16_to_col(line, sym.location.range.start.character);
                         Some(PickerResult {
                             display: format!(
                                 "{}:{}:{}",
-                                path.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy(),
+                                path.file_name().unwrap_or_default().to_string_lossy(),
                                 line + 1,
                                 col + 1
                             ),
@@ -155,21 +146,14 @@ impl Editor {
         }
     }
 
-    pub(in crate::editor) async fn call_hierarchy_incoming_impl(
-        &mut self,
-    ) -> Result<bool> {
+    pub(in crate::editor) async fn call_hierarchy_incoming_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("call-hierarchy").await?;
 
         self.set_lsp_status("Fetching incoming calls...".to_string());
 
         let items = ctx
             .lsp
-            .prepare_call_hierarchy(
-                ctx.uri,
-                ctx.line,
-                ctx.character,
-                &ctx.language_id,
-            )
+            .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
             .await;
 
         match items {
@@ -192,10 +176,7 @@ impl Editor {
                         self.store_call_hierarchy(&locations);
                         let picker_items = self.locations_to_picker_items(&locations);
                         self.open_location_picker(picker_items, "Incoming Calls");
-                        self.set_lsp_status(format!(
-                            "Found {} incoming calls",
-                            locations.len()
-                        ));
+                        self.set_lsp_status(format!("Found {} incoming calls", locations.len()));
                         Ok(true)
                     }
                     Ok(_) => {
@@ -203,18 +184,13 @@ impl Editor {
                         Ok(false)
                     }
                     Err(e) => {
-                        self.set_lsp_status(format!(
-                            "Incoming calls request failed: {}",
-                            e
-                        ));
+                        self.set_lsp_status(format!("Incoming calls request failed: {}", e));
                         Err(e)
                     }
                 }
             }
             Ok(_) => {
-                self.set_lsp_status(
-                    "Call hierarchy not available at cursor position".to_string(),
-                );
+                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
                 Ok(false)
             }
             Err(e) => {
@@ -224,21 +200,14 @@ impl Editor {
         }
     }
 
-    pub(in crate::editor) async fn call_hierarchy_outgoing_impl(
-        &mut self,
-    ) -> Result<bool> {
+    pub(in crate::editor) async fn call_hierarchy_outgoing_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("call-hierarchy").await?;
 
         self.set_lsp_status("Fetching outgoing calls...".to_string());
 
         let items = ctx
             .lsp
-            .prepare_call_hierarchy(
-                ctx.uri,
-                ctx.line,
-                ctx.character,
-                &ctx.language_id,
-            )
+            .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
             .await;
 
         match items {
@@ -261,10 +230,7 @@ impl Editor {
                         self.store_call_hierarchy(&locations);
                         let picker_items = self.locations_to_picker_items(&locations);
                         self.open_location_picker(picker_items, "Outgoing Calls");
-                        self.set_lsp_status(format!(
-                            "Found {} outgoing calls",
-                            locations.len()
-                        ));
+                        self.set_lsp_status(format!("Found {} outgoing calls", locations.len()));
                         Ok(true)
                     }
                     Ok(_) => {
@@ -272,18 +238,13 @@ impl Editor {
                         Ok(false)
                     }
                     Err(e) => {
-                        self.set_lsp_status(format!(
-                            "Outgoing calls request failed: {}",
-                            e
-                        ));
+                        self.set_lsp_status(format!("Outgoing calls request failed: {}", e));
                         Err(e)
                     }
                 }
             }
             Ok(_) => {
-                self.set_lsp_status(
-                    "Call hierarchy not available at cursor position".to_string(),
-                );
+                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
                 Ok(false)
             }
             Err(e) => {
@@ -300,20 +261,13 @@ impl Editor {
 
         let prepare_result = ctx
             .lsp
-            .prepare_type_hierarchy(
-                ctx.uri.clone(),
-                ctx.line,
-                ctx.character,
-                &ctx.language_id,
-            )
+            .prepare_type_hierarchy(ctx.uri.clone(), ctx.line, ctx.character, &ctx.language_id)
             .await;
 
         let items = match prepare_result {
             Ok(Some(items)) => items,
             Ok(None) => {
-                self.set_lsp_status(
-                    "No type hierarchy available at cursor".to_string(),
-                );
+                self.set_lsp_status("No type hierarchy available at cursor".to_string());
                 return Ok(false);
             }
             Err(e) => {
@@ -326,9 +280,7 @@ impl Editor {
         let mut all_types = Vec::new();
         let mut all_types_data = Vec::new();
 
-        if let Ok(Some(supertypes)) =
-            ctx.lsp.supertypes(item.clone(), &ctx.language_id).await
-        {
+        if let Ok(Some(supertypes)) = ctx.lsp.supertypes(item.clone(), &ctx.language_id).await {
             for supertype in supertypes {
                 let location = Location {
                     uri: supertype.uri.clone(),
@@ -339,9 +291,7 @@ impl Editor {
             }
         }
 
-        if let Ok(Some(subtypes)) =
-            ctx.lsp.subtypes(item.clone(), &ctx.language_id).await
-        {
+        if let Ok(Some(subtypes)) = ctx.lsp.subtypes(item.clone(), &ctx.language_id).await {
             for subtype in subtypes {
                 let location = Location {
                     uri: subtype.uri.clone(),
@@ -391,8 +341,10 @@ impl Editor {
                     return;
                 }
                 let symbol = &self.lsp_state.available_document_symbols[index];
-                let file_path =
-                    self.buffer().file_path().expect("Document symbols require a file");
+                let file_path = self
+                    .buffer()
+                    .file_path()
+                    .expect("Document symbols require a file");
                 let uri = uri_from_file_path(file_path).expect("Invalid file path");
                 Location {
                     uri,
@@ -462,11 +414,9 @@ impl Editor {
         items: Vec<PickerResult>,
         _title: &str,
     ) {
-        let base_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let base_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-        let picker =
-            crate::editor::picker::Picker::new_with_results(base_dir, items);
+        let picker = crate::editor::picker::Picker::new_with_results(base_dir, items);
         self.set_picker(picker);
         self.set_mode(crate::mode::Mode::Picker);
         self.mark_picker_selection_changed();
@@ -513,7 +463,6 @@ impl Editor {
                 (path, loc.clone())
             })
             .collect();
-        self.lsp_state.active_lsp_result_type =
-            Some(crate::editor::LspResultType::CallHierarchy);
+        self.lsp_state.active_lsp_result_type = Some(crate::editor::LspResultType::CallHierarchy);
     }
 }
