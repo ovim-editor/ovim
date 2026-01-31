@@ -392,6 +392,11 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 operator: None,
             });
         }
+        // Jump to matching bracket (%)
+        KeyCode::Char('%') => {
+            Motions::jump_to_matching_bracket(editor.buffer_mut());
+            editor.clear_count();
+        }
         // Search forward in visual mode
         KeyCode::Char('/') => {
             // Save visual search state for extending selection after search
@@ -445,7 +450,11 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Yank selection
         KeyCode::Char('y') => {
-            helpers::yank_visual_selection(editor)?;
+            // Move cursor to start of selection before yanking (Vim behavior)
+            if let Some(((start_line, start_col), _)) = editor.visual_selection() {
+                helpers::yank_visual_selection(editor)?;
+                editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+            }
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Change selection

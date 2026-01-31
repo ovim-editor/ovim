@@ -150,7 +150,7 @@ fn delete_char_backward(editor: &mut Editor) -> Result<()> {
                 .buffer_mut()
                 .delete_range(line_idx, start_col, line_idx, col);
             let range = Range::new(start_pos, end_pos);
-            let change = Change::delete(range, deleted.clone(), cursor_before);
+            let change = Change::delete_backward(range, deleted.clone(), cursor_before);
 
             editor.delete_to_register(deleted);
             editor.add_change(change);

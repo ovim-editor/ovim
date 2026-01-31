@@ -98,10 +98,18 @@ async fn process_editor_tick(
 
     if editor.mode() == Mode::Picker {
         // Tick picker: drives nucleo matching (FindFiles) or applies debounced filter (other modes)
+        let mut picker_changed = false;
         if let Some(picker) = editor.picker_mut() {
             if picker.tick() {
-                editor.mark_dirty();
+                picker_changed = true;
             }
+            // Drain streaming grep results (LiveGrep mode)
+            if picker.drain_grep_results() {
+                picker_changed = true;
+            }
+        }
+        if picker_changed {
+            editor.mark_dirty();
         }
         // Apply debounced filter for non-nucleo modes
         if editor.apply_pending_picker_filter(50) {

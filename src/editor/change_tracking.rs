@@ -28,9 +28,12 @@ impl Editor {
         if let Some(change) = buf.change_manager.last_change.clone() {
             let mut repeated = change;
             let before = (buf.cursor().line(), buf.cursor().col());
-            repeated.set_cursor_before(before);
+            // Call repeat() BEFORE set_cursor_before() — repeat() uses the
+            // original cursor_before to detect deletion direction (forward vs
+            // backward).  It also updates range/deleted_text so undo works.
             repeated.repeat(buf);
             let after = (buf.cursor().line(), buf.cursor().col());
+            repeated.set_cursor_before(before);
             repeated.set_cursor_after(after);
             buf.change_manager.push_change(repeated);
         }

@@ -702,7 +702,8 @@ pub fn render_line_with_highlights(
         let byte_idx = byte_indices[col_idx];
         let syntax_group = syntax_highlights
             .iter()
-            .find(|(range, _)| range.contains(&byte_idx))
+            .filter(|(range, _)| range.contains(&byte_idx))
+            .min_by_key(|(range, _)| range.end - range.start)
             .map(|(_, group)| *group);
 
         // Determine how many characters share the same styling
@@ -745,7 +746,8 @@ pub fn render_line_with_highlights(
             let next_byte_idx = byte_indices[end_col];
             let next_syntax_group = syntax_highlights
                 .iter()
-                .find(|(range, _)| range.contains(&next_byte_idx))
+                .filter(|(range, _)| range.contains(&next_byte_idx))
+                .min_by_key(|(range, _)| range.end - range.start)
                 .map(|(_, group)| *group);
 
             // If styling changes, break
