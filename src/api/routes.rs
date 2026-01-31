@@ -1,7 +1,8 @@
 use super::handlers::{
-    execute_command, get_buffer, get_cursor, get_diagnostics, get_health, get_lsp_status,
-    get_metrics, get_mode, get_outline, get_prometheus_metrics, get_render, get_snapshot, get_trace,
-    search_symbol, send_keys, set_buffer, set_mode,
+    delete_lines, edit_line, execute_command, get_buffer, get_cursor, get_diagnostics, get_health,
+    get_lsp_status, get_metrics, get_mode, get_outline, get_prometheus_metrics, get_render,
+    get_snapshot, get_trace, insert_lines, read_lines, search_symbol, send_keys, set_buffer,
+    set_mode,
 };
 use super::mcp_handler::handle_mcp;
 use super::state::ApiState;
@@ -31,16 +32,18 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/symbol", get(search_symbol))
         .route("/trace", get(get_trace))
         .route("/diagnostics", get(get_diagnostics))
+        .route("/edit", post(edit_line))
+        .route("/insert", post(insert_lines))
+        .route("/delete-lines", post(delete_lines))
+        .route("/lines", get(read_lines))
         .route("/mcp", post(handle_mcp));
 
     // Root router with version namespaces
     Router::new()
         // V1 API under /v1 prefix (recommended)
         .nest("/v1", v1_routes.clone())
-
         // Legacy routes (no prefix) - for backward compatibility
         // These will be removed in ovim v1.0
         .merge(v1_routes)
-
         .with_state(state)
 }

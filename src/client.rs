@@ -6,7 +6,10 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::api::{BufferInfo, ContextWindowInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo, OutlineInfo, SymbolSearchInfo, TraceInfo};
+use crate::api::{
+    BufferInfo, ContextWindowInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo,
+    OutlineInfo, SymbolSearchInfo, TraceInfo,
+};
 use crate::session::SessionInfo;
 
 /// Client for making requests to an ovim session
@@ -279,6 +282,91 @@ impl OvimClient {
         }
 
         anyhow::bail!("Failed to parse context window response")
+    }
+
+    /// Edit text: find and replace on a specific line or whole buffer
+    pub fn edit_line(
+        &self,
+        line: Option<usize>,
+        old: &str,
+        new: &str,
+    ) -> Result<Value> {
+        let response = self
+            .client
+            .post(format!("{}/v1/edit", self.base_url))
+            .json(&json!({
+                "line": line,
+                "old": old,
+                "new": new,
+            }))
+            .send()
+            .context("Failed to send request")?;
+
+        let result: Value = response.json()?;
+        if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("{}", error);
+        }
+        Ok(result)
+    }
+
+    /// Insert text after or before a line
+    pub fn insert_lines(
+        &self,
+        after: Option<usize>,
+        before: Option<usize>,
+        text: &str,
+    ) -> Result<Value> {
+        let response = self
+            .client
+            .post(format!("{}/v1/insert", self.base_url))
+            .json(&json!({
+                "after": after,
+                "before": before,
+                "text": text,
+            }))
+            .send()
+            .context("Failed to send request")?;
+
+        let result: Value = response.json()?;
+        if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("{}", error);
+        }
+        Ok(result)
+    }
+
+    /// Delete a range of lines (1-indexed, inclusive)
+    pub fn delete_lines(&self, from: usize, to: usize) -> Result<Value> {
+        let response = self
+            .client
+            .post(format!("{}/v1/delete-lines", self.base_url))
+            .json(&json!({
+                "from": from,
+                "to": to,
+            }))
+            .send()
+            .context("Failed to send request")?;
+
+        let result: Value = response.json()?;
+        if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("{}", error);
+        }
+        Ok(result)
+    }
+
+    /// Read a range of lines (1-indexed, inclusive)
+    pub fn read_lines(&self, from: usize, to: usize) -> Result<Value> {
+        let response = self
+            .client
+            .get(format!("{}/v1/lines", self.base_url))
+            .query(&[("from", from.to_string()), ("to", to.to_string())])
+            .send()
+            .context("Failed to send request")?;
+
+        let result: Value = response.json()?;
+        if let Some(error) = result.get("error").and_then(|v| v.as_str()) {
+            anyhow::bail!("{}", error);
+        }
+        Ok(result)
     }
 
     /// Send MCP JSON-RPC request

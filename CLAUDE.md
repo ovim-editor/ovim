@@ -33,6 +33,34 @@ cargo build --release
 
 **New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed). See [CLI_SUBCOMMANDS.md](code-docs/CLI_SUBCOMMANDS.md) for details.
 
+## Agent Interface (Recommended for AI/LLM agents)
+
+Stateless, surgical buffer manipulation without fighting vim's modal grammar:
+
+```bash
+# Edit: find and replace text (literal match, \n for newlines)
+ovim edit --line 42 --old "foo" --new "bar"           # Replace on specific line
+ovim edit --old "unique string" --new "replacement"    # Replace in whole buffer (must be unique match)
+
+# Insert lines
+ovim insert --after 42 --text "    new line"           # Insert after line 42
+ovim insert --before 1 --text "use std::io;"           # Insert before line 1
+ovim insert --after 0 --text "first line"              # Insert at start of file
+
+# Delete lines (inclusive)
+ovim delete-lines --from 42 --to 45                    # Delete lines 42-45
+
+# Read lines with line numbers
+ovim read-lines --from 40 --to 60                      # Plain text output
+ovim read-lines --from 40 --to 60 --json               # JSON output
+
+# Context & buffer (read-only)
+ovim context                                           # 21-line window around cursor
+ovim buffer                                            # Full buffer content
+```
+
+All commands support `--session` for multi-session. Line numbers are 1-indexed. All mutations record undo history (`:u` works). Use `\n` in `--old`/`--new`/`--text` for multi-line strings.
+
 ## Architecture
 
 ```

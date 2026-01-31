@@ -4,55 +4,50 @@ mod mcp_handler;
 mod routes;
 mod state;
 
-pub use mcp::{JsonRpcRequest, JsonRpcResponse, get_tools, get_resources};
+pub use mcp::{get_resources, get_tools, JsonRpcRequest, JsonRpcResponse};
 pub use routes::create_router;
 pub use state::{
-    parse_key_string, format_context_window, ApiRequest, ApiResponse, ApiState, BufferInfo, ContextWindowInfo, CursorPosition,
+    format_context_window, parse_key_string, ApiRequest, ApiResponse, ApiState, BufferInfo,
+    ContextWindowInfo, CursorPosition, DiagnosticCounts, DiagnosticItem, DiagnosticsInfo,
     EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, MetricsInfo,
     ModeInfo, OutlineInfo, OutlineSymbol, PickerInfo, PickerResultInfo, RenderInfo, SendKeysResult,
     SuccessResponse, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode, VisualSelection,
-    DiagnosticsInfo, DiagnosticItem, DiagnosticCounts,
+    LinesResponse, LineEntry,
 };
 
 use anyhow::Result;
 use axum::{
+    http::Request,
     middleware::{self, Next},
     response::Response,
-    http::Request,
 };
 use tokio::sync::mpsc;
 
 /// Middleware to add deprecation warning for unversioned API routes
-async fn deprecation_middleware(
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
+async fn deprecation_middleware(req: Request<axum::body::Body>, next: Next) -> Response {
     let path = req.uri().path().to_string();
 
     // Check if this is an unversioned route (not starting with /v1, /v2, etc.)
-    let is_unversioned = !path.starts_with("/v1") &&
-                         !path.starts_with("/v2") &&
-                         path != "/" &&
-                         path != "/favicon.ico";
+    let is_unversioned = !path.starts_with("/v1")
+        && !path.starts_with("/v2")
+        && path != "/"
+        && path != "/favicon.ico";
 
     let mut response = next.run(req).await;
 
     if is_unversioned {
         // Add deprecation header
-        if let Ok(header_value) = "Unversioned API paths are deprecated. Use /v1/* instead.".parse() {
-            response.headers_mut().insert(
-                "X-API-Deprecation",
-                header_value
-            );
+        if let Ok(header_value) = "Unversioned API paths are deprecated. Use /v1/* instead.".parse()
+        {
+            response
+                .headers_mut()
+                .insert("X-API-Deprecation", header_value);
         }
 
         // Add Sunset header (API sunset date - 6 months from now)
         // Note: This is a static date and should be updated periodically
         if let Ok(header_value) = "Wed, 01 Jul 2026 00:00:00 GMT".parse() {
-            response.headers_mut().insert(
-                "Sunset",
-                header_value
-            );
+            response.headers_mut().insert("Sunset", header_value);
         }
     }
 
@@ -67,8 +62,7 @@ pub async fn start_server(
     port_tx: tokio::sync::oneshot::Sender<u16>,
 ) -> Result<()> {
     let state = ApiState::new(tx);
-    let app = create_router(state)
-        .layer(middleware::from_fn(deprecation_middleware));
+    let app = create_router(state).layer(middleware::from_fn(deprecation_middleware));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let actual_addr = listener.local_addr()?;
