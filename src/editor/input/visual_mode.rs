@@ -71,6 +71,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     {
                         let cursor = editor.buffer().cursor();
                         let cursor_before = (cursor.line(), cursor.col());
+                        let mut all_changes = Vec::new();
 
                         for line_idx in start_line..=end_line {
                             if let Some(line) = editor.buffer().line(line_idx) {
@@ -106,14 +107,23 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                         replacement,
                                         cursor_before,
                                     );
-                                    let change = Change::composite(
+                                    let line_change = Change::composite(
                                         vec![delete_change, insert_change],
                                         cursor_before,
                                         cursor_before,
                                     );
-                                    editor.add_change(change);
+                                    all_changes.push(line_change);
                                 }
                             }
+                        }
+
+                        if !all_changes.is_empty() {
+                            let composite = Change::composite(
+                                all_changes,
+                                cursor_before,
+                                cursor_before,
+                            );
+                            editor.add_change(composite);
                         }
                     }
                     editor.clear_visual_start();
@@ -729,6 +739,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 {
                     let cursor = editor.buffer().cursor();
                     let cursor_before = (cursor.line(), cursor.col());
+                    let mut all_changes = Vec::new();
 
                     for line_idx in start_line..=end_line {
                         if let Some(line) = editor.buffer().line(line_idx) {
@@ -739,12 +750,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                             let line_end = (end_col + 1).min(chars.len());
 
                             if line_start < line_end {
-                                // Delete the range
                                 let deleted = editor
                                     .buffer_mut()
                                     .delete_range(line_idx, line_start, line_idx, line_end);
 
-                                // Toggle case
                                 let toggled: String = deleted
                                     .chars()
                                     .map(|ch| {
@@ -756,12 +765,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                     })
                                     .collect();
 
-                                // Insert the toggled text
                                 editor
                                     .buffer_mut()
                                     .insert_text_at(line_idx, line_start, &toggled);
 
-                                // Track change
                                 let delete_change = Change::delete(
                                     Range::new((line_idx, line_start), (line_idx, line_end)),
                                     deleted,
@@ -769,14 +776,23 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                 );
                                 let insert_change =
                                     Change::insert((line_idx, line_start), toggled, cursor_before);
-                                let change = Change::composite(
+                                let line_change = Change::composite(
                                     vec![delete_change, insert_change],
                                     cursor_before,
                                     cursor_before,
                                 );
-                                editor.add_change(change);
+                                all_changes.push(line_change);
                             }
                         }
+                    }
+
+                    if !all_changes.is_empty() {
+                        let composite = Change::composite(
+                            all_changes,
+                            cursor_before,
+                            cursor_before,
+                        );
+                        editor.add_change(composite);
                     }
                 }
                 helpers::exit_visual_mode_to_normal(editor);
@@ -787,6 +803,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 {
                     let cursor = editor.buffer().cursor();
                     let cursor_before = (cursor.line(), cursor.col());
+                    let mut all_changes = Vec::new();
 
                     // Handle simple case: same line
                     if start_line == end_line {
@@ -820,12 +837,11 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                 );
                                 let insert_change =
                                     Change::insert((start_line, start_col), toggled, cursor_before);
-                                let change = Change::composite(
+                                all_changes.push(Change::composite(
                                     vec![delete_change, insert_change],
                                     cursor_before,
                                     cursor_before,
-                                );
-                                editor.add_change(change);
+                                ));
                             }
                         }
                     } else {
@@ -835,7 +851,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                 let line_text = line.trim_end_matches('\n');
                                 let chars: Vec<char> = line_text.chars().collect();
 
-                                // Determine the range for this line
                                 let line_start = if line_idx == start_line { start_col } else { 0 };
                                 let line_end = if line_idx == end_line {
                                     (end_col + 1).min(chars.len())
@@ -844,12 +859,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                 };
 
                                 if line_start < line_end {
-                                    // Delete the range
                                     let deleted = editor
                                         .buffer_mut()
                                         .delete_range(line_idx, line_start, line_idx, line_end);
 
-                                    // Toggle case
                                     let toggled: String = deleted
                                         .chars()
                                         .map(|ch| {
@@ -861,12 +874,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                         })
                                         .collect();
 
-                                    // Insert the toggled text
                                     editor
                                         .buffer_mut()
                                         .insert_text_at(line_idx, line_start, &toggled);
 
-                                    // Track change
                                     let delete_change = Change::delete(
                                         Range::new((line_idx, line_start), (line_idx, line_end)),
                                         deleted,
@@ -877,15 +888,23 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                                         toggled,
                                         cursor_before,
                                     );
-                                    let change = Change::composite(
+                                    all_changes.push(Change::composite(
                                         vec![delete_change, insert_change],
                                         cursor_before,
                                         cursor_before,
-                                    );
-                                    editor.add_change(change);
+                                    ));
                                 }
                             }
                         }
+                    }
+
+                    if !all_changes.is_empty() {
+                        let composite = Change::composite(
+                            all_changes,
+                            cursor_before,
+                            cursor_before,
+                        );
+                        editor.add_change(composite);
                     }
                 }
                 helpers::exit_visual_mode_to_normal(editor);
