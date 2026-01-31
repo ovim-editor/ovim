@@ -155,7 +155,8 @@ fn test_V_yank_paste_lines() {
         test.buffer_content(),
         "line 1\nline 2\nline 3\nline 1\nline 2\n"
     );
-    test.assert_cursor(4, 0);
+    // Vim: cursor on first non-blank of first pasted line
+    test.assert_cursor(3, 0);
 }
 
 #[test]
