@@ -1,4 +1,5 @@
 mod backend;
+mod constructors;
 mod filter;
 mod fuzzy_backend;
 mod grep_backend;
@@ -8,8 +9,6 @@ mod text_editing;
 
 use backend::PickerBackend;
 use fuzzy_backend::FuzzyListKind;
-use grep_backend::GrepState;
-use nucleo_backend::NucleoState;
 pub use result::{PickerAction, PickerField, PickerMode, PickerResult};
 
 use super::fuzzy;
@@ -17,130 +16,30 @@ use std::path::{Path, PathBuf};
 
 pub struct Picker {
     /// Current search query
-    query: String,
+    pub(super) query: String,
     /// Cursor position in the query (byte offset)
-    query_cursor: usize,
+    pub(super) query_cursor: usize,
     /// File filter string (for LiveGrep mode)
-    file_filter: String,
+    pub(super) file_filter: String,
     /// Cursor position in the file filter (char offset)
-    file_filter_cursor: usize,
+    pub(super) file_filter_cursor: usize,
     /// Which input field is currently active
-    active_field: PickerField,
+    pub(super) active_field: PickerField,
     /// All available results (unfiltered)
-    all_results: Vec<PickerResult>,
+    pub(super) all_results: Vec<PickerResult>,
     /// Filtered results based on query
-    filtered_results: Vec<PickerResult>,
+    pub(super) filtered_results: Vec<PickerResult>,
     /// Currently selected index in filtered_results
-    selected_index: usize,
+    pub(super) selected_index: usize,
     /// Base directory for file search
-    base_dir: PathBuf,
+    pub(super) base_dir: PathBuf,
     /// Whether filtering is pending (for debouncing)
-    pending_filter: bool,
+    pub(super) pending_filter: bool,
     /// Typed backend owning mode-specific state
-    backend: PickerBackend,
+    pub(super) backend: PickerBackend,
 }
 
 impl Picker {
-    /// Creates a new file finder picker
-    pub fn new_file_finder(base_dir: PathBuf) -> Self {
-        Self {
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: Vec::new(),
-            filtered_results: Vec::new(),
-            selected_index: 0,
-            base_dir,
-            pending_filter: false,
-            backend: PickerBackend::Nucleo(NucleoState::new()),
-        }
-    }
-
-    /// Creates a new live grep picker
-    pub fn new_live_grep(base_dir: PathBuf) -> Self {
-        Self {
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: Vec::new(),
-            filtered_results: Vec::new(),
-            selected_index: 0,
-            base_dir,
-            pending_filter: false,
-            backend: PickerBackend::Grep(GrepState::new()),
-        }
-    }
-
-    fn new_fuzzy_list(base_dir: PathBuf, results: Vec<PickerResult>, kind: FuzzyListKind) -> Self {
-        Self {
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: results.clone(),
-            filtered_results: results,
-            selected_index: 0,
-            base_dir,
-            pending_filter: false,
-            backend: PickerBackend::FuzzyList(kind),
-        }
-    }
-
-    fn items_to_results(items: Vec<String>) -> Vec<PickerResult> {
-        items
-            .into_iter()
-            .enumerate()
-            .map(|(idx, display)| PickerResult {
-                display,
-                location: idx.to_string(),
-                line: idx,
-                col: 0,
-                match_positions: Vec::new(),
-                content: None,
-            })
-            .collect()
-    }
-
-    /// Creates a new picker with custom items
-    pub fn new_custom(base_dir: PathBuf, items: Vec<String>) -> Self {
-        Self::new_fuzzy_list(
-            base_dir,
-            Self::items_to_results(items),
-            FuzzyListKind::Custom,
-        )
-    }
-
-    /// Creates a new completion picker with custom items
-    pub fn new_completion(base_dir: PathBuf, items: Vec<String>) -> Self {
-        Self::new_fuzzy_list(
-            base_dir,
-            Self::items_to_results(items),
-            FuzzyListKind::Completion,
-        )
-    }
-
-    /// Creates a new LSP locations picker
-    pub fn new_lsp_locations(base_dir: PathBuf, items: Vec<String>) -> Self {
-        Self::new_fuzzy_list(
-            base_dir,
-            Self::items_to_results(items),
-            FuzzyListKind::LspLocations,
-        )
-    }
-
-    /// Creates a new LSP locations picker with pre-built PickerResult items
-    pub fn new_with_results(base_dir: PathBuf, results: Vec<PickerResult>) -> Self {
-        Self::new_fuzzy_list(base_dir, results, FuzzyListKind::LspLocations)
-    }
-
-    /// Sets the prompt for the picker
-    pub fn set_prompt(&mut self, _prompt: String) {}
-
     /// Starts an in-process grep search, cancelling any previous one.
     pub fn start_grep_search(&mut self) {
         if let PickerBackend::Grep(ref mut g) = self.backend {
@@ -286,30 +185,48 @@ impl Picker {
 
     /// Marks that filtering is pending (query changed but not yet filtered).
     pub fn mark_filter_pending(&mut self) {
-        match &mut self.backend {
-            PickerBackend::Nucleo(s) => {
-                s.nucleo.update_query(&self.query);
-            }
+        enum Action {
+            UpdateNucleoQuery,
+            SetPendingFilter,
+            ApplyFileFilter,
+            None,
+        }
+
+        let action = match &self.backend {
+            PickerBackend::Nucleo(_) => Action::UpdateNucleoQuery,
             PickerBackend::Grep(g) => {
                 if self.query != g.last_grep_query {
-                    self.pending_filter = true;
+                    Action::SetPendingFilter
                 } else if self.file_filter != g.last_filtered_file_filter {
-                    // Can't call self.apply_file_filter() while borrowing self.backend
-                    // So inline the filter logic
-                    let file_filter = self.file_filter.clone();
-                    g.last_filtered_file_filter = file_filter.clone();
-                    self.filtered_results = self
-                        .all_results
-                        .iter()
-                        .filter(|r| filter::matches_file_filter(&file_filter, &r.display))
-                        .cloned()
-                        .collect();
-                    self.selected_index = 0;
+                    Action::ApplyFileFilter
+                } else {
+                    Action::None
                 }
             }
-            PickerBackend::FuzzyList(_) => {
+            PickerBackend::FuzzyList(_) => Action::SetPendingFilter,
+        };
+
+        match action {
+            Action::UpdateNucleoQuery => {
+                if let PickerBackend::Nucleo(s) = &mut self.backend {
+                    s.nucleo.update_query(&self.query);
+                }
+            }
+            Action::SetPendingFilter => {
                 self.pending_filter = true;
             }
+            Action::ApplyFileFilter => {
+                if let PickerBackend::Grep(g) = &mut self.backend {
+                    g.last_filtered_file_filter = self.file_filter.clone();
+                }
+                filter::apply_file_filter_to(
+                    &self.file_filter,
+                    &self.all_results,
+                    &mut self.filtered_results,
+                    &mut self.selected_index,
+                );
+            }
+            Action::None => {}
         }
     }
 
@@ -522,184 +439,4 @@ impl Picker {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn test_glob_match_star() {
-        assert!(filter::glob_match("*.rs", "main.rs"));
-        assert!(filter::glob_match("*.rs", "MAIN.RS"));
-        assert!(!filter::glob_match("*.rs", "main.ts"));
-        assert!(filter::glob_match("src/*", "src/lib.rs"));
-        assert!(filter::glob_match("*test*", "my_test_file.rs"));
-    }
-
-    #[test]
-    fn test_glob_match_question() {
-        assert!(filter::glob_match("?.rs", "a.rs"));
-        assert!(!filter::glob_match("?.rs", "ab.rs"));
-        assert!(filter::glob_match("??.rs", "ab.rs"));
-    }
-
-    #[test]
-    fn test_glob_match_combined() {
-        assert!(filter::glob_match("*_test.?s", "my_test.rs"));
-        assert!(filter::glob_match("*_test.?s", "my_test.ts"));
-        assert!(!filter::glob_match("*_test.?s", "my_test.css"));
-    }
-
-    #[test]
-    fn test_matches_file_filter_empty() {
-        assert!(filter::matches_file_filter("", "src/main.rs"));
-        assert!(filter::matches_file_filter("   ", "src/main.rs"));
-    }
-
-    #[test]
-    fn test_matches_file_filter_substring() {
-        assert!(filter::matches_file_filter("mod", "src/mod.rs"));
-        assert!(filter::matches_file_filter("mod", "src/editor/mod.rs"));
-        assert!(!filter::matches_file_filter("xyz", "src/main.rs"));
-    }
-
-    #[test]
-    fn test_matches_file_filter_glob() {
-        assert!(filter::matches_file_filter("*.rs", "src/main.rs"));
-        assert!(!filter::matches_file_filter("*.ts", "src/main.rs"));
-    }
-
-    #[test]
-    fn test_matches_file_filter_multiple_tokens() {
-        assert!(filter::matches_file_filter("*.rs mod", "mod.rs"));
-        assert!(!filter::matches_file_filter("*.rs xyz", "mod.rs"));
-    }
-
-    #[test]
-    fn test_matches_file_filter_path_token() {
-        assert!(filter::matches_file_filter("src/", "src/main.rs"));
-        assert!(!filter::matches_file_filter("src/", "lib/main.rs"));
-    }
-
-    #[test]
-    fn test_toggle_field() {
-        let mut picker = Picker::new_live_grep(PathBuf::from("."));
-        assert_eq!(picker.active_field(), PickerField::Query);
-
-        picker.toggle_field();
-        assert_eq!(picker.active_field(), PickerField::FileFilter);
-
-        picker.toggle_field();
-        assert_eq!(picker.active_field(), PickerField::Query);
-    }
-
-    #[test]
-    fn test_toggle_field_no_op_for_find_files() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
-        assert_eq!(picker.active_field(), PickerField::Query);
-
-        picker.toggle_field();
-        assert_eq!(picker.active_field(), PickerField::Query);
-    }
-
-    #[test]
-    fn test_toggle_field_no_op_for_custom() {
-        let mut picker = Picker::new_custom(PathBuf::from("."), vec!["a".into(), "b".into()]);
-        assert_eq!(picker.active_field(), PickerField::Query);
-
-        picker.toggle_field();
-        assert_eq!(picker.active_field(), PickerField::Query);
-    }
-
-    #[test]
-    fn test_has_file_filter() {
-        assert!(!Picker::new_file_finder(PathBuf::from(".")).has_file_filter());
-        assert!(Picker::new_live_grep(PathBuf::from(".")).has_file_filter());
-        assert!(!Picker::new_custom(PathBuf::from("."), vec![]).has_file_filter());
-        assert!(!Picker::new_completion(PathBuf::from("."), vec![]).has_file_filter());
-        assert!(!Picker::new_lsp_locations(PathBuf::from("."), vec![]).has_file_filter());
-    }
-
-    #[test]
-    fn test_active_field_mut_delegates_to_query() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
-        picker.insert_char('a');
-        picker.insert_char('b');
-        assert_eq!(picker.query(), "ab");
-        assert_eq!(picker.file_filter(), "");
-    }
-
-    #[test]
-    fn test_active_field_mut_delegates_to_filter() {
-        let mut picker = Picker::new_live_grep(PathBuf::from("."));
-        picker.toggle_field();
-
-        picker.insert_char('*');
-        picker.insert_char('.');
-        picker.insert_char('r');
-        picker.insert_char('s');
-        assert_eq!(picker.file_filter(), "*.rs");
-        assert_eq!(picker.query(), "");
-    }
-
-    #[test]
-    fn test_backspace_in_filter_field() {
-        let mut picker = Picker::new_live_grep(PathBuf::from("."));
-        picker.toggle_field();
-        picker.insert_char('a');
-        picker.insert_char('b');
-        picker.backspace_query();
-        assert_eq!(picker.file_filter(), "a");
-        assert_eq!(picker.file_filter_cursor(), 1);
-    }
-
-    #[test]
-    fn test_insert_text_into_query() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
-        picker.insert_text("hello");
-        assert_eq!(picker.query(), "hello");
-        assert_eq!(picker.query_cursor(), 5);
-
-        picker.insert_text(" world");
-        assert_eq!(picker.query(), "hello world");
-        assert_eq!(picker.query_cursor(), 11);
-    }
-
-    #[test]
-    fn test_insert_text_at_cursor_midpoint() {
-        let mut picker = Picker::new_file_finder(PathBuf::from("."));
-        picker.insert_text("ac");
-        picker.move_cursor_left();
-        picker.insert_text("b");
-        assert_eq!(picker.query(), "abc");
-        assert_eq!(picker.query_cursor(), 2);
-    }
-
-    #[test]
-    fn test_insert_text_into_file_filter() {
-        let mut picker = Picker::new_live_grep(PathBuf::from("."));
-        picker.toggle_field();
-        picker.insert_text("*.rs");
-        assert_eq!(picker.file_filter(), "*.rs");
-        assert_eq!(picker.file_filter_cursor(), 4);
-        assert_eq!(picker.query(), "");
-    }
-
-    #[test]
-    fn test_cursor_movement_in_filter_field() {
-        let mut picker = Picker::new_live_grep(PathBuf::from("."));
-        picker.toggle_field();
-        picker.insert_char('a');
-        picker.insert_char('b');
-        picker.insert_char('c');
-        assert_eq!(picker.file_filter_cursor(), 3);
-
-        picker.move_cursor_left();
-        assert_eq!(picker.file_filter_cursor(), 2);
-
-        picker.move_cursor_home();
-        assert_eq!(picker.file_filter_cursor(), 0);
-
-        picker.move_cursor_end();
-        assert_eq!(picker.file_filter_cursor(), 3);
-    }
-}
+mod tests;
