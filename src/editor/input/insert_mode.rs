@@ -127,105 +127,94 @@ fn exit_insert_mode(editor: &mut Editor) {
     editor.mark_buffer_modified(); // Mark for LSP didChange notification
 
     // If we were in visual block insert/append mode, replay the changes on all other lines
-    let should_move_to_end_line =
-        if let Some((start_line, end_line, col, is_append, move_to_end)) =
-            editor.visual_block_insert_state()
-        {
-            // Get the text that was inserted and the first line's change
-            if let Some(last_change) = editor.last_change() {
-                let inserted_text = last_change.get_inserted_text();
-                let mut all_changes = vec![last_change.clone()];
+    let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
+        editor.visual_block_insert_state()
+    {
+        // Get the text that was inserted and the first line's change
+        if let Some(last_change) = editor.last_change() {
+            let inserted_text = last_change.get_inserted_text();
+            let mut all_changes = vec![last_change.clone()];
 
-                // Get cursor_before from first change
-                let cursor_before = last_change.cursor_before();
+            // Get cursor_before from first change
+            let cursor_before = last_change.cursor_before();
 
-                // Replay on lines start_line+1 through end_line
-                for line_idx in (start_line + 1)..=end_line {
-                    if is_append {
-                        // Append mode: insert at end of line
-                        if let Some(line) = editor.buffer().line(line_idx) {
-                            let line_text = line.trim_end_matches('\n');
-                            let line_len = line_text.chars().count();
-                            editor.buffer_mut().insert_text_at(
-                                line_idx,
-                                line_len,
-                                &inserted_text,
-                            );
-                            // Track this insertion as a change
-                            let change = Change::insert(
-                                (line_idx, line_len),
-                                inserted_text.clone(),
-                                cursor_before,
-                            );
-                            all_changes.push(change);
-                        }
-                    } else {
-                        // Insert mode: insert at column
-                        if let Some(line) = editor.buffer().line(line_idx) {
-                            let line_text = line.trim_end_matches('\n');
-                            let insert_col = col.min(line_text.chars().count());
-                            editor.buffer_mut().insert_text_at(
-                                line_idx,
-                                insert_col,
-                                &inserted_text,
-                            );
-                            // Track this insertion as a change
-                            let change = Change::insert(
-                                (line_idx, insert_col),
-                                inserted_text.clone(),
-                                cursor_before,
-                            );
-                            all_changes.push(change);
-                        }
-                    }
-                }
-
-                // If multiple lines were affected, wrap in composite for proper undo
-                if all_changes.len() > 1 {
-                    // Remove the last change (first line's change) from undo stack
-                    editor.pop_last_change();
-
-                    // Create composite for all insert changes
-                    let insert_composite = Change::composite(
-                        all_changes,
-                        cursor_before,
-                        cursor_before,
-                    );
-
-                    // Check if there's a delete composite on the stack (from visual block 'c')
-                    // If so, combine delete + insert into a super-composite
-                    if let Some(prev_change) = editor.pop_last_change() {
-                        // Check if previous change looks like a visual block delete
-                        // (it would be a composite or delete change)
-                        // Combine them into a super-composite
-                        let super_composite = Change::composite(
-                            vec![prev_change, insert_composite],
-                            cursor_before,
+            // Replay on lines start_line+1 through end_line
+            for line_idx in (start_line + 1)..=end_line {
+                if is_append {
+                    // Append mode: insert at end of line
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let line_len = line_text.chars().count();
+                        editor
+                            .buffer_mut()
+                            .insert_text_at(line_idx, line_len, &inserted_text);
+                        // Track this insertion as a change
+                        let change = Change::insert(
+                            (line_idx, line_len),
+                            inserted_text.clone(),
                             cursor_before,
                         );
-                        editor.add_change(super_composite);
-                    } else {
-                        // No previous change, just add the insert composite
-                        editor.add_change(insert_composite);
+                        all_changes.push(change);
+                    }
+                } else {
+                    // Insert mode: insert at column
+                    if let Some(line) = editor.buffer().line(line_idx) {
+                        let line_text = line.trim_end_matches('\n');
+                        let insert_col = col.min(line_text.chars().count());
+                        editor
+                            .buffer_mut()
+                            .insert_text_at(line_idx, insert_col, &inserted_text);
+                        // Track this insertion as a change
+                        let change = Change::insert(
+                            (line_idx, insert_col),
+                            inserted_text.clone(),
+                            cursor_before,
+                        );
+                        all_changes.push(change);
                     }
                 }
             }
 
-            // Clear the visual block insert state
-            editor.set_visual_block_insert_state(None);
-            Some((start_line, end_line, col, is_append, move_to_end))
-        } else {
-            None
-        };
+            // If multiple lines were affected, wrap in composite for proper undo
+            if all_changes.len() > 1 {
+                // Remove the last change (first line's change) from undo stack
+                editor.pop_last_change();
+
+                // Create composite for all insert changes
+                let insert_composite = Change::composite(all_changes, cursor_before, cursor_before);
+
+                // Check if there's a delete composite on the stack (from visual block 'c')
+                // If so, combine delete + insert into a super-composite
+                if let Some(prev_change) = editor.pop_last_change() {
+                    // Check if previous change looks like a visual block delete
+                    // (it would be a composite or delete change)
+                    // Combine them into a super-composite
+                    let super_composite = Change::composite(
+                        vec![prev_change, insert_composite],
+                        cursor_before,
+                        cursor_before,
+                    );
+                    editor.add_change(super_composite);
+                } else {
+                    // No previous change, just add the insert composite
+                    editor.add_change(insert_composite);
+                }
+            }
+        }
+
+        // Clear the visual block insert state
+        editor.set_visual_block_insert_state(None);
+        Some((start_line, end_line, col, is_append, move_to_end))
+    } else {
+        None
+    };
 
     editor.set_mode(Mode::Normal);
 
     // Move cursor left when exiting insert mode (unless at column 0)
 
     // If we were in visual block mode, move cursor to appropriate line
-    if let Some((start_line, end_line, _col, is_append, move_to_end)) =
-        should_move_to_end_line
-    {
+    if let Some((start_line, end_line, _col, is_append, move_to_end)) = should_move_to_end_line {
         // For visual block, calculate the correct final cursor position
         let target_line = if move_to_end { end_line } else { start_line };
 

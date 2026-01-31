@@ -136,11 +136,7 @@ impl TestSession {
     }
 
     /// Helper: PUT request with JSON body
-    pub async fn put_json(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    pub async fn put_json(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
         let resp = reqwest::Client::new()
             .put(&self.url(path))
             .json(&body)

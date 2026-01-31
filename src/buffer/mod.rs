@@ -1,14 +1,14 @@
 mod cursor;
 mod encoding;
-mod line_ending;
-mod highlighting;
 mod file_io;
+mod highlighting;
+mod line_ending;
 mod text_ops;
 
 pub use cursor::Cursor;
 pub use encoding::FileEncoding;
-pub use line_ending::LineEnding;
 pub use highlighting::LineHighlights;
+pub use line_ending::LineEnding;
 
 use crate::editor::ChangeManager;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
@@ -555,7 +555,6 @@ impl Buffer {
             false
         }
     }
-
 }
 
 impl Default for Buffer {
@@ -573,10 +572,22 @@ mod tests {
         // Empty string creates empty rope with 1 empty line
         let buf = Buffer::new_from_str("");
 
-        assert_eq!(buf.rope().len_chars(), 0, "Empty buffer should have 0 chars");
-        assert_eq!(buf.rope().len_lines(), 1, "Empty buffer should have 1 empty line");
+        assert_eq!(
+            buf.rope().len_chars(),
+            0,
+            "Empty buffer should have 0 chars"
+        );
+        assert_eq!(
+            buf.rope().len_lines(),
+            1,
+            "Empty buffer should have 1 empty line"
+        );
         assert_eq!(buf.line_count(), 1, "Empty buffer should report 1 line");
-        assert_eq!(buf.line(0), Some("".to_string()), "First line should be empty string");
+        assert_eq!(
+            buf.line(0),
+            Some("".to_string()),
+            "First line should be empty string"
+        );
         assert_eq!(buf.cursor().line(), 0, "Cursor should be at line 0");
         assert_eq!(buf.cursor().col(), 0, "Cursor should be at col 0");
         assert!(!buf.is_modified(), "New buffer should not be modified");
@@ -587,9 +598,21 @@ mod tests {
         // Single newline creates rope with 1 char, 2 lines (one empty, one after newline)
         let buf = Buffer::new_from_str("\n");
 
-        assert_eq!(buf.rope().len_chars(), 1, "Single newline should have 1 char");
-        assert_eq!(buf.rope().len_lines(), 2, "Single newline should have 2 lines");
-        assert_eq!(buf.rope().to_string(), "\n", "Content should be just newline");
+        assert_eq!(
+            buf.rope().len_chars(),
+            1,
+            "Single newline should have 1 char"
+        );
+        assert_eq!(
+            buf.rope().len_lines(),
+            2,
+            "Single newline should have 2 lines"
+        );
+        assert_eq!(
+            buf.rope().to_string(),
+            "\n",
+            "Content should be just newline"
+        );
     }
 
     #[test]
@@ -599,9 +622,17 @@ mod tests {
 
         assert_eq!(buf.rope().to_string(), "hello\n", "Newline should be added");
         assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
-        assert_eq!(buf.rope().len_lines(), 2, "Ropey counts 2 lines (content + phantom empty)");
+        assert_eq!(
+            buf.rope().len_lines(),
+            2,
+            "Ropey counts 2 lines (content + phantom empty)"
+        );
         assert_eq!(buf.line_count(), 1, "Vim semantics: 1 line for 'hello\\n'");
-        assert_eq!(buf.line(0), Some("hello\n".to_string()), "First line should include newline");
+        assert_eq!(
+            buf.line(0),
+            Some("hello\n".to_string()),
+            "First line should include newline"
+        );
     }
 
     #[test]
@@ -609,7 +640,11 @@ mod tests {
         // Content with trailing newline is unchanged
         let buf = Buffer::new_from_str("hello\n");
 
-        assert_eq!(buf.rope().to_string(), "hello\n", "Content should be unchanged");
+        assert_eq!(
+            buf.rope().to_string(),
+            "hello\n",
+            "Content should be unchanged"
+        );
         assert_eq!(buf.rope().len_chars(), 6, "Should have 5 chars + newline");
         assert_eq!(buf.rope().len_lines(), 2, "Should have 2 lines");
     }
@@ -619,7 +654,11 @@ mod tests {
         // Multiple lines with trailing newline
         let buf = Buffer::new_from_str("line1\nline2\nline3\n");
 
-        assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Content should be unchanged");
+        assert_eq!(
+            buf.rope().to_string(),
+            "line1\nline2\nline3\n",
+            "Content should be unchanged"
+        );
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
         assert_eq!(buf.line(0), Some("line1\n".to_string()));
         assert_eq!(buf.line(1), Some("line2\n".to_string()));
@@ -631,9 +670,17 @@ mod tests {
         // Multiple lines without trailing newline gets one added
         let buf = Buffer::new_from_str("line1\nline2\nline3");
 
-        assert_eq!(buf.rope().to_string(), "line1\nline2\nline3\n", "Newline should be added");
+        assert_eq!(
+            buf.rope().to_string(),
+            "line1\nline2\nline3\n",
+            "Newline should be added"
+        );
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
-        assert_eq!(buf.line(2), Some("line3\n".to_string()), "Last line should have newline added");
+        assert_eq!(
+            buf.line(2),
+            Some("line3\n".to_string()),
+            "Last line should have newline added"
+        );
     }
 
     #[test]
@@ -642,9 +689,17 @@ mod tests {
         let buf = Buffer::new_from_str("line1\n\nline3\n");
 
         assert_eq!(buf.rope().to_string(), "line1\n\nline3\n");
-        assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines (line1, empty, line3)");
+        assert_eq!(
+            buf.line_count(),
+            3,
+            "Vim semantics: 3 lines (line1, empty, line3)"
+        );
         assert_eq!(buf.line(0), Some("line1\n".to_string()));
-        assert_eq!(buf.line(1), Some("\n".to_string()), "Middle line should be just newline");
+        assert_eq!(
+            buf.line(1),
+            Some("\n".to_string()),
+            "Middle line should be just newline"
+        );
         assert_eq!(buf.line(2), Some("line3\n".to_string()));
     }
 

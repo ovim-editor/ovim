@@ -85,7 +85,9 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
         while (add_before || add_after) && used_width < available_width {
             if add_before {
                 let tab_width = tab_widths[before_idx].max(MIN_TAB_WIDTH) + SEPARATOR_WIDTH;
-                if used_width + tab_width <= available_width.saturating_sub(OVERFLOW_INDICATOR_WIDTH) {
+                if used_width + tab_width
+                    <= available_width.saturating_sub(OVERFLOW_INDICATOR_WIDTH)
+                {
                     visible_tabs.insert(0, before_idx);
                     used_width += tab_width;
                     if before_idx > 0 {
@@ -100,7 +102,9 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
 
             if add_after && used_width < available_width {
                 let tab_width = tab_widths[after_idx].max(MIN_TAB_WIDTH) + SEPARATOR_WIDTH;
-                if used_width + tab_width <= available_width.saturating_sub(OVERFLOW_INDICATOR_WIDTH) {
+                if used_width + tab_width
+                    <= available_width.saturating_sub(OVERFLOW_INDICATOR_WIDTH)
+                {
                     visible_tabs.push(after_idx);
                     used_width += tab_width;
                     after_idx += 1;
@@ -151,7 +155,9 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
         }
 
         // Show overflow indicator at the end if needed
-        let hidden_after = tabs.len().saturating_sub(visible_tabs.last().copied().unwrap_or(0) + 1);
+        let hidden_after = tabs
+            .len()
+            .saturating_sub(visible_tabs.last().copied().unwrap_or(0) + 1);
         if hidden_after > 0 {
             spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
             let overflow_text = format!(" +{} ", hidden_after);
@@ -297,15 +303,14 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     // Add LSP status if present
     if !lsp_status.is_empty() {
-        let lsp_color = if editor.lsp_status().contains("Failed")
-            || editor.lsp_status().contains("Error")
-        {
-            Color::Red
-        } else if editor.lsp_status().contains("ready") {
-            Color::Green
-        } else {
-            Color::Blue
-        };
+        let lsp_color =
+            if editor.lsp_status().contains("Failed") || editor.lsp_status().contains("Error") {
+                Color::Red
+            } else if editor.lsp_status().contains("ready") {
+                Color::Green
+            } else {
+                Color::Blue
+            };
         spans.push(Span::styled(
             &lsp_status,
             Style::default().fg(Color::Black).bg(lsp_color),
@@ -366,7 +371,11 @@ pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: R
         .take(max_visible)
         .map(|e| {
             let display_len = e.name.width();
-            if e.is_dir { display_len + 1 } else { display_len }
+            if e.is_dir {
+                display_len + 1
+            } else {
+                display_len
+            }
         })
         .max()
         .unwrap_or(20);
@@ -441,7 +450,11 @@ pub fn render_message_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
 /// Renders the search line
 pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let search_prefix = if editor.search.search_forward { "/" } else { "?" };
+    let search_prefix = if editor.search.search_forward {
+        "/"
+    } else {
+        "?"
+    };
     let search_text = format!("{}{}", search_prefix, &editor.search.search_buffer);
 
     let search_line = Line::from(vec![Span::styled(
@@ -470,11 +483,7 @@ pub fn render_rename_input(frame: &mut Frame, editor: &Editor, area: Rect) {
 ///
 /// Shows error/warning counts as a colored badge (red bg for errors, yellow for warnings only).
 /// Hidden when: counts are zero, badge is dismissed, or buffer is too narrow.
-pub fn render_diagnostic_badge(
-    frame: &mut Frame,
-    editor: &Editor,
-    buffer_area: Rect,
-) {
+pub fn render_diagnostic_badge(frame: &mut Frame, editor: &Editor, buffer_area: Rect) {
     if editor.diagnostic_badge_dismissed() {
         return;
     }
@@ -511,8 +520,16 @@ pub fn render_diagnostic_badge(
         height: 1,
     };
 
-    let bg_color = if errors > 0 { Color::Red } else { Color::Yellow };
-    let fg_color = if errors > 0 { Color::White } else { Color::Black };
+    let bg_color = if errors > 0 {
+        Color::Red
+    } else {
+        Color::Yellow
+    };
+    let fg_color = if errors > 0 {
+        Color::White
+    } else {
+        Color::Black
+    };
 
     let badge = Paragraph::new(Span::styled(
         badge_text,

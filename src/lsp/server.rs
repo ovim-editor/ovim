@@ -335,7 +335,12 @@ impl LanguageServer {
             while let Some(msg) = outgoing_rx.recv().await {
                 let mut stdin_guard = stdin_clone.lock().await;
                 if let Err(e) = write_message(&mut *stdin_guard, &msg).await {
-                    crate::lsp_error!("Writer", "[{}] Error writing to language server: {}", writer_lang, e);
+                    crate::lsp_error!(
+                        "Writer",
+                        "[{}] Error writing to language server: {}",
+                        writer_lang,
+                        e
+                    );
                     let mut state = writer_state.lock().await;
                     *state = ServerState::Failed {
                         error: format!("Writer failed: {}", e),
@@ -805,7 +810,7 @@ impl LanguageServer {
                         }
                     }
                 }))
-            },
+            }
             "javascript" | "typescript" | "typescriptreact" | "javascriptreact" => {
                 // TypeScript language server configuration
                 Some(json!({
@@ -820,7 +825,7 @@ impl LanguageServer {
                     },
                     "hostInfo": "ovim"
                 }))
-            },
+            }
             "python" => {
                 // pyright/pylsp configuration
                 Some(json!({
@@ -832,7 +837,7 @@ impl LanguageServer {
                         }
                     }
                 }))
-            },
+            }
             _ => {
                 // No specific initialization options for other languages
                 None
@@ -864,7 +869,10 @@ impl LanguageServer {
             "LSP Initialize | Language: {} | Root: {} | InitOptions: {}",
             self.inner.language,
             root_uri.as_str(),
-            initialization_options.as_ref().map(|opts| opts.to_string()).unwrap_or_else(|| "None".to_string())
+            initialization_options
+                .as_ref()
+                .map(|opts| opts.to_string())
+                .unwrap_or_else(|| "None".to_string())
         );
 
         let result = self
@@ -1123,11 +1131,12 @@ impl LanguageServer {
             }
         }
 
-        self.inner
-            .outgoing_tx
-            .send(msg)
-            .await
-            .map_err(|_| anyhow!("LSP server not responding — channel closed (method: {})", method))?;
+        self.inner.outgoing_tx.send(msg).await.map_err(|_| {
+            anyhow!(
+                "LSP server not responding — channel closed (method: {})",
+                method
+            )
+        })?;
 
         // Wait for response with timeout
         // Use longer timeout for initialize request (jdtls can be very slow)
@@ -1147,13 +1156,14 @@ impl LanguageServer {
                 let result_preview = match &result {
                     Ok(value) if value.is_null() => "null".to_string(),
                     Ok(value) => {
-                        let json_str = serde_json::to_string(value).unwrap_or_else(|_| "?".to_string());
+                        let json_str =
+                            serde_json::to_string(value).unwrap_or_else(|_| "?".to_string());
                         if json_str.len() > 200 {
                             format!("{}...", &json_str[..200])
                         } else {
                             json_str
                         }
-                    },
+                    }
                     Err(e) => {
                         crate::metrics::LSP_ERRORS_TOTAL.inc();
                         format!("Error: {}", e)
@@ -1209,11 +1219,12 @@ impl LanguageServer {
             ));
         }
 
-        self.inner
-            .outgoing_tx
-            .send(msg)
-            .await
-            .map_err(|_| anyhow!("LSP server not responding — channel closed (notification: {})", method))?;
+        self.inner.outgoing_tx.send(msg).await.map_err(|_| {
+            anyhow!(
+                "LSP server not responding — channel closed (notification: {})",
+                method
+            )
+        })?;
         Ok(())
     }
 
@@ -1560,9 +1571,9 @@ impl LanguageServer {
             "textDocument/prepareCallHierarchy" => Some(&self.inner.cap_call_hierarchy),
             "textDocument/executeCommand" => Some(&self.inner.cap_execute_command),
             "textDocument/inlayHint" => Some(&self.inner.cap_inlay_hint),
-            "textDocument/semanticTokens" | "textDocument/semanticTokens/full" | "textDocument/semanticTokens/range" => {
-                Some(&self.inner.cap_semantic_tokens)
-            }
+            "textDocument/semanticTokens"
+            | "textDocument/semanticTokens/full"
+            | "textDocument/semanticTokens/range" => Some(&self.inner.cap_semantic_tokens),
             _ => None,
         };
         if let Some(flag) = flag {

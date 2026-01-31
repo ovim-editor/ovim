@@ -165,16 +165,16 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
 
         if is_selected {
             // Highlight the entire line for selected item
-            spans.push(Span::styled(key_part, key_style.bg(colors::MENU_SELECTED_BG)));
+            spans.push(Span::styled(
+                key_part,
+                key_style.bg(colors::MENU_SELECTED_BG),
+            ));
             spans.push(Span::styled(*label, label_style));
             spans.push(Span::styled(
                 " ".repeat(spacing),
                 Style::default().bg(colors::MENU_SELECTED_BG),
             ));
-            spans.push(Span::styled(
-                *hint,
-                hint_style.bg(colors::MENU_SELECTED_BG),
-            ));
+            spans.push(Span::styled(*hint, hint_style.bg(colors::MENU_SELECTED_BG)));
             spans.push(Span::styled(
                 "  ",
                 Style::default().bg(colors::MENU_SELECTED_BG),

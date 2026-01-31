@@ -156,7 +156,7 @@ pub(crate) fn fuzzy_score(query: &str, target: &str) -> Option<(i32, Vec<usize>)
         // Try matching against filename first (with bonus)
         if let Some((score, positions)) = fuzzy_match_with_positions(token, filename) {
             total_score += score + 50; // Filename match bonus
-            // Offset positions to full-path indices
+                                       // Offset positions to full-path indices
             for pos in positions {
                 all_positions.push(pos + filename_char_offset);
             }

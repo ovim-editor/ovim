@@ -73,7 +73,8 @@ impl Editor {
         }
 
         // Update the / register with the search pattern
-        self.registers.set_last_search(self.search.search_buffer.clone());
+        self.registers
+            .set_last_search(self.search.search_buffer.clone());
 
         let mut search = Search::new_with_options(
             self.search.search_buffer.clone(),
@@ -201,7 +202,8 @@ impl Editor {
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col();
         let mode = self.mode();
-        let in_visual_mode = mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
+        let in_visual_mode =
+            mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
 
         // Clone search to avoid borrow conflicts
         if let Some(ref search) = self.search.current_search {
@@ -217,12 +219,15 @@ impl Editor {
 
                     if cursor_in_match {
                         // If cursor is within a match, select the current match
-                        if let Some((start_col, end_col)) = matches.iter().find(|(start, end)| {
-                            cursor_col >= *start && cursor_col < *end
-                        }) {
+                        if let Some((start_col, end_col)) = matches
+                            .iter()
+                            .find(|(start, end)| cursor_col >= *start && cursor_col < *end)
+                        {
                             // In normal mode, enter visual mode and select this match
                             self.set_visual_start(cursor_line, *start_col);
-                            self.buffer_mut().cursor_mut().set_position(cursor_line, end_col - 1);
+                            self.buffer_mut()
+                                .cursor_mut()
+                                .set_position(cursor_line, end_col - 1);
                             self.set_mode(Mode::Visual);
                             return true;
                         }
@@ -232,7 +237,9 @@ impl Editor {
 
             // Find the next match (always search from cursor + 1 to skip current position)
             let search_col = cursor_col + 1;
-            if let Some((line, col, match_text)) = search_clone.find_next(self.buffer(), cursor_line, search_col) {
+            if let Some((line, col, match_text)) =
+                search_clone.find_next(self.buffer(), cursor_line, search_col)
+            {
                 let match_len = match_text.chars().count();
                 let match_end = col + match_len - 1;
 
@@ -267,7 +274,8 @@ impl Editor {
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col();
         let mode = self.mode();
-        let in_visual_mode = mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
+        let in_visual_mode =
+            mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
 
         // Clone search to avoid borrow conflicts
         if let Some(ref search) = self.search.current_search {
@@ -289,11 +297,14 @@ impl Editor {
                 let mut col = if cursor_col > 0 { cursor_col - 1 } else { 0 };
                 if let Some(line_text) = self.buffer().line(cursor_line) {
                     let matches = rev_search.find_all_in_line(&line_text);
-                    if let Some((start_col, _end_col)) = matches.iter().find(|(start, end)| {
-                        cursor_col >= *start && cursor_col < *end
-                    }) {
+                    if let Some((start_col, _end_col)) = matches
+                        .iter()
+                        .find(|(start, end)| cursor_col >= *start && cursor_col < *end)
+                    {
                         // Cursor is inside a match - search from before this match's start
-                        col = if *start_col > 0 { start_col - 1 } else {
+                        col = if *start_col > 0 {
+                            start_col - 1
+                        } else {
                             // Match starts at col 0 — find_backward with from_col=0
                             // searches empty text on current line, then wraps to previous lines
                             0
@@ -302,7 +313,9 @@ impl Editor {
                 }
                 col
             };
-            if let Some((line, col, match_text)) = rev_search.find_next(self.buffer(), cursor_line, search_col) {
+            if let Some((line, col, match_text)) =
+                rev_search.find_next(self.buffer(), cursor_line, search_col)
+            {
                 let match_len = match_text.chars().count();
                 let match_end = col + match_len - 1;
 

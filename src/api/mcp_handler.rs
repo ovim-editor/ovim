@@ -1,7 +1,11 @@
 /// MCP JSON-RPC request handler
 use super::mcp::{self, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use super::state::{ApiRequest, ApiState};
-use axum::{extract::State, response::{IntoResponse, Json, Response}, Json as JsonExtractor};
+use axum::{
+    extract::State,
+    response::{IntoResponse, Json, Response},
+    Json as JsonExtractor,
+};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
@@ -127,7 +131,9 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             match rx.await {
                 Ok(response) => {
                     if let super::state::ApiResponse::Success(_) = response {
-                        Ok(mcp::tool_result(vec![mcp::text_content("Buffer set successfully")]))
+                        Ok(mcp::tool_result(vec![mcp::text_content(
+                            "Buffer set successfully",
+                        )]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
                     } else {
@@ -171,7 +177,9 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             match rx.await {
                 Ok(response) => {
                     if let super::state::ApiResponse::Success(success) = response {
-                        let msg = success.message.unwrap_or_else(|| "Command executed successfully".to_string());
+                        let msg = success
+                            .message
+                            .unwrap_or_else(|| "Command executed successfully".to_string());
                         Ok(mcp::tool_result(vec![mcp::text_content(&msg)]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
@@ -185,7 +193,9 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
         "lsp_hover" => {
             // Ensure NORMAL mode before triggering hover
             let (mode_tx, mode_rx) = oneshot::channel();
-            let _ = state.tx.send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
+            let _ = state
+                .tx
+                .send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
             let _ = mode_rx.await;
 
             // Send K to trigger hover
@@ -215,18 +225,24 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
 
             // Dismiss hover popup, return to NORMAL mode
             let (esc_tx, esc_rx) = oneshot::channel();
-            let _ = state.tx.send(ApiRequest::SetMode("NORMAL".to_string(), esc_tx));
+            let _ = state
+                .tx
+                .send(ApiRequest::SetMode("NORMAL".to_string(), esc_tx));
             let _ = esc_rx.await;
 
             match hover_text {
                 Some(text) => Ok(mcp::tool_result(vec![mcp::text_content(&text)])),
-                None => Ok(mcp::tool_result(vec![mcp::text_content("No hover information available at cursor position")])),
+                None => Ok(mcp::tool_result(vec![mcp::text_content(
+                    "No hover information available at cursor position",
+                )])),
             }
         }
         "lsp_goto_definition" => {
             // Ensure NORMAL mode before triggering goto definition
             let (mode_tx, mode_rx) = oneshot::channel();
-            let _ = state.tx.send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
+            let _ = state
+                .tx
+                .send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
             let _ = mode_rx.await;
 
             let (tx, rx) = oneshot::channel();
@@ -247,7 +263,9 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                         Err(JsonRpcError::internal_error("Unexpected response type"))
                     }
                 }
-                Err(_) => Err(JsonRpcError::internal_error("Failed to trigger goto definition")),
+                Err(_) => Err(JsonRpcError::internal_error(
+                    "Failed to trigger goto definition",
+                )),
             }
         }
         "get_snapshot" => {
@@ -318,7 +336,10 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                         .unwrap_or_else(|_| "[]".to_string());
                     Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
                 }
-                Err(e) => Err(JsonRpcError::internal_error(&format!("Failed to list sessions: {}", e))),
+                Err(e) => Err(JsonRpcError::internal_error(&format!(
+                    "Failed to list sessions: {}",
+                    e
+                ))),
             }
         }
         "set_mode" => {
@@ -336,7 +357,9 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             match rx.await {
                 Ok(response) => {
                     if let super::state::ApiResponse::Success(success) = response {
-                        let msg = success.message.unwrap_or_else(|| format!("Mode set to {}", mode_str));
+                        let msg = success
+                            .message
+                            .unwrap_or_else(|| format!("Mode set to {}", mode_str));
                         Ok(mcp::tool_result(vec![mcp::text_content(&msg)]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
@@ -421,8 +444,8 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
 
             match rx.await {
                 Ok(super::state::ApiResponse::Diagnostics(info)) => {
-                    let json_str = serde_json::to_string_pretty(&info)
-                        .unwrap_or_else(|_| "{}".to_string());
+                    let json_str =
+                        serde_json::to_string_pretty(&info).unwrap_or_else(|_| "{}".to_string());
                     Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
                 }
                 _ => Err(JsonRpcError::internal_error("Failed to get diagnostics")),
@@ -438,8 +461,8 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             match rx.await {
                 Ok(response) => {
                     if let super::state::ApiResponse::ContextWindow(ctx) = response {
-                        let json_str = serde_json::to_string_pretty(&ctx)
-                            .unwrap_or_else(|_| "{}".to_string());
+                        let json_str =
+                            serde_json::to_string_pretty(&ctx).unwrap_or_else(|_| "{}".to_string());
                         Ok(mcp::tool_result(vec![mcp::text_content(&json_str)]))
                     } else {
                         Err(JsonRpcError::internal_error("Unexpected response type"))
@@ -448,7 +471,10 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 Err(_) => Err(JsonRpcError::internal_error("Failed to get context window")),
             }
         }
-        _ => Err(JsonRpcError::invalid_params(&format!("Unknown tool: {}", tool_name))),
+        _ => Err(JsonRpcError::invalid_params(&format!(
+            "Unknown tool: {}",
+            tool_name
+        ))),
     }
 }
 
@@ -587,10 +613,16 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
                     Err(_) => Err(JsonRpcError::internal_error("Failed to get buffer")),
                 }
             } else {
-                Err(JsonRpcError::invalid_params(&format!("File not found: {}", uri)))
+                Err(JsonRpcError::invalid_params(&format!(
+                    "File not found: {}",
+                    uri
+                )))
             }
         }
-        _ => Err(JsonRpcError::invalid_params(&format!("Unknown resource URI: {}", uri))),
+        _ => Err(JsonRpcError::invalid_params(&format!(
+            "Unknown resource URI: {}",
+            uri
+        ))),
     }
 }
 

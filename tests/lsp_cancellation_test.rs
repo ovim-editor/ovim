@@ -47,7 +47,10 @@ async fn test_lsp_cancellation_mechanism() {
 
     // Verify that the cancellation error code is correct
     const LSP_ERROR_REQUEST_CANCELLED: i32 = -32800;
-    assert_eq!(LSP_ERROR_REQUEST_CANCELLED, -32800, "LSP cancellation error code must be -32800");
+    assert_eq!(
+        LSP_ERROR_REQUEST_CANCELLED, -32800,
+        "LSP cancellation error code must be -32800"
+    );
 
     println!("✓ LSP cancellation error code is correct");
     println!("✓ cancel_requests_by_method compiles and is callable");
@@ -180,8 +183,11 @@ async fn test_cancellation_performance() {
     println!("Cancelling {} requests took: {:?}", pending_count, elapsed);
 
     // Should be very fast (< 1ms on modern hardware)
-    assert!(elapsed < Duration::from_millis(10),
-            "Cancellation should be fast, took {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_millis(10),
+        "Cancellation should be fast, took {:?}",
+        elapsed
+    );
 }
 
 /// Edge case: Cancelling when no requests pending

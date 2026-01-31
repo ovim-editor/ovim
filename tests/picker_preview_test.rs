@@ -46,7 +46,9 @@ fn test_picker_new_with_results_preserves_file_paths() {
     );
 
     // Verify selected result also has the correct location
-    let selected = picker.selected_result().expect("Should have a selected result");
+    let selected = picker
+        .selected_result()
+        .expect("Should have a selected result");
     assert_eq!(
         selected.location,
         "/Users/adrian/Projects/ovim/src/editor/picker.rs"
@@ -80,8 +82,8 @@ fn test_picker_preserves_line_and_col() {
     let results = vec![PickerResult {
         display: "test.rs:42:15".to_string(),
         location: "/path/to/test.rs".to_string(),
-        line: 41,  // 0-indexed
-        col: 14,   // 0-indexed
+        line: 41, // 0-indexed
+        col: 14,  // 0-indexed
         match_positions: Vec::new(),
         content: None,
     }];
@@ -89,7 +91,9 @@ fn test_picker_preserves_line_and_col() {
     let base_dir = PathBuf::from("/path/to");
     let picker = Picker::new_with_results(base_dir, results);
 
-    let selected = picker.selected_result().expect("Should have a selected result");
+    let selected = picker
+        .selected_result()
+        .expect("Should have a selected result");
     assert_eq!(selected.line, 41);
     assert_eq!(selected.col, 14);
     assert_eq!(selected.location, "/path/to/test.rs");

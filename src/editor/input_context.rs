@@ -4,8 +4,8 @@
 //! state for command parsing, including counts, operators, pending commands,
 //! registers, and the input state machine.
 
-use crate::editor::operators::Operator;
 use crate::editor::input_state::InputState;
+use crate::editor::operators::Operator;
 
 /// Context for input state machine (counts, operators, pending commands).
 ///

@@ -270,7 +270,10 @@ impl LspManagerPanel {
     /// Update running servers and rebuild entries
     pub fn update_running_servers(&mut self, running: Vec<String>) {
         self.running_servers = running;
-        let prev_selected = self.entries.get(self.selected_index).map(|e| e.language_id.clone());
+        let prev_selected = self
+            .entries
+            .get(self.selected_index)
+            .map(|e| e.language_id.clone());
         self.rebuild_entries();
         // Try to restore selection
         if let Some(prev_id) = prev_selected {

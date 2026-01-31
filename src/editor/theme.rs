@@ -5,7 +5,9 @@ use anyhow::Result;
 impl Editor {
     /// Gets the current color scheme
     pub fn get_color_scheme(&self) -> Option<&ColorScheme> {
-        self.theme.color_scheme_registry.get(&self.theme.current_color_scheme)
+        self.theme
+            .color_scheme_registry
+            .get(&self.theme.current_color_scheme)
     }
 
     /// Sets the color scheme by name

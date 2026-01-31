@@ -24,7 +24,10 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     let replacement_len = state.replacements.chars().count();
                     let old_range = Range::new(
                         state.start_position,
-                        (state.start_position.0, state.start_position.1 + replacement_len),
+                        (
+                            state.start_position.0,
+                            state.start_position.1 + replacement_len,
+                        ),
                     );
                     let change = Change::replace_mode(
                         state.replacements,
@@ -119,9 +122,11 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                             restore_col + 1,
                         );
                         // Insert the original character
-                        editor
-                            .buffer_mut()
-                            .insert_text_at(cursor_line, restore_col, &old_char.to_string());
+                        editor.buffer_mut().insert_text_at(
+                            cursor_line,
+                            restore_col,
+                            &old_char.to_string(),
+                        );
                     } else {
                         // No old_text means this was an insertion at end of line, delete it
                         let delete_col = cursor_col - 1;

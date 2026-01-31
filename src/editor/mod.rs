@@ -12,83 +12,85 @@ pub(crate) mod grep;
 mod input;
 mod input_context;
 mod input_state;
-pub mod lsp_manager_panel;
-mod lsp_ui;
 mod keymap;
-mod lsp_state;
 mod lsp_integration;
+pub mod lsp_manager_panel;
+mod lsp_state;
+mod lsp_ui;
 mod lua_integration;
 mod macros;
 mod mark_jump;
 mod marks;
-mod navigation_state;
 mod motions;
+mod navigation_state;
+pub mod nucleo_matcher;
 mod operators;
 pub(crate) mod path_completion;
 mod performance;
-pub mod nucleo_matcher;
 pub mod picker;
 mod picker_manager;
 pub(crate) mod picker_state;
 mod quickfix;
-mod render_cache;
 mod register;
+mod render_cache;
 mod search;
 mod search_context;
 mod search_manager;
-mod tabpage;
 mod tab_manager;
+mod tabpage;
 mod textobjects;
 mod theme;
 mod theme_state;
 mod ui_features;
 mod ui_panels;
 mod undo;
-mod visual_context;
 mod viewport_state;
+mod visual_context;
 mod visual_mode;
 mod window;
 mod window_viewport;
 mod wrap_map;
 mod yank_flash;
 
-pub use change::{Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType};
+pub use change::{
+    Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType,
+};
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
+pub use editing_state::EditingState;
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
-pub use input::InputHandler;
 pub use input::mouse::handle_mouse_event;
 pub use input::shell_expansion;
+pub use input::InputHandler;
 pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
-pub use lsp_state::{HoverContentType, LspAction, LspResultType, LspState};
-pub use macros::MacroManager;
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
+pub use lsp_manager_panel::LspManagerPanel;
+pub use lsp_state::{HoverContentType, LspAction, LspResultType, LspState};
+pub use lsp_ui::LspUi;
+pub use macros::MacroManager;
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
+pub use navigation_state::NavigationState;
 pub use operators::Operator;
+pub use path_completion::PathCompletionState;
 pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
 pub use picker::{Picker, PickerAction, PickerField, PickerMode, PickerResult};
 pub use picker_state::PickerState;
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
-pub use path_completion::PathCompletionState;
 pub use register::{RegisterManager, RegisterType};
+pub use render_cache::RenderCache;
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
 pub use tabpage::{TabPage, TabPageManager};
 pub use textobjects::{TextObjectRange, TextObjects};
-pub use undo::UndoManager;
-pub use visual_context::{VisualContext, VisualSelection};
-pub use window::{SplitDirection, Window, WindowManager, WindowNode};
-pub use lsp_manager_panel::LspManagerPanel;
-pub use editing_state::EditingState;
-pub use lsp_ui::LspUi;
-pub use navigation_state::NavigationState;
-pub use render_cache::RenderCache;
 pub use theme_state::ThemeState;
 pub use ui_panels::UiPanels;
+pub use undo::UndoManager;
 pub use viewport_state::ViewportState;
+pub use visual_context::{VisualContext, VisualSelection};
+pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use wrap_map::WrapMap;
 
 /// Editor options and settings
@@ -397,6 +399,7 @@ impl Editor {
             window_manager: None, // Will be initialized when viewport size is known
             mode: Mode::default(),
             should_quit: false,
+            exit_code: 0,
             input: InputContext::new(),
             registers: RegisterManager::new(),
             visual: VisualContext::new(),
@@ -615,7 +618,12 @@ impl Editor {
     }
 
     /// Caches the buffer layout from the last render (for mouse coordinate conversion)
-    pub fn set_last_layout(&mut self, buffer_area: ratatui::layout::Rect, gutter_width: usize, text_width: usize) {
+    pub fn set_last_layout(
+        &mut self,
+        buffer_area: ratatui::layout::Rect,
+        gutter_width: usize,
+        text_width: usize,
+    ) {
         self.render_cache.last_buffer_area = Some(buffer_area);
         self.render_cache.last_gutter_width = gutter_width;
         self.render_cache.last_text_width = text_width;
@@ -660,7 +668,10 @@ impl Editor {
 
         // Check if existing map is up to date or can be incrementally updated
         let needs_action = if let Some(ref map) = self.viewport.wrap_map {
-            if map.buffer_version() == buf_version && map.wrap_width() == width && map.line_count() == line_count {
+            if map.buffer_version() == buf_version
+                && map.wrap_width() == width
+                && map.line_count() == line_count
+            {
                 return; // Already up to date
             }
             if map.wrap_width() == width && map.line_count() == line_count {
@@ -734,7 +745,10 @@ impl Editor {
         // Clamp scrolloff so top and bottom margins don't overlap.
         // When scrolloff >= ceil(visible_lines/2), both margins would claim
         // the same lines, causing the viewport to oscillate on every movement.
-        let scrolloff = self.options.scrolloff.min(visible_lines.saturating_sub(1) / 2);
+        let scrolloff = self
+            .options
+            .scrolloff
+            .min(visible_lines.saturating_sub(1) / 2);
 
         // Calculate new scroll offset
         let new_offset;
@@ -745,7 +759,8 @@ impl Editor {
         // return 0 for the new line, jumping the viewport to the top.
         let wrap_map_usable = self.options.wrap
             && self
-                .viewport.wrap_map
+                .viewport
+                .wrap_map
                 .as_ref()
                 .is_some_and(|m| m.line_count() >= self.buffer().rope().len_lines());
 
@@ -760,7 +775,11 @@ impl Editor {
                 } else {
                     String::new()
                 };
-                let disp_col = crate::display::char_col_to_display_col(&line_text, cursor_col, self.options.tab_width);
+                let disp_col = crate::display::char_col_to_display_col(
+                    &line_text,
+                    cursor_col,
+                    self.options.tab_width,
+                );
                 let (cursor_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, disp_col);
                 let viewport_visual_start = wrap_map.logical_to_visual(current_offset);
 
@@ -781,12 +800,18 @@ impl Editor {
             } else {
                 // Wrap enabled but no wrap map yet — use logical line fallback
                 new_offset = Self::compute_logical_scroll_offset(
-                    cursor_line, current_offset, visible_lines, scrolloff,
+                    cursor_line,
+                    current_offset,
+                    visible_lines,
+                    scrolloff,
                 );
             }
         } else {
             new_offset = Self::compute_logical_scroll_offset(
-                cursor_line, current_offset, visible_lines, scrolloff,
+                cursor_line,
+                current_offset,
+                visible_lines,
+                scrolloff,
             );
         };
 
@@ -862,6 +887,17 @@ impl Editor {
     /// Sets the quit flag
     pub fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    /// Quit with a specific exit code (used by :cq)
+    pub fn quit_with_code(&mut self, code: i32) {
+        self.should_quit = true;
+        self.exit_code = code;
+    }
+
+    /// Returns the exit code (0 = success, non-zero = error)
+    pub fn exit_code(&self) -> i32 {
+        self.exit_code
     }
 
     /// Gets the current count
@@ -1102,7 +1138,8 @@ impl Editor {
                     return;
                 }
                 _ => {
-                    self.registers.set_with_type(Some(reg), text.clone(), reg_type);
+                    self.registers
+                        .set_with_type(Some(reg), text.clone(), reg_type);
                 }
             }
         } else {
@@ -1131,7 +1168,8 @@ impl Editor {
                     return;
                 }
                 _ => {
-                    self.registers.set_with_type(Some(reg), text.clone(), reg_type);
+                    self.registers
+                        .set_with_type(Some(reg), text.clone(), reg_type);
                 }
             }
         } else {
@@ -1249,9 +1287,7 @@ impl Editor {
 
     /// Sets how insert mode was entered on the current change builder (for dot repeat).
     pub fn set_change_entry_mode(&mut self, mode: InsertEntryMode) {
-        self.buffer_mut()
-            .change_manager_mut()
-            .set_entry_mode(mode);
+        self.buffer_mut().change_manager_mut().set_entry_mode(mode);
     }
 
     /// Adds a change to the change manager
@@ -1376,7 +1412,6 @@ impl Editor {
             }
         }
     }
-
 }
 
 impl Default for Editor {
@@ -1408,44 +1443,123 @@ mod size_tests {
         println!("\n=== Editor Struct Size Analysis ===\n");
 
         let editor_size = size_of::<Editor>();
-        println!("Total Editor size: {} bytes ({:.2} KB)", editor_size, editor_size as f64 / 1024.0);
+        println!(
+            "Total Editor size: {} bytes ({:.2} KB)",
+            editor_size,
+            editor_size as f64 / 1024.0
+        );
 
         // Measure major field types
         println!("\nMajor field sizes:");
-        println!("  Vec<Buffer>:                {} bytes", size_of::<Vec<Buffer>>());
-        println!("  Option<WindowManager>:      {} bytes", size_of::<Option<WindowManager>>());
-        println!("  RegisterManager:            {} bytes", size_of::<RegisterManager>());
-        println!("  MarkManager:                {} bytes", size_of::<MarkManager>());
-        println!("  KeyMapManager:              {} bytes", size_of::<KeyMapManager>());
-        println!("  JumpList:                   {} bytes", size_of::<JumpList>());
-        println!("  TagStack:                   {} bytes", size_of::<TagStack>());
-        println!("  MacroManager:               {} bytes", size_of::<MacroManager>());
-        println!("  Option<Picker>:             {} bytes", size_of::<Option<Picker>>());
-        println!("  InputState:                 {} bytes", size_of::<InputState>());
-        println!("  LspState:                   {} bytes", size_of::<LspState>());
-        println!("  CompletionMenu:             {} bytes", size_of::<CompletionMenu>());
-        println!("  HashMap<String, PreviewCache>: {} bytes", size_of::<HashMap<String, PreviewCache>>());
-        println!("  ColorSchemeRegistry:        {} bytes", size_of::<crate::syntax::ColorSchemeRegistry>());
-        println!("  EditorOptions:              {} bytes", size_of::<EditorOptions>());
-        println!("  FileTree:                   {} bytes", size_of::<FileTree>());
-        println!("  QuickfixList:               {} bytes", size_of::<QuickfixList>());
-        println!("  LocationList:               {} bytes", size_of::<LocationList>());
-        println!("  TabPageManager:             {} bytes", size_of::<TabPageManager>());
+        println!(
+            "  Vec<Buffer>:                {} bytes",
+            size_of::<Vec<Buffer>>()
+        );
+        println!(
+            "  Option<WindowManager>:      {} bytes",
+            size_of::<Option<WindowManager>>()
+        );
+        println!(
+            "  RegisterManager:            {} bytes",
+            size_of::<RegisterManager>()
+        );
+        println!(
+            "  MarkManager:                {} bytes",
+            size_of::<MarkManager>()
+        );
+        println!(
+            "  KeyMapManager:              {} bytes",
+            size_of::<KeyMapManager>()
+        );
+        println!(
+            "  JumpList:                   {} bytes",
+            size_of::<JumpList>()
+        );
+        println!(
+            "  TagStack:                   {} bytes",
+            size_of::<TagStack>()
+        );
+        println!(
+            "  MacroManager:               {} bytes",
+            size_of::<MacroManager>()
+        );
+        println!(
+            "  Option<Picker>:             {} bytes",
+            size_of::<Option<Picker>>()
+        );
+        println!(
+            "  InputState:                 {} bytes",
+            size_of::<InputState>()
+        );
+        println!(
+            "  LspState:                   {} bytes",
+            size_of::<LspState>()
+        );
+        println!(
+            "  CompletionMenu:             {} bytes",
+            size_of::<CompletionMenu>()
+        );
+        println!(
+            "  HashMap<String, PreviewCache>: {} bytes",
+            size_of::<HashMap<String, PreviewCache>>()
+        );
+        println!(
+            "  ColorSchemeRegistry:        {} bytes",
+            size_of::<crate::syntax::ColorSchemeRegistry>()
+        );
+        println!(
+            "  EditorOptions:              {} bytes",
+            size_of::<EditorOptions>()
+        );
+        println!(
+            "  FileTree:                   {} bytes",
+            size_of::<FileTree>()
+        );
+        println!(
+            "  QuickfixList:               {} bytes",
+            size_of::<QuickfixList>()
+        );
+        println!(
+            "  LocationList:               {} bytes",
+            size_of::<LocationList>()
+        );
+        println!(
+            "  TabPageManager:             {} bytes",
+            size_of::<TabPageManager>()
+        );
 
         // Measure small scalar/enum fields for comparison
         println!("\nSmall field sizes (for reference):");
         println!("  Mode:                       {} bytes", size_of::<Mode>());
         println!("  bool:                       {} bytes", size_of::<bool>());
         println!("  usize:                      {} bytes", size_of::<usize>());
-        println!("  Option<usize>:              {} bytes", size_of::<Option<usize>>());
-        println!("  Option<char>:               {} bytes", size_of::<Option<char>>());
-        println!("  String:                     {} bytes", size_of::<String>());
-        println!("  Option<(usize, usize)>:     {} bytes", size_of::<Option<(usize, usize)>>());
+        println!(
+            "  Option<usize>:              {} bytes",
+            size_of::<Option<usize>>()
+        );
+        println!(
+            "  Option<char>:               {} bytes",
+            size_of::<Option<char>>()
+        );
+        println!(
+            "  String:                     {} bytes",
+            size_of::<String>()
+        );
+        println!(
+            "  Option<(usize, usize)>:     {} bytes",
+            size_of::<Option<(usize, usize)>>()
+        );
 
         // Measure wrapping options
         println!("\nWrapping overhead:");
-        println!("  Arc<Mutex<Editor>>:         {} bytes (pointer-sized)", size_of::<Arc<Mutex<Editor>>>());
-        println!("  Box<Editor>:                {} bytes (pointer-sized)", size_of::<Box<Editor>>());
+        println!(
+            "  Arc<Mutex<Editor>>:         {} bytes (pointer-sized)",
+            size_of::<Arc<Mutex<Editor>>>()
+        );
+        println!(
+            "  Box<Editor>:                {} bytes (pointer-sized)",
+            size_of::<Box<Editor>>()
+        );
 
         // Analysis and recommendations
         println!("\n=== Analysis ===");
@@ -1463,7 +1577,9 @@ mod size_tests {
             println!("Recommendation: Box fields > 64 bytes to reduce struct size");
         } else {
             println!("Status: MUST OPTIMIZE - too large for efficient stack allocation");
-            println!("Recommendation: Box all fields > 64 bytes OR wrap entire Editor in Arc<Mutex<>>");
+            println!(
+                "Recommendation: Box all fields > 64 bytes OR wrap entire Editor in Arc<Mutex<>>"
+            );
         }
 
         println!("\n=== Stack Usage Patterns ===");
@@ -1472,15 +1588,27 @@ mod size_tests {
         println!("  - UI rendering: borrows &Editor (zero copy)");
         println!("  - API handlers: borrow &mut Editor via channels (zero copy)");
         println!("\nVerdict: Editor is NEVER passed by value, only by reference.");
-        println!("Stack overhead = {} bytes once per thread (in main function).", editor_size);
+        println!(
+            "Stack overhead = {} bytes once per thread (in main function).",
+            editor_size
+        );
 
         // Educational note about the measurement
         println!("\n=== Educational Context ===");
         println!("Why size matters:");
-        println!("1. Stack allocation: Creating Editor on stack uses {} bytes", editor_size);
-        println!("2. Move semantics: Moving Editor copies {} bytes", editor_size);
+        println!(
+            "1. Stack allocation: Creating Editor on stack uses {} bytes",
+            editor_size
+        );
+        println!(
+            "2. Move semantics: Moving Editor copies {} bytes",
+            editor_size
+        );
         println!("3. Async futures: Each .await point may store Editor state");
-        println!("4. Cache locality: Struct doesn't fit in L1 cache ({} bytes)", CACHE_LINE);
+        println!(
+            "4. Cache locality: Struct doesn't fit in L1 cache ({} bytes)",
+            CACHE_LINE
+        );
         println!("\nHowever, since Editor is always passed by &mut reference,");
         println!("the only overhead is the initial allocation in main().");
         println!("This is a one-time cost, not a per-call cost.");
@@ -1504,7 +1632,8 @@ mod size_tests {
              3. Moving large data to heap with Box\n\
              \n\
              Run 'cargo test measure_editor_size -- --nocapture' to see size breakdown.",
-            actual, MAX_ACCEPTABLE_SIZE
+            actual,
+            MAX_ACCEPTABLE_SIZE
         );
     }
 

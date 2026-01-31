@@ -1,9 +1,9 @@
-mod viewport_assertions;
 pub mod test_session;
+mod viewport_assertions;
 
+pub use test_session::TestSession;
 #[allow(unused_imports)]
 pub use viewport_assertions::ViewportAssertion;
-pub use test_session::TestSession;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ovim::editor::{Editor, InputHandler};
@@ -114,10 +114,18 @@ impl EditorTest {
                                 self.press_with(KeyCode::Char(c), KeyModifiers::CONTROL)
                             } else {
                                 match char_part {
-                                    "[" => self.press_with(KeyCode::Char('['), KeyModifiers::CONTROL),
-                                    "]" => self.press_with(KeyCode::Char(']'), KeyModifiers::CONTROL),
-                                    "^" => self.press_with(KeyCode::Char('^'), KeyModifiers::CONTROL),
-                                    " " => self.press_with(KeyCode::Char(' '), KeyModifiers::CONTROL),
+                                    "[" => {
+                                        self.press_with(KeyCode::Char('['), KeyModifiers::CONTROL)
+                                    }
+                                    "]" => {
+                                        self.press_with(KeyCode::Char(']'), KeyModifiers::CONTROL)
+                                    }
+                                    "^" => {
+                                        self.press_with(KeyCode::Char('^'), KeyModifiers::CONTROL)
+                                    }
+                                    " " => {
+                                        self.press_with(KeyCode::Char(' '), KeyModifiers::CONTROL)
+                                    }
                                     _ => panic!("Unknown Ctrl key: <{}>", special_key),
                                 }
                             }
@@ -128,7 +136,8 @@ impl EditorTest {
                     // Not a special key - press '<' and put back what we consumed
                     self.press('<');
                     for ch in lookahead {
-                        if ch != '>' {  // Don't put back the '>' if we found one for empty special key
+                        if ch != '>' {
+                            // Don't put back the '>' if we found one for empty special key
                             self.press(ch);
                         }
                     }
@@ -278,7 +287,10 @@ impl EditorTest {
     /// This is useful for setting up test scenarios where you need the cursor
     /// at a specific location before executing commands.
     pub fn set_cursor(&mut self, line: usize, col: usize) -> &mut Self {
-        self.editor.buffer_mut().cursor_mut().set_position(line, col);
+        self.editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, col);
         self
     }
 

@@ -22,7 +22,11 @@ fn test_shell_command_echo() {
 
     // Status should contain "test"
     let status = test.editor.lsp_status();
-    assert!(status.contains("test"), "Status should contain 'test', got: {}", status);
+    assert!(
+        status.contains("test"),
+        "Status should contain 'test', got: {}",
+        status
+    );
 }
 
 #[test]
@@ -35,7 +39,12 @@ fn test_filter_current_line() {
 
     // Line 1 should be uppercased
     let line = test.editor.buffer().line(1).unwrap();
-    assert_eq!(line.trim(), "FOO BAR", "Line should be uppercased, got: {}", line);
+    assert_eq!(
+        line.trim(),
+        "FOO BAR",
+        "Line should be uppercased, got: {}",
+        line
+    );
 }
 
 #[test]
@@ -63,7 +72,11 @@ fn test_read_shell_command() {
 
     // "inserted" should be somewhere in the buffer (after current line)
     let content = test.editor.buffer().rope().to_string();
-    assert!(content.contains("inserted"), "Buffer should contain 'inserted', got: {}", content);
+    assert!(
+        content.contains("inserted"),
+        "Buffer should contain 'inserted', got: {}",
+        content
+    );
 }
 
 #[test]
@@ -76,8 +89,11 @@ fn test_write_to_shell_command() {
 
     // Status should mention lines written
     let status = test.editor.lsp_status();
-    assert!(status.contains("written") || status.contains("line"),
-            "Status should mention lines written, got: {}", status);
+    assert!(
+        status.contains("written") || status.contains("line"),
+        "Status should mention lines written, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -85,15 +101,20 @@ fn test_percent_expansion_in_shell() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path
-    test.editor.buffer_mut().set_file_path("test_file.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("test_file.rs".to_string());
 
     // Execute :!echo % (should expand to filename)
     InputHandler::execute_command_string(&mut test.editor, "!echo %").unwrap();
 
     // Status should contain the filename
     let status = test.editor.lsp_status();
-    assert!(status.contains("test_file.rs"),
-            "Status should contain filename, got: {}", status);
+    assert!(
+        status.contains("test_file.rs"),
+        "Status should contain filename, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -101,13 +122,18 @@ fn test_percent_tail_modifier() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path with directory
-    test.editor.buffer_mut().set_file_path("src/main.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("src/main.rs".to_string());
 
     // Test :t (tail/basename)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:t").unwrap();
     let status = test.editor.lsp_status();
-    assert!(status.contains("main.rs"),
-            "Tail should be main.rs, got: {}", status);
+    assert!(
+        status.contains("main.rs"),
+        "Tail should be main.rs, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -115,13 +141,18 @@ fn test_percent_head_modifier() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path with directory
-    test.editor.buffer_mut().set_file_path("src/main.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("src/main.rs".to_string());
 
     // Test :h (head/directory)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:h").unwrap();
     let status = test.editor.lsp_status();
-    assert!(status.contains("src"),
-            "Head should be src, got: {}", status);
+    assert!(
+        status.contains("src"),
+        "Head should be src, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -129,13 +160,18 @@ fn test_percent_root_modifier() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path with directory
-    test.editor.buffer_mut().set_file_path("src/main.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("src/main.rs".to_string());
 
     // Test :r (root/no extension)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:r").unwrap();
     let status = test.editor.lsp_status();
-    assert!(status.contains("src/main"),
-            "Root should be src/main, got: {}", status);
+    assert!(
+        status.contains("src/main"),
+        "Root should be src/main, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -143,13 +179,18 @@ fn test_percent_extension_modifier() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path with directory
-    test.editor.buffer_mut().set_file_path("src/main.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("src/main.rs".to_string());
 
     // Test :e (extension)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:e").unwrap();
     let status = test.editor.lsp_status();
-    assert!(status.contains("rs"),
-            "Extension should be rs, got: {}", status);
+    assert!(
+        status.contains("rs"),
+        "Extension should be rs, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -157,17 +198,25 @@ fn test_escaped_percent() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path
-    test.editor.buffer_mut().set_file_path("test.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("test.rs".to_string());
 
     // Execute :!echo \% (should show literal %)
     InputHandler::execute_command_string(&mut test.editor, r"!echo \%").unwrap();
 
     // Status should contain literal %
     let status = test.editor.lsp_status();
-    assert!(status.contains("%"),
-            "Status should contain literal %, got: {}", status);
-    assert!(!status.contains("test.rs"),
-            "Status should NOT contain filename, got: {}", status);
+    assert!(
+        status.contains("%"),
+        "Status should contain literal %, got: {}",
+        status
+    );
+    assert!(
+        !status.contains("test.rs"),
+        "Status should NOT contain filename, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -175,15 +224,23 @@ fn test_chained_modifiers() {
     let mut test = EditorTest::new("content\n");
 
     // Set file path with nested directories
-    test.editor.buffer_mut().set_file_path("src/editor/main.rs".to_string());
+    test.editor
+        .buffer_mut()
+        .set_file_path("src/editor/main.rs".to_string());
 
     // Test :t:r (tail then root = "main")
     InputHandler::execute_command_string(&mut test.editor, "!echo %:t:r").unwrap();
     let status = test.editor.lsp_status();
-    assert!(status.contains("main"),
-            "Tail+root should be main, got: {}", status);
-    assert!(!status.contains(".rs"),
-            "Should not contain .rs, got: {}", status);
+    assert!(
+        status.contains("main"),
+        "Tail+root should be main, got: {}",
+        status
+    );
+    assert!(
+        !status.contains(".rs"),
+        "Should not contain .rs, got: {}",
+        status
+    );
 }
 
 #[test]
@@ -212,10 +269,16 @@ fn test_edit_force_reload() {
 
     // Buffer should be back to original
     let content = test.editor.buffer().rope().to_string();
-    assert!(content.contains("original content"),
-            "Buffer should contain original content, got: {}", content);
-    assert!(!content.contains("MODIFIED"),
-            "Buffer should not contain MODIFIED, got: {}", content);
+    assert!(
+        content.contains("original content"),
+        "Buffer should contain original content, got: {}",
+        content
+    );
+    assert!(
+        !content.contains("MODIFIED"),
+        "Buffer should not contain MODIFIED, got: {}",
+        content
+    );
 
     // Clean up
     std::fs::remove_file(temp_file).ok();

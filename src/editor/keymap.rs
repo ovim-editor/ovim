@@ -115,7 +115,10 @@ impl KeyMapManager {
     pub fn has_prefix(&self, mode: MapMode, prefix: &str) -> bool {
         // Check mode-specific mappings
         if let Some(maps) = self.mappings.get(&mode) {
-            if maps.iter().any(|m| m.lhs.starts_with(prefix) && m.lhs != prefix) {
+            if maps
+                .iter()
+                .any(|m| m.lhs.starts_with(prefix) && m.lhs != prefix)
+            {
                 return true;
             }
         }
@@ -123,7 +126,10 @@ impl KeyMapManager {
         // Check All-mode mappings
         if mode != MapMode::All {
             if let Some(maps) = self.mappings.get(&MapMode::All) {
-                if maps.iter().any(|m| m.lhs.starts_with(prefix) && m.lhs != prefix) {
+                if maps
+                    .iter()
+                    .any(|m| m.lhs.starts_with(prefix) && m.lhs != prefix)
+                {
                     return true;
                 }
             }

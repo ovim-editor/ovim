@@ -33,7 +33,9 @@ impl Editor {
             // Clamp start position to buffer bounds
             let line_count = self.buffer().line_count();
             let clamped_start_line = start.0.min(line_count.saturating_sub(1));
-            let start_line_len = self.buffer().line(clamped_start_line)
+            let start_line_len = self
+                .buffer()
+                .line(clamped_start_line)
                 .map(|l| l.trim_end_matches('\n').chars().count())
                 .unwrap_or(0);
             let clamped_start_col = if mode == crate::mode::Mode::VisualLine {
@@ -45,7 +47,9 @@ impl Editor {
 
             // Clamp end position to buffer bounds
             let clamped_end_line = end.0.min(line_count.saturating_sub(1));
-            let end_line_len = self.buffer().line(clamped_end_line)
+            let end_line_len = self
+                .buffer()
+                .line(clamped_end_line)
                 .map(|l| l.trim_end_matches('\n').chars().count())
                 .unwrap_or(0);
             let clamped_end_col = if mode == crate::mode::Mode::VisualLine {
@@ -58,7 +62,9 @@ impl Editor {
             // Set visual start
             self.visual.visual_start = Some((clamped_start_line, clamped_start_col));
             // Move cursor to end position
-            self.buffer_mut().cursor_mut().set_position(clamped_end_line, clamped_end_col);
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(clamped_end_line, clamped_end_col);
         }
     }
 

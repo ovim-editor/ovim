@@ -33,7 +33,11 @@ use proptest::prelude::*;
 #[derive(Debug, Clone)]
 enum BufferOp {
     /// Insert text at position (line, col)
-    Insert { line: usize, col: usize, text: String },
+    Insert {
+        line: usize,
+        col: usize,
+        text: String,
+    },
     /// Delete range from (start_line, start_col) to (end_line, end_col)
     Delete {
         start_line: usize,

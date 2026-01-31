@@ -356,12 +356,8 @@ mod tests {
 
     #[test]
     fn test_tag_entry_with_context() {
-        let entry = TagEntry::with_context(
-            "main.rs".to_string(),
-            100,
-            15,
-            "fn calculate".to_string(),
-        );
+        let entry =
+            TagEntry::with_context("main.rs".to_string(), 100, 15, "fn calculate".to_string());
         assert_eq!(entry.context, "fn calculate");
     }
 }

@@ -1,5 +1,5 @@
-use crate::mode::Mode;
 use super::search::Search;
+use crate::mode::Mode;
 
 /// Visual search state - saved when entering search from visual mode
 #[derive(Debug, Clone)]

@@ -89,8 +89,7 @@ impl InputHandler {
 
         // Global keybindings (work in any mode)
         // Cmd+1 - toggle file tree
-        if key_event.code == KeyCode::Char('1')
-            && key_event.modifiers.contains(KeyModifiers::SUPER)
+        if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(KeyModifiers::SUPER)
         {
             editor.toggle_file_tree();
             return Ok(());
@@ -108,14 +107,18 @@ impl InputHandler {
             Mode::Picker => picker_mode::handle_picker_mode(editor, key_event),
             Mode::HoverPreview => {
                 // HoverPreview may forward keys to normal mode
-                if let Some(forwarded_key) = hover_mode::handle_hover_preview_mode(editor, key_event)? {
+                if let Some(forwarded_key) =
+                    hover_mode::handle_hover_preview_mode(editor, key_event)?
+                {
                     Self::handle_normal_mode(editor, forwarded_key)?;
                 }
                 Ok(())
             }
             Mode::HoverNavigate => hover_mode::handle_hover_navigate_mode(editor, key_event),
             Mode::FileTree => filetree_mode::handle_filetree_mode(editor, key_event),
-            Mode::SubstituteConfirm => substitute_mode::handle_substitute_confirm_mode(editor, key_event),
+            Mode::SubstituteConfirm => {
+                substitute_mode::handle_substitute_confirm_mode(editor, key_event)
+            }
             Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
             Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
             Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),

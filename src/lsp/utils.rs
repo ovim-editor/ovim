@@ -95,7 +95,13 @@ pub fn compute_simple_diff(
         };
         let new_text: String = new_chars[start_char..end_char_new].iter().collect();
 
-        return Some((Range { start: start_pos, end: end_pos }, new_text));
+        return Some((
+            Range {
+                start: start_pos,
+                end: end_pos,
+            },
+            new_text,
+        ));
     }
 
     // For all other cases (insertion, deletion, multi-line changes),
@@ -199,7 +205,13 @@ pub fn compute_simple_diff(
         }
     };
 
-    Some((Range { start: start_pos, end: end_pos }, new_text))
+    Some((
+        Range {
+            start: start_pos,
+            end: end_pos,
+        },
+        new_text,
+    ))
 }
 
 /// Converts a MarkedString to plain text
@@ -227,7 +239,11 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
     // Convert LSP positions to byte offsets
     let start_offset = if (range.start.line as usize) < lines.len() {
         let line = lines[range.start.line as usize];
-        let char_offset: usize = line.chars().take(range.start.character as usize).map(|c| c.len_utf8()).sum();
+        let char_offset: usize = line
+            .chars()
+            .take(range.start.character as usize)
+            .map(|c| c.len_utf8())
+            .sum();
         line_offsets[range.start.line as usize] + char_offset
     } else {
         content.len()
@@ -235,7 +251,11 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
 
     let end_offset = if (range.end.line as usize) < lines.len() {
         let line = lines[range.end.line as usize];
-        let char_offset: usize = line.chars().take(range.end.character as usize).map(|c| c.len_utf8()).sum();
+        let char_offset: usize = line
+            .chars()
+            .take(range.end.character as usize)
+            .map(|c| c.len_utf8())
+            .sum();
         line_offsets[range.end.line as usize] + char_offset
     } else {
         content.len()
@@ -305,10 +325,7 @@ mod tests {
 
     #[test]
     fn test_insert_multiple_lines() {
-        assert_diff_correct(
-            "Line 1\nLine 4\n",
-            "Line 1\nLine 2\nLine 3\nLine 4\n",
-        );
+        assert_diff_correct("Line 1\nLine 4\n", "Line 1\nLine 2\nLine 3\nLine 4\n");
     }
 
     #[test]
@@ -318,10 +335,7 @@ mod tests {
 
     #[test]
     fn test_delete_multiple_lines() {
-        assert_diff_correct(
-            "Line 1\nLine 2\nLine 3\nLine 4\n",
-            "Line 1\nLine 4\n",
-        );
+        assert_diff_correct("Line 1\nLine 2\nLine 3\nLine 4\n", "Line 1\nLine 4\n");
     }
 
     #[test]

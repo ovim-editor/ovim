@@ -8,12 +8,18 @@ use crate::mode::Mode;
 /// Top-level mouse event dispatcher.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<()> {
     match event.kind {
-        MouseEventKind::Down(MouseButton::Left) => handle_left_click(editor, event.column, event.row),
-        MouseEventKind::Drag(MouseButton::Left) => handle_left_drag(editor, event.column, event.row),
+        MouseEventKind::Down(MouseButton::Left) => {
+            handle_left_click(editor, event.column, event.row)
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            handle_left_drag(editor, event.column, event.row)
+        }
         MouseEventKind::Up(MouseButton::Left) => handle_left_release(editor),
         MouseEventKind::ScrollUp => handle_scroll(editor, true),
         MouseEventKind::ScrollDown => handle_scroll(editor, false),
-        MouseEventKind::Down(MouseButton::Middle) => handle_middle_click(editor, event.column, event.row),
+        MouseEventKind::Down(MouseButton::Middle) => {
+            handle_middle_click(editor, event.column, event.row)
+        }
         _ => Ok(()), // Right click, other events: ignored
     }
 }
@@ -55,11 +61,13 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
             let col = sub_line * text_width + display_col_in_row;
             (line, col)
         } else {
-            let line = (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+            let line = (rel_row + editor.scroll_offset())
+                .min(editor.buffer().line_count().saturating_sub(1));
             (line, display_col_in_row + editor.horizontal_offset())
         }
     } else {
-        let line = (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+        let line =
+            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
         (line, display_col_in_row + editor.horizontal_offset())
     };
 
@@ -112,7 +120,8 @@ fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<
                 let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
                 logical_line.min(editor.buffer().line_count().saturating_sub(1))
             } else {
-                (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+                (rel_row + editor.scroll_offset())
+                    .min(editor.buffer().line_count().saturating_sub(1))
             }
         } else {
             (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
@@ -147,7 +156,10 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     }
 
     // Dismiss transient overlays on click
-    if matches!(mode, Mode::Command | Mode::Search | Mode::HoverPreview | Mode::HoverNavigate) {
+    if matches!(
+        mode,
+        Mode::Command | Mode::Search | Mode::HoverPreview | Mode::HoverNavigate
+    ) {
         editor.set_mode(Mode::Normal);
         // Fall through to also move cursor
     } else if should_ignore_click(mode) {
@@ -171,7 +183,10 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 
     // Buffer click → move cursor
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
-        editor.buffer_mut().cursor_mut().set_position(line, char_col);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, char_col);
         editor.render_cache.mouse_state.is_dragging = true;
         editor.render_cache.mouse_state.drag_origin = Some((line, char_col));
     }
@@ -201,7 +216,10 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
             }
         }
 
-        editor.buffer_mut().cursor_mut().set_position(line, char_col);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, char_col);
     }
 
     Ok(())
@@ -270,7 +288,10 @@ fn handle_middle_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 
     // Move cursor to click position first
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
-        editor.buffer_mut().cursor_mut().set_position(line, char_col);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, char_col);
     }
 
     // Paste from system clipboard register (+)
@@ -329,8 +350,5 @@ fn handle_picker_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 /// Returns true if the screen point (col, row) is inside the rect.
 fn rect_contains(rect: &ratatui::layout::Rect, point: (u16, u16)) -> bool {
     let (col, row) = point;
-    col >= rect.x
-        && col < rect.x + rect.width
-        && row >= rect.y
-        && row < rect.y + rect.height
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }

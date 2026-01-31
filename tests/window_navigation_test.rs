@@ -13,15 +13,24 @@ fn test_window_nav_left_horizontal_split() {
     assert_eq!(test.editor.window_count(), 2);
 
     // Focus stays on left window (0) after split
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate right
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate left
     test.keys("<C-w>h");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test <C-w>l in a simple 2-window horizontal split
@@ -33,15 +42,24 @@ fn test_window_nav_right_horizontal_split() {
     // Vertical split
     test.keys("<C-w>v");
     assert_eq!(test.editor.window_count(), 2);
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate right
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate left
     test.keys("<C-w>h");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test <C-w>j in a simple 2-window vertical split
@@ -53,11 +71,17 @@ fn test_window_nav_down_vertical_split() {
     // Horizontal split creates top (0) and bottom (1) windows
     test.keys("<C-w>s");
     assert_eq!(test.editor.window_count(), 2);
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate down
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 }
 
 /// Test <C-w>k in a simple 2-window vertical split
@@ -72,11 +96,17 @@ fn test_window_nav_up_vertical_split() {
 
     // Navigate down first
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate up
     test.keys("<C-w>k");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test <C-w>w cycling through windows
@@ -91,18 +121,30 @@ fn test_window_cycle_forward() {
     assert_eq!(test.editor.window_count(), 3);
 
     // Focus is at window 0 after splits
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Cycle forward
     test.keys("<C-w>w");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     test.keys("<C-w>w");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     // Should wrap around
     test.keys("<C-w>w");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test <C-w>p switching between current and previous window
@@ -117,15 +159,24 @@ fn test_window_previous() {
 
     // Navigate to second window
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Go back to previous (first) window
     test.keys("<C-w>p");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Go back to previous (second) window again
     test.keys("<C-w>p");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 }
 
 /// Test navigation in a 3-window layout (vsplit then split)
@@ -143,24 +194,40 @@ fn test_window_nav_three_window_layout() {
     assert_eq!(test.editor.window_count(), 3);
 
     // Currently at window 0 (top-left)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate down to bottom-left
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate up to top-left
     test.keys("<C-w>k");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate right to right window
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     // Navigate left (should go back to left side)
     test.keys("<C-w>h");
     let focused = test.editor.window_manager().unwrap().focused_window_index();
-    assert!(focused == 0 || focused == 1, "Should navigate to a left window, got {}", focused);
+    assert!(
+        focused == 0 || focused == 1,
+        "Should navigate to a left window, got {}",
+        focused
+    );
 }
 
 /// Test navigation in a 4-window grid (2x2)
@@ -185,27 +252,45 @@ fn test_window_nav_four_window_grid() {
     assert_eq!(test.editor.window_count(), 4);
 
     // Currently at top-right (window 2)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     // Navigate down to bottom-right
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 3);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        3
+    );
 
     // Navigate up to top-right
     test.keys("<C-w>k");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     // Navigate left to top-left
     test.keys("<C-w>h");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate down to bottom-left
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate right to bottom-right
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 3);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        3
+    );
 }
 
 /// Test navigation at boundaries - left edge
@@ -218,11 +303,17 @@ fn test_window_nav_boundary_left() {
     test.keys("<C-w>v");
 
     // Already at leftmost window (0)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Try to go further left (should stay at same window)
     test.keys("<C-w>h");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test navigation at boundaries - right edge
@@ -236,11 +327,17 @@ fn test_window_nav_boundary_right() {
 
     // Navigate to rightmost window
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Try to go further right (should stay at same window)
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 }
 
 /// Test navigation at boundaries - top edge
@@ -253,11 +350,17 @@ fn test_window_nav_boundary_top() {
     test.keys("<C-w>s");
 
     // Already at topmost window (0)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Try to go further up (should stay at same window)
     test.keys("<C-w>k");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test navigation at boundaries - bottom edge
@@ -271,11 +374,17 @@ fn test_window_nav_boundary_bottom() {
 
     // Navigate to bottom window
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Try to go further down (should stay at same window)
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 }
 
 /// Test single window - all navigation commands should be no-ops
@@ -286,27 +395,48 @@ fn test_window_nav_single_window() {
 
     // Only one window
     assert_eq!(test.editor.window_count(), 1);
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // All directional navigation should be no-ops
     test.keys("<C-w>h");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     test.keys("<C-w>k");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Cycle commands should also be no-ops
     test.keys("<C-w>w");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     test.keys("<C-w>p");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test navigation after closing a window
@@ -322,7 +452,10 @@ fn test_window_nav_after_close() {
 
     // Navigate to middle window (index 1)
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Close it
     test.keys("<C-w>c");
@@ -330,7 +463,11 @@ fn test_window_nav_after_close() {
 
     // Focus should have moved to a valid window
     let focused = test.editor.window_manager().unwrap().focused_window_index();
-    assert!(focused < 2, "Focus should be on a valid window, got {}", focused);
+    assert!(
+        focused < 2,
+        "Focus should be on a valid window, got {}",
+        focused
+    );
 
     // Should still be able to navigate
     test.keys("<C-w>w");
@@ -354,14 +491,23 @@ fn test_window_nav_after_only() {
     assert_eq!(test.editor.window_count(), 1);
 
     // Focus should be on the only window
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigation should be no-op
     test.keys("<C-w>h");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test cursor position preserved when switching windows
@@ -470,30 +616,46 @@ fn test_asymmetric_layout_navigation() {
 
     // Create layout: [top-left (0) | right (2)]
     //                [bottom-left (1)          ]
-    test.keys("<C-w>v");  // Vertical split: left (0) | right (1)
-    test.keys("<C-w>s");  // Horizontal split on left: top-left (0) | right (2)
-                           //                            bottom-left (1)
+    test.keys("<C-w>v"); // Vertical split: left (0) | right (1)
+    test.keys("<C-w>s"); // Horizontal split on left: top-left (0) | right (2)
+                         //                            bottom-left (1)
     assert_eq!(test.editor.window_count(), 3);
 
     // Currently at top-left (window 0)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate down to bottom-left
     test.keys("<C-w>j");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate up to top-left
     test.keys("<C-w>k");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Navigate right to right window
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     // Navigate left (should go to one of the left windows)
     test.keys("<C-w>h");
     let focused = test.editor.window_manager().unwrap().focused_window_index();
-    assert!(focused == 0 || focused == 1, "Should navigate to a left window, got {}", focused);
+    assert!(
+        focused == 0 || focused == 1,
+        "Should navigate to a left window, got {}",
+        focused
+    );
 }
 
 /// Test <C-w>W (cycle backwards) - NOTE: <C-w>W is not implemented
@@ -509,13 +671,19 @@ fn test_window_cycle_backward_unimplemented() {
     assert_eq!(test.editor.window_count(), 3);
 
     // Start at window 0
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // <C-w>W is not implemented, so this should be a no-op
     test.keys("<C-w>W");
 
     // Should remain at window 0 (command not implemented)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test rapid navigation sequences
@@ -525,12 +693,12 @@ fn test_rapid_navigation_sequence() {
     test.editor.init_window_manager(80, 24);
 
     // Create 2x2 grid
-    test.keys("<C-w>v");    // left (0) | right (1)
-    test.keys("<C-w>s");    // top-left (0) | right (2)
-                            // bottom-left (1)
-    test.keys("<C-w>l");    // Navigate to right (2)
-    test.keys("<C-w>s");    // Split right: top-left (0) | top-right (2)
-                            //              bottom-left (1) | bottom-right (3)
+    test.keys("<C-w>v"); // left (0) | right (1)
+    test.keys("<C-w>s"); // top-left (0) | right (2)
+                         // bottom-left (1)
+    test.keys("<C-w>l"); // Navigate to right (2)
+    test.keys("<C-w>s"); // Split right: top-left (0) | top-right (2)
+                         //              bottom-left (1) | bottom-right (3)
     assert_eq!(test.editor.window_count(), 4);
 
     // Rapid navigation sequence
@@ -552,13 +720,19 @@ fn test_window_nav_ctrl_w_ctrl_h() {
 
     // Navigate to right window first
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Use <C-w><C-h> syntax to navigate left
     test.keys("<C-w><C-h>");
 
     // Should navigate left
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test window navigation maintains mode
@@ -600,13 +774,19 @@ fn test_window_nav_top_left_unimplemented() {
     // Navigate to last window
     test.keys("<C-w>w");
     test.keys("<C-w>w");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     // <C-w>t is not implemented, so this should be a no-op
     test.keys("<C-w>t");
 
     // Should remain at window 2 (command not implemented)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 }
 
 /// Test <C-w>b (go to bottom-right window) - NOTE: Not implemented
@@ -622,13 +802,19 @@ fn test_window_nav_bottom_right_unimplemented() {
     assert_eq!(test.editor.window_count(), 3);
 
     // Start at window 0
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // <C-w>b is not implemented, so this should be a no-op
     test.keys("<C-w>b");
 
     // Should remain at window 0 (command not implemented)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 }
 
 /// Test window navigation after multiple operations
@@ -646,7 +832,10 @@ fn test_complex_window_workflow() {
 
     // Navigate to second window
     test.keys("<C-w>l");
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
     test.keys("iSECOND<Esc>");
 
     // Split second window: left (0) | top (1)
@@ -655,24 +844,39 @@ fn test_complex_window_workflow() {
     assert_eq!(test.editor.window_count(), 3);
 
     // Currently at window 1 (top right)
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Navigate through all windows
     test.keys("<C-w>w"); // Go to window 2
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     test.keys("<C-w>w"); // Wrap around to window 0
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     test.keys("<C-w>w"); // Go to window 1
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     // Content should have both edits (shared buffer)
     let content = test.buffer_content();
     // The edits replace the beginning of the buffer, so we end up with "SECONDFIRSTlineX"
     // both inserts happen at the same position (beginning of buffer)
-    assert!(content.contains("FIRST") || content.contains("SECOND"),
-        "Buffer should contain edits, got: {:?}", content);
+    assert!(
+        content.contains("FIRST") || content.contains("SECOND"),
+        "Buffer should contain edits, got: {:?}",
+        content
+    );
 }
 
 /// Test navigation with count - verifies count is consumed by <C-w> command
@@ -688,18 +892,30 @@ fn test_window_nav_with_count() {
     assert_eq!(test.editor.window_count(), 4);
 
     // Start at window 0
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 0);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        0
+    );
 
     // Try to navigate using count: 3<C-w>w
     // Note: Count support may not be fully implemented, so the test uses manual cycling
     test.keys("<C-w>w"); // Navigate to window 1
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 1);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        1
+    );
 
     test.keys("<C-w>w"); // Navigate to window 2
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 2);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        2
+    );
 
     test.keys("<C-w>w"); // Navigate to window 3
-    assert_eq!(test.editor.window_manager().unwrap().focused_window_index(), 3);
+    assert_eq!(
+        test.editor.window_manager().unwrap().focused_window_index(),
+        3
+    );
 }
 
 /// Test equal window splits maintain proper ratios

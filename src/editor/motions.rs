@@ -306,11 +306,12 @@ impl Motions {
             col = cursor.col();
             // Use Vim-compatible line count: exclude phantom empty line after trailing '\n'.
             let raw = rope.len_lines();
-            total_lines = if raw > 1 && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) == '\n' {
-                raw - 1
-            } else {
-                raw
-            };
+            total_lines =
+                if raw > 1 && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) == '\n' {
+                    raw - 1
+                } else {
+                    raw
+                };
 
             if line_idx >= total_lines {
                 return;
@@ -334,7 +335,9 @@ impl Motions {
                     let first_class = char_class(next_chars[0]);
                     let mut end_col = 0;
                     if first_class != CharClass::Whitespace {
-                        while end_col + 1 < next_chars.len() && char_class(next_chars[end_col + 1]) == first_class {
+                        while end_col + 1 < next_chars.len()
+                            && char_class(next_chars[end_col + 1]) == first_class
+                        {
                             end_col += 1;
                         }
                     }
@@ -344,7 +347,9 @@ impl Motions {
                 next_line += 1;
             }
             // All remaining lines are blank, go to last line
-            buffer.cursor_mut().set_position(total_lines.saturating_sub(1), 0);
+            buffer
+                .cursor_mut()
+                .set_position(total_lines.saturating_sub(1), 0);
             return;
         }
 
@@ -1670,10 +1675,7 @@ impl Motions {
 
         // Position cursor at first non-whitespace
         if let Some(line) = buffer.line(current_line) {
-            let col = line
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .count();
+            let col = line.chars().take_while(|c| c.is_whitespace()).count();
             buffer.cursor_mut().set_position(current_line, col);
         } else {
             buffer.cursor_mut().set_position(current_line, 0);
@@ -1704,10 +1706,7 @@ impl Motions {
 
         // Position cursor at first non-whitespace
         if let Some(line) = buffer.line(current_line) {
-            let col = line
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .count();
+            let col = line.chars().take_while(|c| c.is_whitespace()).count();
             buffer.cursor_mut().set_position(current_line, col);
         } else {
             buffer.cursor_mut().set_position(current_line, 0);
@@ -1795,7 +1794,9 @@ impl Motions {
             // Check for C/C++/Java/Go style - identifier followed by ( at start of line
             // Look for pattern: word word( or word( at reasonable indent level
             let indent = line.len() - line.trim_start().len();
-            if indent <= 8 && trimmed.contains('(') && !trimmed.starts_with("if ")
+            if indent <= 8
+                && trimmed.contains('(')
+                && !trimmed.starts_with("if ")
                 && !trimmed.starts_with("for ")
                 && !trimmed.starts_with("while ")
                 && !trimmed.starts_with("switch ")

@@ -277,7 +277,11 @@ impl LanguageRegistry {
 
         // Try parent-qualified filename (e.g., "ghostty/config")
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if let Some(parent) = path.parent().and_then(|p| p.file_name()).and_then(|p| p.to_str()) {
+            if let Some(parent) = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|p| p.to_str())
+            {
                 let key = (parent.to_lowercase(), name.to_lowercase());
                 if let Some(&idx) = self.by_path_filename.get(&key) {
                     return Some(&self.languages[idx]);
@@ -412,10 +416,7 @@ impl LanguageRegistry {
             // Index path_filenames (format: "parent/filename", stored lowercase)
             for path_name in &lang.path_filenames {
                 if let Some((parent, filename)) = path_name.rsplit_once('/') {
-                    by_path_filename.insert(
-                        (parent.to_lowercase(), filename.to_lowercase()),
-                        idx,
-                    );
+                    by_path_filename.insert((parent.to_lowercase(), filename.to_lowercase()), idx);
                 }
             }
 
@@ -713,13 +714,19 @@ mod tests {
 
         // Matches when parent dir is "ghostty" and filename is "config"
         assert_eq!(
-            registry.detect("/home/user/.config/ghostty/config").unwrap().id,
+            registry
+                .detect("/home/user/.config/ghostty/config")
+                .unwrap()
+                .id,
             "ghostty"
         );
 
         // Case-insensitive match
         assert_eq!(
-            registry.detect("/home/user/.config/Ghostty/Config").unwrap().id,
+            registry
+                .detect("/home/user/.config/Ghostty/Config")
+                .unwrap()
+                .id,
             "ghostty"
         );
 
@@ -757,13 +764,19 @@ mod tests {
 
         // Path-qualified match wins over generic filename match
         assert_eq!(
-            registry.detect("/home/user/.config/ghostty/config").unwrap().id,
+            registry
+                .detect("/home/user/.config/ghostty/config")
+                .unwrap()
+                .id,
             "ghostty"
         );
 
         // Generic filename match still works for other parents
         assert_eq!(
-            registry.detect("/home/user/.config/other/config").unwrap().id,
+            registry
+                .detect("/home/user/.config/other/config")
+                .unwrap()
+                .id,
             "generic-config"
         );
     }

@@ -73,8 +73,7 @@ impl PickerState {
     pub fn is_scrolling_rapidly(&self) -> bool {
         match (self.prev_selection_change, self.last_selection_change) {
             (Some(prev), Some(last)) => {
-                last.duration_since(prev).as_millis() < 80
-                    && last.elapsed().as_millis() < 150
+                last.duration_since(prev).as_millis() < 80 && last.elapsed().as_millis() < 150
             }
             _ => false,
         }
@@ -268,10 +267,7 @@ impl PickerState {
     const FILE_LIST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
     /// Gets cached file list if available and fresh (less than 5 minutes old)
-    pub fn get_cached_file_list(
-        &self,
-        root: &std::path::Path,
-    ) -> Option<&[super::PickerResult]> {
+    pub fn get_cached_file_list(&self, root: &std::path::Path) -> Option<&[super::PickerResult]> {
         let (cached_root, files, timestamp) = self.file_list_cache.as_ref()?;
         if cached_root == root && timestamp.elapsed() < Self::FILE_LIST_CACHE_TTL {
             Some(files.as_slice())
@@ -436,10 +432,7 @@ impl Editor {
     }
 
     /// Gets cached file list if available and fresh
-    pub fn get_cached_file_list(
-        &self,
-        root: &std::path::Path,
-    ) -> Option<&[super::PickerResult]> {
+    pub fn get_cached_file_list(&self, root: &std::path::Path) -> Option<&[super::PickerResult]> {
         self.picker_state.get_cached_file_list(root)
     }
 

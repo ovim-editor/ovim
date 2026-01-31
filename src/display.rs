@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(char_col_to_display_col(text, 0, 4), 0);
         assert_eq!(char_col_to_display_col(text, 1, 4), 1); // after 'a'
         assert_eq!(char_col_to_display_col(text, 2, 4), 3); // after '世'
-        // inverse
+                                                            // inverse
         assert_eq!(display_col_to_char_col(text, 0, 4), 0);
         assert_eq!(display_col_to_char_col(text, 1, 4), 1); // start of '世'
         assert_eq!(display_col_to_char_col(text, 2, 4), 1); // middle of '世' -> returns char 1

@@ -50,13 +50,9 @@ impl NucleoMatcher {
     /// This is instant and non-blocking — matching happens in background.
     pub fn update_query(&mut self, query: &str) {
         let append = query.starts_with(&self.last_query) && !self.last_query.is_empty();
-        self.nucleo.pattern.reparse(
-            0,
-            query,
-            CaseMatching::Ignore,
-            Normalization::Smart,
-            append,
-        );
+        self.nucleo
+            .pattern
+            .reparse(0, query, CaseMatching::Ignore, Normalization::Smart, append);
         self.last_query = query.to_string();
     }
 

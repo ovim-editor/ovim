@@ -82,8 +82,7 @@ impl Modeline {
 
     /// Get an integer option value
     pub fn get_int(&self, long_name: &str, short_name: &str) -> Option<usize> {
-        self.get(long_name, short_name)
-            .and_then(|v| v.parse().ok())
+        self.get(long_name, short_name).and_then(|v| v.parse().ok())
     }
 }
 

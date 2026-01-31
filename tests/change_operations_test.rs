@@ -454,10 +454,7 @@ fn test_cG_change_to_end_of_file() {
         .type_text("rest of file")
         .press_esc();
 
-    assert_eq!(
-        test.buffer_content(),
-        "line 1\nrest of file\n"
-    );
+    assert_eq!(test.buffer_content(), "line 1\nrest of file\n");
     test.assert_cursor(1, 11);
 }
 

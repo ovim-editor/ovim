@@ -358,7 +358,12 @@ struct Rect {
 impl Rect {
     /// Creates a new rectangle
     fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// Returns the right edge (x + width)
@@ -595,7 +600,15 @@ impl WindowManager {
     fn collect_window_rects(&self, width: u16, height: u16) -> Vec<(usize, Rect)> {
         let mut rects = Vec::new();
         let mut current_index = 0;
-        Self::collect_rects_recursive(&self.root, 0, 0, width, height, &mut rects, &mut current_index);
+        Self::collect_rects_recursive(
+            &self.root,
+            0,
+            0,
+            width,
+            height,
+            &mut rects,
+            &mut current_index,
+        );
         rects
     }
 
@@ -625,7 +638,15 @@ impl WindowManager {
                         // Windows stacked vertically
                         let first_height = (height as f32 * *ratio) as u16;
                         let second_height = height.saturating_sub(first_height).saturating_sub(1); // -1 for separator
-                        Self::collect_rects_recursive(first, x, y, width, first_height, rects, current_index);
+                        Self::collect_rects_recursive(
+                            first,
+                            x,
+                            y,
+                            width,
+                            first_height,
+                            rects,
+                            current_index,
+                        );
                         Self::collect_rects_recursive(
                             second,
                             x,
@@ -640,7 +661,15 @@ impl WindowManager {
                         // Windows side by side
                         let first_width = (width as f32 * *ratio) as u16;
                         let second_width = width.saturating_sub(first_width).saturating_sub(1); // -1 for separator
-                        Self::collect_rects_recursive(first, x, y, first_width, height, rects, current_index);
+                        Self::collect_rects_recursive(
+                            first,
+                            x,
+                            y,
+                            first_width,
+                            height,
+                            rects,
+                            current_index,
+                        );
                         Self::collect_rects_recursive(
                             second,
                             x + first_width + 1,
@@ -801,7 +830,9 @@ impl WindowManager {
                 // Check if target is in first child
                 if target_index < current_index + first_count {
                     // Check if first child is the exact target (and is a leaf)
-                    if current_index == target_index && matches!(first.as_ref(), WindowNode::Leaf(_)) {
+                    if current_index == target_index
+                        && matches!(first.as_ref(), WindowNode::Leaf(_))
+                    {
                         // Replace this Split with the second child
                         *node = (**second).clone();
                         return true;
@@ -816,7 +847,9 @@ impl WindowManager {
                     let second_start_index = current_index + first_count;
 
                     // Check if second child is the exact target (and is a leaf)
-                    if second_start_index == target_index && matches!(second.as_ref(), WindowNode::Leaf(_)) {
+                    if second_start_index == target_index
+                        && matches!(second.as_ref(), WindowNode::Leaf(_))
+                    {
                         // Replace this Split with the first child
                         *node = (**first).clone();
                         return true;

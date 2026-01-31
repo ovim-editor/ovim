@@ -11,9 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Handles input in Picker mode
 pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // Ctrl-C - cancel picker (same as Escape)
-    if key_event.code == KeyCode::Char('c')
-        && key_event.modifiers.contains(KeyModifiers::CONTROL)
-    {
+    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
         editor.close_picker();
         editor.set_mode(Mode::Normal);
         return Ok(());
@@ -169,8 +167,7 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Alt+F / Alt+B (Ghostty sends Alt+Right/Left as ESC+'f'/'b') - toggle field
         KeyCode::Char('f') | KeyCode::Char('b')
-            if cfg!(target_os = "macos")
-                && key_event.modifiers.contains(KeyModifiers::ALT) =>
+            if cfg!(target_os = "macos") && key_event.modifiers.contains(KeyModifiers::ALT) =>
         {
             if let Some(picker) = editor.picker_mut() {
                 picker.toggle_field();

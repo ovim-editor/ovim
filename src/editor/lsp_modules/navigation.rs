@@ -132,11 +132,7 @@ impl Editor {
             detail: item.detail.clone(),
         });
 
-        let incoming = match ctx
-            .lsp
-            .incoming_calls(item.clone(), &ctx.language_id)
-            .await
-        {
+        let incoming = match ctx.lsp.incoming_calls(item.clone(), &ctx.language_id).await {
             Ok(Some(calls)) => calls
                 .iter()
                 .take(50)
@@ -359,10 +355,7 @@ fn symbol_kind_str(kind: lsp_types::SymbolKind) -> String {
 }
 
 fn count_symbols(symbols: &[OutlineSymbol]) -> usize {
-    symbols
-        .iter()
-        .map(|s| 1 + count_symbols(&s.children))
-        .sum()
+    symbols.iter().map(|s| 1 + count_symbols(&s.children)).sum()
 }
 
 /// Recursively collect symbols from a treesitter node.
@@ -378,11 +371,7 @@ fn collect_symbols(
         if let Some(mapping) = table.iter().find(|m| m.node_kind == child.kind()) {
             let name = child
                 .child_by_field_name(mapping.name_field)
-                .map(|n| {
-                    n.utf8_text(source)
-                        .unwrap_or("<unknown>")
-                        .to_string()
-                })
+                .map(|n| n.utf8_text(source).unwrap_or("<unknown>").to_string())
                 .unwrap_or_else(|| {
                     // For impl_item, try to build "impl Type" name
                     if mapping.node_kind == "impl_item" {

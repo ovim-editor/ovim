@@ -107,9 +107,9 @@ fn test_p_on_last_line_creates_new_line() {
     // not concatenate with current line
     let mut test = EditorTest::new("first\nlast");
 
-    test.keys("yy")  // Yank "first\n"
-        .keys("G")   // Go to last content line ("last")
-        .keys("p");  // Paste after
+    test.keys("yy") // Yank "first\n"
+        .keys("G") // Go to last content line ("last")
+        .keys("p"); // Paste after
 
     // Expected:
     // first
@@ -130,9 +130,9 @@ fn test_paste_after_uses_register_type_correctly() {
     let mut test = EditorTest::new("hello world");
 
     // Character yank (yw on word without newline)
-    test.keys("yw")   // Yank "hello "
-        .keys("$")    // Go to end
-        .keys("p");   // Paste after
+    test.keys("yw") // Yank "hello "
+        .keys("$") // Go to end
+        .keys("p"); // Paste after
 
     // Should paste inline after the 'd' in "world"
     // Result should be "hello worldhello " (with trailing space)
@@ -193,8 +193,8 @@ fn test_o_esc_removes_whitespace_only_line() {
     // Verify that o<Esc> properly removes the auto-indent whitespace
     let mut test = EditorTest::new("    indented\nnext");
 
-    test.keys("o");      // Open new line with indent
-    test.keys("<Esc>");  // Exit without typing
+    test.keys("o"); // Open new line with indent
+    test.keys("<Esc>"); // Exit without typing
 
     // Correct behavior: line should be empty (no auto-indent whitespace)
     let line1 = test.line(1).unwrap_or_default();
@@ -212,8 +212,8 @@ fn test_i_esc_should_not_alter_whitespace() {
 
     let original_line = test.line(0).unwrap();
 
-    test.keys("i");       // Enter insert mode
-    test.keys("<Esc>");   // Exit immediately
+    test.keys("i"); // Enter insert mode
+    test.keys("<Esc>"); // Exit immediately
 
     let after_line = test.line(0).unwrap();
 
@@ -246,9 +246,9 @@ fn test_O_esc_leaves_empty_line() {
     // O (insert line above) should also remove whitespace on Esc
     let mut test = EditorTest::new("    indented\nnext");
 
-    test.keys("j");      // Go to "next"
-    test.keys("O");      // Open line above with potential indent
-    test.keys("<Esc>");  // Exit without typing
+    test.keys("j"); // Go to "next"
+    test.keys("O"); // Open line above with potential indent
+    test.keys("<Esc>"); // Exit without typing
 
     // Line 1 should be empty after Esc without typing
     assert_eq!(
@@ -264,8 +264,8 @@ fn test_cc_esc_behavior() {
     // This is a related case to document
     let mut test = EditorTest::new("    indented content\nnext");
 
-    test.keys("cc");     // Change entire line (delete content, keep indent, enter insert)
-    test.keys("<Esc>");  // Exit without typing
+    test.keys("cc"); // Change entire line (delete content, keep indent, enter insert)
+    test.keys("<Esc>"); // Exit without typing
 
     // Document current behavior
     let line0 = test.line(0).unwrap();
@@ -289,8 +289,8 @@ fn test_o_esc_undo_on_indented_line() {
     test.assert_cursor(0, 0);
 
     // Press o<Esc>u
-    test.keys("o");      // Opens new line with indent
-    test.keys("<Esc>");  // Exit without typing
+    test.keys("o"); // Opens new line with indent
+    test.keys("<Esc>"); // Exit without typing
 
     // After o<Esc>, we should have 3 lines (original 2 + 1 new empty line)
     eprintln!("After o<Esc>:");
@@ -299,7 +299,7 @@ fn test_o_esc_undo_on_indented_line() {
     eprintln!("  Line 2: {:?}", test.line(2));
     eprintln!("  Buffer: {:?}", test.buffer_content());
 
-    test.keys("u");      // Undo
+    test.keys("u"); // Undo
 
     // After undo, should be back to original 2 lines
     eprintln!("After undo:");

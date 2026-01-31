@@ -17,7 +17,10 @@ use crate::session::SessionInfo;
 
 /// Main MCP server loop
 pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
-    eprintln!("[MCP] Starting ovim MCP server in workspace: {}", workspace_dir.display());
+    eprintln!(
+        "[MCP] Starting ovim MCP server in workspace: {}",
+        workspace_dir.display()
+    );
 
     let stdin = io::stdin();
     let mut reader = io::BufReader::new(stdin.lock());
@@ -49,11 +52,8 @@ pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
                         eprintln!("[MCP] Request: {} (id: {:?})", request.method, request.id);
 
                         // Handle request and get response
-                        let response = handle_request(
-                            &request,
-                            &workspace_dir,
-                            &mut current_session,
-                        );
+                        let response =
+                            handle_request(&request, &workspace_dir, &mut current_session);
 
                         // Send response if this was a regular request (not notification)
                         if request.id.is_some() {
@@ -185,8 +185,9 @@ fn handle_tool_call(
 
     // Try to use preferred session if specified
     let session = if let Some(session_name) = preferred_session {
-        SessionInfo::read(session_name)
-            .map_err(|e| JsonRpcError::internal_error(&format!("Session '{}' not found: {}", session_name, e)))?
+        SessionInfo::read(session_name).map_err(|e| {
+            JsonRpcError::internal_error(&format!("Session '{}' not found: {}", session_name, e))
+        })?
     } else {
         // Get or discover session (auto-discovery with smart behavior)
         get_or_discover_session(workspace_dir, current_session)
@@ -541,9 +542,10 @@ fn get_or_discover_session(
     let all_sessions = SessionInfo::list_all().unwrap_or_default();
 
     match all_sessions.len() {
-        0 => {
-            Err("No active ovim sessions found. Start one with: ovim --headless --session default".to_string())
-        }
+        0 => Err(
+            "No active ovim sessions found. Start one with: ovim --headless --session default"
+                .to_string(),
+        ),
         1 => {
             // Single session found, use it
             Ok(all_sessions[0].clone())

@@ -55,7 +55,10 @@ pub fn expand_shell_command(cmd: &str, current_file: &str, alternate_file: &str)
 
 /// Expands a filename with optional modifiers (:p, :h, :t, :r, :e).
 /// Modifiers can be chained.
-fn expand_with_modifiers(filename: &str, chars: &mut std::iter::Peekable<std::str::Chars>) -> String {
+fn expand_with_modifiers(
+    filename: &str,
+    chars: &mut std::iter::Peekable<std::str::Chars>,
+) -> String {
     let mut result = filename.to_string();
 
     // Consume and apply modifiers
@@ -151,7 +154,8 @@ fn get_root(path: &str) -> String {
     let path = Path::new(path);
 
     // Get the stem (filename without extension)
-    let stem = path.file_stem()
+    let stem = path
+        .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
@@ -185,9 +189,33 @@ fn shell_escape(s: &str) -> String {
 
     // Check if the string needs quoting
     let needs_quoting = s.chars().any(|c| {
-        matches!(c, ' ' | '\t' | '\n' | '!' | '"' | '#' | '$' | '&' | '\'' |
-                 '(' | ')' | '*' | ';' | '<' | '>' | '?' | '[' | '\\' |
-                 ']' | '^' | '`' | '{' | '|' | '}' | '~')
+        matches!(
+            c,
+            ' ' | '\t'
+                | '\n'
+                | '!'
+                | '"'
+                | '#'
+                | '$'
+                | '&'
+                | '\''
+                | '('
+                | ')'
+                | '*'
+                | ';'
+                | '<'
+                | '>'
+                | '?'
+                | '['
+                | '\\'
+                | ']'
+                | '^'
+                | '`'
+                | '{'
+                | '|'
+                | '}'
+                | '~'
+        )
     });
 
     if !needs_quoting {

@@ -12,8 +12,7 @@ use super::operators::Operator;
 /// Each variant represents a distinct state the editor can be in while
 /// waiting for additional input. The state determines how the next
 /// keypress will be interpreted.
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum InputState {
     /// Ready for any command. This is the default/idle state.
     #[default]
@@ -130,7 +129,6 @@ pub enum InputState {
     /// - `"ap` → paste from register 'a'
     RegisterPending,
 }
-
 
 impl InputState {
     /// Returns true if the state is Normal (ready for any command).
@@ -304,8 +302,14 @@ mod tests {
 
     #[test]
     fn test_text_object_prefix_from_char() {
-        assert_eq!(TextObjectPrefix::from_char('i'), Some(TextObjectPrefix::Inner));
-        assert_eq!(TextObjectPrefix::from_char('a'), Some(TextObjectPrefix::Around));
+        assert_eq!(
+            TextObjectPrefix::from_char('i'),
+            Some(TextObjectPrefix::Inner)
+        );
+        assert_eq!(
+            TextObjectPrefix::from_char('a'),
+            Some(TextObjectPrefix::Around)
+        );
         assert_eq!(TextObjectPrefix::from_char('x'), None);
     }
 }

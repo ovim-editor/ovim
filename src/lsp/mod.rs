@@ -283,11 +283,20 @@ impl LspManager {
         );
         // Check if already running
         if self.servers.contains_key(server_id) {
-            lsp_debug!("LspManager", "Companion server already running for {}", server_id);
+            lsp_debug!(
+                "LspManager",
+                "Companion server already running for {}",
+                server_id
+            );
             return Ok(());
         }
 
-        lsp_debug!("LspManager", "Spawning companion server: {} {:?}", command, args);
+        lsp_debug!(
+            "LspManager",
+            "Spawning companion server: {} {:?}",
+            command,
+            args
+        );
         // Extract language part for the server's language field
         let language = server_id.split(':').next().unwrap_or(server_id);
         let mut server = LanguageServer::spawn(language, command, args).await?;

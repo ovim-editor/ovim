@@ -7,7 +7,8 @@ impl Editor {
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col();
         let file_path = self.buffer().file_path().map(|s| s.to_string());
-        self.nav.marks
+        self.nav
+            .marks
             .set_mark(name, cursor_line, cursor_col, file_path.as_deref())
     }
 

@@ -50,10 +50,7 @@ impl Editor {
         self.set_lsp_status("Fetching code actions...".to_string());
 
         // Get diagnostics for the current line to provide context for code actions
-        let diagnostics = ctx
-            .lsp
-            .get_diagnostics_for_line(&ctx.uri, ctx.line)
-            .await;
+        let diagnostics = ctx.lsp.get_diagnostics_for_line(&ctx.uri, ctx.line).await;
         let result = if ctx.server_ids.len() > 1 {
             ctx.lsp
                 .code_actions_multi(
@@ -90,8 +87,7 @@ impl Editor {
 
                 let base_dir =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let picker =
-                    crate::editor::picker::Picker::new_custom(base_dir, titles);
+                let picker = crate::editor::picker::Picker::new_custom(base_dir, titles);
                 self.set_picker(picker);
                 self.set_mode(crate::mode::Mode::Picker);
                 self.mark_picker_selection_changed();
@@ -132,12 +128,9 @@ impl Editor {
                 if let Some(changes) = &workspace_edit.changes {
                     for (uri, edits) in changes {
                         if let Some(path) = uri_to_file_path(uri) {
-                            let current_path =
-                                self.buffer().file_path().map(|s| s.to_string());
+                            let current_path = self.buffer().file_path().map(|s| s.to_string());
 
-                            if current_path.as_deref()
-                                == Some(path.to_string_lossy().as_ref())
-                            {
+                            if current_path.as_deref() == Some(path.to_string_lossy().as_ref()) {
                                 self.apply_lsp_edits(edits.clone());
                             }
                             // Silently skip edits for other files (not yet supported)
@@ -159,8 +152,7 @@ impl Editor {
                                     if current_path.as_deref()
                                         == Some(path.to_string_lossy().as_ref())
                                     {
-                                        let text_edits =
-                                            extract_text_edits(&text_doc_edit.edits);
+                                        let text_edits = extract_text_edits(&text_doc_edit.edits);
                                         self.apply_lsp_edits(text_edits);
                                     }
                                 }
@@ -168,24 +160,19 @@ impl Editor {
                         }
                         lsp_types::DocumentChanges::Operations(ops) => {
                             for op in ops {
-                                if let lsp_types::DocumentChangeOperation::Edit(
-                                    text_doc_edit,
-                                ) = op
+                                if let lsp_types::DocumentChangeOperation::Edit(text_doc_edit) = op
                                 {
-                                    if let Some(path) = uri_to_file_path(
-                                        &text_doc_edit.text_document.uri,
-                                    ) {
-                                        let current_path = self
-                                            .buffer()
-                                            .file_path()
-                                            .map(|s| s.to_string());
+                                    if let Some(path) =
+                                        uri_to_file_path(&text_doc_edit.text_document.uri)
+                                    {
+                                        let current_path =
+                                            self.buffer().file_path().map(|s| s.to_string());
 
                                         if current_path.as_deref()
                                             == Some(path.to_string_lossy().as_ref())
                                         {
-                                            let text_edits = extract_text_edits(
-                                                &text_doc_edit.edits,
-                                            );
+                                            let text_edits =
+                                                extract_text_edits(&text_doc_edit.edits);
                                             self.apply_lsp_edits(text_edits);
                                         }
                                     }
@@ -212,17 +199,13 @@ impl Editor {
                         match crate::syntax::LanguageRegistry::get_lsp_language_id(path) {
                             Some(id) => id,
                             None => {
-                                self.set_lsp_status(
-                                    "Language not supported for LSP".to_string(),
-                                );
+                                self.set_lsp_status("Language not supported for LSP".to_string());
                                 return;
                             }
                         }
                     }
                     None => {
-                        self.set_lsp_status(
-                            "No file open for command execution".to_string(),
-                        );
+                        self.set_lsp_status("No file open for command execution".to_string());
                         return;
                     }
                 };
@@ -296,7 +279,13 @@ impl Editor {
 
         let result = ctx
             .lsp
-            .rename(&ctx.uri, ctx.line, ctx.character, &ctx.language_id, new_name)
+            .rename(
+                &ctx.uri,
+                ctx.line,
+                ctx.character,
+                &ctx.language_id,
+                new_name,
+            )
             .await;
 
         match result {
@@ -326,7 +315,10 @@ impl Editor {
 
         self.set_lsp_status("Fetching semantic tokens...".to_string());
 
-        let result = ctx.lsp.semantic_tokens_full(&ctx.uri, &ctx.language_id).await;
+        let result = ctx
+            .lsp
+            .semantic_tokens_full(&ctx.uri, &ctx.language_id)
+            .await;
 
         match result {
             Ok(Some(_tokens)) => {

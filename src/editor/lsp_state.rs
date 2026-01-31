@@ -72,7 +72,13 @@ pub struct HoverCache {
 impl HoverCache {
     const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 
-    pub fn is_valid(&self, file_path: &str, line: usize, col: usize, buffer_version: usize) -> bool {
+    pub fn is_valid(
+        &self,
+        file_path: &str,
+        line: usize,
+        col: usize,
+        buffer_version: usize,
+    ) -> bool {
         self.file_path == file_path
             && self.line == line
             && self.col == col
@@ -80,7 +86,13 @@ impl HoverCache {
             && self.cached_at.elapsed() < Self::MAX_AGE
     }
 
-    pub fn new(file_path: String, line: usize, col: usize, buffer_version: usize, hover_text: String) -> Self {
+    pub fn new(
+        file_path: String,
+        line: usize,
+        col: usize,
+        buffer_version: usize,
+        hover_text: String,
+    ) -> Self {
         Self {
             file_path,
             line,

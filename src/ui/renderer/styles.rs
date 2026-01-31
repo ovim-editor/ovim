@@ -71,7 +71,9 @@ pub fn get_git_sign_style(status: Option<crate::LineStatus>) -> (&'static str, C
 }
 
 /// Returns the sign text and color for diagnostic severity in the gutter (nerd font icons)
-pub fn get_diagnostic_sign_style(severity: Option<lsp_types::DiagnosticSeverity>) -> (&'static str, Color) {
+pub fn get_diagnostic_sign_style(
+    severity: Option<lsp_types::DiagnosticSeverity>,
+) -> (&'static str, Color) {
     use lsp_types::DiagnosticSeverity;
     match severity {
         Some(DiagnosticSeverity::ERROR) => (" ", Color::Red),
@@ -83,7 +85,9 @@ pub fn get_diagnostic_sign_style(severity: Option<lsp_types::DiagnosticSeverity>
 }
 
 /// Returns the (icon, foreground color, background color) for diagnostic virtual text
-pub fn get_diagnostic_virtual_text_style(severity: Option<lsp_types::DiagnosticSeverity>) -> (&'static str, Color, Color) {
+pub fn get_diagnostic_virtual_text_style(
+    severity: Option<lsp_types::DiagnosticSeverity>,
+) -> (&'static str, Color, Color) {
     use lsp_types::DiagnosticSeverity;
     match severity {
         Some(DiagnosticSeverity::ERROR) => ("", Color::Red, Color::Rgb(60, 20, 20)),

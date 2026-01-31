@@ -169,8 +169,13 @@ impl SyntaxHighlighter {
         // Restrict query cursor to the viewport line range
         let mut cursor = QueryCursor::new();
         cursor.set_point_range(
-            tree_sitter::Point { row: start_line, column: 0 }
-                ..tree_sitter::Point { row: actual_end, column: 0 },
+            tree_sitter::Point {
+                row: start_line,
+                column: 0,
+            }..tree_sitter::Point {
+                row: actual_end,
+                column: 0,
+            },
         );
 
         let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
@@ -351,8 +356,8 @@ mod tests {
 
     #[test]
     fn test_tsx_highlighter() {
-        let mut h = SyntaxHighlighter::new(Language::Tsx)
-            .expect("TSX highlighter should be created");
+        let mut h =
+            SyntaxHighlighter::new(Language::Tsx).expect("TSX highlighter should be created");
 
         let tsx_code = r#"const Button = ({ onClick }: Props) => {
   return (
@@ -393,8 +398,8 @@ const user: User = { name: "Alice", age: 30 };"#;
     fn test_jsx_comment_brace_not_comment_colored() {
         // Regression: JSX comment braces {/* */} should not appear as comments.
         // The `}` was highlighted as PunctuationDelimiter which shared Comment's color.
-        let mut h = SyntaxHighlighter::new(Language::Tsx)
-            .expect("TSX highlighter should be created");
+        let mut h =
+            SyntaxHighlighter::new(Language::Tsx).expect("TSX highlighter should be created");
 
         let code = "<div>\n  {/* comment */}\n</div>";
 

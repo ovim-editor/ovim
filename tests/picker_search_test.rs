@@ -53,8 +53,8 @@ fn top_results(picker: &Picker, n: usize) -> Vec<String> {
 #[test]
 fn exact_substring_ranks_above_fuzzy() {
     let mut picker = file_picker(&[
-        "src/logging.rs",   // s...g scattered
-        "src/msg.rs",       // "sg" contiguous in filename
+        "src/logging.rs", // s...g scattered
+        "src/msg.rs",     // "sg" contiguous in filename
     ]);
 
     picker.set_query("sg".to_string());
@@ -65,9 +65,9 @@ fn exact_substring_ranks_above_fuzzy() {
 #[test]
 fn exact_substring_at_word_boundary_preferred() {
     let mut picker = file_picker(&[
-        "src/message.rs",   // "msg" not present
-        "src/xmsg.rs",      // "msg" inside word
-        "src/a/msg.rs",     // "msg" at word boundary (after /)
+        "src/message.rs", // "msg" not present
+        "src/xmsg.rs",    // "msg" inside word
+        "src/a/msg.rs",   // "msg" at word boundary (after /)
     ]);
 
     picker.set_query("msg".to_string());
@@ -96,8 +96,8 @@ fn exact_match_at_start_of_filename() {
 #[test]
 fn filename_match_ranks_above_path_match() {
     let mut picker = file_picker(&[
-        "picker/something.rs",  // "picker" only in directory
-        "src/picker.rs",        // "picker" in filename
+        "picker/something.rs", // "picker" only in directory
+        "src/picker.rs",       // "picker" in filename
     ]);
 
     picker.set_query("picker".to_string());
@@ -126,10 +126,7 @@ fn multi_token_all_must_match() {
 
 #[test]
 fn multi_token_no_match_if_token_missing() {
-    let mut picker = file_picker(&[
-        "src/editor/mod.rs",
-        "src/buffer/mod.rs",
-    ]);
+    let mut picker = file_picker(&["src/editor/mod.rs", "src/buffer/mod.rs"]);
 
     picker.set_query("editor xyz".to_string());
     tick_picker(&mut picker);
@@ -186,10 +183,7 @@ fn no_match_returns_empty() {
 
 #[test]
 fn match_positions_populated_on_exact_substring() {
-    let mut picker = Picker::new_custom(
-        PathBuf::from("/project"),
-        vec!["src/mod.rs".to_string()],
-    );
+    let mut picker = Picker::new_custom(PathBuf::from("/project"), vec!["src/mod.rs".to_string()]);
 
     picker.set_query("mod".to_string());
     let result = &picker.filtered_results()[0];
@@ -199,10 +193,7 @@ fn match_positions_populated_on_exact_substring() {
 
 #[test]
 fn match_positions_populated_on_fuzzy() {
-    let mut picker = Picker::new_custom(
-        PathBuf::from("/project"),
-        vec!["abcdef".to_string()],
-    );
+    let mut picker = Picker::new_custom(PathBuf::from("/project"), vec!["abcdef".to_string()]);
 
     // "adf" — a at 0, d at 3, f at 5 (no contiguous substring → fuzzy)
     picker.set_query("adf".to_string());
@@ -403,7 +394,11 @@ fn live_grep_searches_real_files() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let dir_path = dir.path().to_path_buf();
 
-    fs::write(dir_path.join("hello.txt"), "needle in haystack\nother line\n").unwrap();
+    fs::write(
+        dir_path.join("hello.txt"),
+        "needle in haystack\nother line\n",
+    )
+    .unwrap();
     fs::write(dir_path.join("empty.txt"), "nothing here\n").unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -422,11 +417,24 @@ fn live_grep_searches_real_files() {
         }
 
         let results = picker.filtered_results();
-        assert_eq!(results.len(), 1, "expected 1 grep result, got {}", results.len());
+        assert_eq!(
+            results.len(),
+            1,
+            "expected 1 grep result, got {}",
+            results.len()
+        );
 
         let r = &results[0];
-        assert!(r.display.contains("hello.txt"), "display should contain filename: {}", r.display);
-        assert!(r.display.contains("1"), "display should contain line number: {}", r.display);
+        assert!(
+            r.display.contains("hello.txt"),
+            "display should contain filename: {}",
+            r.display
+        );
+        assert!(
+            r.display.contains("1"),
+            "display should contain line number: {}",
+            r.display
+        );
         assert_eq!(r.line, 0, "line should be 0-indexed");
         assert_eq!(r.content.as_deref(), Some("needle in haystack"));
 
@@ -506,7 +514,19 @@ fn truncate_short_path_unchanged() {
 fn truncate_long_path_uses_ellipsis() {
     let long = "src/deeply/nested/path/to/some/module/file.rs";
     let truncated = Picker::truncate_path(long, 30);
-    assert!(truncated.len() <= 30, "truncated len {} > 30", truncated.len());
-    assert!(truncated.contains("..."), "should contain ellipsis: {}", truncated);
-    assert!(truncated.contains("file.rs"), "should keep filename: {}", truncated);
+    assert!(
+        truncated.len() <= 30,
+        "truncated len {} > 30",
+        truncated.len()
+    );
+    assert!(
+        truncated.contains("..."),
+        "should contain ellipsis: {}",
+        truncated
+    );
+    assert!(
+        truncated.contains("file.rs"),
+        "should keep filename: {}",
+        truncated
+    );
 }

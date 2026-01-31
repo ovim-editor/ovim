@@ -23,7 +23,9 @@ fn test_buffer_java_block_comment_highlighting() {
     // Check that block comment lines have Comment highlight
     for line_idx in 0..3 {
         let highlights = buffer.highlights_for_line(line_idx);
-        let has_comment = highlights.iter().any(|(_, g)| *g == HighlightGroup::Comment);
+        let has_comment = highlights
+            .iter()
+            .any(|(_, g)| *g == HighlightGroup::Comment);
         assert!(
             has_comment,
             "Line {} should have Comment highlight via Buffer.highlights_for_line(), got: {:?}",

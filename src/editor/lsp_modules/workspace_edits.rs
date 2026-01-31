@@ -47,10 +47,7 @@ impl Editor {
     }
 
     /// Apply a workspace edit (used for rename, organize imports, etc.)
-    pub async fn apply_workspace_edit(
-        &mut self,
-        edit: lsp_types::WorkspaceEdit,
-    ) -> Result<bool> {
+    pub async fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
         let mut all_applied = true;
         let mut modified_files = Vec::new();
 
@@ -84,14 +81,10 @@ impl Editor {
                     for text_doc_edit in edits {
                         let uri = &text_doc_edit.text_document.uri;
 
-                        if let Some(buffer_index) =
-                            self.find_or_load_buffer_index_by_uri(uri)
-                        {
+                        if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(uri) {
                             Self::track_modified_file(uri, &mut modified_files);
                             let text_edits = extract_text_edits(&text_doc_edit.edits);
-                            if !self
-                                .apply_lsp_edits_to_buffer_index(buffer_index, text_edits)
-                            {
+                            if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
                                 all_applied = false;
                             }
                         } else {
@@ -109,12 +102,10 @@ impl Editor {
                                     self.find_or_load_buffer_index_by_uri(uri)
                                 {
                                     Self::track_modified_file(uri, &mut modified_files);
-                                    let text_edits =
-                                        extract_text_edits(&text_doc_edit.edits);
-                                    if !self.apply_lsp_edits_to_buffer_index(
-                                        buffer_index,
-                                        text_edits,
-                                    ) {
+                                    let text_edits = extract_text_edits(&text_doc_edit.edits);
+                                    if !self
+                                        .apply_lsp_edits_to_buffer_index(buffer_index, text_edits)
+                                    {
                                         all_applied = false;
                                     }
                                 } else {

@@ -279,15 +279,9 @@ pub fn render_markdown(
             MarkdownElement::Text(text) => {
                 // Check for @param and @return annotations
                 let styled_text = if text.contains("@param") || text.starts_with("@param") {
-                    Span::styled(
-                        text.clone(),
-                        Style::default().fg(colors::PARAM),
-                    )
+                    Span::styled(text.clone(), Style::default().fg(colors::PARAM))
                 } else if text.contains("@return") || text.starts_with("@return") {
-                    Span::styled(
-                        text.clone(),
-                        Style::default().fg(colors::RETURN),
-                    )
+                    Span::styled(text.clone(), Style::default().fg(colors::RETURN))
                 } else {
                     Span::styled(text.clone(), text_style)
                 };
@@ -410,7 +404,9 @@ mod tests {
     #[test]
     fn test_parse_bold() {
         let elements = parse_markdown("Hello **world**!");
-        assert!(elements.iter().any(|e| matches!(e, MarkdownElement::Bold(s) if s == "world")));
+        assert!(elements
+            .iter()
+            .any(|e| matches!(e, MarkdownElement::Bold(s) if s == "world")));
     }
 
     #[test]

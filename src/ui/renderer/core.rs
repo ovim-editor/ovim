@@ -15,9 +15,9 @@ use std::io;
 
 use super::buffer::render_buffer;
 use super::dashboard::render_dashboard;
+use super::file_tree_widget::render_file_tree;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
-use super::file_tree_widget::render_file_tree;
 use super::overlays::{render_completion_menu, render_hover_window};
 use super::picker_widget::render_picker;
 use super::status_widgets::{
@@ -343,21 +343,19 @@ fn set_cursor_position(
                         // search_width + sep(1) + icon(1) + space(1) + cursor_pos
                         let pos = picker.file_filter_cursor();
                         let filter_start = inner_x + search_width as u16 + 1; // after separator
-                        (filter_start + 2 + pos as u16)
-                            .min(inner_x + inner_width as u16 - 1)
+                        (filter_start + 2 + pos as u16).min(inner_x + inner_width as u16 - 1)
                     }
                 }
             } else {
                 let cursor_pos = picker.query_cursor();
-                (inner_x + 2 + cursor_pos as u16)
-                    .min(inner_x + inner_width as u16 - 1)
+                (inner_x + 2 + cursor_pos as u16).min(inner_x + inner_width as u16 - 1)
             };
 
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     } else if editor.mode() == crate::mode::Mode::Command {
-        let cmd_cursor_x = (editor.command_line().len() + 1)
-            .min(command_chunk.width.saturating_sub(1) as usize);
+        let cmd_cursor_x =
+            (editor.command_line().len() + 1).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + cmd_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::Search {
         let search_cursor_x = (editor.search.search_buffer.len() + 1)
@@ -365,8 +363,8 @@ fn set_cursor_position(
         frame.set_cursor_position((command_chunk.x + search_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::RenameInput {
         // "rename: " is 8 chars
-        let rename_cursor_x = (editor.rename_cursor() + 8)
-            .min(command_chunk.width.saturating_sub(1) as usize);
+        let rename_cursor_x =
+            (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else {
         let rope = editor.buffer().rope();
@@ -511,10 +509,24 @@ fn render_window_tree(
 
             render_separator(frame, sep_area, *direction);
 
-            let first_result =
-                render_window_tree(frame, editor, theme, first, first_area, focused_index, current_index);
-            let second_result =
-                render_window_tree(frame, editor, theme, second, second_area, focused_index, current_index);
+            let first_result = render_window_tree(
+                frame,
+                editor,
+                theme,
+                first,
+                first_area,
+                focused_index,
+                current_index,
+            );
+            let second_result = render_window_tree(
+                frame,
+                editor,
+                theme,
+                second,
+                second_area,
+                focused_index,
+                current_index,
+            );
 
             first_result.or(second_result)
         }

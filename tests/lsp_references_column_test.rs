@@ -11,7 +11,6 @@
 ///
 /// This test verifies the fix by checking that navigation preserves
 /// the column position when jumping between files.
-
 use ovim::buffer::Buffer;
 use std::fs;
 use tempfile::TempDir;
@@ -34,7 +33,10 @@ async fn test_utf16_to_col_returns_zero_for_nonexistent_line() {
 
     // We can't directly test utf16_to_col since it's private to Editor,
     // but we can test the underlying behavior of Buffer::line()
-    assert!(buffer.line(10).is_none(), "Line 10 should not exist in a 2-line buffer");
+    assert!(
+        buffer.line(10).is_none(),
+        "Line 10 should not exist in a 2-line buffer"
+    );
 
     // This documents why the bug happened:
     // If we tried to convert UTF-16 position on line 10, but the current buffer
@@ -113,10 +115,7 @@ async fn test_utf16_offset_conversion_with_multibyte() {
 
     // Find where 'let' is (character position)
     let chars: Vec<char> = line_str.chars().collect();
-    let let_pos = chars
-        .windows(3)
-        .position(|w| w == ['l', 'e', 't'])
-        .unwrap();
+    let let_pos = chars.windows(3).position(|w| w == ['l', 'e', 't']).unwrap();
 
     // The emoji is at character position 12, and takes 2 UTF-16 units
     // So 'let' is at UTF-16 offset 12 + 2 = 14, but character position 14

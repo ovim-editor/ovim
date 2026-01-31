@@ -213,11 +213,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     let mut start_col = col;
 
     // Skip trailing whitespace (Vim deletes whitespace + preceding word)
-    while start_col > 0
-        && chars
-            .get(start_col - 1)
-            .is_some_and(|c| c.is_whitespace())
-    {
+    while start_col > 0 && chars.get(start_col - 1).is_some_and(|c| c.is_whitespace()) {
         start_col -= 1;
     }
 
@@ -227,9 +223,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
 
         if let Some(&ch) = chars.get(start_col - 1) {
             if is_word_char(ch) {
-                while start_col > 0
-                    && chars.get(start_col - 1).is_some_and(|&c| is_word_char(c))
-                {
+                while start_col > 0 && chars.get(start_col - 1).is_some_and(|&c| is_word_char(c)) {
                     start_col -= 1;
                 }
             } else {
@@ -455,9 +449,7 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
                     let line_content = line_text.trim_end_matches('\n');
 
                     // Skip the final empty line (implicit from trailing newline)
-                    if line_content.is_empty()
-                        && target_line == editor.buffer().line_count() - 1
-                    {
+                    if line_content.is_empty() && target_line == editor.buffer().line_count() - 1 {
                         break;
                     }
 
@@ -520,7 +512,10 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
             let cur_col = cur.col();
             let cur_line = cur.line();
             if cur_col > 0 {
-                editor.buffer_mut().cursor_mut().set_position(cur_line, cur_col - 1);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(cur_line, cur_col - 1);
             }
             // If col == 0 (text ended with \n), cursor is already at correct position
         }
@@ -555,9 +550,7 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
 
                 if let Some(line_text) = editor.buffer().line(target_line) {
                     let line_content = line_text.trim_end_matches('\n');
-                    if line_content.is_empty()
-                        && target_line == editor.buffer().line_count() - 1
-                    {
+                    if line_content.is_empty() && target_line == editor.buffer().line_count() - 1 {
                         break;
                     }
 
@@ -708,12 +701,10 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                 let start_pos = (start_line, start_col);
                 let end_pos = (end_line, end_col + 1);
 
-                let deleted = editor.buffer_mut().delete_range(
-                    start_line,
-                    start_col,
-                    end_line,
-                    end_col + 1,
-                );
+                let deleted =
+                    editor
+                        .buffer_mut()
+                        .delete_range(start_line, start_col, end_line, end_col + 1);
 
                 let range = Range::new(start_pos, end_pos);
                 let change = Change::delete(range, deleted.clone(), cursor_before);
@@ -819,8 +810,18 @@ pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
     editor.buffer_mut().join_lines(count)?;
 
     // Track the change for dot-repeat and undo
-    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
-    let change = Change::join_lines(count, true, cursor_before, cursor_after, old_text, old_range);
+    let cursor_after = (
+        editor.buffer().cursor().line(),
+        editor.buffer().cursor().col(),
+    );
+    let change = Change::join_lines(
+        count,
+        true,
+        cursor_before,
+        cursor_after,
+        old_text,
+        old_range,
+    );
     editor.add_change(change);
 
     Ok(())
@@ -846,8 +847,18 @@ pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
     editor.buffer_mut().join_lines_no_space(count)?;
 
     // Track the change for dot-repeat and undo
-    let cursor_after = (editor.buffer().cursor().line(), editor.buffer().cursor().col());
-    let change = Change::join_lines(count, false, cursor_before, cursor_after, old_text, old_range);
+    let cursor_after = (
+        editor.buffer().cursor().line(),
+        editor.buffer().cursor().col(),
+    );
+    let change = Change::join_lines(
+        count,
+        false,
+        cursor_before,
+        cursor_after,
+        old_text,
+        old_range,
+    );
     editor.add_change(change);
 
     Ok(())
@@ -990,8 +1001,12 @@ fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String
                     let transformed = transform(line_text);
                     let char_count = line_text.chars().count();
 
-                    editor.buffer_mut().delete_range(line_idx, 0, line_idx, char_count);
-                    editor.buffer_mut().insert_text_at(line_idx, 0, &transformed);
+                    editor
+                        .buffer_mut()
+                        .delete_range(line_idx, 0, line_idx, char_count);
+                    editor
+                        .buffer_mut()
+                        .insert_text_at(line_idx, 0, &transformed);
 
                     let change = Change::composite(
                         vec![
@@ -1044,12 +1059,10 @@ fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String
         }
         _ => {
             // Character-wise visual mode
-            let deleted = editor.buffer_mut().delete_range(
-                start_line,
-                start_col,
-                end_line,
-                end_col + 1,
-            );
+            let deleted =
+                editor
+                    .buffer_mut()
+                    .delete_range(start_line, start_col, end_line, end_col + 1);
             let transformed = transform(&deleted);
             editor
                 .buffer_mut()
@@ -1147,7 +1160,11 @@ fn setup_and_execute_search(editor: &mut Editor, text: &str, forward: bool) -> b
     // For visual * and #, we want to find the NEXT occurrence, not the current one
     // So start searching from the next column position (forward) or current position (backward)
     let cursor = editor.buffer().cursor();
-    let search_col = if forward { cursor.col() + 1 } else { cursor.col() };
+    let search_col = if forward {
+        cursor.col() + 1
+    } else {
+        cursor.col()
+    };
 
     if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
         editor.buffer_mut().cursor_mut().set_position(line, col);
@@ -1170,7 +1187,13 @@ pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
             // Character-wise selection
             let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
             let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
-            Some(editor.buffer().rope().slice(start_char..end_char).to_string())
+            Some(
+                editor
+                    .buffer()
+                    .rope()
+                    .slice(start_char..end_char)
+                    .to_string(),
+            )
         }
         Mode::VisualLine => {
             // Line-wise selection (include entire lines)
@@ -1389,10 +1412,7 @@ pub fn auto_indent_lines(
             let trimmed = line_text.trim_start();
 
             // Decrease indent if line starts with closing bracket
-            if trimmed.starts_with('}')
-                || trimmed.starts_with(')')
-                || trimmed.starts_with(']')
-            {
+            if trimmed.starts_with('}') || trimmed.starts_with(')') || trimmed.starts_with(']') {
                 current_indent = current_indent.saturating_sub(tab_width);
             }
 
@@ -1436,4 +1456,3 @@ fn count_leading_spaces(line: &str, tab_width: usize) -> usize {
     }
     count
 }
-

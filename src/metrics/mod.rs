@@ -39,8 +39,8 @@ use lazy_static::lazy_static;
 
 #[cfg(feature = "metrics")]
 use prometheus::{
-    register_histogram, register_int_counter, register_int_gauge,
-    Encoder, Histogram, IntCounter, IntGauge, TextEncoder,
+    register_histogram, register_int_counter, register_int_gauge, Encoder, Histogram, IntCounter,
+    IntGauge, TextEncoder,
 };
 
 #[cfg(feature = "metrics")]

@@ -242,7 +242,10 @@ impl LspManager {
 
         // Check if server supports hover
         if !server.supports_hover().await {
-            lsp_info!("LSP-HOVER", "Server does not support hover - returning None");
+            lsp_info!(
+                "LSP-HOVER",
+                "Server does not support hover - returning None"
+            );
             return Ok(None); // Gracefully return None if not supported
         }
 
@@ -303,7 +306,8 @@ impl LspManager {
                     Some(marked_string_to_text(contents.remove(0)))
                 } else {
                     // Multiple items: allocate and join
-                    let texts: Vec<String> = contents.into_iter().map(marked_string_to_text).collect();
+                    let texts: Vec<String> =
+                        contents.into_iter().map(marked_string_to_text).collect();
                     Some(texts.join("\n\n"))
                 }
             }
@@ -339,7 +343,10 @@ impl LspManager {
 
         // Cancel any pending completion requests before sending new one
         // Completion is high-frequency and only latest matters (user is still typing)
-        if let Err(e) = server.cancel_requests_by_method("textDocument/completion").await {
+        if let Err(e) = server
+            .cancel_requests_by_method("textDocument/completion")
+            .await
+        {
             lsp_warn!(
                 "LSP-COMPLETION",
                 "Failed to cancel previous completion requests: {}",
@@ -668,7 +675,10 @@ impl LspManager {
 
         // Cancel any pending signature help requests before sending new one
         // Signature help is triggered during typing, only latest position matters
-        if let Err(e) = server.cancel_requests_by_method("textDocument/signatureHelp").await {
+        if let Err(e) = server
+            .cancel_requests_by_method("textDocument/signatureHelp")
+            .await
+        {
             lsp_warn!(
                 "LSP-SIGNATURE",
                 "Failed to cancel previous signature help requests: {}",
@@ -1503,9 +1513,7 @@ impl LspManager {
 
         let response: Option<lsp_types::Hover> = serde_json::from_value(result).ok();
         Ok(response.and_then(|hover| match hover.contents {
-            lsp_types::HoverContents::Scalar(content) => {
-                Some(marked_string_to_text(content))
-            }
+            lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
             lsp_types::HoverContents::Array(mut contents) => {
                 if contents.is_empty() {
                     None

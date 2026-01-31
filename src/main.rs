@@ -65,7 +65,8 @@ async fn main() -> Result<()> {
             ovim::log_warn!(
                 "main",
                 "Could not load file '{}': {}. Starting with empty buffer.",
-                file_path, e
+                file_path,
+                e
             );
             ed = Editor::new();
             ed.buffer_mut().set_file_path(file_path.clone());
@@ -212,6 +213,10 @@ async fn main() -> Result<()> {
         .await?;
         sigint_handle.abort();
         sigterm_handle.abort();
+        let code = editor.exit_code();
+        if code != 0 {
+            std::process::exit(code);
+        }
         return Ok(());
     }
 
@@ -256,6 +261,11 @@ async fn main() -> Result<()> {
 
     // Main event loop with TUI (now with API support)
     event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx).await?;
+
+    let code = editor.exit_code();
+    if code != 0 {
+        std::process::exit(code);
+    }
 
     Ok(())
 }

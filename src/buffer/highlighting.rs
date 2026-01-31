@@ -1,5 +1,7 @@
 use super::Buffer;
-use crate::syntax::{CodeBlockCache, HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter};
+use crate::syntax::{
+    CodeBlockCache, HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter,
+};
 use std::ops::Range;
 
 /// Finds inline code spans (single backtick `code`) in a line of text.
@@ -7,22 +9,24 @@ use std::ops::Range;
 /// Handles escaped backticks and double-backtick (`` ` ``) spans.
 fn find_inline_code_spans(line: &str) -> Vec<Range<usize>> {
     let mut spans = Vec::new();
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
+    // Build (char, byte_offset) pairs to track both char and byte positions
+    let indexed: Vec<(usize, char)> = line.char_indices().collect();
+    let len = indexed.len();
     let mut i = 0;
 
     while i < len {
+        let (_, ch) = indexed[i];
         // Skip escaped backticks
-        if chars[i] == '\\' {
+        if ch == '\\' {
             i += 2;
             continue;
         }
 
-        if chars[i] == '`' {
+        if ch == '`' {
             // Count consecutive backticks for the opening delimiter
-            let open_start = i;
+            let open_byte_start = indexed[i].0;
             let mut backtick_count = 0;
-            while i < len && chars[i] == '`' {
+            while i < len && indexed[i].1 == '`' {
                 backtick_count += 1;
                 i += 1;
             }
@@ -31,15 +35,21 @@ fn find_inline_code_spans(line: &str) -> Vec<Range<usize>> {
             let content_start = i;
             let mut found_close = false;
             while i < len {
-                if chars[i] == '`' {
+                if indexed[i].1 == '`' {
                     let mut close_count = 0;
-                    while i < len && chars[i] == '`' {
+                    while i < len && indexed[i].1 == '`' {
                         close_count += 1;
                         i += 1;
                     }
                     if close_count == backtick_count {
                         // Found matching close - span covers open backticks through close backticks
-                        spans.push(open_start..i);
+                        // Use byte position after the last closing backtick
+                        let close_byte_end = if i < len {
+                            indexed[i].0
+                        } else {
+                            line.len()
+                        };
+                        spans.push(open_byte_start..close_byte_end);
                         found_close = true;
                         break;
                     }
@@ -642,10 +652,13 @@ impl Buffer {
             return;
         }
 
-        let viewport_highlights = syntax.highlights_for_line_range(&content, start_line, actual_end);
+        let viewport_highlights =
+            syntax.highlights_for_line_range(&content, start_line, actual_end);
 
         // Ensure the cache exists and is the right size
-        let cache = self.cached_highlights.get_or_insert_with(|| vec![Vec::new(); line_count]);
+        let cache = self
+            .cached_highlights
+            .get_or_insert_with(|| vec![Vec::new(); line_count]);
         // Resize if needed (buffer may have grown/shrunk)
         cache.resize_with(line_count, Vec::new);
 
