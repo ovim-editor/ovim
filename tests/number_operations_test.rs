@@ -521,3 +521,60 @@ fn test_ctrl_a_number_with_leading_zeros() {
     assert_eq!(test.buffer_content(), "id: 8\n");
     test.assert_cursor(0, 4);
 }
+
+// ============================================================================
+// OV-00033: Negative hex/bin/oct format
+// ============================================================================
+
+#[test]
+fn test_ctrl_x_hex_to_negative() {
+    // Decrementing 0x00 should produce -0x1, not 0xffffffffffffffff
+    let mut test = EditorTest::new("val: 0x00");
+
+    test.keys("w")
+        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+
+    assert_eq!(test.buffer_content(), "val: -0x1\n");
+}
+
+#[test]
+fn test_ctrl_x_hex_from_one() {
+    // Decrementing 0x01 should produce 0x0
+    let mut test = EditorTest::new("val: 0x01");
+
+    test.keys("w")
+        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+
+    assert_eq!(test.buffer_content(), "val: 0x0\n");
+}
+
+// ============================================================================
+// OV-00034: Hex digit scanning with cursor on a-f
+// ============================================================================
+
+#[test]
+fn test_ctrl_a_hex_cursor_on_hex_digit() {
+    // With cursor on the 'f' in 0xff, should still recognize the hex number
+    let mut test = EditorTest::new("val: 0xff");
+
+    // Move to the last 'f'
+    test.keys("$");
+    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+
+    assert_eq!(test.buffer_content(), "val: 0x100\n");
+}
+
+// ============================================================================
+// OV-00037: Forward-only search when not on digit
+// ============================================================================
+
+#[test]
+fn test_ctrl_a_forward_search_only() {
+    // When cursor is before a number, Ctrl-A should search forward only
+    let mut test = EditorTest::new("abc 42 def");
+
+    // Cursor at col 0, not on a digit — should find 42 forward
+    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+
+    assert_eq!(test.buffer_content(), "abc 43 def\n");
+}
