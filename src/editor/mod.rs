@@ -37,6 +37,7 @@ mod tabpage;
 mod tab_manager;
 mod textobjects;
 mod theme;
+mod theme_state;
 mod ui_features;
 mod undo;
 mod visual_context;
@@ -77,6 +78,7 @@ pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use lsp_manager_panel::LspManagerPanel;
 pub use render_cache::RenderCache;
+pub use theme_state::ThemeState;
 pub use viewport_state::ViewportState;
 pub use wrap_map::WrapMap;
 
@@ -155,7 +157,6 @@ impl Default for EditorOptions {
 use crate::buffer::Buffer;
 use crate::lua::LuaContext;
 use crate::mode::Mode;
-use crate::syntax::ColorSchemeRegistry;
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -245,14 +246,12 @@ pub struct Editor {
     completion_menu: CompletionMenu,
     /// Path completion state for command-line mode
     path_completion: PathCompletionState,
-    /// Color scheme registry
-    color_scheme_registry: ColorSchemeRegistry,
+    /// Theme and color scheme state
+    theme: ThemeState,
     /// Editor options and settings
     pub options: EditorOptions,
     /// Viewport and scroll state
     pub(crate) viewport: ViewportState,
-    /// Current color scheme name
-    current_color_scheme: String,
     /// File tree explorer
     file_tree: FileTree,
     /// Quickfix list (global error/location list)
@@ -414,8 +413,7 @@ impl Editor {
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
             path_completion: PathCompletionState::new(),
-            color_scheme_registry: ColorSchemeRegistry::new(),
-            current_color_scheme: "tokyonight".to_string(),
+            theme: ThemeState::default(),
             options: EditorOptions::default(),
             viewport: ViewportState::default(),
             file_tree: FileTree::new(),
@@ -475,8 +473,7 @@ impl Editor {
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
             path_completion: PathCompletionState::new(),
-            color_scheme_registry: ColorSchemeRegistry::new(),
-            current_color_scheme: "tokyonight".to_string(),
+            theme: ThemeState::default(),
             options: EditorOptions::default(),
             viewport: ViewportState::default(),
             file_tree: FileTree::new(),
