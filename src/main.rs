@@ -263,6 +263,10 @@ async fn main() -> Result<()> {
     event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx).await?;
 
     let code = editor.exit_code();
+
+    // Drop UI first to restore terminal before exiting
+    drop(ui);
+
     if code != 0 {
         std::process::exit(code);
     }
