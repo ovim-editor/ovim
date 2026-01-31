@@ -1,6 +1,6 @@
 use super::filter;
 use super::result::PickerResult;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -31,7 +31,7 @@ impl GrepState {
     pub fn start_search(
         &mut self,
         query: &str,
-        base_dir: &PathBuf,
+        base_dir: &Path,
         all_results: &mut Vec<PickerResult>,
         filtered_results: &mut Vec<PickerResult>,
         selected_index: &mut usize,
@@ -51,11 +51,8 @@ impl GrepState {
         let cancel = Arc::new(AtomicBool::new(false));
         self.grep_cancel = Some(cancel.clone());
 
-        let rx = super::super::grep::spawn_grep_search(
-            query.to_string(),
-            base_dir.clone(),
-            cancel,
-        );
+        let rx =
+            super::super::grep::spawn_grep_search(query.to_string(), base_dir.to_path_buf(), cancel);
         self.grep_rx = Some(rx);
         self.grep_stale = true;
     }

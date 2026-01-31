@@ -4,6 +4,7 @@ mod fuzzy_backend;
 mod grep_backend;
 mod nucleo_backend;
 mod result;
+mod text_editing;
 
 use backend::PickerBackend;
 use fuzzy_backend::FuzzyListKind;
@@ -35,10 +36,6 @@ pub struct Picker {
     base_dir: PathBuf,
     /// Whether filtering is pending (for debouncing)
     pending_filter: bool,
-    /// The last query that was actually filtered
-    last_filtered_query: String,
-    /// The last file filter that was actually filtered (non-grep modes)
-    last_filtered_file_filter: String,
     /// Typed backend owning mode-specific state
     backend: PickerBackend,
 }
@@ -57,8 +54,6 @@ impl Picker {
             selected_index: 0,
             base_dir,
             pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
             backend: PickerBackend::Nucleo(NucleoState::new()),
         }
     }
@@ -76,8 +71,6 @@ impl Picker {
             selected_index: 0,
             base_dir,
             pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
             backend: PickerBackend::Grep(GrepState::new()),
         }
     }
@@ -94,8 +87,6 @@ impl Picker {
             selected_index: 0,
             base_dir,
             pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
             backend: PickerBackend::FuzzyList(kind),
         }
     }
@@ -117,17 +108,29 @@ impl Picker {
 
     /// Creates a new picker with custom items
     pub fn new_custom(base_dir: PathBuf, items: Vec<String>) -> Self {
-        Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::Custom)
+        Self::new_fuzzy_list(
+            base_dir,
+            Self::items_to_results(items),
+            FuzzyListKind::Custom,
+        )
     }
 
     /// Creates a new completion picker with custom items
     pub fn new_completion(base_dir: PathBuf, items: Vec<String>) -> Self {
-        Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::Completion)
+        Self::new_fuzzy_list(
+            base_dir,
+            Self::items_to_results(items),
+            FuzzyListKind::Completion,
+        )
     }
 
     /// Creates a new LSP locations picker
     pub fn new_lsp_locations(base_dir: PathBuf, items: Vec<String>) -> Self {
-        Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::LspLocations)
+        Self::new_fuzzy_list(
+            base_dir,
+            Self::items_to_results(items),
+            FuzzyListKind::LspLocations,
+        )
     }
 
     /// Creates a new LSP locations picker with pre-built PickerResult items
@@ -166,17 +169,6 @@ impl Picker {
         }
     }
 
-    /// Re-applies the file filter on `all_results` to produce `filtered_results`.
-    fn apply_file_filter(&mut self) {
-        self.filtered_results = self
-            .all_results
-            .iter()
-            .filter(|r| filter::matches_file_filter(&self.file_filter, &r.display))
-            .cloned()
-            .collect();
-        self.selected_index = 0;
-    }
-
     /// Cancels any in-flight grep search.
     pub fn cancel_grep(&mut self) {
         if let PickerBackend::Grep(ref mut g) = self.backend {
@@ -205,8 +197,7 @@ impl Picker {
     /// Pre-fetches visible item indices in a single nucleo snapshot.
     pub fn prefetch_visible_range(&mut self, start: usize, count: usize) {
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
-            s.cached_visible_indices =
-                s.nucleo.get_items_in_range(start as u32, count as u32);
+            s.cached_visible_indices = s.nucleo.get_items_in_range(start as u32, count as u32);
             s.cached_visible_start = start;
         }
     }
@@ -267,9 +258,8 @@ impl Picker {
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        fuzzy::fuzzy_score(&self.query, &r.display).map(|(score, positions)| {
-                            (r.clone(), score, positions)
-                        })
+                        fuzzy::fuzzy_score(&self.query, &r.display)
+                            .map(|(score, positions)| (r.clone(), score, positions))
                     })
                     .collect();
 
@@ -291,8 +281,6 @@ impl Picker {
         }
 
         self.selected_index = 0;
-        self.last_filtered_query = self.query.clone();
-        self.last_filtered_file_filter = self.file_filter.clone();
         self.pending_filter = false;
     }
 
@@ -335,99 +323,6 @@ impl Picker {
         if self.pending_filter {
             self.apply_filter_internal();
         }
-    }
-
-    /// Returns mutable references to the active field's text and cursor
-    fn active_field_mut(&mut self) -> (&mut String, &mut usize) {
-        match self.active_field {
-            PickerField::Query => (&mut self.query, &mut self.query_cursor),
-            PickerField::FileFilter => (&mut self.file_filter, &mut self.file_filter_cursor),
-        }
-    }
-
-    fn char_pos_to_byte_pos_in(s: &str, char_pos: usize) -> usize {
-        s.char_indices()
-            .nth(char_pos)
-            .map(|(byte_pos, _)| byte_pos)
-            .unwrap_or(s.len())
-    }
-
-    /// Inserts a character at the cursor position in the active field
-    pub fn insert_char(&mut self, ch: char) {
-        let (text, cursor) = self.active_field_mut();
-        let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor);
-        text.insert(byte_pos, ch);
-        *cursor += 1;
-        self.mark_filter_pending();
-    }
-
-    /// Inserts a string at the cursor position in the active field
-    pub fn insert_text(&mut self, s: &str) {
-        let (text, cursor) = self.active_field_mut();
-        let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor);
-        text.insert_str(byte_pos, s);
-        *cursor += s.chars().count();
-        self.mark_filter_pending();
-    }
-
-    /// Appends a character to the query (legacy method, inserts at cursor)
-    pub fn append_query(&mut self, ch: char) {
-        self.insert_char(ch);
-    }
-
-    /// Removes the character before the cursor in the active field
-    pub fn backspace_query(&mut self) {
-        let (text, cursor) = self.active_field_mut();
-        if *cursor > 0 {
-            let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor - 1);
-            text.remove(byte_pos);
-            *cursor -= 1;
-        } else {
-            return;
-        }
-        self.mark_filter_pending();
-    }
-
-    /// Removes the character at the cursor in the active field (delete key)
-    pub fn delete_char(&mut self) {
-        let (text, cursor) = self.active_field_mut();
-        let char_len = text.chars().count();
-        if *cursor < char_len {
-            let byte_pos = Self::char_pos_to_byte_pos_in(text, *cursor);
-            text.remove(byte_pos);
-        } else {
-            return;
-        }
-        self.mark_filter_pending();
-    }
-
-    /// Moves cursor left in the active field
-    pub fn move_cursor_left(&mut self) {
-        let (_text, cursor) = self.active_field_mut();
-        if *cursor > 0 {
-            *cursor -= 1;
-        }
-    }
-
-    /// Moves cursor right in the active field
-    pub fn move_cursor_right(&mut self) {
-        let (text, cursor) = self.active_field_mut();
-        let char_len = text.chars().count();
-        if *cursor < char_len {
-            *cursor += 1;
-        }
-    }
-
-    /// Moves cursor to the beginning of the active field
-    pub fn move_cursor_home(&mut self) {
-        let (_text, cursor) = self.active_field_mut();
-        *cursor = 0;
-    }
-
-    /// Moves cursor to the end of the active field
-    pub fn move_cursor_end(&mut self) {
-        let (text, cursor) = self.active_field_mut();
-        *cursor = text.chars().count();
     }
 
     /// Moves selection down
@@ -480,13 +375,11 @@ impl Picker {
                     col: result.col,
                 })
             }
-            PickerBackend::Nucleo(_) | PickerBackend::Grep(_) => {
-                Some(PickerAction::OpenFile {
-                    path: result.location.clone(),
-                    line: result.line,
-                    col: result.col,
-                })
-            }
+            PickerBackend::Nucleo(_) | PickerBackend::Grep(_) => Some(PickerAction::OpenFile {
+                path: result.location.clone(),
+                line: result.line,
+                col: result.col,
+            }),
         }
     }
 
@@ -582,13 +475,11 @@ impl Picker {
 
         if let PickerBackend::Nucleo(ref s) = self.backend {
             s.nucleo.inject(idx, &display);
-        } else {
-            if self.query.is_empty() {
-                self.filtered_results.push(result);
-            } else if fuzzy::fuzzy_score(&self.query, &result.display).is_some() {
-                self.filtered_results.push(result);
-                self.pending_filter = true;
-            }
+        } else if self.query.is_empty() {
+            self.filtered_results.push(result);
+        } else if fuzzy::fuzzy_score(&self.query, &result.display).is_some() {
+            self.filtered_results.push(result);
+            self.pending_filter = true;
         }
     }
 
