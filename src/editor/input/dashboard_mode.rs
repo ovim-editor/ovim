@@ -82,8 +82,7 @@ fn execute_dashboard_action(editor: &mut Editor, index: usize) -> Result<()> {
         }
         1 => {
             // Find File
-            let base_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let base_dir = editor.picker_base_dir();
             let picker = Picker::new_file_finder(base_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
@@ -91,8 +90,7 @@ fn execute_dashboard_action(editor: &mut Editor, index: usize) -> Result<()> {
         }
         2 => {
             // Recent Files - for now, use file finder (TODO: add recent files picker)
-            let base_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let base_dir = editor.picker_base_dir();
             let picker = Picker::new_file_finder(base_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
@@ -100,8 +98,7 @@ fn execute_dashboard_action(editor: &mut Editor, index: usize) -> Result<()> {
         }
         3 => {
             // Find Word (grep)
-            let base_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let base_dir = editor.picker_base_dir();
             let picker = Picker::new_live_grep(base_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
