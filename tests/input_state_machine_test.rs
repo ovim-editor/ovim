@@ -263,7 +263,7 @@ mod leader_sequences {
         test.keys("0");
 
         test.keys(" "); // Just space
-        // Space sets pending_leader, but doesn't move cursor
+        // Space enters Leader state, but doesn't move cursor
         test.assert_mode(Mode::Normal);
     }
 

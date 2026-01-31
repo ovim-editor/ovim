@@ -35,9 +35,6 @@ pub struct InputContext {
     /// This will eventually replace pending_command, pending_operator, etc.
     pub input_state: InputState,
 
-    /// Waiting for leader sequence (e.g., after pressing space)
-    pub pending_leader: bool,
-
     /// Leader key (default: space)
     pub leader_key: char,
 }
@@ -51,7 +48,6 @@ impl InputContext {
             pending_command: None,
             pending_register: None,
             input_state: InputState::Normal,
-            pending_leader: false,
             leader_key: ' ', // default space
         }
     }
@@ -64,7 +60,6 @@ impl InputContext {
         self.pending_command = None;
         self.pending_register = None;
         self.input_state.reset();
-        self.pending_leader = false;
     }
 
     /// Returns true if any input is currently pending.
@@ -74,7 +69,6 @@ impl InputContext {
             || self.pending_command.is_some()
             || self.pending_register.is_some()
             || !self.input_state.is_normal()
-            || self.pending_leader
     }
 }
 
@@ -96,7 +90,6 @@ mod tests {
         assert_eq!(ctx.pending_command, None);
         assert_eq!(ctx.pending_register, None);
         assert_eq!(ctx.input_state, InputState::Normal);
-        assert!(!ctx.pending_leader);
         assert_eq!(ctx.leader_key, ' ');
     }
 
@@ -104,7 +97,6 @@ mod tests {
     fn test_default() {
         let ctx = InputContext::default();
         assert_eq!(ctx.count, None);
-        assert!(!ctx.pending_leader);
     }
 
     #[test]
@@ -114,7 +106,6 @@ mod tests {
         ctx.pending_operator = Some(Operator::Delete);
         ctx.pending_command = Some('g');
         ctx.pending_register = Some('a');
-        ctx.pending_leader = true;
         ctx.input_state = InputState::OperatorPending {
             operator: Operator::Delete,
         };
@@ -126,7 +117,6 @@ mod tests {
         assert_eq!(ctx.pending_command, None);
         assert_eq!(ctx.pending_register, None);
         assert_eq!(ctx.input_state, InputState::Normal);
-        assert!(!ctx.pending_leader);
     }
 
     #[test]
@@ -147,10 +137,6 @@ mod tests {
 
         ctx.reset();
         ctx.pending_register = Some('a');
-        assert!(ctx.has_pending_input());
-
-        ctx.reset();
-        ctx.pending_leader = true;
         assert!(ctx.has_pending_input());
 
         ctx.reset();
