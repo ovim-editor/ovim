@@ -546,7 +546,7 @@ fn test_dedent_tabs() {
 
     test.keys("<<"); // Dedent tabs
 
-    assert_eq!(test.buffer_content(), "ne\n");
+    assert_eq!(test.buffer_content(), "\tline\n");
     test.assert_cursor(0, 0);
 }
 

@@ -325,13 +325,13 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
 
     // Count leading whitespace to remove (up to tab_width)
     let chars: Vec<char> = line_text.chars().collect();
-    let mut spaces_to_remove = 0;
+    let mut chars_to_remove = 0;
 
     for &ch in chars.iter().take(tab_width) {
         if ch == ' ' {
-            spaces_to_remove += 1;
+            chars_to_remove += 1;
         } else if ch == '\t' {
-            spaces_to_remove = tab_width;
+            chars_to_remove += 1;
             break;
         } else {
             break;
@@ -339,21 +339,21 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // If no leading whitespace, do nothing
-    if spaces_to_remove == 0 {
+    if chars_to_remove == 0 {
         return Ok(());
     }
 
     // Delete the leading whitespace
     let deleted = editor
         .buffer_mut()
-        .delete_range(line_idx, 0, line_idx, spaces_to_remove);
+        .delete_range(line_idx, 0, line_idx, chars_to_remove);
 
-    // Update cursor position - move column left by spaces_to_remove
-    let new_col = col.saturating_sub(spaces_to_remove);
+    // Update cursor position - move column left by chars_to_remove
+    let new_col = col.saturating_sub(chars_to_remove);
     editor.buffer_mut().cursor_mut().set_col(new_col);
 
     // Create change for undo
-    let range = Range::new((line_idx, 0), (line_idx, spaces_to_remove));
+    let range = Range::new((line_idx, 0), (line_idx, chars_to_remove));
     let change = Change::delete(range, deleted, cursor_before);
     editor.add_change(change);
 
@@ -886,25 +886,27 @@ pub fn dedent_lines_with_tracking(
         if let Some(line) = editor.buffer().line(line_idx) {
             let line_text = line.trim_end_matches('\n');
             let chars: Vec<char> = line_text.chars().collect();
-            let mut spaces_to_remove = 0;
+            let mut chars_to_remove = 0;
 
             for &ch in chars.iter().take(tab_width) {
                 if ch == ' ' {
-                    spaces_to_remove += 1;
+                    chars_to_remove += 1;
                 } else if ch == '\t' {
-                    spaces_to_remove = tab_width;
+                    // A tab counts as one character to delete, completing
+                    // the removal of one indent level
+                    chars_to_remove += 1;
                     break;
                 } else {
                     break;
                 }
             }
 
-            if spaces_to_remove > 0 {
+            if chars_to_remove > 0 {
                 let deleted =
                     editor
                         .buffer_mut()
-                        .delete_range(line_idx, 0, line_idx, spaces_to_remove);
-                let range = Range::new((line_idx, 0), (line_idx, spaces_to_remove));
+                        .delete_range(line_idx, 0, line_idx, chars_to_remove);
+                let range = Range::new((line_idx, 0), (line_idx, chars_to_remove));
                 let change = Change::delete(range, deleted, cursor_before);
                 editor.add_change(change);
                 modified = true;
