@@ -13,6 +13,7 @@ mod input;
 mod input_context;
 mod input_state;
 pub mod lsp_manager_panel;
+mod lsp_ui;
 mod keymap;
 mod lsp_state;
 mod lsp_integration;
@@ -81,6 +82,7 @@ pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use lsp_manager_panel::LspManagerPanel;
 pub use editing_state::EditingState;
+pub use lsp_ui::LspUi;
 pub use navigation_state::NavigationState;
 pub use render_cache::RenderCache;
 pub use theme_state::ThemeState;
@@ -257,14 +259,8 @@ pub struct Editor {
     pub(crate) render_cache: RenderCache,
     /// UI panels (file tree, quickfix, path completion, dashboard, diagnostic badge)
     pub(crate) ui_panels: UiPanels,
-    /// LSP Manager panel state
-    lsp_manager_panel: Option<LspManagerPanel>,
-    /// Channel for receiving LSP install progress updates
-    install_progress_rx: Option<tokio::sync::mpsc::UnboundedReceiver<lsp_manager_panel::InstallProgress>>,
-    /// Channel sender for LSP install progress (cloned into background tasks)
-    install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
-    /// Pending install requests to be picked up by the event loop
-    pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
+    /// LSP UI panel state (manager panel and install progress)
+    pub(crate) lsp_ui: LspUi,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -380,10 +376,7 @@ impl Editor {
             metrics: PerformanceMetrics::new(),
             render_cache: RenderCache::default(),
             ui_panels: UiPanels::default(),
-            lsp_manager_panel: None,
-            install_progress_rx: None,
-            install_progress_tx: None,
-            pending_installs: Vec::new(),
+            lsp_ui: LspUi::default(),
         }
     }
 
@@ -420,10 +413,7 @@ impl Editor {
             metrics: PerformanceMetrics::new(),
             render_cache: RenderCache::default(),
             ui_panels: UiPanels::default(),
-            lsp_manager_panel: None,
-            install_progress_rx: None,
-            install_progress_tx: None,
-            pending_installs: Vec::new(),
+            lsp_ui: LspUi::default(),
         }
     }
 
