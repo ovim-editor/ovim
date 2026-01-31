@@ -67,13 +67,26 @@ impl PickerState {
     /// Detects rapid scrolling by checking if two consecutive selection changes
     /// happened within 80ms of each other (i.e., holding j/k or fast repeated presses).
     /// A single keypress won't trigger this — only sustained rapid navigation.
+    /// Also requires that the last change was recent (< 150ms ago) so that
+    /// rapid scrolling "expires" once the user stops — otherwise the stale
+    /// timestamps would keep returning true forever.
     pub fn is_scrolling_rapidly(&self) -> bool {
         match (self.prev_selection_change, self.last_selection_change) {
             (Some(prev), Some(last)) => {
                 last.duration_since(prev).as_millis() < 80
+                    && last.elapsed().as_millis() < 150
             }
             _ => false,
         }
+    }
+
+    /// Returns true if rapid scrolling just stopped (was rapid, now isn't).
+    /// Used to trigger a re-render so syntax highlighting gets applied.
+    pub fn rapid_scrolling_just_stopped(&mut self) -> bool {
+        let rapid_now = self.is_scrolling_rapidly();
+        let was_rapid = self.was_scrolling_rapidly;
+        self.was_scrolling_rapidly = rapid_now;
+        was_rapid && !rapid_now
     }
 
     /// Checks if enough time has elapsed since picker query changed (for debouncing)
@@ -148,6 +161,7 @@ impl PickerState {
         self.preview_cache.clear();
         self.last_selection_change = None;
         self.prev_selection_change = None;
+        self.was_scrolling_rapidly = false;
         self.last_layout = None;
     }
 
@@ -359,6 +373,11 @@ impl Editor {
     /// Returns true if user is scrolling rapidly through picker results
     pub fn is_picker_scrolling_rapidly(&self) -> bool {
         self.picker_state.is_scrolling_rapidly()
+    }
+
+    /// Returns true if rapid scrolling just stopped (needs re-render for syntax highlighting)
+    pub fn picker_rapid_scrolling_just_stopped(&mut self) -> bool {
+        self.picker_state.rapid_scrolling_just_stopped()
     }
 
     /// Checks if enough time has elapsed since picker query changed (for debouncing filtering)
