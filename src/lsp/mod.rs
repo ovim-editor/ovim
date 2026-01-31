@@ -61,7 +61,10 @@ const CHANGE_DEBOUNCE_MS: u64 = 150;
 /// Notification message from a language server
 #[derive(Clone)]
 pub struct LspNotification {
-    pub language_id: String,
+    /// The server_id that sent this notification.
+    /// For primary servers this equals the language_id (e.g., "rust").
+    /// For companion servers this is "language_id:companion_id" (e.g., "typescript:tailwindcss").
+    pub server_id: String,
     pub message: JsonRpcMessage,
 }
 
@@ -125,8 +128,9 @@ pub struct LspManager {
     /// Using DashMap for lock-free concurrent access
     servers: DashMap<String, LanguageServer>,
 
-    /// Diagnostics per file URI
-    diagnostics: Mutex<HashMap<Uri, Vec<Diagnostic>>>,
+    /// Diagnostics per file URI, per server_id
+    /// Outer key: URI, inner key: server_id, value: diagnostics from that server
+    diagnostics: Mutex<HashMap<Uri, HashMap<String, Vec<Diagnostic>>>>,
 
     /// Document versions for change tracking
     document_versions: Mutex<HashMap<Uri, i32>>,
@@ -157,6 +161,12 @@ pub struct LspManager {
     /// BUG FIX: Counter for dropped notifications when channel is full
     /// Prevents blocking when notification receiver is slow
     dropped_notifications: Arc<AtomicU64>,
+}
+
+/// Builds a composite server ID for companion LSP servers.
+/// Primary servers use just `language_id`, companion servers use `language_id:companion_id`.
+pub fn companion_server_id(language_id: &str, companion_id: &str) -> String {
+    format!("{}:{}", language_id, companion_id)
 }
 
 impl LspManager {
@@ -257,6 +267,69 @@ impl LspManager {
         Ok(())
     }
 
+    /// Starts a companion language server with an explicit server_id
+    /// The server_id should be built with `companion_server_id(language_id, companion_id)`
+    pub async fn start_companion_server(
+        &self,
+        server_id: &str,
+        command: &str,
+        args: Vec<String>,
+        root_path: &Path,
+    ) -> Result<()> {
+        lsp_debug!(
+            "LspManager",
+            "start_companion_server called for server_id={}",
+            server_id
+        );
+        // Check if already running
+        if self.servers.contains_key(server_id) {
+            lsp_debug!("LspManager", "Companion server already running for {}", server_id);
+            return Ok(());
+        }
+
+        lsp_debug!("LspManager", "Spawning companion server: {} {:?}", command, args);
+        // Extract language part for the server's language field
+        let language = server_id.split(':').next().unwrap_or(server_id);
+        let mut server = LanguageServer::spawn(language, command, args).await?;
+
+        let root_uri =
+            uri_from_file_path(root_path).ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
+
+        server.initialize(root_uri).await?;
+        lsp_debug!("LspManager", "Companion server {} initialized", server_id);
+
+        if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
+            if let Err(e) = existing.shutdown().await {
+                lsp_warn!(
+                    "LspManager",
+                    "Failed to shut down redundant companion server for {}: {}",
+                    server_id,
+                    e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns all server_ids that serve the given language_id.
+    /// This includes the primary server (key == language_id) and any
+    /// companion servers (key starts with "language_id:").
+    pub fn servers_for_language(&self, language_id: &str) -> Vec<String> {
+        let prefix = format!("{}:", language_id);
+        self.servers
+            .iter()
+            .filter_map(|entry| {
+                let key = entry.key();
+                if key == language_id || key.starts_with(&prefix) {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Stops a language server
     pub async fn stop_server(&self, language: &str) -> Result<()> {
         if let Some((_, mut server)) = self.servers.remove(language) {
@@ -266,37 +339,64 @@ impl LspManager {
         Ok(())
     }
 
-    /// Gets diagnostics for a file
-    pub async fn get_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
-        let diagnostics = self.diagnostics.lock().await;
-        diagnostics.get(uri).cloned().unwrap_or_default()
+    /// Merges diagnostics from all servers for a URI, deduplicating by range+message
+    fn merge_diagnostics(server_map: &HashMap<String, Vec<Diagnostic>>) -> Vec<Diagnostic> {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let mut merged = Vec::new();
+        for diags in server_map.values() {
+            for diag in diags {
+                // Deduplicate by (range, message) — different servers may report the same issue
+                let key = (
+                    diag.range.start.line,
+                    diag.range.start.character,
+                    diag.range.end.line,
+                    diag.range.end.character,
+                    diag.message.clone(),
+                );
+                if seen.insert(key) {
+                    merged.push(diag.clone());
+                }
+            }
+        }
+        merged
     }
 
-    /// Gets diagnostics for a specific line in a file
+    /// Gets diagnostics for a file (merged from all servers)
+    pub async fn get_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
+        let diagnostics = self.diagnostics.lock().await;
+        diagnostics
+            .get(uri)
+            .map(Self::merge_diagnostics)
+            .unwrap_or_default()
+    }
+
+    /// Gets diagnostics for a specific line in a file (merged from all servers)
     pub async fn get_diagnostics_for_line(&self, uri: &Uri, line: u32) -> Vec<Diagnostic> {
         let diagnostics = self.diagnostics.lock().await;
         diagnostics
             .get(uri)
-            .map(|diags| {
-                diags
-                    .iter()
+            .map(|server_map| {
+                let merged = Self::merge_diagnostics(server_map);
+                merged
+                    .into_iter()
                     .filter(|d| d.range.start.line <= line && d.range.end.line >= line)
-                    .cloned()
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    /// Counts diagnostics by severity
+    /// Counts diagnostics by severity (merged from all servers)
     pub async fn count_diagnostics(&self, uri: &Uri) -> (usize, usize, usize, usize) {
         let diagnostics = self.diagnostics.lock().await;
-        if let Some(diags) = diagnostics.get(uri) {
+        if let Some(server_map) = diagnostics.get(uri) {
+            let merged = Self::merge_diagnostics(server_map);
             let mut errors = 0;
             let mut warnings = 0;
             let mut info = 0;
             let mut hints = 0;
 
-            for diag in diags {
+            for diag in &merged {
                 match diag.severity {
                     Some(lsp_types::DiagnosticSeverity::ERROR) => errors += 1,
                     Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
@@ -313,11 +413,15 @@ impl LspManager {
         }
     }
 
-    /// Sets diagnostics for a file (called when receiving publishDiagnostics)
-    pub async fn set_diagnostics(&self, uri: Uri, diagnostics: Vec<Diagnostic>) {
+    /// Sets diagnostics for a file from a specific server
+    /// (called when receiving publishDiagnostics)
+    pub async fn set_diagnostics(&self, uri: Uri, server_id: &str, diagnostics: Vec<Diagnostic>) {
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
         let mut diags = self.diagnostics.lock().await;
-        diags.insert(uri, diagnostics);
+        diags
+            .entry(uri)
+            .or_default()
+            .insert(server_id.to_string(), diagnostics);
         self.diagnostics_changed.store(true, Ordering::SeqCst);
     }
 
@@ -388,7 +492,7 @@ mod tests {
 
         // Set diagnostics
         let diags = vec![]; // Empty for now
-        manager.set_diagnostics(uri.clone(), diags).await;
+        manager.set_diagnostics(uri.clone(), "rust", diags).await;
 
         // Verify stored
         assert_eq!(manager.get_diagnostics(&uri).await.len(), 0);

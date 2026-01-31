@@ -25,8 +25,17 @@ official = { crate = "tree_sitter_rust", constant = "HIGHLIGHTS_QUERY" }
 
 [language.lsp]
 command = "rust-analyzer"
+fallback_commands = [
+    "~/.cargo/bin/rust-analyzer",
+    "~/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rust-analyzer",
+    "~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-analyzer",
+    "~/.rustup/toolchains/stable-x86_64-apple-darwin/bin/rust-analyzer",
+]
 root_markers = ["Cargo.toml", "Cargo.lock"]
 install_hint = "Install with: rustup component add rust-analyzer"
+
+[language.lsp.auto_install]
+method = { type = "shell", command = "rustup component add rust-analyzer" }
 
 # ============================================================================
 # TypeScript
@@ -125,7 +134,12 @@ official = { crate = "tree_sitter_python", constant = "HIGHLIGHTS_QUERY" }
 # Try pyright first (current default in python.rs)
 command = "pyright-langserver"
 args = ["--stdio"]
-fallback_commands = ["pylsp", "jedi-language-server"]
+fallback_commands = [
+    "pylsp",
+    "jedi-language-server",
+    "~/.local/bin/pyright-langserver",
+    "~/.local/bin/pylsp",
+]
 root_markers = ["pyproject.toml", "setup.py", "requirements.txt", ".git"]
 install_hint = "Install with: pip install pyright (or: pip install python-lsp-server)"
 
@@ -278,6 +292,9 @@ official = { crate = "tree_sitter_go", constant = "HIGHLIGHTS_QUERY" }
 
 [language.lsp]
 command = "gopls"
+fallback_commands = [
+    "~/go/bin/gopls",
+]
 root_markers = ["go.mod", "go.sum", ".git"]
 install_hint = "Install with: go install golang.org/x/tools/gopls@latest"
 
@@ -425,3 +442,33 @@ command = "elixir-ls"
 fallback_commands = ["language_server.sh"]
 root_markers = ["mix.exs", ".git"]
 install_hint = "Download from: https://github.com/elixir-lsp/elixir-ls/releases"
+
+# ============================================================================
+# Ghostty
+# ============================================================================
+
+[[language]]
+id = "ghostty"
+name = "Ghostty"
+path_filenames = ["ghostty/config"]
+
+[language.lsp]
+command = "ghostty-lsp"
+root_markers = [".git"]
+install_hint = "Install from source: cargo install --git https://github.com/matthewmturner/ghostty-lsp"
+
+# ============================================================================
+# Companion LSP Servers
+# ============================================================================
+# Companion servers provide additional LSP support alongside primary servers.
+# They activate only when activation_markers are present in the project tree.
+
+[[companion_lsp]]
+id = "tailwindcss"
+name = "Tailwind CSS"
+command = "tailwindcss-language-server"
+args = ["--stdio"]
+applies_to = ["typescript", "typescriptreact", "javascript", "javascriptreact", "html", "css"]
+root_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs", "package.json"]
+activation_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs"]
+install_hint = "Install with: npm install -g @tailwindcss/language-server"

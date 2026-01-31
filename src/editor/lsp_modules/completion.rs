@@ -96,7 +96,13 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
-        let result = lsp.completion(&uri, line, character, language_id).await;
+        // Query all servers for this language (primary + companions)
+        let server_ids = lsp.servers_for_language(language_id);
+        let result = if server_ids.len() > 1 {
+            lsp.completion_multi(&uri, line, character, &server_ids).await
+        } else {
+            lsp.completion(&uri, line, character, language_id).await
+        };
 
         match result {
             Ok(items) if !items.is_empty() => {

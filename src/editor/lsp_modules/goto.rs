@@ -99,12 +99,19 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
+        // Resolve all server_ids for this language (primary + companions)
+        let server_ids = lsp.servers_for_language(language_id);
+
         // Spawn definition request in background (non-blocking)
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = lsp.goto_definition(&uri, line, character, language_id).await;
-            let _ = tx.send(result); // Send to receiver (ignore if dropped)
-            Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
+            let result = if server_ids.len() > 1 {
+                lsp.goto_definition_multi(&uri, line, character, &server_ids).await
+            } else {
+                lsp.goto_definition(&uri, line, character, language_id).await
+            };
+            let _ = tx.send(result);
+            Ok(None)
         });
 
         // Store task handle and receiver for polling

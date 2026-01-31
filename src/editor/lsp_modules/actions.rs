@@ -54,16 +54,27 @@ impl Editor {
             .lsp
             .get_diagnostics_for_line(&ctx.uri, ctx.line)
             .await;
-        let result = ctx
-            .lsp
-            .code_actions(
-                &ctx.uri,
-                ctx.line,
-                ctx.character,
-                &ctx.language_id,
-                diagnostics,
-            )
-            .await;
+        let result = if ctx.server_ids.len() > 1 {
+            ctx.lsp
+                .code_actions_multi(
+                    &ctx.uri,
+                    ctx.line,
+                    ctx.character,
+                    &ctx.server_ids,
+                    diagnostics,
+                )
+                .await
+        } else {
+            ctx.lsp
+                .code_actions(
+                    &ctx.uri,
+                    ctx.line,
+                    ctx.character,
+                    &ctx.language_id,
+                    diagnostics,
+                )
+                .await
+        };
 
         match result {
             Ok(actions) if !actions.is_empty() => {
@@ -238,10 +249,15 @@ impl Editor {
 
         // Request code actions for organize imports (at file start, no diagnostics needed)
         let diagnostics = Vec::new();
-        let result = ctx
-            .lsp
-            .code_actions(&ctx.uri, 0, 0, &ctx.language_id, diagnostics)
-            .await;
+        let result = if ctx.server_ids.len() > 1 {
+            ctx.lsp
+                .code_actions_multi(&ctx.uri, 0, 0, &ctx.server_ids, diagnostics)
+                .await
+        } else {
+            ctx.lsp
+                .code_actions(&ctx.uri, 0, 0, &ctx.language_id, diagnostics)
+                .await
+        };
 
         match result {
             Ok(actions) => {
