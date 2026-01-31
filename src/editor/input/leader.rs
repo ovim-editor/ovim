@@ -117,12 +117,12 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         }
         (&['c'], 'i') => {
             // <Space>ci - Incoming calls (call hierarchy)
-            // TODO: Implement when call hierarchy is added
+            editor.request_call_hierarchy_incoming();
             editor.reset_input_state();
         }
         (&['c'], 'o') => {
             // <Space>co - Outgoing calls (call hierarchy)
-            // TODO: Implement when call hierarchy is added
+            editor.request_call_hierarchy_outgoing();
             editor.reset_input_state();
         }
 
