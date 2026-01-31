@@ -28,6 +28,7 @@ pub mod picker;
 mod picker_manager;
 pub(crate) mod picker_state;
 mod quickfix;
+mod render_cache;
 mod register;
 mod search;
 mod search_context;
@@ -75,6 +76,7 @@ pub use undo::UndoManager;
 pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use lsp_manager_panel::LspManagerPanel;
+pub use render_cache::RenderCache;
 pub use viewport_state::ViewportState;
 pub use wrap_map::WrapMap;
 
@@ -278,12 +280,8 @@ pub struct Editor {
     pending_semantic_change: Option<PendingSemanticChange>,
     /// Replace mode tracking for dot-repeat
     replace_mode_state: Option<ReplaceModeState>,
-    /// Mouse interaction state (dragging, drag origin)
-    pub(crate) mouse_state: MouseState,
-    /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
-    pub(crate) last_buffer_area: Option<ratatui::layout::Rect>,
-    /// Cached gutter width from last render
-    pub(crate) last_gutter_width: usize,
+    /// Cached rendering state (mouse, layout geometry)
+    pub(crate) render_cache: RenderCache,
     /// Dashboard cat animation state
     cat_animation: Option<crate::ui::CatAnimation>,
     /// LSP Manager panel state
@@ -433,9 +431,7 @@ impl Editor {
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
-            mouse_state: MouseState::default(),
-            last_buffer_area: None,
-            last_gutter_width: 0,
+            render_cache: RenderCache::default(),
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
             install_progress_rx: None,
@@ -496,9 +492,7 @@ impl Editor {
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
-            mouse_state: MouseState::default(),
-            last_buffer_area: None,
-            last_gutter_width: 0,
+            render_cache: RenderCache::default(),
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
             install_progress_rx: None,
@@ -674,8 +668,8 @@ impl Editor {
 
     /// Caches the buffer layout from the last render (for mouse coordinate conversion)
     pub fn set_last_layout(&mut self, buffer_area: ratatui::layout::Rect, gutter_width: usize) {
-        self.last_buffer_area = Some(buffer_area);
-        self.last_gutter_width = gutter_width;
+        self.render_cache.last_buffer_area = Some(buffer_area);
+        self.render_cache.last_gutter_width = gutter_width;
     }
 
     /// Gets the viewport height
