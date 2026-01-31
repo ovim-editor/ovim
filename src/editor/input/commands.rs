@@ -601,7 +601,7 @@ fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
     // 'x = mark
     if endpoint.starts_with('\'') && endpoint.len() == 2 {
         let mark_char = endpoint.chars().nth(1)?;
-        if let Some(mark) = editor.marks.get_mark(mark_char) {
+        if let Some(mark) = editor.nav.marks.get_mark(mark_char) {
             return Some(mark.line);
         }
         // TODO (Bug 1): Add "E20: Mark not set" error message

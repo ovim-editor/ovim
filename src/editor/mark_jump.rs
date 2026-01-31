@@ -7,7 +7,7 @@ impl Editor {
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col();
         let file_path = self.buffer().file_path().map(|s| s.to_string());
-        self.marks
+        self.nav.marks
             .set_mark(name, cursor_line, cursor_col, file_path.as_deref())
     }
 
@@ -15,7 +15,7 @@ impl Editor {
     pub fn jump_to_mark(&mut self, name: char) -> bool {
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
-            if let Some(mark) = self.marks.get_mark(name) {
+            if let Some(mark) = self.nav.marks.get_mark(name) {
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(mark.line, mark.col);
@@ -27,7 +27,7 @@ impl Editor {
 
         // Try global mark (A-Z)
         if name.is_ascii_uppercase() {
-            if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
+            if let Some(global_mark) = self.nav.marks.get_global_mark(name).cloned() {
                 // Load the file if it's different from current file
                 let current_file = self.buffer().file_path().map(|s| s.to_string());
                 if current_file.as_deref() != Some(&global_mark.file_path)
@@ -64,7 +64,7 @@ impl Editor {
     pub fn jump_to_mark_line(&mut self, name: char) -> bool {
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
-            if let Some(mark) = self.marks.get_mark(name) {
+            if let Some(mark) = self.nav.marks.get_mark(name) {
                 // Find first non-blank character on the line
                 let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
                     line_text
@@ -86,7 +86,7 @@ impl Editor {
 
         // Try global mark (A-Z)
         if name.is_ascii_uppercase() {
-            if let Some(global_mark) = self.marks.get_global_mark(name).cloned() {
+            if let Some(global_mark) = self.nav.marks.get_global_mark(name).cloned() {
                 // Load the file if it's different from current file
                 let current_file = self.buffer().file_path().map(|s| s.to_string());
                 if current_file.as_deref() != Some(&global_mark.file_path)
@@ -124,12 +124,12 @@ impl Editor {
     /// Adds current position to jump list
     pub fn add_jump(&mut self) {
         let cursor = self.buffer().cursor();
-        self.jump_list.add_jump(cursor.line(), cursor.col());
+        self.nav.jump_list.add_jump(cursor.line(), cursor.col());
     }
 
     /// Jumps back in the jump list (Ctrl-O)
     pub fn jump_back(&mut self) -> bool {
-        if let Some((line, col)) = self.jump_list.jump_back() {
+        if let Some((line, col)) = self.nav.jump_list.jump_back() {
             self.buffer_mut().cursor_mut().set_position(line, col);
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
@@ -141,7 +141,7 @@ impl Editor {
 
     /// Jumps forward in the jump list (Ctrl-I)
     pub fn jump_forward(&mut self) -> bool {
-        if let Some((line, col)) = self.jump_list.jump_forward() {
+        if let Some((line, col)) = self.nav.jump_list.jump_forward() {
             self.buffer_mut().cursor_mut().set_position(line, col);
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
@@ -153,17 +153,17 @@ impl Editor {
 
     /// Sets the last find motion for ; and , repeat
     pub fn set_last_find(&mut self, ch: char, find_type: FindType, direction: FindDirection) {
-        self.last_find = Some((ch, find_type, direction));
+        self.nav.last_find = Some((ch, find_type, direction));
     }
 
     /// Gets the last find motion
     pub fn get_last_find(&self) -> Option<(char, FindType, FindDirection)> {
-        self.last_find
+        self.nav.last_find
     }
 
     /// Gets the mark manager (for reading marks)
     pub fn marks(&self) -> &MarkManager {
-        &self.marks
+        &self.nav.marks
     }
 
     /// Pushes current position to tag stack before LSP navigation (gd/gD/gy)
@@ -172,14 +172,14 @@ impl Editor {
         if let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) {
             let cursor = self.buffer().cursor();
             let entry = TagEntry::new(file_path, cursor.line(), cursor.col());
-            self.tag_stack.push(entry);
+            self.nav.tag_stack.push(entry);
         }
     }
 
     /// Pops from tag stack and navigates to that location (Ctrl-T)
     /// Returns true if successfully jumped, false if stack was empty or navigation failed
     pub fn tag_pop(&mut self) -> bool {
-        if let Some(entry) = self.tag_stack.pop() {
+        if let Some(entry) = self.nav.tag_stack.pop() {
             // Check if we need to switch files
             let current_file = self.buffer().file_path().map(|s| s.to_string());
             let needs_file_switch = current_file.as_deref() != Some(&entry.file_path);
@@ -215,7 +215,7 @@ impl Editor {
             self.mark_dirty();
 
             // Show status
-            let remaining = self.tag_stack.len();
+            let remaining = self.nav.tag_stack.len();
             let file_name = std::path::Path::new(&entry.file_path)
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -237,11 +237,11 @@ impl Editor {
 
     /// Returns the number of entries in the tag stack
     pub fn tag_stack_len(&self) -> usize {
-        self.tag_stack.len()
+        self.nav.tag_stack.len()
     }
 
     /// Returns true if the tag stack is empty
     pub fn tag_stack_is_empty(&self) -> bool {
-        self.tag_stack.is_empty()
+        self.nav.tag_stack.is_empty()
     }
 }

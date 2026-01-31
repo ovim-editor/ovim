@@ -20,6 +20,7 @@ mod lua_integration;
 mod macros;
 mod mark_jump;
 mod marks;
+mod navigation_state;
 mod motions;
 mod operators;
 pub(crate) mod path_completion;
@@ -79,6 +80,7 @@ pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use lsp_manager_panel::LspManagerPanel;
 pub use editing_state::EditingState;
+pub use navigation_state::NavigationState;
 pub use render_cache::RenderCache;
 pub use theme_state::ThemeState;
 pub use viewport_state::ViewportState;
@@ -217,19 +219,12 @@ pub struct Editor {
     command: CommandContext,
     /// Search-related state
     pub search: SearchContext,
-    /// Mark manager for buffer marks
-    marks: MarkManager,
+    /// Navigation state (marks, jump list, tag stack, find repeat)
+    pub(crate) nav: NavigationState,
     /// Key mapping manager
     keymaps: KeyMapManager,
-    /// Jump list for Ctrl-O and Ctrl-I
-    jump_list: JumpList,
-    /// Tag stack for Ctrl-T (LSP goto definition/implementation/type navigation)
-    tag_stack: TagStack,
     /// Macro manager for recording and playback
     macro_manager: MacroManager,
-    /// Last find motion (for ; and , repeat)
-    /// (char, FindType::Find/Till, FindDirection::Forward/Backward)
-    last_find: Option<(char, FindType, FindDirection)>,
     /// Picker state (picker, preview cache, layout, file list cache, etc.)
     pub(crate) picker_state: PickerState,
     /// LSP-related state
@@ -385,12 +380,9 @@ impl Editor {
             visual: VisualContext::new(),
             command: CommandContext::new(),
             search: SearchContext::new(),
-            marks: MarkManager::new(),
+            nav: NavigationState::default(),
             keymaps: KeyMapManager::new(),
-            jump_list: JumpList::new(),
-            tag_stack: TagStack::new(),
             macro_manager: MacroManager::new(),
-            last_find: None,
             picker_state: PickerState::new(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
@@ -438,12 +430,9 @@ impl Editor {
             visual: VisualContext::new(),
             command: CommandContext::new(),
             search: SearchContext::new(),
-            marks: MarkManager::new(),
+            nav: NavigationState::default(),
             keymaps: KeyMapManager::new(),
-            jump_list: JumpList::new(),
-            tag_stack: TagStack::new(),
             macro_manager: MacroManager::new(),
-            last_find: None,
             picker_state: PickerState::new(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
