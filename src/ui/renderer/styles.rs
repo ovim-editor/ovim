@@ -70,14 +70,26 @@ pub fn get_git_sign_style(status: Option<crate::LineStatus>) -> (&'static str, C
     }
 }
 
-/// Returns the sign text and color for diagnostic severity in the gutter
+/// Returns the sign text and color for diagnostic severity in the gutter (nerd font icons)
 pub fn get_diagnostic_sign_style(severity: Option<lsp_types::DiagnosticSeverity>) -> (&'static str, Color) {
     use lsp_types::DiagnosticSeverity;
     match severity {
-        Some(DiagnosticSeverity::ERROR) => ("● ", Color::Red),
-        Some(DiagnosticSeverity::WARNING) => ("▲ ", Color::Yellow),
-        Some(DiagnosticSeverity::INFORMATION) => ("■ ", Color::Cyan),
-        Some(DiagnosticSeverity::HINT) => ("○ ", Color::Gray),
-        _ => ("● ", Color::Red), // Default to error style
+        Some(DiagnosticSeverity::ERROR) => (" ", Color::Red),
+        Some(DiagnosticSeverity::WARNING) => (" ", Color::Yellow),
+        Some(DiagnosticSeverity::INFORMATION) => (" ", Color::Cyan),
+        Some(DiagnosticSeverity::HINT) => (" ", Color::Gray),
+        _ => (" ", Color::Red), // Default to error style
+    }
+}
+
+/// Returns the (icon, foreground color, background color) for diagnostic virtual text
+pub fn get_diagnostic_virtual_text_style(severity: Option<lsp_types::DiagnosticSeverity>) -> (&'static str, Color, Color) {
+    use lsp_types::DiagnosticSeverity;
+    match severity {
+        Some(DiagnosticSeverity::ERROR) => ("", Color::Red, Color::Rgb(60, 20, 20)),
+        Some(DiagnosticSeverity::WARNING) => ("", Color::Yellow, Color::Rgb(60, 50, 20)),
+        Some(DiagnosticSeverity::INFORMATION) => ("", Color::Cyan, Color::Rgb(20, 40, 60)),
+        Some(DiagnosticSeverity::HINT) => ("", Color::Gray, Color::Rgb(40, 40, 40)),
+        _ => ("", Color::Gray, Color::Rgb(40, 40, 40)),
     }
 }
