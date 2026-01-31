@@ -391,4 +391,35 @@ impl Editor {
     pub fn invalidate_file_list_cache(&mut self) {
         self.picker_state.invalidate_file_list_cache();
     }
+
+    /// Executes a picker action (called after the picker is closed)
+    pub fn execute_picker_action(&mut self, action: super::PickerAction) -> anyhow::Result<()> {
+        use super::PickerAction;
+        match action {
+            PickerAction::OpenFile { path, line, col } => {
+                if let Err(e) = self.load_file(&path) {
+                    self.set_lsp_status(format!("Failed to load file {}: {}", path, e));
+                    return Ok(());
+                }
+                self.buffer_mut().cursor_mut().set_position(line, col);
+            }
+            PickerAction::OpenFileWithTag { path, line, col } => {
+                self.push_tag();
+                if let Err(e) = self.load_file(&path) {
+                    self.set_lsp_status(format!("Failed to load file {}: {}", path, e));
+                    return Ok(());
+                }
+                self.buffer_mut().cursor_mut().set_position(line, col);
+                self.buffer_mut().validate_cursor_position();
+                self.center_cursor_in_viewport();
+            }
+            PickerAction::ApplyCodeAction { index } => {
+                self.apply_code_action(index);
+            }
+            PickerAction::ApplyCompletion { index } => {
+                self.apply_completion(index);
+            }
+        }
+        Ok(())
+    }
 }
