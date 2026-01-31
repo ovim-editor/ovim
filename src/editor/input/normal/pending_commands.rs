@@ -270,12 +270,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('R', KeyCode::Char('n')) => {
-            // grn - LSP rename
-            editor.clear_command_line();
-            editor.set_mode(Mode::Command);
-            for ch in "LspRename ".chars() {
-                editor.append_to_command_line(ch);
-            }
+            // grn - LSP rename with pre-filled word under cursor
+            let word = editor.buffer().word_under_cursor().map(|(w, _, _)| w);
+            let word = word.unwrap_or_default();
+            let cursor_pos = word.len();
+            editor.set_rename_buffer(word);
+            editor.set_rename_cursor(cursor_pos);
+            editor.set_mode(Mode::RenameInput);
         }
         ('R', KeyCode::Char('a')) => {
             editor.request_code_actions();

@@ -314,6 +314,10 @@ pub struct Editor {
     install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
     /// Pending install requests to be picked up by the event loop
     pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
+    /// Rename input buffer (for LSP rename mode)
+    rename_buffer: String,
+    /// Cursor position within the rename input buffer
+    rename_cursor: usize,
     /// Whether the diagnostic badge overlay has been dismissed (double-Escape)
     diagnostic_badge_dismissed: bool,
     /// Last diagnostic count when badge state was set (for detecting changes)
@@ -469,6 +473,8 @@ impl Editor {
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
+            rename_buffer: String::new(),
+            rename_cursor: 0,
             diagnostic_badge_dismissed: false,
             diagnostic_badge_last_count: (0, 0),
             last_escape_time: None,
@@ -542,6 +548,8 @@ impl Editor {
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
+            rename_buffer: String::new(),
+            rename_cursor: 0,
             diagnostic_badge_dismissed: false,
             diagnostic_badge_last_count: (0, 0),
             last_escape_time: None,
@@ -567,6 +575,24 @@ impl Editor {
         // Convert buffer to ANSI string
         let buffer = terminal.backend().buffer();
         Ok(buffer_to_ansi(buffer))
+    }
+
+    // ==================== Rename Input ====================
+
+    pub fn rename_buffer(&self) -> &str {
+        &self.rename_buffer
+    }
+
+    pub fn rename_cursor(&self) -> usize {
+        self.rename_cursor
+    }
+
+    pub fn set_rename_buffer(&mut self, s: String) {
+        self.rename_buffer = s;
+    }
+
+    pub fn set_rename_cursor(&mut self, pos: usize) {
+        self.rename_cursor = pos;
     }
 
     // ==================== Core Editor Methods ====================

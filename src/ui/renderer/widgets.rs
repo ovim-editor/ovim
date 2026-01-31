@@ -910,6 +910,19 @@ pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Renders the rename input line
+pub fn render_rename_input(frame: &mut Frame, editor: &Editor, area: Rect) {
+    let text = format!("rename: {}", editor.rename_buffer());
+
+    let line = Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(Color::White).bg(Color::Black),
+    )]);
+
+    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
+    frame.render_widget(paragraph, area);
+}
+
 /// Calculates the picker overlay area (centered, takes up 80% of screen)
 pub fn get_picker_area(full_area: Rect) -> Rect {
     let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
@@ -934,7 +947,8 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     };
 
     let picker_area = get_picker_area(frame.area());
-    let show_preview = should_show_preview(picker_area);
+    let show_preview = should_show_preview(picker_area)
+        && matches!(picker.mode(), crate::editor::PickerMode::FindFiles | crate::editor::PickerMode::LiveGrep | crate::editor::PickerMode::LspLocations);
 
     // Clear underlying content, then fill with picker background
     frame.render_widget(ratatui::widgets::Clear, picker_area);
