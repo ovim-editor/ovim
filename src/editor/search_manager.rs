@@ -106,26 +106,27 @@ impl Editor {
             let mut search_clone = search.clone();
 
             // For forward search, start from col+1; for backward, start from col-1 or col
-            let search_col = if is_forward {
-                // Clamp to avoid exceeding line length (wrap to next line starts at col 0)
+            let (search_line, search_col) = if is_forward {
                 if let Some(line) = self.buffer().line(cursor_line) {
                     let line_len = line.trim_end_matches('\n').chars().count();
                     if cursor_col + 1 >= line_len {
-                        0 // Wrap to next line
+                        // OV-00040: Advance to next line instead of col 0 of same line
+                        let next_line = (cursor_line + 1) % self.buffer().line_count().max(1);
+                        (next_line, 0)
                     } else {
-                        cursor_col + 1
+                        (cursor_line, cursor_col + 1)
                     }
                 } else {
-                    cursor_col + 1
+                    (cursor_line, cursor_col + 1)
                 }
             } else if cursor_col > 0 {
-                cursor_col - 1
+                (cursor_line, cursor_col - 1)
             } else {
-                0
+                (cursor_line, 0)
             };
 
             if let Some((line, col, _)) =
-                search_clone.find_next(self.buffer(), cursor_line, search_col)
+                search_clone.find_next(self.buffer(), search_line, search_col)
             {
                 self.buffer_mut().cursor_mut().set_position(line, col);
             }
@@ -148,29 +149,31 @@ impl Editor {
 
             // For reverse direction: if original was forward, now going backward (use col-1)
             // if original was backward, now going forward (use col+1)
-            let search_col = if is_forward {
+            let (search_line, search_col) = if is_forward {
                 // Original was forward, now backward
                 if cursor_col > 0 {
-                    cursor_col - 1
+                    (cursor_line, cursor_col - 1)
                 } else {
-                    0
+                    (cursor_line, 0)
                 }
             } else {
                 // Original was backward, now forward - clamp to avoid exceeding line length
                 if let Some(line) = self.buffer().line(cursor_line) {
                     let line_len = line.trim_end_matches('\n').chars().count();
                     if cursor_col + 1 >= line_len {
-                        0 // Wrap to next line
+                        // OV-00040: Advance to next line instead of col 0 of same line
+                        let next_line = (cursor_line + 1) % self.buffer().line_count().max(1);
+                        (next_line, 0)
                     } else {
-                        cursor_col + 1
+                        (cursor_line, cursor_col + 1)
                     }
                 } else {
-                    cursor_col + 1
+                    (cursor_line, cursor_col + 1)
                 }
             };
 
             if let Some((line, col, _)) =
-                rev_search.find_next(self.buffer(), cursor_line, search_col)
+                rev_search.find_next(self.buffer(), search_line, search_col)
             {
                 self.buffer_mut().cursor_mut().set_position(line, col);
             }
