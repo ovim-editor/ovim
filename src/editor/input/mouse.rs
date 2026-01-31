@@ -234,7 +234,7 @@ fn handle_middle_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 fn handle_picker_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     use crate::editor::PickerField;
 
-    let layout = match &editor.last_picker_layout {
+    let layout = match &editor.picker_state.last_layout {
         Some(l) => l.clone(),
         None => return Ok(()),
     };

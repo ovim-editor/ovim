@@ -1,9 +1,12 @@
 //! Picker management and preview cache
 
+use super::picker_state::PickerState;
 use super::{Editor, Picker, PreviewCache};
 use std::collections::HashMap;
 
-impl Editor {
+// ==================== PickerState methods ====================
+
+impl PickerState {
     /// Sets the picker
     pub fn set_picker(&mut self, picker: Picker) {
         self.picker = Some(picker);
@@ -20,16 +23,16 @@ impl Editor {
     }
 
     /// Marks that picker query was just changed (for debouncing preview loading and filtering)
-    pub fn mark_picker_query_changed(&mut self) {
-        self.last_picker_query_change = Some(std::time::Instant::now());
+    pub fn mark_query_changed(&mut self) {
+        self.last_query_change = Some(std::time::Instant::now());
         // Clear loading flag since query changed
         self.loading_preview = None;
     }
 
     /// Checks if enough time has elapsed since picker query changed (for debouncing filtering)
     /// Returns true if we should apply the pending filter now
-    pub fn should_apply_picker_filter(&self, debounce_ms: u64) -> bool {
-        match self.last_picker_query_change {
+    pub fn should_apply_filter(&self, debounce_ms: u64) -> bool {
+        match self.last_query_change {
             None => true, // No recent change, apply immediately
             Some(last_change) => last_change.elapsed().as_millis() >= debounce_ms as u128,
         }
@@ -37,8 +40,8 @@ impl Editor {
 
     /// Applies pending filter if debounce period has elapsed
     /// Returns true if filter was applied
-    pub fn apply_pending_picker_filter(&mut self, debounce_ms: u64) -> bool {
-        if !self.should_apply_picker_filter(debounce_ms) {
+    pub fn apply_pending_filter(&mut self, debounce_ms: u64) -> bool {
+        if !self.should_apply_filter(debounce_ms) {
             return false;
         }
 
@@ -52,9 +55,9 @@ impl Editor {
     }
 
     /// Marks that the picker selection moved (for debouncing preview loading)
-    pub fn mark_picker_selection_changed(&mut self) {
-        self.prev_picker_selection_change = self.last_picker_selection_change;
-        self.last_picker_selection_change = Some(std::time::Instant::now());
+    pub fn mark_selection_changed(&mut self) {
+        self.prev_selection_change = self.last_selection_change;
+        self.last_selection_change = Some(std::time::Instant::now());
         // Allow new preview to load for the freshly selected entry
         self.loading_preview = None;
     }
@@ -64,8 +67,8 @@ impl Editor {
     /// Detects rapid scrolling by checking if two consecutive selection changes
     /// happened within 80ms of each other (i.e., holding j/k or fast repeated presses).
     /// A single keypress won't trigger this — only sustained rapid navigation.
-    pub fn is_picker_scrolling_rapidly(&self) -> bool {
-        match (self.prev_picker_selection_change, self.last_picker_selection_change) {
+    pub fn is_scrolling_rapidly(&self) -> bool {
+        match (self.prev_selection_change, self.last_selection_change) {
             (Some(prev), Some(last)) => {
                 last.duration_since(prev).as_millis() < 80
             }
@@ -75,10 +78,10 @@ impl Editor {
 
     /// Checks if enough time has elapsed since picker query changed (for debouncing)
     /// Returns true if we should load preview now
-    pub fn should_load_picker_preview(&self, debounce_ms: u64) -> bool {
-        let mut last_change = self.last_picker_query_change;
+    pub fn should_load_preview(&self, debounce_ms: u64) -> bool {
+        let mut last_change = self.last_query_change;
 
-        if let Some(selection_change) = self.last_picker_selection_change {
+        if let Some(selection_change) = self.last_selection_change {
             last_change = match last_change {
                 Some(existing) => Some(std::cmp::max(existing, selection_change)),
                 None => Some(selection_change),
@@ -139,9 +142,9 @@ impl Editor {
         self.picker = None;
         // Clear preview cache when closing picker to free memory
         self.preview_cache.clear();
-        self.last_picker_selection_change = None;
-        self.prev_picker_selection_change = None;
-        self.last_picker_layout = None;
+        self.last_selection_change = None;
+        self.prev_selection_change = None;
+        self.last_layout = None;
     }
 
     /// Gets preview from cache or loads it (async version)
@@ -271,5 +274,121 @@ impl Editor {
     /// Invalidates the file list cache (called on file save/create/delete)
     pub fn invalidate_file_list_cache(&mut self) {
         self.file_list_cache = None;
+    }
+}
+
+// ==================== Editor delegation methods ====================
+
+impl Editor {
+    /// Sets the picker
+    pub fn set_picker(&mut self, picker: Picker) {
+        self.picker_state.set_picker(picker);
+    }
+
+    /// Gets a reference to the picker
+    pub fn picker(&self) -> Option<&Picker> {
+        self.picker_state.picker()
+    }
+
+    /// Gets a mutable reference to the picker
+    pub fn picker_mut(&mut self) -> Option<&mut Picker> {
+        self.picker_state.picker_mut()
+    }
+
+    /// Closes the picker
+    pub fn close_picker(&mut self) {
+        self.picker_state.close_picker();
+    }
+
+    /// Marks that picker query was just changed (for debouncing preview loading and filtering)
+    pub fn mark_picker_query_changed(&mut self) {
+        self.picker_state.mark_query_changed();
+    }
+
+    /// Marks that the picker selection moved (for debouncing preview loading)
+    pub fn mark_picker_selection_changed(&mut self) {
+        self.picker_state.mark_selection_changed();
+    }
+
+    /// Returns true if user is scrolling rapidly through picker results
+    pub fn is_picker_scrolling_rapidly(&self) -> bool {
+        self.picker_state.is_scrolling_rapidly()
+    }
+
+    /// Checks if enough time has elapsed since picker query changed (for debouncing filtering)
+    pub fn should_apply_picker_filter(&self, debounce_ms: u64) -> bool {
+        self.picker_state.should_apply_filter(debounce_ms)
+    }
+
+    /// Applies pending filter if debounce period has elapsed
+    pub fn apply_pending_picker_filter(&mut self, debounce_ms: u64) -> bool {
+        self.picker_state.apply_pending_filter(debounce_ms)
+    }
+
+    /// Checks if enough time has elapsed since picker query changed (for debouncing)
+    pub fn should_load_picker_preview(&self, debounce_ms: u64) -> bool {
+        self.picker_state.should_load_preview(debounce_ms)
+    }
+
+    /// Gets the path that should be loaded for preview (if any)
+    pub fn get_preview_to_load(&mut self) -> Option<String> {
+        self.picker_state.get_preview_to_load()
+    }
+
+    /// Inserts a loaded preview into the cache
+    pub fn insert_preview(&mut self, file_path: String, cache: PreviewCache) {
+        self.picker_state.insert_preview(file_path, cache);
+    }
+
+    /// Gets preview from cache or loads it (async version)
+    pub async fn get_or_load_preview_async(&mut self, file_path: &str) -> Option<&PreviewCache> {
+        self.picker_state.get_or_load_preview_async(file_path).await
+    }
+
+    /// Gets preview from cache or loads it (blocking wrapper)
+    pub fn get_or_load_preview(&mut self, file_path: &str) -> Option<&PreviewCache> {
+        self.picker_state.get_or_load_preview(file_path)
+    }
+
+    /// Gets cached preview if available
+    pub fn get_preview_cache(&self, file_path: &str) -> Option<&PreviewCache> {
+        self.picker_state.get_preview_cache(file_path)
+    }
+
+    /// Gets preview with fallback
+    pub fn get_preview_with_fallback(&self, file_path: &str) -> Option<(&PreviewCache, bool)> {
+        self.picker_state.get_preview_with_fallback(file_path)
+    }
+
+    /// Update the last shown preview path
+    pub fn set_last_shown_preview(&mut self, file_path: &str) {
+        self.picker_state.set_last_shown_preview(file_path);
+    }
+
+    /// Limits preview cache size to prevent memory bloat
+    pub fn trim_preview_cache(&mut self, max_entries: usize) {
+        self.picker_state.trim_preview_cache(max_entries);
+    }
+
+    /// Gets cached file list if available and fresh
+    pub fn get_cached_file_list(
+        &self,
+        root: &std::path::Path,
+    ) -> Option<&[super::PickerResult]> {
+        self.picker_state.get_cached_file_list(root)
+    }
+
+    /// Stores the file list in cache with current timestamp
+    pub fn update_file_list_cache(
+        &mut self,
+        root: std::path::PathBuf,
+        files: Vec<super::PickerResult>,
+    ) {
+        self.picker_state.update_file_list_cache(root, files);
+    }
+
+    /// Invalidates the file list cache
+    pub fn invalidate_file_list_cache(&mut self) {
+        self.picker_state.invalidate_file_list_cache();
     }
 }

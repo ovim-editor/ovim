@@ -1070,7 +1070,7 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     let _ = picker;
 
     // Store cached layout on editor
-    editor.last_picker_layout = Some(crate::editor::PickerLayout {
+    editor.picker_state.last_layout = Some(crate::editor::PickerLayout {
         query_field,
         filter_field,
         results_area,

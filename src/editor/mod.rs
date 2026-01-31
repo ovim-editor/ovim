@@ -24,6 +24,7 @@ mod performance;
 pub mod nucleo_matcher;
 pub mod picker;
 mod picker_manager;
+pub(crate) mod picker_state;
 mod quickfix;
 mod register;
 mod search;
@@ -59,6 +60,7 @@ pub use motions::Motions;
 pub use operators::Operator;
 pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
 pub use picker::{Picker, PickerField, PickerMode, PickerResult};
+pub use picker_state::PickerState;
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use path_completion::PathCompletionState;
 pub use register::{RegisterManager, RegisterType};
@@ -219,8 +221,8 @@ pub struct Editor {
     /// Last find motion (for ; and , repeat)
     /// (char, FindType::Find/Till, FindDirection::Forward/Backward)
     last_find: Option<(char, FindType, FindDirection)>,
-    /// Picker for fuzzy finding files/grep
-    picker: Option<Picker>,
+    /// Picker state (picker, preview cache, layout, file list cache, etc.)
+    pub(crate) picker_state: PickerState,
     /// LSP-related state
     lsp_state: LspState,
     /// Channel sender for LSP commands from background tasks
@@ -237,8 +239,6 @@ pub struct Editor {
     completion_menu: CompletionMenu,
     /// Path completion state for command-line mode
     path_completion: PathCompletionState,
-    /// Preview cache for picker (file_path -> (content, syntax highlights))
-    preview_cache: HashMap<String, PreviewCache>,
     /// Color scheme registry
     color_scheme_registry: ColorSchemeRegistry,
     /// Editor options and settings
@@ -267,16 +267,6 @@ pub struct Editor {
     substitute_pattern: Option<regex::Regex>,
     /// Tab page manager
     tab_page_manager: TabPageManager,
-    /// Last time picker query changed (for debouncing preview loading)
-    last_picker_query_change: Option<std::time::Instant>,
-    /// Last time picker selection moved (for debouncing preview loading)
-    last_picker_selection_change: Option<std::time::Instant>,
-    /// Previous picker selection change time (for detecting rapid scrolling vs single navigation)
-    prev_picker_selection_change: Option<std::time::Instant>,
-    /// Currently loading preview path (to avoid duplicate requests)
-    loading_preview: Option<String>,
-    /// Last successfully shown preview path (to show while new one loads)
-    pub last_shown_preview: Option<String>,
     /// Performance metrics
     metrics: PerformanceMetrics,
     /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
@@ -291,9 +281,6 @@ pub struct Editor {
     pending_semantic_change: Option<PendingSemanticChange>,
     /// Replace mode tracking for dot-repeat
     replace_mode_state: Option<ReplaceModeState>,
-    /// Cached file list for picker: (root_path, files, timestamp)
-    /// Speeds up repeated picker opens by reusing file discovery results
-    file_list_cache: Option<(std::path::PathBuf, Vec<PickerResult>, std::time::Instant)>,
     /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
     wrap_map: Option<WrapMap>,
     /// Mouse interaction state (dragging, drag origin)
@@ -302,8 +289,6 @@ pub struct Editor {
     pub(crate) last_buffer_area: Option<ratatui::layout::Rect>,
     /// Cached gutter width from last render
     pub(crate) last_gutter_width: usize,
-    /// Cached picker layout rects from last render (for mouse hit-testing)
-    pub(crate) last_picker_layout: Option<PickerLayout>,
     /// Dashboard cat animation state
     cat_animation: Option<crate::ui::CatAnimation>,
     /// LSP Manager panel state
@@ -427,7 +412,7 @@ impl Editor {
             tag_stack: TagStack::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
-            picker: None,
+            picker_state: PickerState::new(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
@@ -436,7 +421,6 @@ impl Editor {
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
             path_completion: PathCompletionState::new(),
-            preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
@@ -451,23 +435,16 @@ impl Editor {
             substitute_match_index: 0,
             substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
-            last_picker_query_change: None,
-            last_picker_selection_change: None,
-            prev_picker_selection_change: None,
-            loading_preview: None,
-            last_shown_preview: None,
             metrics: PerformanceMetrics::new(),
             skip_scroll_update: false,
             viewport_command_active: false,
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
-            file_list_cache: None,
             wrap_map: None,
             mouse_state: MouseState::default(),
             last_buffer_area: None,
             last_gutter_width: 0,
-            last_picker_layout: None,
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
             install_progress_rx: None,
@@ -502,7 +479,7 @@ impl Editor {
             tag_stack: TagStack::new(),
             macro_manager: MacroManager::new(),
             last_find: None,
-            picker: None,
+            picker_state: PickerState::new(),
             lsp_state: LspState::new(),
             lsp_command_tx: None,
             lsp_command_rx: None,
@@ -511,7 +488,6 @@ impl Editor {
             last_insert_position: None,
             completion_menu: CompletionMenu::new(),
             path_completion: PathCompletionState::new(),
-            preview_cache: HashMap::new(),
             color_scheme_registry: ColorSchemeRegistry::new(),
             current_color_scheme: "tokyonight".to_string(),
             options: EditorOptions::default(),
@@ -526,23 +502,16 @@ impl Editor {
             substitute_match_index: 0,
             substitute_pattern: None,
             tab_page_manager: TabPageManager::new(),
-            last_picker_query_change: None,
-            last_picker_selection_change: None,
-            prev_picker_selection_change: None,
-            loading_preview: None,
-            last_shown_preview: None,
             metrics: PerformanceMetrics::new(),
             skip_scroll_update: false,
             viewport_command_active: false,
             dashboard_selected: 0,
             pending_semantic_change: None,
             replace_mode_state: None,
-            file_list_cache: None,
             wrap_map: None,
             mouse_state: MouseState::default(),
             last_buffer_area: None,
             last_gutter_width: 0,
-            last_picker_layout: None,
             cat_animation: Some(crate::ui::CatAnimation::new()),
             lsp_manager_panel: None,
             install_progress_rx: None,
@@ -1382,16 +1351,6 @@ impl Editor {
     /// Gets the leader key
     pub fn leader_key(&self) -> char {
         self.input.leader_key
-    }
-
-    /// Sets pending leader state
-    pub fn set_pending_leader(&mut self, pending: bool) {
-        self.input.pending_leader = pending;
-    }
-
-    /// Gets pending leader state
-    pub fn pending_leader(&self) -> bool {
-        self.input.pending_leader
     }
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
