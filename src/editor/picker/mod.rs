@@ -1,54 +1,14 @@
+mod filter;
+mod result;
+
+pub use result::{PickerAction, PickerField, PickerMode, PickerResult};
+
 use super::fuzzy;
 use super::nucleo_matcher::NucleoMatcher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum PickerMode {
-    FindFiles,
-    LiveGrep,
-    Custom,
-    Completion,
-    LspLocations,
-}
-
-/// Action to execute when a picker result is selected (Enter key).
-/// Decouples the selection logic from the mode-switching dispatch.
-#[derive(Debug, Clone)]
-pub enum PickerAction {
-    /// Open a file at a specific position
-    OpenFile { path: String, line: usize, col: usize },
-    /// Open a file at a specific position and push to the tag stack (Ctrl-T navigation)
-    OpenFileWithTag { path: String, line: usize, col: usize },
-    /// Apply a code action by index
-    ApplyCodeAction { index: usize },
-    /// Apply a completion by index
-    ApplyCompletion { index: usize },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PickerField {
-    Query,
-    FileFilter,
-}
-
-#[derive(Debug, Clone)]
-pub struct PickerResult {
-    /// Display text for the result
-    pub display: String,
-    /// File path (for FindFiles) or file:line:col (for LiveGrep)
-    pub location: String,
-    /// Line number (for LiveGrep, 0 for FindFiles)
-    pub line: usize,
-    /// Column number (for LiveGrep, 0 for FindFiles)
-    pub col: usize,
-    /// Character indices in `display` that matched the query
-    pub match_positions: Vec<usize>,
-    /// Matched content (for LiveGrep) — displayed separately from the location
-    pub content: Option<String>,
-}
 
 pub struct Picker {
     /// Current picker mode
@@ -167,7 +127,7 @@ impl Picker {
             .enumerate()
             .map(|(idx, display)| PickerResult {
                 display,
-                location: idx.to_string(), // Use index as location identifier
+                location: idx.to_string(),
                 line: idx,
                 col: 0,
                 match_positions: Vec::new(),
@@ -209,7 +169,7 @@ impl Picker {
             .enumerate()
             .map(|(idx, display)| PickerResult {
                 display,
-                location: idx.to_string(), // Use index as location identifier
+                location: idx.to_string(),
                 line: idx,
                 col: 0,
                 match_positions: Vec::new(),
@@ -252,7 +212,7 @@ impl Picker {
             .enumerate()
             .map(|(idx, display)| PickerResult {
                 display,
-                location: idx.to_string(), // Index into editor's LSP storage vectors
+                location: idx.to_string(),
                 line: idx,
                 col: 0,
                 match_positions: Vec::new(),
@@ -323,87 +283,6 @@ impl Picker {
         // This is a placeholder for API compatibility
     }
 
-    /// Simple glob pattern matching supporting `*` and `?` wildcards.
-    /// Matches against the given string case-insensitively.
-    fn glob_match(pattern: &str, text: &str) -> bool {
-        let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
-        let text: Vec<char> = text.to_lowercase().chars().collect();
-        Self::glob_match_inner(&pattern, &text)
-    }
-
-    fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
-        let mut pi = 0;
-        let mut ti = 0;
-        let mut star_pi = None;
-        let mut star_ti = 0;
-
-        while ti < text.len() {
-            if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
-                pi += 1;
-                ti += 1;
-            } else if pi < pattern.len() && pattern[pi] == '*' {
-                star_pi = Some(pi);
-                star_ti = ti;
-                pi += 1;
-            } else if let Some(sp) = star_pi {
-                pi = sp + 1;
-                star_ti += 1;
-                ti = star_ti;
-            } else {
-                return false;
-            }
-        }
-
-        while pi < pattern.len() && pattern[pi] == '*' {
-            pi += 1;
-        }
-
-        pi == pattern.len()
-    }
-
-    /// Checks if a result's file path matches the file filter.
-    /// The filter is space-separated tokens; all must match.
-    /// Tokens containing `*` or `?` are glob-matched against the basename
-    /// (or full path if token contains `/`). Otherwise, substring match (case-insensitive).
-    fn matches_file_filter(filter: &str, path: &str) -> bool {
-        if filter.is_empty() {
-            return true;
-        }
-
-        let tokens: Vec<&str> = filter.split_whitespace().collect();
-        if tokens.is_empty() {
-            return true;
-        }
-
-        let basename = std::path::Path::new(path)
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string());
-
-        let path_lower = path.to_lowercase();
-        let basename_lower = basename.to_lowercase();
-
-        for token in &tokens {
-            let is_glob = token.contains('*') || token.contains('?');
-            let has_slash = token.contains('/');
-
-            if is_glob {
-                let target = if has_slash { &path_lower } else { &basename_lower };
-                if !Self::glob_match(token, target) {
-                    return false;
-                }
-            } else {
-                let token_lower = token.to_lowercase();
-                let target = if has_slash { &path_lower } else { &basename_lower };
-                if !target.contains(&token_lower) {
-                    return false;
-                }
-            }
-        }
-
-        true
-    }
-
     /// Starts an in-process grep search, cancelling any previous one.
     /// Results stream in via channel and are drained by `drain_grep_results()`.
     pub fn start_grep_search(&mut self) {
@@ -466,7 +345,7 @@ impl Picker {
                     // Always push to all_results
                     self.all_results.push(result.clone());
                     // Apply file filter before adding to filtered
-                    if Self::matches_file_filter(&self.file_filter, &result.display) {
+                    if filter::matches_file_filter(&self.file_filter, &result.display) {
                         self.filtered_results.push(result);
                     }
                     added = true;
@@ -497,7 +376,7 @@ impl Picker {
         self.filtered_results = self
             .all_results
             .iter()
-            .filter(|r| Self::matches_file_filter(&self.file_filter, &r.display))
+            .filter(|r| filter::matches_file_filter(&self.file_filter, &r.display))
             .cloned()
             .collect();
         self.selected_index = 0;
@@ -518,8 +397,6 @@ impl Picker {
     }
 
     /// Returns the total number of results (before filtering).
-    /// Uses `all_results.len()` directly — accurate because `add_file_result()`
-    /// always pushes to both `all_results` and nucleo's injector.
     pub fn all_results_count(&self) -> usize {
         self.all_results.len()
     }
@@ -544,8 +421,6 @@ impl Picker {
     }
 
     /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
-    /// For nucleo mode, uses the prefetched cache when available, falling back
-    /// to a per-item snapshot call if out of range.
     pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
         if let Some(ref nucleo) = self.nucleo {
             // Try the prefetched cache first
@@ -565,15 +440,12 @@ impl Picker {
     }
 
     /// Drives the nucleo matcher forward and updates matched count.
-    /// Only relevant for nucleo modes (FindFiles). Non-nucleo modes use
-    /// `apply_pending_filter()` via the debounce path in picker_manager.
     /// Returns `true` if results changed.
     pub fn tick(&mut self) -> bool {
         if let Some(ref mut nucleo) = self.nucleo {
             let changed = nucleo.tick();
             if changed {
                 self.nucleo_matched_count = nucleo.matched_count() as usize;
-                // Clamp selected_index
                 if self.nucleo_matched_count > 0 {
                     self.selected_index = self.selected_index.min(self.nucleo_matched_count - 1);
                 } else {
@@ -587,9 +459,6 @@ impl Picker {
     }
 
     /// Updates the query and refreshes filtered results
-    /// For nucleo modes, immediately pushes the query (matching happens in background).
-    /// For non-nucleo modes with incremental typing, use mark_filter_pending() and
-    /// apply_pending_filter() to debounce.
     pub fn set_query(&mut self, query: String) {
         self.query = query;
         if let Some(ref mut nucleo) = self.nucleo {
@@ -602,29 +471,10 @@ impl Picker {
     /// Internal filter logic - called by both set_query and apply_pending_filter
     fn apply_filter_internal(&mut self) {
         match self.mode {
-            PickerMode::FindFiles => {
-                // No file_filter in FindFiles mode — query is the sole filter
-                let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
-                    .all_results
-                    .iter()
-                    .filter_map(|r| {
-                        fuzzy::fuzzy_score(&self.query, &r.display).map(|(score, positions)| {
-                            (r.clone(), score, positions)
-                        })
-                    })
-                    .collect();
-
-                scored_results.sort_by(|a, b| b.1.cmp(&a.1));
-
-                self.filtered_results = scored_results
-                    .into_iter()
-                    .map(|(mut result, _score, positions)| {
-                        result.match_positions = positions;
-                        result
-                    })
-                    .collect();
-            }
-            PickerMode::Custom | PickerMode::Completion | PickerMode::LspLocations => {
+            PickerMode::FindFiles
+            | PickerMode::Custom
+            | PickerMode::Completion
+            | PickerMode::LspLocations => {
                 let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
                     .all_results
                     .iter()
@@ -649,29 +499,21 @@ impl Picker {
                 // Non-blocking: spawn grep search, results stream via channel
                 self.start_grep_search();
                 self.pending_filter = false;
-                return; // Don't update last_filtered_query here — drain does it
+                return;
             }
         }
 
-        // Reset selection to first result
         self.selected_index = 0;
-        // Track what query was filtered
         self.last_filtered_query = self.query.clone();
         self.last_filtered_file_filter = self.file_filter.clone();
         self.pending_filter = false;
     }
 
     /// Marks that filtering is pending (query changed but not yet filtered).
-    /// For nucleo modes, immediately pushes the query update (matching happens in background).
-    /// For LiveGrep: if only file_filter changed, applies filter instantly (no re-search).
     pub fn mark_filter_pending(&mut self) {
         if let Some(ref mut nucleo) = self.nucleo {
-            // Nucleo: push query immediately, background threads handle matching
             nucleo.update_query(&self.query);
         } else if self.mode == PickerMode::LiveGrep {
-            // Two-stage filtering for LiveGrep:
-            // - Query changed → need a new grep search (debounced)
-            // - Only file_filter changed → instant client-side filter
             if self.query != self.last_grep_query {
                 self.pending_filter = true;
             } else if self.file_filter != self.last_filtered_file_filter {
@@ -689,7 +531,6 @@ impl Picker {
     }
 
     /// Applies the pending filter if query has changed since last filter
-    /// Call this from the event loop after debounce period
     pub fn apply_pending_filter(&mut self) {
         if self.pending_filter {
             self.apply_filter_internal();
@@ -824,7 +665,6 @@ impl Picker {
     }
 
     /// Derives the action to execute for the currently selected result.
-    /// Returns None if no result is selected.
     pub fn selected_action(&self) -> Option<PickerAction> {
         let result = self.selected_result()?;
         match self.mode {
@@ -926,17 +766,13 @@ impl Picker {
         self.all_results.push(result.clone());
 
         if let Some(ref nucleo) = self.nucleo {
-            // Inject into nucleo — matching happens in background
             nucleo.inject(idx, &display);
         } else {
-            // Non-nucleo path (shouldn't happen for FindFiles, but keep for safety)
             if self.query.is_empty() {
                 self.filtered_results.push(result);
-            } else {
-                if fuzzy::fuzzy_score(&self.query, &result.display).is_some() {
-                    self.filtered_results.push(result);
-                    self.pending_filter = true;
-                }
+            } else if fuzzy::fuzzy_score(&self.query, &result.display).is_some() {
+                self.filtered_results.push(result);
+                self.pending_filter = true;
             }
         }
     }
@@ -962,100 +798,8 @@ impl Picker {
     }
 
     /// Truncates a path in the middle if it's too long
-    /// Prioritizes showing the filename and immediate parent directories
-    /// Examples:
-    ///   "src/buffer/mod.rs" -> "src/buffer/mod.rs" (fits)
-    ///   "src/buffer/cursor/position.rs" -> "src/.../position.rs" (truncated)
-    ///   "backend/services/user-state/users.ts" -> "backend/.../user-state/users.ts"
     pub fn truncate_path(path: &str, max_len: usize) -> String {
-        if path.len() <= max_len {
-            return path.to_string();
-        }
-
-        // Split by path separator
-        let parts: Vec<&str> = path.split('/').collect();
-
-        if parts.is_empty() {
-            return path.to_string();
-        }
-
-        if parts.len() == 1 {
-            // Single component, truncate with ellipsis in middle
-            if max_len < 4 {
-                return "...".to_string();
-            }
-            let chars: Vec<char> = path.chars().collect();
-            let start_len = (max_len - 3) / 2;
-            let end_len = max_len - 3 - start_len;
-            let start: String = chars.iter().take(start_len).collect();
-            let end: String = chars
-                .iter()
-                .skip(chars.len().saturating_sub(end_len))
-                .collect();
-            return format!("{}...{}", start, end);
-        }
-
-        // Always keep the last component (filename)
-        let last = parts[parts.len() - 1];
-
-        // Reserve space for ".../" (4 chars) and the last component
-        let reserved = 4 + last.len();
-
-        if reserved >= max_len {
-            // Not enough space, truncate the filename itself
-            if max_len < 4 {
-                return "...".to_string();
-            }
-            let available = max_len - 3;
-            let chars: Vec<char> = last.chars().collect();
-            let skip_count = chars.len().saturating_sub(available);
-            let suffix: String = chars.iter().skip(skip_count).collect();
-            return format!("...{}", suffix);
-        }
-
-        // Try to include as many parts from the end as possible
-        let mut included_parts = vec![last];
-        let mut current_len = last.len();
-
-        // Work backwards from the second-to-last component
-        for i in (0..parts.len() - 1).rev() {
-            let part = parts[i];
-            let needed = part.len() + 1; // +1 for the separator
-
-            // Check if adding this part would fit
-            if current_len + needed + 4 <= max_len {
-                // We have room for this part plus ".../"
-                included_parts.insert(0, part);
-                current_len += needed;
-            } else {
-                // Can't fit this part, but check if we can fit it without the leading parts
-                if i > 0 && current_len + needed + 4 <= max_len {
-                    included_parts.insert(0, part);
-                    let current_len = current_len + needed;
-                    let _ = current_len; // Suppress warning for now
-                }
-                break;
-            }
-        }
-
-        // Build the result
-        if included_parts.len() == parts.len() {
-            // We managed to fit everything (shouldn't happen since path.len() > max_len)
-            return path.to_string();
-        }
-
-        // Check if we're missing the first part
-        if included_parts.len() < parts.len() {
-            // Add ellipsis at the beginning
-            if included_parts[0] != parts[0] {
-                // We're not showing from the start, add ".../"
-                let mut result = String::from(".../");
-                result.push_str(&included_parts.join("/"));
-                return result;
-            }
-        }
-
-        included_parts.join("/")
+        filter::truncate_path(path, max_len)
     }
 }
 
@@ -1066,58 +810,56 @@ mod tests {
 
     #[test]
     fn test_glob_match_star() {
-        assert!(Picker::glob_match("*.rs", "main.rs"));
-        assert!(Picker::glob_match("*.rs", "MAIN.RS"));
-        assert!(!Picker::glob_match("*.rs", "main.ts"));
-        assert!(Picker::glob_match("src/*", "src/lib.rs"));
-        assert!(Picker::glob_match("*test*", "my_test_file.rs"));
+        assert!(filter::glob_match("*.rs", "main.rs"));
+        assert!(filter::glob_match("*.rs", "MAIN.RS"));
+        assert!(!filter::glob_match("*.rs", "main.ts"));
+        assert!(filter::glob_match("src/*", "src/lib.rs"));
+        assert!(filter::glob_match("*test*", "my_test_file.rs"));
     }
 
     #[test]
     fn test_glob_match_question() {
-        assert!(Picker::glob_match("?.rs", "a.rs"));
-        assert!(!Picker::glob_match("?.rs", "ab.rs"));
-        assert!(Picker::glob_match("??.rs", "ab.rs"));
+        assert!(filter::glob_match("?.rs", "a.rs"));
+        assert!(!filter::glob_match("?.rs", "ab.rs"));
+        assert!(filter::glob_match("??.rs", "ab.rs"));
     }
 
     #[test]
     fn test_glob_match_combined() {
-        assert!(Picker::glob_match("*_test.?s", "my_test.rs"));
-        assert!(Picker::glob_match("*_test.?s", "my_test.ts"));
-        assert!(!Picker::glob_match("*_test.?s", "my_test.css"));
+        assert!(filter::glob_match("*_test.?s", "my_test.rs"));
+        assert!(filter::glob_match("*_test.?s", "my_test.ts"));
+        assert!(!filter::glob_match("*_test.?s", "my_test.css"));
     }
 
     #[test]
     fn test_matches_file_filter_empty() {
-        assert!(Picker::matches_file_filter("", "src/main.rs"));
-        assert!(Picker::matches_file_filter("   ", "src/main.rs"));
+        assert!(filter::matches_file_filter("", "src/main.rs"));
+        assert!(filter::matches_file_filter("   ", "src/main.rs"));
     }
 
     #[test]
     fn test_matches_file_filter_substring() {
-        assert!(Picker::matches_file_filter("mod", "src/mod.rs"));
-        assert!(Picker::matches_file_filter("mod", "src/editor/mod.rs"));
-        assert!(!Picker::matches_file_filter("xyz", "src/main.rs"));
+        assert!(filter::matches_file_filter("mod", "src/mod.rs"));
+        assert!(filter::matches_file_filter("mod", "src/editor/mod.rs"));
+        assert!(!filter::matches_file_filter("xyz", "src/main.rs"));
     }
 
     #[test]
     fn test_matches_file_filter_glob() {
-        assert!(Picker::matches_file_filter("*.rs", "src/main.rs"));
-        assert!(!Picker::matches_file_filter("*.ts", "src/main.rs"));
+        assert!(filter::matches_file_filter("*.rs", "src/main.rs"));
+        assert!(!filter::matches_file_filter("*.ts", "src/main.rs"));
     }
 
     #[test]
     fn test_matches_file_filter_multiple_tokens() {
-        // All tokens must match
-        assert!(Picker::matches_file_filter("*.rs mod", "mod.rs"));
-        assert!(!Picker::matches_file_filter("*.rs xyz", "mod.rs"));
+        assert!(filter::matches_file_filter("*.rs mod", "mod.rs"));
+        assert!(!filter::matches_file_filter("*.rs xyz", "mod.rs"));
     }
 
     #[test]
     fn test_matches_file_filter_path_token() {
-        // Token with `/` matches against full path
-        assert!(Picker::matches_file_filter("src/", "src/main.rs"));
-        assert!(!Picker::matches_file_filter("src/", "lib/main.rs"));
+        assert!(filter::matches_file_filter("src/", "src/main.rs"));
+        assert!(!filter::matches_file_filter("src/", "lib/main.rs"));
     }
 
     #[test]
@@ -1138,7 +880,7 @@ mod tests {
         assert_eq!(picker.active_field(), PickerField::Query);
 
         picker.toggle_field();
-        assert_eq!(picker.active_field(), PickerField::Query); // No change
+        assert_eq!(picker.active_field(), PickerField::Query);
     }
 
     #[test]
@@ -1147,7 +889,7 @@ mod tests {
         assert_eq!(picker.active_field(), PickerField::Query);
 
         picker.toggle_field();
-        assert_eq!(picker.active_field(), PickerField::Query); // No change
+        assert_eq!(picker.active_field(), PickerField::Query);
     }
 
     #[test]
@@ -1162,7 +904,6 @@ mod tests {
     #[test]
     fn test_active_field_mut_delegates_to_query() {
         let mut picker = Picker::new_file_finder(PathBuf::from("."));
-        // Active field is Query by default
         picker.insert_char('a');
         picker.insert_char('b');
         assert_eq!(picker.query(), "ab");
@@ -1200,7 +941,6 @@ mod tests {
         assert_eq!(picker.query(), "hello");
         assert_eq!(picker.query_cursor(), 5);
 
-        // Insert more text at cursor
         picker.insert_text(" world");
         assert_eq!(picker.query(), "hello world");
         assert_eq!(picker.query_cursor(), 11);
@@ -1210,7 +950,7 @@ mod tests {
     fn test_insert_text_at_cursor_midpoint() {
         let mut picker = Picker::new_file_finder(PathBuf::from("."));
         picker.insert_text("ac");
-        picker.move_cursor_left(); // cursor before 'c'
+        picker.move_cursor_left();
         picker.insert_text("b");
         assert_eq!(picker.query(), "abc");
         assert_eq!(picker.query_cursor(), 2);
