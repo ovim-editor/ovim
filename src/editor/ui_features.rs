@@ -294,31 +294,31 @@ impl Editor {
         matches: Vec<(usize, usize, usize, String)>,
         pattern: regex::Regex,
     ) {
-        self.substitute_matches = matches;
-        self.substitute_match_index = 0;
-        self.substitute_pattern = Some(pattern);
-        if !self.substitute_matches.is_empty() {
+        self.editing.substitute_matches = matches;
+        self.editing.substitute_match_index = 0;
+        self.editing.substitute_pattern = Some(pattern);
+        if !self.editing.substitute_matches.is_empty() {
             self.mode = Mode::SubstituteConfirm;
             // Move cursor to first match
-            let (line, col, _, _) = self.substitute_matches[0];
+            let (line, col, _, _) = self.editing.substitute_matches[0];
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 
     /// Gets the current substitute match info (line, start_col, end_col, replacement)
     pub fn current_substitute_match(&self) -> Option<&(usize, usize, usize, String)> {
-        self.substitute_matches.get(self.substitute_match_index)
+        self.editing.substitute_matches.get(self.editing.substitute_match_index)
     }
 
     /// Gets the substitute pattern for highlighting
     pub fn substitute_pattern(&self) -> Option<&regex::Regex> {
-        self.substitute_pattern.as_ref()
+        self.editing.substitute_pattern.as_ref()
     }
 
     /// Confirms the current substitution and moves to the next
     pub fn confirm_substitute(&mut self) {
         if let Some((line, start_col, end_col, replacement)) =
-            self.substitute_matches.get(self.substitute_match_index).cloned()
+            self.editing.substitute_matches.get(self.editing.substitute_match_index).cloned()
         {
             // Perform the substitution
             let cursor_before = (self.buffer().cursor().line(), self.buffer().cursor().col());
@@ -335,12 +335,12 @@ impl Editor {
             self.add_change(delete_change);
             self.add_change(insert_change);
 
-            self.substitute_match_index += 1;
-            if self.substitute_match_index >= self.substitute_matches.len() {
+            self.editing.substitute_match_index += 1;
+            if self.editing.substitute_match_index >= self.editing.substitute_matches.len() {
                 self.end_substitute_confirm();
             } else {
                 // Move cursor to next match
-                let (next_line, next_col, _, _) = self.substitute_matches[self.substitute_match_index];
+                let (next_line, next_col, _, _) = self.editing.substitute_matches[self.editing.substitute_match_index];
                 self.buffer_mut().cursor_mut().set_position(next_line, next_col);
             }
         }
@@ -348,19 +348,19 @@ impl Editor {
 
     /// Skips the current match and moves to the next
     pub fn skip_substitute(&mut self) {
-        self.substitute_match_index += 1;
-        if self.substitute_match_index >= self.substitute_matches.len() {
+        self.editing.substitute_match_index += 1;
+        if self.editing.substitute_match_index >= self.editing.substitute_matches.len() {
             self.end_substitute_confirm();
         } else {
             // Move cursor to next match
-            let (line, col, _, _) = self.substitute_matches[self.substitute_match_index];
+            let (line, col, _, _) = self.editing.substitute_matches[self.editing.substitute_match_index];
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 
     /// Confirms all remaining substitutions
     pub fn confirm_all_substitutes(&mut self) {
-        while self.substitute_match_index < self.substitute_matches.len() {
+        while self.editing.substitute_match_index < self.editing.substitute_matches.len() {
             self.confirm_substitute();
         }
     }
@@ -373,9 +373,9 @@ impl Editor {
 
     /// Ends substitute confirmation mode
     pub fn end_substitute_confirm(&mut self) {
-        self.substitute_matches.clear();
-        self.substitute_match_index = 0;
-        self.substitute_pattern = None;
+        self.editing.substitute_matches.clear();
+        self.editing.substitute_match_index = 0;
+        self.editing.substitute_pattern = None;
         self.mode = Mode::Normal;
     }
 

@@ -15,10 +15,10 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             // Save last insert position
             let cursor_line = editor.buffer().cursor().line();
             let cursor_col = editor.buffer().cursor().col();
-            editor.last_insert_position = Some((cursor_line, cursor_col));
+            editor.editing.last_insert_position = Some((cursor_line, cursor_col));
 
             // Create ReplaceMode change for dot-repeat
-            if let Some(state) = editor.replace_mode_state.take() {
+            if let Some(state) = editor.editing.replace_mode_state.take() {
                 if !state.replacements.is_empty() {
                     let cursor_after = (cursor_line, cursor_col);
                     let replacement_len = state.replacements.chars().count();
@@ -70,7 +70,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     editor.buffer_mut().insert_text_at(line_idx, col, &new_char);
 
                     // Track for dot-repeat
-                    if let Some(ref mut state) = editor.replace_mode_state {
+                    if let Some(ref mut state) = editor.editing.replace_mode_state {
                         state.replacements.push(c);
                         state.old_text.push(old_char);
                     }
@@ -81,7 +81,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     // At end of line, just insert (like append)
                     helpers::insert_char(editor, c)?;
                     // Also track for dot-repeat
-                    if let Some(ref mut state) = editor.replace_mode_state {
+                    if let Some(ref mut state) = editor.editing.replace_mode_state {
                         state.replacements.push(c);
                     }
                 }
@@ -97,7 +97,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             let cursor_col = editor.buffer().cursor().col();
             let cursor_line = editor.buffer().cursor().line();
 
-            if let Some(ref mut state) = editor.replace_mode_state {
+            if let Some(ref mut state) = editor.editing.replace_mode_state {
                 let (start_line, start_col) = state.start_position;
 
                 // Check if we're past the start position and have replacements to undo

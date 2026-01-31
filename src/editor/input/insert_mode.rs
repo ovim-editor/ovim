@@ -58,7 +58,7 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
 fn exit_insert_mode(editor: &mut Editor) {
     // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
     let cursor = editor.buffer().cursor();
-    editor.last_insert_position = Some((cursor.line(), cursor.col()));
+    editor.editing.last_insert_position = Some((cursor.line(), cursor.col()));
 
     // Cleanup whitespace-only lines before finalizing changes
     cleanup_whitespace_only_line(editor);
