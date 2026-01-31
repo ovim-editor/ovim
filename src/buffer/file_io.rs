@@ -426,14 +426,18 @@ impl Buffer {
             .ok()
             .and_then(|m| m.modified().ok());
 
-        // Detect line ending
-        self.line_ending = LineEnding::detect(&bytes);
+        // Re-detect encoding and line ending
+        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
+        self.encoding = encoding;
+        self.line_ending = LineEnding::detect(&bytes[bom_offset..]);
 
-        // Validate UTF-8
-        let content = String::from_utf8(bytes).map_err(|e| {
+        // Decode using detected encoding (not hardcoded UTF-8)
+        let content = self.encoding.decode(&bytes, bom_offset).map_err(|e| {
             anyhow::anyhow!(
-                "File contains invalid UTF-8 at byte {}",
-                e.utf8_error().valid_up_to()
+                "Failed to decode file '{}' as {:?}: {}",
+                file_path,
+                self.encoding,
+                e
             )
         })?;
 
@@ -483,14 +487,18 @@ impl Buffer {
             .ok()
             .and_then(|m| m.modified().ok());
 
-        // Detect line ending
-        self.line_ending = LineEnding::detect(&bytes);
+        // Re-detect encoding and line ending
+        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
+        self.encoding = encoding;
+        self.line_ending = LineEnding::detect(&bytes[bom_offset..]);
 
-        // Validate UTF-8
-        let content = String::from_utf8(bytes).map_err(|e| {
+        // Decode using detected encoding (not hardcoded UTF-8)
+        let content = self.encoding.decode(&bytes, bom_offset).map_err(|e| {
             anyhow::anyhow!(
-                "File contains invalid UTF-8 at byte {}",
-                e.utf8_error().valid_up_to()
+                "Failed to decode file '{}' as {:?}: {}",
+                file_path,
+                self.encoding,
+                e
             )
         })?;
 
