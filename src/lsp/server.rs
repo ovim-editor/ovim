@@ -1536,6 +1536,40 @@ impl LanguageServer {
             .store(caps.semantic_tokens_provider.is_some(), Ordering::Relaxed);
     }
 
+    /// Sets a cached capability flag based on an LSP method name from dynamic registration.
+    /// Called when the server sends `client/registerCapability` or `client/unregisterCapability`.
+    pub fn set_capability_by_method(&self, method: &str, enabled: bool) {
+        let flag = match method {
+            "textDocument/definition" => Some(&self.inner.cap_goto_definition),
+            "textDocument/declaration" => Some(&self.inner.cap_goto_declaration),
+            "textDocument/implementation" => Some(&self.inner.cap_goto_implementation),
+            "textDocument/typeDefinition" => Some(&self.inner.cap_goto_type_definition),
+            "textDocument/hover" => Some(&self.inner.cap_hover),
+            "textDocument/completion" => Some(&self.inner.cap_completion),
+            "textDocument/formatting" => Some(&self.inner.cap_formatting),
+            "textDocument/rangeFormatting" => Some(&self.inner.cap_range_formatting),
+            "textDocument/codeAction" => Some(&self.inner.cap_code_actions),
+            "textDocument/references" => Some(&self.inner.cap_references),
+            "textDocument/rename" => Some(&self.inner.cap_rename),
+            "textDocument/signatureHelp" => Some(&self.inner.cap_signature_help),
+            "textDocument/documentSymbol" => Some(&self.inner.cap_document_symbol),
+            "textDocument/selectionRange" => Some(&self.inner.cap_selection_range),
+            "workspace/symbol" => Some(&self.inner.cap_workspace_symbol),
+            "textDocument/documentHighlight" => Some(&self.inner.cap_document_highlight),
+            "textDocument/foldingRange" => Some(&self.inner.cap_folding_range),
+            "textDocument/prepareCallHierarchy" => Some(&self.inner.cap_call_hierarchy),
+            "textDocument/executeCommand" => Some(&self.inner.cap_execute_command),
+            "textDocument/inlayHint" => Some(&self.inner.cap_inlay_hint),
+            "textDocument/semanticTokens" | "textDocument/semanticTokens/full" | "textDocument/semanticTokens/range" => {
+                Some(&self.inner.cap_semantic_tokens)
+            }
+            _ => None,
+        };
+        if let Some(flag) = flag {
+            flag.store(enabled, Ordering::Relaxed);
+        }
+    }
+
     /// Gets the server capabilities
     pub async fn capabilities(&self) -> Option<ServerCapabilities> {
         let caps = self.inner.capabilities.lock().await;

@@ -618,6 +618,91 @@ impl LspManager {
                     }
                 }
             }
+            "client/registerCapability" => {
+                // Server wants to dynamically register capabilities
+                if let Some(params) = request.params {
+                    match serde_json::from_value::<lsp_types::RegistrationParams>(params) {
+                        Ok(reg_params) => {
+                            // Update cached capability flags for each registration
+                            if let Some(server) = self.servers.get(server_id) {
+                                for reg in &reg_params.registrations {
+                                    lsp_info!(
+                                        "LSP-SERVER-REQUEST",
+                                        "Dynamic registration: {} (id: {})",
+                                        reg.method,
+                                        reg.id
+                                    );
+                                    server.set_capability_by_method(&reg.method, true);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            lsp_warn!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to parse client/registerCapability params: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // Always acknowledge success
+                if let Some(id) = request_id {
+                    if let Some(server) = self.servers.get(server_id) {
+                        let response_msg =
+                            JsonRpcMessage::response(id, serde_json::Value::Null);
+                        if let Err(e) = server.send_response(response_msg).await {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to send client/registerCapability response: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            "client/unregisterCapability" => {
+                // Server wants to dynamically unregister capabilities
+                if let Some(params) = request.params {
+                    match serde_json::from_value::<lsp_types::UnregistrationParams>(params) {
+                        Ok(unreg_params) => {
+                            if let Some(server) = self.servers.get(server_id) {
+                                for unreg in &unreg_params.unregisterations {
+                                    lsp_info!(
+                                        "LSP-SERVER-REQUEST",
+                                        "Dynamic unregistration: {} (id: {})",
+                                        unreg.method,
+                                        unreg.id
+                                    );
+                                    server.set_capability_by_method(&unreg.method, false);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            lsp_warn!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to parse client/unregisterCapability params: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+
+                // Always acknowledge success
+                if let Some(id) = request_id {
+                    if let Some(server) = self.servers.get(server_id) {
+                        let response_msg =
+                            JsonRpcMessage::response(id, serde_json::Value::Null);
+                        if let Err(e) = server.send_response(response_msg).await {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to send client/unregisterCapability response: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
             "window/workDoneProgress/create" => {
                 // Server wants to create a progress token — acknowledge with success
                 // Responding with an error crashes some LSP servers (e.g. typescript-language-server)
