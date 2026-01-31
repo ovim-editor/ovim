@@ -284,6 +284,48 @@ impl PickerState {
 // ==================== Editor delegation methods ====================
 
 impl Editor {
+    /// Returns the best base directory for file picker / grep operations.
+    ///
+    /// Priority:
+    /// 1. Git root of the current file (walk up looking for `.git`)
+    /// 2. Parent directory of the current file
+    /// 3. `current_dir()` as last resort
+    ///
+    /// This prevents scanning the user's entire home directory (and triggering
+    /// macOS iCloud Drive / TCC permission dialogs) when ovim is launched from ~.
+    pub fn picker_base_dir(&self) -> std::path::PathBuf {
+        // Try to find git root from current file
+        if let Some(file_path) = self.buffer().file_path() {
+            let path = std::path::Path::new(file_path);
+
+            // Make path absolute for reliable parent traversal
+            let abs_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(path))
+                    .unwrap_or_else(|_| path.to_path_buf())
+            };
+
+            // Walk up looking for .git
+            let mut current = abs_path.parent();
+            while let Some(dir) = current {
+                if dir.join(".git").exists() {
+                    return dir.to_path_buf();
+                }
+                current = dir.parent();
+            }
+
+            // No git root found — use file's parent directory
+            if let Some(parent) = abs_path.parent() {
+                return parent.to_path_buf();
+            }
+        }
+
+        // Fallback: current working directory
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
     /// Sets the picker
     pub fn set_picker(&mut self, picker: Picker) {
         self.picker_state.set_picker(picker);

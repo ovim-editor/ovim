@@ -129,8 +129,7 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         // <Space>s... sequences
         (&['s'], 'f') => {
             // <Space>sf - Find files
-            let base_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let base_dir = editor.picker_base_dir();
             let picker = Picker::new_file_finder(base_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
@@ -139,8 +138,7 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         }
         (&['s'], 'g') => {
             // <Space>sg - Live grep
-            let base_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let base_dir = editor.picker_base_dir();
             let picker = Picker::new_live_grep(base_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
