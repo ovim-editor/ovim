@@ -1,6 +1,14 @@
+mod backend;
 mod filter;
+mod fuzzy_backend;
+mod grep_backend;
+mod nucleo_backend;
 mod result;
 
+use backend::PickerBackend;
+use fuzzy_backend::FuzzyListKind;
+use grep_backend::GrepState;
+use nucleo_backend::NucleoState;
 pub use result::{PickerAction, PickerField, PickerMode, PickerResult};
 
 use super::fuzzy;
@@ -57,6 +65,8 @@ pub struct Picker {
     last_grep_query: String,
     /// Old results are stale and should be cleared when first new result arrives
     grep_stale: bool,
+    /// Typed backend (temporary duplication during migration)
+    backend: PickerBackend,
 }
 
 impl Picker {
@@ -88,6 +98,7 @@ impl Picker {
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            backend: PickerBackend::Nucleo(NucleoState::new()),
         }
     }
 
@@ -117,6 +128,7 @@ impl Picker {
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            backend: PickerBackend::Grep(GrepState::new()),
         }
     }
 
@@ -159,6 +171,7 @@ impl Picker {
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            backend: PickerBackend::FuzzyList(FuzzyListKind::Custom),
         }
     }
 
@@ -201,6 +214,7 @@ impl Picker {
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            backend: PickerBackend::FuzzyList(FuzzyListKind::Completion),
         }
     }
 
@@ -244,6 +258,7 @@ impl Picker {
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            backend: PickerBackend::FuzzyList(FuzzyListKind::LspLocations),
         }
     }
 
@@ -274,6 +289,7 @@ impl Picker {
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            backend: PickerBackend::FuzzyList(FuzzyListKind::LspLocations),
         }
     }
 
