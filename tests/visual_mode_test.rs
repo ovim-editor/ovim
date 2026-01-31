@@ -957,3 +957,22 @@ fn test_gn_empty_buffer_does_nothing() {
     // Should stay in normal mode
     assert_eq!(test.editor.mode(), Mode::Normal);
 }
+
+// ============================================================================
+// OV-00041: Visual ~ undo grouping
+// ============================================================================
+
+#[test]
+fn test_visual_tilde_multi_line_single_undo() {
+    // Visual select 3 lines, press ~, then u should revert all 3 lines in one undo
+    let mut test = EditorTest::new("aaa\nbbb\nccc");
+
+    test.keys("Vjj~");
+
+    // Should have toggled case
+    assert_eq!(test.buffer_content(), "AAA\nBBB\nCCC\n");
+
+    // Single undo should revert ALL lines
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aaa\nbbb\nccc\n");
+}
