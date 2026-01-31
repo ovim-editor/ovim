@@ -12,9 +12,17 @@ pub enum PickerMode {
 #[derive(Debug, Clone)]
 pub enum PickerAction {
     /// Open a file at a specific position
-    OpenFile { path: String, line: usize, col: usize },
+    OpenFile {
+        path: String,
+        line: usize,
+        col: usize,
+    },
     /// Open a file at a specific position and push to the tag stack (Ctrl-T navigation)
-    OpenFileWithTag { path: String, line: usize, col: usize },
+    OpenFileWithTag {
+        path: String,
+        line: usize,
+        col: usize,
+    },
     /// Apply a code action by index
     ApplyCodeAction { index: usize },
     /// Apply a completion by index

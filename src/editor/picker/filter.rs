@@ -63,13 +63,21 @@ pub fn matches_file_filter(filter: &str, path: &str) -> bool {
         let has_slash = token.contains('/');
 
         if is_glob {
-            let target = if has_slash { &path_lower } else { &basename_lower };
+            let target = if has_slash {
+                &path_lower
+            } else {
+                &basename_lower
+            };
             if !glob_match(token, target) {
                 return false;
             }
         } else {
             let token_lower = token.to_lowercase();
-            let target = if has_slash { &path_lower } else { &basename_lower };
+            let target = if has_slash {
+                &path_lower
+            } else {
+                &basename_lower
+            };
             if !target.contains(&token_lower) {
                 return false;
             }
@@ -145,12 +153,10 @@ pub fn truncate_path(path: &str, max_len: usize) -> String {
         return path.to_string();
     }
 
-    if included_parts.len() < parts.len() {
-        if included_parts[0] != parts[0] {
-            let mut result = String::from(".../");
-            result.push_str(&included_parts.join("/"));
-            return result;
-        }
+    if included_parts.len() < parts.len() && included_parts[0] != parts[0] {
+        let mut result = String::from(".../");
+        result.push_str(&included_parts.join("/"));
+        return result;
     }
 
     included_parts.join("/")
