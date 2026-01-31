@@ -578,9 +578,10 @@ impl Editor {
     }
 
     /// Caches the buffer layout from the last render (for mouse coordinate conversion)
-    pub fn set_last_layout(&mut self, buffer_area: ratatui::layout::Rect, gutter_width: usize) {
+    pub fn set_last_layout(&mut self, buffer_area: ratatui::layout::Rect, gutter_width: usize, text_width: usize) {
         self.render_cache.last_buffer_area = Some(buffer_area);
         self.render_cache.last_gutter_width = gutter_width;
+        self.render_cache.last_text_width = text_width;
     }
 
     /// Gets the viewport height
