@@ -32,6 +32,8 @@ pub enum Mode {
     Dashboard,
     /// LspManager mode - browse and install language servers
     LspManager,
+    /// RenameInput mode - for entering a new name for LSP rename
+    RenameInput,
 }
 
 impl Mode {
@@ -53,6 +55,7 @@ impl Mode {
             Mode::SubstituteConfirm => "SUBSTITUTE",
             Mode::Dashboard => "DASHBOARD",
             Mode::LspManager => "LSP MANAGER",
+            Mode::RenameInput => "RENAME",
         }
     }
 

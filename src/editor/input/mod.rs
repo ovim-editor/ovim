@@ -48,6 +48,9 @@ mod dashboard_mode;
 /// LSP Manager mode handler
 mod lsp_manager_mode;
 
+/// Rename input mode handler
+mod rename_input_mode;
+
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
@@ -115,6 +118,7 @@ impl InputHandler {
             Mode::SubstituteConfirm => substitute_mode::handle_substitute_confirm_mode(editor, key_event),
             Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
             Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
+            Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
         };
 
         // Update scroll offset to keep cursor visible with scrolloff margin

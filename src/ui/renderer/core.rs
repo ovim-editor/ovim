@@ -20,7 +20,8 @@ use super::layout::{BufferLayout, OverlayContext};
 use super::widgets::{
     render_command_line, render_completion_menu, render_diagnostic_badge, render_file_tree,
     render_hover_window, render_message_line, render_path_completion, render_picker,
-    render_progress_line, render_search_line, render_status_line, render_tab_bar,
+    render_progress_line, render_rename_input, render_search_line, render_status_line,
+    render_tab_bar,
 };
 
 // ---------------------------------------------------------------------------
@@ -223,6 +224,8 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
         render_command_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::Search {
         render_search_line(frame, editor, areas.command_chunk);
+    } else if editor.mode() == crate::mode::Mode::RenameInput {
+        render_rename_input(frame, editor, areas.command_chunk);
     } else {
         render_message_line(frame, editor, areas.command_chunk);
     }
@@ -358,6 +361,11 @@ fn set_cursor_position(
         let search_cursor_x = (editor.search.search_buffer.len() + 1)
             .min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + search_cursor_x as u16, command_chunk.y));
+    } else if editor.mode() == crate::mode::Mode::RenameInput {
+        // "rename: " is 8 chars
+        let rename_cursor_x = (editor.rename_cursor() + 8)
+            .min(command_chunk.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else {
         let rope = editor.buffer().rope();
         let line_count = editor.buffer().line_count();
@@ -622,6 +630,7 @@ impl Renderer {
             crate::mode::Mode::Picker => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Command => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::RenameInput => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::HoverPreview | crate::mode::Mode::HoverNavigate => {
                 SetCursorStyle::SteadyBlock
             }
