@@ -507,6 +507,16 @@ impl LanguageServer {
                     }
                 };
 
+                // Validate Content-Length before allocation
+                if content_length > MAX_MESSAGE_SIZE {
+                    eprintln!(
+                        "[LSP] Message too large: {} bytes (max {}MB), skipping",
+                        content_length,
+                        MAX_MESSAGE_SIZE / (1024 * 1024)
+                    );
+                    continue;
+                }
+
                 // Read empty line
                 let mut empty = String::new();
                 if reader.read_line(&mut empty).await.is_err() {
