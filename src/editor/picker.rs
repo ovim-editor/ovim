@@ -10,6 +10,20 @@ pub enum PickerMode {
     LspLocations,
 }
 
+/// Action to execute when a picker result is selected (Enter key).
+/// Decouples the selection logic from the mode-switching dispatch.
+#[derive(Debug, Clone)]
+pub enum PickerAction {
+    /// Open a file at a specific position
+    OpenFile { path: String, line: usize, col: usize },
+    /// Open a file at a specific position and push to the tag stack (Ctrl-T navigation)
+    OpenFileWithTag { path: String, line: usize, col: usize },
+    /// Apply a code action by index
+    ApplyCodeAction { index: usize },
+    /// Apply a completion by index
+    ApplyCompletion { index: usize },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PickerField {
     Query,
@@ -889,6 +903,26 @@ impl Picker {
     /// Gets the currently selected result
     pub fn selected_result(&self) -> Option<&PickerResult> {
         self.filtered_result(self.selected_index)
+    }
+
+    /// Derives the action to execute for the currently selected result.
+    /// Returns None if no result is selected.
+    pub fn selected_action(&self) -> Option<PickerAction> {
+        let result = self.selected_result()?;
+        match self.mode {
+            PickerMode::Custom => Some(PickerAction::ApplyCodeAction { index: result.line }),
+            PickerMode::Completion => Some(PickerAction::ApplyCompletion { index: result.line }),
+            PickerMode::LspLocations => Some(PickerAction::OpenFileWithTag {
+                path: result.location.clone(),
+                line: result.line,
+                col: result.col,
+            }),
+            PickerMode::FindFiles | PickerMode::LiveGrep => Some(PickerAction::OpenFile {
+                path: result.location.clone(),
+                line: result.line,
+                col: result.col,
+            }),
+        }
     }
 
     /// Gets the current query
