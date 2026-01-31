@@ -127,11 +127,11 @@ impl InputHandler {
         // 2. There's a pending viewport command (e.g., 'z' waiting for 't')
         //    This prevents scroll changes between multi-key sequences like 'zt'
         let is_viewport_pending = matches!(editor.pending_command(), Some('z') | Some('Z'));
-        if !editor.skip_scroll_update && !is_viewport_pending {
+        if !editor.viewport.skip_scroll_update && !is_viewport_pending {
             editor.update_scroll_offset();
         } else {
             // Reset flag for next key event
-            editor.skip_scroll_update = false;
+            editor.viewport.skip_scroll_update = false;
         }
 
         result
