@@ -122,6 +122,48 @@ fn apply_style_at_column(line: &mut Line<'static>, target_col: usize, style: Sty
     }
 }
 
+/// Apply a background color to a column range within a Line.
+/// Splits spans as needed to cover exactly the given range.
+fn apply_bg_to_column_range(line: &mut Line<'static>, start_col: usize, end_col: usize, bg: Color) {
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_col = 0;
+
+    for span in line.spans.drain(..) {
+        let span_len = span.content.chars().count();
+        let span_end = current_col + span_len;
+
+        if span_end <= start_col || current_col > end_col {
+            // Entirely outside the flash range
+            new_spans.push(span);
+        } else if current_col >= start_col && span_end <= end_col + 1 {
+            // Entirely inside the flash range
+            new_spans.push(Span::styled(span.content, span.style.bg(bg)));
+        } else {
+            // Partially overlapping - split the span
+            let chars: Vec<char> = span.content.chars().collect();
+            let flash_start = start_col.saturating_sub(current_col);
+            let flash_end = (end_col + 1).saturating_sub(current_col).min(chars.len());
+
+            if flash_start > 0 {
+                let before: String = chars[..flash_start].iter().collect();
+                new_spans.push(Span::styled(before, span.style));
+            }
+            if flash_start < flash_end {
+                let middle: String = chars[flash_start..flash_end].iter().collect();
+                new_spans.push(Span::styled(middle, span.style.bg(bg)));
+            }
+            if flash_end < chars.len() {
+                let after: String = chars[flash_end..].iter().collect();
+                new_spans.push(Span::styled(after, span.style));
+            }
+        }
+
+        current_col = span_end;
+    }
+
+    line.spans = new_spans;
+}
+
 /// Find matching bracket position if cursor is on a bracket
 fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usize, usize)> {
     let cursor = buffer.cursor();
@@ -478,13 +520,23 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
             let line_diagnostics = editor.diagnostics_for_line(line_idx);
             let has_diagnostics = !line_diagnostics.is_empty();
 
+            // Check if this line is in a yank flash region
+            let yank_flash = editor.yank_flash.as_ref().and_then(|flash| {
+                if flash.contains_line(line_idx) {
+                    Some(flash.col_range_for_line(line_idx))
+                } else {
+                    None
+                }
+            });
+
             // Always use character-by-character rendering if we have any highlighting
             let needs_detailed_rendering = has_visual_selection
                 || !search_matches.is_empty()
                 || !syntax_highlights.is_empty()
                 || is_cursor_line
                 || bracket_col.is_some()
-                || has_diagnostics;
+                || has_diagnostics
+                || yank_flash.is_some();
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -512,19 +564,39 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
                         msg.to_string()
                     };
                     let vtext_style = Style::default().fg(fg_color).bg(bg_color).add_modifier(Modifier::ITALIC);
+                    // Plain gap between code and diagnostic (no background)
+                    line.spans.push(Span::raw("  "));
                     line.spans.push(Span::styled(
-                        format!(" {} {}", icon, msg),
+                        format!("{} {}", icon, msg),
                         vtext_style,
                     ));
                 }
 
                 // Apply cursorline background if this is the cursor line
-                if is_cursor_line {
+                if is_cursor_line && yank_flash.is_none() {
                     let cursorline_bg = Color::Rgb(40, 40, 50); // Subtle dark blue background
                     for span in &mut line.spans {
                         span.style = span.style.bg(cursorline_bg);
                     }
                 }
+
+                // Apply yank flash highlight
+                if let Some(col_range) = yank_flash {
+                    let flash_bg = Color::Rgb(60, 50, 20); // Warm amber glow
+                    match col_range {
+                        None => {
+                            // Linewise flash: highlight entire line
+                            for span in &mut line.spans {
+                                span.style = span.style.bg(flash_bg);
+                            }
+                        }
+                        Some((start_col, end_col)) => {
+                            // Character-wise flash: highlight column range
+                            apply_bg_to_column_range(&mut line, start_col, end_col, flash_bg);
+                        }
+                    }
+                }
+
                 // Apply bracket highlighting
                 if let Some(col) = bracket_col {
                     let bracket_style = Style::default()
