@@ -27,10 +27,10 @@ impl Default for EditorOptions {
             tab_width: 4,
             shift_width: 4,
             expand_tab: true,
-            number: false,
+            number: true,
             relative_number: false,
             scroll: None,
-            textwidth: None,
+            textwidth: Some(150),
         }
     }
 }
