@@ -121,6 +121,30 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.mark_picker_selection_changed();
             }
         }
+        // Ctrl-D - move down half page in results
+        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            let half_page = editor.half_page_scroll();
+            let mut moved = false;
+            if let Some(picker) = editor.picker_mut() {
+                picker.move_down_n(half_page);
+                moved = true;
+            }
+            if moved {
+                editor.mark_picker_selection_changed();
+            }
+        }
+        // Ctrl-U - move up half page in results
+        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            let half_page = editor.half_page_scroll();
+            let mut moved = false;
+            if let Some(picker) = editor.picker_mut() {
+                picker.move_up_n(half_page);
+                moved = true;
+            }
+            if moved {
+                editor.mark_picker_selection_changed();
+            }
+        }
         // Down arrow - move down in results
         KeyCode::Down => {
             let mut moved = false;

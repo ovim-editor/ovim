@@ -798,11 +798,24 @@ impl Picker {
         }
     }
 
+    /// Moves selection down by n items
+    pub fn move_down_n(&mut self, n: usize) {
+        let count = self.filtered_result_count();
+        if count > 0 {
+            self.selected_index = (self.selected_index + n).min(count - 1);
+        }
+    }
+
     /// Moves selection up
     pub fn move_up(&mut self) {
         if self.selected_index > 0 {
             self.selected_index -= 1;
         }
+    }
+
+    /// Moves selection up by n items
+    pub fn move_up_n(&mut self, n: usize) {
+        self.selected_index = self.selected_index.saturating_sub(n);
     }
 
     /// Gets the currently selected result
