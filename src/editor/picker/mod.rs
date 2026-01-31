@@ -13,9 +13,6 @@ pub use result::{PickerAction, PickerField, PickerMode, PickerResult};
 
 use super::fuzzy;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tokio::sync::mpsc;
 
 pub struct Picker {
     /// Current search query
@@ -40,26 +37,14 @@ pub struct Picker {
     pending_filter: bool,
     /// The last query that was actually filtered
     last_filtered_query: String,
-    /// The last file filter that was actually filtered
+    /// The last file filter that was actually filtered (non-grep modes)
     last_filtered_file_filter: String,
-    /// Receiver for streaming grep results (LiveGrep mode)
-    grep_rx: Option<mpsc::Receiver<PickerResult>>,
-    /// Cancel flag for the current grep search
-    grep_cancel: Option<Arc<AtomicBool>>,
-    /// The query that was last sent to the grep search
-    last_grep_query: String,
-    /// Old results are stale and should be cleared when first new result arrives
-    grep_stale: bool,
-    /// Whether file loading is still in progress (grep or nucleo)
-    loading: bool,
     /// Typed backend owning mode-specific state
     backend: PickerBackend,
 }
 
 impl Picker {
     /// Creates a new file finder picker
-    /// Files are loaded asynchronously - use add_file_result() to populate
-    /// Uses nucleo for parallel background fuzzy matching.
     pub fn new_file_finder(base_dir: PathBuf) -> Self {
         Self {
             query: String::new(),
@@ -74,11 +59,6 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            loading: true,
             backend: PickerBackend::Nucleo(NucleoState::new()),
         }
     }
@@ -98,11 +78,6 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            loading: false,
             backend: PickerBackend::Grep(GrepState::new()),
         }
     }
@@ -121,11 +96,6 @@ impl Picker {
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            loading: false,
             backend: PickerBackend::FuzzyList(kind),
         }
     }
@@ -155,7 +125,7 @@ impl Picker {
         Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::Completion)
     }
 
-    /// Creates a new LSP locations picker (for references, symbols, hierarchy, etc.)
+    /// Creates a new LSP locations picker
     pub fn new_lsp_locations(base_dir: PathBuf, items: Vec<String>) -> Self {
         Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::LspLocations)
     }
@@ -170,77 +140,30 @@ impl Picker {
 
     /// Starts an in-process grep search, cancelling any previous one.
     pub fn start_grep_search(&mut self) {
-        self.cancel_grep();
-
-        if self.query.is_empty() {
-            self.all_results.clear();
-            self.filtered_results.clear();
-            self.selected_index = 0;
-            return;
+        if let PickerBackend::Grep(ref mut g) = self.backend {
+            g.start_search(
+                &self.query,
+                &self.base_dir,
+                &mut self.all_results,
+                &mut self.filtered_results,
+                &mut self.selected_index,
+            );
         }
-
-        self.loading = true;
-        self.last_grep_query = self.query.clone();
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.grep_cancel = Some(cancel.clone());
-
-        let rx = super::grep::spawn_grep_search(
-            self.query.clone(),
-            self.base_dir.clone(),
-            cancel,
-        );
-        self.grep_rx = Some(rx);
-        self.grep_stale = true;
     }
 
     /// Drains grep results from the channel with a 2ms budget.
     /// Returns true if any new results were added.
     pub fn drain_grep_results(&mut self) -> bool {
-        let rx = match self.grep_rx.as_mut() {
-            Some(rx) => rx,
-            None => return false,
-        };
-
-        let start = std::time::Instant::now();
-        let budget = std::time::Duration::from_millis(2);
-        let mut added = false;
-
-        loop {
-            if start.elapsed() >= budget {
-                break;
-            }
-
-            match rx.try_recv() {
-                Ok(result) => {
-                    if self.grep_stale {
-                        self.all_results.clear();
-                        self.filtered_results.clear();
-                        self.selected_index = 0;
-                        self.grep_stale = false;
-                    }
-                    self.all_results.push(result.clone());
-                    if filter::matches_file_filter(&self.file_filter, &result.display) {
-                        self.filtered_results.push(result);
-                    }
-                    added = true;
-                }
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    if self.grep_stale {
-                        self.all_results.clear();
-                        self.filtered_results.clear();
-                        self.selected_index = 0;
-                        self.grep_stale = false;
-                    }
-                    self.grep_rx = None;
-                    self.loading = false;
-                    break;
-                }
-            }
+        if let PickerBackend::Grep(ref mut g) = self.backend {
+            g.drain_results(
+                &self.file_filter,
+                &mut self.all_results,
+                &mut self.filtered_results,
+                &mut self.selected_index,
+            )
+        } else {
+            false
         }
-
-        added
     }
 
     /// Re-applies the file filter on `all_results` to produce `filtered_results`.
@@ -256,11 +179,9 @@ impl Picker {
 
     /// Cancels any in-flight grep search.
     pub fn cancel_grep(&mut self) {
-        if let Some(cancel) = self.grep_cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
+        if let PickerBackend::Grep(ref mut g) = self.backend {
+            g.cancel();
         }
-        self.grep_rx = None;
-        self.loading = false;
     }
 
     /// Returns whether this picker uses nucleo for matching.
@@ -293,7 +214,6 @@ impl Picker {
     /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
     pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
         if let PickerBackend::Nucleo(ref s) = self.backend {
-            // Try the prefetched cache first
             if idx >= s.cached_visible_start {
                 let cache_idx = idx - s.cached_visible_start;
                 if cache_idx < s.cached_visible_indices.len() {
@@ -309,7 +229,6 @@ impl Picker {
     }
 
     /// Drives the nucleo matcher forward and updates matched count.
-    /// Returns `true` if results changed.
     pub fn tick(&mut self) -> bool {
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
             let changed = s.nucleo.tick();
@@ -341,7 +260,6 @@ impl Picker {
     fn apply_filter_internal(&mut self) {
         match &self.backend {
             PickerBackend::Nucleo(_) => {
-                // Nucleo handles its own filtering
                 unreachable!("apply_filter_internal should not be called for Nucleo backend");
             }
             PickerBackend::FuzzyList(_) => {
@@ -384,12 +302,21 @@ impl Picker {
             PickerBackend::Nucleo(s) => {
                 s.nucleo.update_query(&self.query);
             }
-            PickerBackend::Grep(_) => {
-                if self.query != self.last_grep_query {
+            PickerBackend::Grep(g) => {
+                if self.query != g.last_grep_query {
                     self.pending_filter = true;
-                } else if self.file_filter != self.last_filtered_file_filter {
-                    self.apply_file_filter();
-                    self.last_filtered_file_filter = self.file_filter.clone();
+                } else if self.file_filter != g.last_filtered_file_filter {
+                    // Can't call self.apply_file_filter() while borrowing self.backend
+                    // So inline the filter logic
+                    let file_filter = self.file_filter.clone();
+                    g.last_filtered_file_filter = file_filter.clone();
+                    self.filtered_results = self
+                        .all_results
+                        .iter()
+                        .filter(|r| filter::matches_file_filter(&file_filter, &r.display))
+                        .cloned()
+                        .collect();
+                    self.selected_index = 0;
                 }
             }
             PickerBackend::FuzzyList(_) => {
@@ -583,11 +510,8 @@ impl Picker {
         self.selected_index
     }
 
-    /// Gets picker mode
+    /// Gets picker mode (derived from backend variant)
     pub fn mode(&self) -> &PickerMode {
-        // Return a reference to a static or compute it
-        // Since PickerMode is Clone + small, we can use a match
-        // But we need to return &PickerMode, so use a helper
         match &self.backend {
             PickerBackend::Nucleo(_) => &PickerMode::FindFiles,
             PickerBackend::Grep(_) => &PickerMode::LiveGrep,
@@ -670,7 +594,6 @@ impl Picker {
 
     /// Marks file loading as complete
     pub fn finish_loading(&mut self) {
-        self.loading = false;
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
             s.loading = false;
         }
@@ -678,7 +601,11 @@ impl Picker {
 
     /// Returns whether files are still being loaded
     pub fn is_loading(&self) -> bool {
-        self.loading
+        match &self.backend {
+            PickerBackend::Nucleo(s) => s.loading,
+            PickerBackend::Grep(g) => g.loading,
+            PickerBackend::FuzzyList(_) => false,
+        }
     }
 
     /// Returns whether file loading should be spawned
