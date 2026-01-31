@@ -275,6 +275,43 @@ fn test_cc_esc_behavior() {
 }
 
 // ============================================================================
+// OV-00035: sentence_backward panic when col > line length
+// ============================================================================
+
+#[test]
+fn test_sentence_backward_col_exceeds_line_length() {
+    // Bug: cursor at col 50 after $ on a long line, then k to a 5-char line,
+    // then ( (sentence backward) panics because col > chars.len()
+    let mut test = EditorTest::new("Short\nThis is a much longer line with lots of characters.");
+
+    // Move to end of the long line, then up to "Short" (col will be clamped by cursor
+    // but sentence_backward had its own unguarded col usage)
+    test.keys("j$k");
+
+    // Now press ( for sentence backward — this should not panic
+    test.keys("(");
+
+    // Should move to beginning of file (first sentence boundary)
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_sentence_backward_on_empty_line() {
+    // Empty lines in the middle should not panic
+    let mut test = EditorTest::new("First sentence.\n\nSecond sentence.");
+
+    // Move to the second sentence
+    test.keys("2j0");
+
+    // Press ( to go backward — should cross the empty line without panic
+    test.keys("(");
+
+    // Should have moved to line 1 (empty line) or line 0
+    let (line, _col) = test.cursor();
+    assert!(line <= 1, "Should move backward past empty line, got line {}", line);
+}
+
+// ============================================================================
 // Bug 4: o<Esc>u on indented lines deletes too much
 // ============================================================================
 

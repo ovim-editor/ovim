@@ -1041,6 +1041,27 @@ impl Motions {
             if let Some(line) = buffer.line(line_idx) {
                 let chars: Vec<char> = line.chars().collect();
 
+                if chars.is_empty() {
+                    // Empty line — skip to previous line
+                    if line_idx == 0 {
+                        buffer.cursor_mut().set_position(0, 0);
+                        return;
+                    }
+                    line_idx -= 1;
+                    if let Some(prev_line) = buffer.line(line_idx) {
+                        col = prev_line
+                            .trim_end_matches('\n')
+                            .chars()
+                            .count()
+                            .saturating_sub(1);
+                    }
+                    continue;
+                }
+
+                // Clamp col to valid range (cursor may exceed line length
+                // e.g. after $ then k to a shorter line)
+                col = col.min(chars.len().saturating_sub(1));
+
                 while col > 0 {
                     let ch = chars[col];
                     if ch == '.' || ch == '!' || ch == '?' {
