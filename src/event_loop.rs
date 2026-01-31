@@ -117,6 +117,10 @@ async fn process_editor_tick(
         }
         spawn_picker_preview_loading(editor, preview_tx);
         spawn_file_finder_loading(editor, file_tx);
+        // Re-render when rapid scrolling stops so syntax highlighting gets applied
+        if editor.picker_rapid_scrolling_just_stopped() {
+            editor.mark_dirty();
+        }
     }
 
     editor.send_lsp_changes_if_modified().await;
@@ -268,6 +272,11 @@ pub async fn run_event_loop(
 
         // Tick dashboard cat animation
         if editor.tick_cat_animation() {
+            editor.mark_dirty();
+        }
+
+        // Tick yank flash (clears after ~150ms)
+        if editor.tick_yank_flash() {
             editor.mark_dirty();
         }
 

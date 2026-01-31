@@ -31,6 +31,8 @@ pub struct PickerState {
     pub file_list_cache: Option<(PathBuf, Vec<PickerResult>, Instant)>,
     /// Cached picker layout rects from last render (for mouse hit-testing)
     pub last_layout: Option<PickerLayout>,
+    /// Whether the last render was during rapid scrolling (to detect transition → not-rapid)
+    pub was_scrolling_rapidly: bool,
 }
 
 impl PickerState {
@@ -45,6 +47,7 @@ impl PickerState {
             last_shown_preview: None,
             file_list_cache: None,
             last_layout: None,
+            was_scrolling_rapidly: false,
         }
     }
 }
