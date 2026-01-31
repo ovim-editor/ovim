@@ -1,6 +1,9 @@
 use super::fuzzy;
 use super::nucleo_matcher::NucleoMatcher;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerMode {
@@ -86,6 +89,14 @@ pub struct Picker {
     cached_visible_indices: Vec<u32>,
     /// Start offset of the cached visible range
     cached_visible_start: usize,
+    /// Receiver for streaming grep results (LiveGrep mode)
+    grep_rx: Option<mpsc::Receiver<PickerResult>>,
+    /// Cancel flag for the current grep search
+    grep_cancel: Option<Arc<AtomicBool>>,
+    /// The query that was last sent to the grep search
+    last_grep_query: String,
+    /// Old results are stale and should be cleared when first new result arrives
+    grep_stale: bool,
 }
 
 impl Picker {
@@ -113,6 +124,10 @@ impl Picker {
             nucleo_matched_count: 0,
             cached_visible_indices: Vec::new(),
             cached_visible_start: 0,
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
         }
     }
 
@@ -138,6 +153,10 @@ impl Picker {
             nucleo_matched_count: 0,
             cached_visible_indices: Vec::new(),
             cached_visible_start: 0,
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
         }
     }
 
@@ -176,6 +195,10 @@ impl Picker {
             nucleo_matched_count: 0,
             cached_visible_indices: Vec::new(),
             cached_visible_start: 0,
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
         }
     }
 
@@ -214,6 +237,10 @@ impl Picker {
             nucleo_matched_count: 0,
             cached_visible_indices: Vec::new(),
             cached_visible_start: 0,
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
         }
     }
 
@@ -253,6 +280,10 @@ impl Picker {
             nucleo_matched_count: 0,
             cached_visible_indices: Vec::new(),
             cached_visible_start: 0,
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
         }
     }
 
@@ -279,6 +310,10 @@ impl Picker {
             nucleo_matched_count: 0,
             cached_visible_indices: Vec::new(),
             cached_visible_start: 0,
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
         }
     }
 
@@ -290,14 +325,12 @@ impl Picker {
 
     /// Simple glob pattern matching supporting `*` and `?` wildcards.
     /// Matches against the given string case-insensitively.
-    #[cfg(test)]
     fn glob_match(pattern: &str, text: &str) -> bool {
         let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
         let text: Vec<char> = text.to_lowercase().chars().collect();
         Self::glob_match_inner(&pattern, &text)
     }
 
-    #[cfg(test)]
     fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
         let mut pi = 0;
         let mut ti = 0;
@@ -332,7 +365,6 @@ impl Picker {
     /// The filter is space-separated tokens; all must match.
     /// Tokens containing `*` or `?` are glob-matched against the basename
     /// (or full path if token contains `/`). Otherwise, substring match (case-insensitive).
-    #[cfg(test)]
     fn matches_file_filter(filter: &str, path: &str) -> bool {
         if filter.is_empty() {
             return true;
@@ -372,82 +404,112 @@ impl Picker {
         true
     }
 
-    /// Performs live grep using ripgrep or grep
-    fn live_grep(query: &str, base_dir: &Path, file_filter: &str) -> Vec<PickerResult> {
-        use std::process::Command;
+    /// Starts an in-process grep search, cancelling any previous one.
+    /// Results stream in via channel and are drained by `drain_grep_results()`.
+    pub fn start_grep_search(&mut self) {
+        // Cancel any previous search
+        self.cancel_grep();
 
-        if query.is_empty() {
-            return Vec::new();
+        if self.query.is_empty() {
+            self.all_results.clear();
+            self.filtered_results.clear();
+            self.selected_index = 0;
+            return;
         }
 
-        let mut args = vec![
-            "--line-number".to_string(),
-            "--column".to_string(),
-            "--no-heading".to_string(),
-            "--color=never".to_string(),
-        ];
+        self.loading = true;
+        self.last_grep_query = self.query.clone();
 
-        // Add glob filters from file_filter
-        for token in file_filter.split_whitespace() {
-            if !token.is_empty() {
-                let is_glob = token.contains('*') || token.contains('?');
-                args.push("--glob".to_string());
-                if is_glob {
-                    args.push(token.to_string());
-                } else {
-                    // Wrap plain substring as glob: "editor" -> "*editor*"
-                    args.push(format!("*{}*", token));
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.grep_cancel = Some(cancel.clone());
+
+        let rx = super::grep::spawn_grep_search(
+            self.query.clone(),
+            self.base_dir.clone(),
+            cancel,
+        );
+        self.grep_rx = Some(rx);
+
+        // Mark old results as stale — they'll be cleared when the first
+        // new result arrives, so the user sees old results until then
+        // instead of a blank flash.
+        self.grep_stale = true;
+    }
+
+    /// Drains grep results from the channel with a 2ms budget.
+    /// Applies the file filter to each incoming result.
+    /// Returns true if any new results were added.
+    pub fn drain_grep_results(&mut self) -> bool {
+        let rx = match self.grep_rx.as_mut() {
+            Some(rx) => rx,
+            None => return false,
+        };
+
+        let start = std::time::Instant::now();
+        let budget = std::time::Duration::from_millis(2);
+        let mut added = false;
+
+        loop {
+            if start.elapsed() >= budget {
+                break;
+            }
+
+            match rx.try_recv() {
+                Ok(result) => {
+                    // First result of a new search: replace stale results
+                    if self.grep_stale {
+                        self.all_results.clear();
+                        self.filtered_results.clear();
+                        self.selected_index = 0;
+                        self.grep_stale = false;
+                    }
+                    // Always push to all_results
+                    self.all_results.push(result.clone());
+                    // Apply file filter before adding to filtered
+                    if Self::matches_file_filter(&self.file_filter, &result.display) {
+                        self.filtered_results.push(result);
+                    }
+                    added = true;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    // Search finished
+                    if self.grep_stale {
+                        // Search produced no results — clear old ones now
+                        self.all_results.clear();
+                        self.filtered_results.clear();
+                        self.selected_index = 0;
+                        self.grep_stale = false;
+                    }
+                    self.grep_rx = None;
+                    self.loading = false;
+                    break;
                 }
             }
         }
 
-        args.push(query.to_string());
+        added
+    }
 
-        // Try ripgrep first, fall back to grep
-        let output = Command::new("rg")
-            .args(&args)
-            .current_dir(base_dir)
-            .output();
+    /// Re-applies the file filter on `all_results` to produce `filtered_results`.
+    /// Used when only the file filter changed (no need to re-search).
+    fn apply_file_filter(&mut self) {
+        self.filtered_results = self
+            .all_results
+            .iter()
+            .filter(|r| Self::matches_file_filter(&self.file_filter, &r.display))
+            .cloned()
+            .collect();
+        self.selected_index = 0;
+    }
 
-        let output = match output {
-            Ok(out) => out,
-            Err(_) => {
-                // Fall back to grep
-                return Vec::new();
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut results = Vec::new();
-
-        for line in stdout.lines() {
-            // Parse rg output: file:line:col:content
-            let parts: Vec<&str> = line.splitn(4, ':').collect();
-            if parts.len() >= 4 {
-                let file = parts[0];
-                let line_num = parts[1].parse::<usize>().unwrap_or(1);
-                let col_num = parts[2].parse::<usize>().unwrap_or(1);
-                let content = parts[3];
-
-                // Convert relative path to absolute path
-                let abs_path = if std::path::Path::new(file).is_absolute() {
-                    file.to_string()
-                } else {
-                    base_dir.join(file).to_string_lossy().to_string()
-                };
-
-                results.push(PickerResult {
-                    display: format!("{}:{}:{}", file, line_num, col_num),
-                    location: abs_path,
-                    line: line_num.saturating_sub(1), // Convert to 0-indexed
-                    col: col_num.saturating_sub(1),
-                    match_positions: Vec::new(),
-                    content: Some(content.trim().to_string()),
-                });
-            }
+    /// Cancels any in-flight grep search.
+    pub fn cancel_grep(&mut self) {
+        if let Some(cancel) = self.grep_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
         }
-
-        results
+        self.grep_rx = None;
+        self.loading = false;
     }
 
     /// Returns whether this picker uses nucleo for matching.
@@ -584,8 +646,10 @@ impl Picker {
                     .collect();
             }
             PickerMode::LiveGrep => {
-                let grep_results = Self::live_grep(&self.query, &self.base_dir, &self.file_filter);
-                self.filtered_results = grep_results;
+                // Non-blocking: spawn grep search, results stream via channel
+                self.start_grep_search();
+                self.pending_filter = false;
+                return; // Don't update last_filtered_query here — drain does it
             }
         }
 
@@ -599,10 +663,21 @@ impl Picker {
 
     /// Marks that filtering is pending (query changed but not yet filtered).
     /// For nucleo modes, immediately pushes the query update (matching happens in background).
+    /// For LiveGrep: if only file_filter changed, applies filter instantly (no re-search).
     pub fn mark_filter_pending(&mut self) {
         if let Some(ref mut nucleo) = self.nucleo {
             // Nucleo: push query immediately, background threads handle matching
             nucleo.update_query(&self.query);
+        } else if self.mode == PickerMode::LiveGrep {
+            // Two-stage filtering for LiveGrep:
+            // - Query changed → need a new grep search (debounced)
+            // - Only file_filter changed → instant client-side filter
+            if self.query != self.last_grep_query {
+                self.pending_filter = true;
+            } else if self.file_filter != self.last_filtered_file_filter {
+                self.apply_file_filter();
+                self.last_filtered_file_filter = self.file_filter.clone();
+            }
         } else {
             self.pending_filter = true;
         }
