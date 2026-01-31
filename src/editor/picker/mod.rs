@@ -12,20 +12,17 @@ use nucleo_backend::NucleoState;
 pub use result::{PickerAction, PickerField, PickerMode, PickerResult};
 
 use super::fuzzy;
-use super::nucleo_matcher::NucleoMatcher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub struct Picker {
-    /// Current picker mode
-    mode: PickerMode,
     /// Current search query
     query: String,
     /// Cursor position in the query (byte offset)
     query_cursor: usize,
-    /// File filter string (for FindFiles/LiveGrep modes)
+    /// File filter string (for LiveGrep mode)
     file_filter: String,
     /// Cursor position in the file filter (char offset)
     file_filter_cursor: usize,
@@ -39,24 +36,12 @@ pub struct Picker {
     selected_index: usize,
     /// Base directory for file search
     base_dir: PathBuf,
-    /// Whether file loading is still in progress
-    loading: bool,
-    /// Whether file loading task has been spawned
-    loading_spawned: bool,
     /// Whether filtering is pending (for debouncing)
     pending_filter: bool,
     /// The last query that was actually filtered
     last_filtered_query: String,
     /// The last file filter that was actually filtered
     last_filtered_file_filter: String,
-    /// Nucleo matcher for parallel fuzzy matching (FindFiles only)
-    nucleo: Option<NucleoMatcher>,
-    /// Number of matched items from last nucleo tick
-    nucleo_matched_count: usize,
-    /// Cached visible indices from prefetch (nucleo mode only)
-    cached_visible_indices: Vec<u32>,
-    /// Start offset of the cached visible range
-    cached_visible_start: usize,
     /// Receiver for streaming grep results (LiveGrep mode)
     grep_rx: Option<mpsc::Receiver<PickerResult>>,
     /// Cancel flag for the current grep search
@@ -65,7 +50,9 @@ pub struct Picker {
     last_grep_query: String,
     /// Old results are stale and should be cleared when first new result arrives
     grep_stale: bool,
-    /// Typed backend (temporary duplication during migration)
+    /// Whether file loading is still in progress (grep or nucleo)
+    loading: bool,
+    /// Typed backend owning mode-specific state
     backend: PickerBackend,
 }
 
@@ -75,7 +62,6 @@ impl Picker {
     /// Uses nucleo for parallel background fuzzy matching.
     pub fn new_file_finder(base_dir: PathBuf) -> Self {
         Self {
-            mode: PickerMode::FindFiles,
             query: String::new(),
             query_cursor: 0,
             file_filter: String::new(),
@@ -85,19 +71,14 @@ impl Picker {
             filtered_results: Vec::new(),
             selected_index: 0,
             base_dir,
-            loading: true,
-            loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
-            nucleo: Some(NucleoMatcher::new()),
-            nucleo_matched_count: 0,
-            cached_visible_indices: Vec::new(),
-            cached_visible_start: 0,
             grep_rx: None,
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            loading: true,
             backend: PickerBackend::Nucleo(NucleoState::new()),
         }
     }
@@ -105,7 +86,6 @@ impl Picker {
     /// Creates a new live grep picker
     pub fn new_live_grep(base_dir: PathBuf) -> Self {
         Self {
-            mode: PickerMode::LiveGrep,
             query: String::new(),
             query_cursor: 0,
             file_filter: String::new(),
@@ -115,26 +95,43 @@ impl Picker {
             filtered_results: Vec::new(),
             selected_index: 0,
             base_dir,
-            loading: false,
-            loading_spawned: false,
             pending_filter: false,
             last_filtered_query: String::new(),
             last_filtered_file_filter: String::new(),
-            nucleo: None,
-            nucleo_matched_count: 0,
-            cached_visible_indices: Vec::new(),
-            cached_visible_start: 0,
             grep_rx: None,
             grep_cancel: None,
             last_grep_query: String::new(),
             grep_stale: false,
+            loading: false,
             backend: PickerBackend::Grep(GrepState::new()),
         }
     }
 
-    /// Creates a new picker with custom items
-    pub fn new_custom(base_dir: PathBuf, items: Vec<String>) -> Self {
-        let results: Vec<PickerResult> = items
+    fn new_fuzzy_list(base_dir: PathBuf, results: Vec<PickerResult>, kind: FuzzyListKind) -> Self {
+        Self {
+            query: String::new(),
+            query_cursor: 0,
+            file_filter: String::new(),
+            file_filter_cursor: 0,
+            active_field: PickerField::Query,
+            all_results: results.clone(),
+            filtered_results: results,
+            selected_index: 0,
+            base_dir,
+            pending_filter: false,
+            last_filtered_query: String::new(),
+            last_filtered_file_filter: String::new(),
+            grep_rx: None,
+            grep_cancel: None,
+            last_grep_query: String::new(),
+            grep_stale: false,
+            loading: false,
+            backend: PickerBackend::FuzzyList(kind),
+        }
+    }
+
+    fn items_to_results(items: Vec<String>) -> Vec<PickerResult> {
+        items
             .into_iter()
             .enumerate()
             .map(|(idx, display)| PickerResult {
@@ -145,164 +142,34 @@ impl Picker {
                 match_positions: Vec::new(),
                 content: None,
             })
-            .collect();
+            .collect()
+    }
 
-        Self {
-            mode: PickerMode::Custom,
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: results.clone(),
-            filtered_results: results,
-            selected_index: 0,
-            base_dir,
-            loading: false,
-            loading_spawned: false,
-            pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
-            nucleo: None,
-            nucleo_matched_count: 0,
-            cached_visible_indices: Vec::new(),
-            cached_visible_start: 0,
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            backend: PickerBackend::FuzzyList(FuzzyListKind::Custom),
-        }
+    /// Creates a new picker with custom items
+    pub fn new_custom(base_dir: PathBuf, items: Vec<String>) -> Self {
+        Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::Custom)
     }
 
     /// Creates a new completion picker with custom items
     pub fn new_completion(base_dir: PathBuf, items: Vec<String>) -> Self {
-        let results: Vec<PickerResult> = items
-            .into_iter()
-            .enumerate()
-            .map(|(idx, display)| PickerResult {
-                display,
-                location: idx.to_string(),
-                line: idx,
-                col: 0,
-                match_positions: Vec::new(),
-                content: None,
-            })
-            .collect();
-
-        Self {
-            mode: PickerMode::Completion,
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: results.clone(),
-            filtered_results: results,
-            selected_index: 0,
-            base_dir,
-            loading: false,
-            loading_spawned: false,
-            pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
-            nucleo: None,
-            nucleo_matched_count: 0,
-            cached_visible_indices: Vec::new(),
-            cached_visible_start: 0,
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            backend: PickerBackend::FuzzyList(FuzzyListKind::Completion),
-        }
+        Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::Completion)
     }
 
     /// Creates a new LSP locations picker (for references, symbols, hierarchy, etc.)
-    /// Items are display strings, and indices map to editor's LSP storage vectors
     pub fn new_lsp_locations(base_dir: PathBuf, items: Vec<String>) -> Self {
-        let results: Vec<PickerResult> = items
-            .into_iter()
-            .enumerate()
-            .map(|(idx, display)| PickerResult {
-                display,
-                location: idx.to_string(),
-                line: idx,
-                col: 0,
-                match_positions: Vec::new(),
-                content: None,
-            })
-            .collect();
-
-        Self {
-            mode: PickerMode::LspLocations,
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: results.clone(),
-            filtered_results: results,
-            selected_index: 0,
-            base_dir,
-            loading: false,
-            loading_spawned: false,
-            pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
-            nucleo: None,
-            nucleo_matched_count: 0,
-            cached_visible_indices: Vec::new(),
-            cached_visible_start: 0,
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            backend: PickerBackend::FuzzyList(FuzzyListKind::LspLocations),
-        }
+        Self::new_fuzzy_list(base_dir, Self::items_to_results(items), FuzzyListKind::LspLocations)
     }
 
     /// Creates a new LSP locations picker with pre-built PickerResult items
-    /// This preserves the actual file paths in location field for preview loading
     pub fn new_with_results(base_dir: PathBuf, results: Vec<PickerResult>) -> Self {
-        Self {
-            mode: PickerMode::LspLocations,
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
-            active_field: PickerField::Query,
-            all_results: results.clone(),
-            filtered_results: results,
-            selected_index: 0,
-            base_dir,
-            loading: false,
-            loading_spawned: false,
-            pending_filter: false,
-            last_filtered_query: String::new(),
-            last_filtered_file_filter: String::new(),
-            nucleo: None,
-            nucleo_matched_count: 0,
-            cached_visible_indices: Vec::new(),
-            cached_visible_start: 0,
-            grep_rx: None,
-            grep_cancel: None,
-            last_grep_query: String::new(),
-            grep_stale: false,
-            backend: PickerBackend::FuzzyList(FuzzyListKind::LspLocations),
-        }
+        Self::new_fuzzy_list(base_dir, results, FuzzyListKind::LspLocations)
     }
 
     /// Sets the prompt for the picker
-    pub fn set_prompt(&mut self, _prompt: String) {
-        // Prompt display is handled by the UI layer
-        // This is a placeholder for API compatibility
-    }
+    pub fn set_prompt(&mut self, _prompt: String) {}
 
     /// Starts an in-process grep search, cancelling any previous one.
-    /// Results stream in via channel and are drained by `drain_grep_results()`.
     pub fn start_grep_search(&mut self) {
-        // Cancel any previous search
         self.cancel_grep();
 
         if self.query.is_empty() {
@@ -324,15 +191,10 @@ impl Picker {
             cancel,
         );
         self.grep_rx = Some(rx);
-
-        // Mark old results as stale — they'll be cleared when the first
-        // new result arrives, so the user sees old results until then
-        // instead of a blank flash.
         self.grep_stale = true;
     }
 
     /// Drains grep results from the channel with a 2ms budget.
-    /// Applies the file filter to each incoming result.
     /// Returns true if any new results were added.
     pub fn drain_grep_results(&mut self) -> bool {
         let rx = match self.grep_rx.as_mut() {
@@ -351,16 +213,13 @@ impl Picker {
 
             match rx.try_recv() {
                 Ok(result) => {
-                    // First result of a new search: replace stale results
                     if self.grep_stale {
                         self.all_results.clear();
                         self.filtered_results.clear();
                         self.selected_index = 0;
                         self.grep_stale = false;
                     }
-                    // Always push to all_results
                     self.all_results.push(result.clone());
-                    // Apply file filter before adding to filtered
                     if filter::matches_file_filter(&self.file_filter, &result.display) {
                         self.filtered_results.push(result);
                     }
@@ -368,9 +227,7 @@ impl Picker {
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    // Search finished
                     if self.grep_stale {
-                        // Search produced no results — clear old ones now
                         self.all_results.clear();
                         self.filtered_results.clear();
                         self.selected_index = 0;
@@ -387,7 +244,6 @@ impl Picker {
     }
 
     /// Re-applies the file filter on `all_results` to produce `filtered_results`.
-    /// Used when only the file filter changed (no need to re-search).
     fn apply_file_filter(&mut self) {
         self.filtered_results = self
             .all_results
@@ -409,7 +265,7 @@ impl Picker {
 
     /// Returns whether this picker uses nucleo for matching.
     pub fn uses_nucleo(&self) -> bool {
-        self.nucleo.is_some()
+        matches!(self.backend, PickerBackend::Nucleo(_))
     }
 
     /// Returns the total number of results (before filtering).
@@ -419,36 +275,33 @@ impl Picker {
 
     /// Returns the number of filtered (matched) results.
     pub fn filtered_result_count(&self) -> usize {
-        if self.nucleo.is_some() {
-            self.nucleo_matched_count
-        } else {
-            self.filtered_results.len()
+        match &self.backend {
+            PickerBackend::Nucleo(s) => s.matched_count,
+            _ => self.filtered_results.len(),
         }
     }
 
     /// Pre-fetches visible item indices in a single nucleo snapshot.
-    /// Call this once before iterating `filtered_result()` during render.
     pub fn prefetch_visible_range(&mut self, start: usize, count: usize) {
-        if let Some(ref nucleo) = self.nucleo {
-            self.cached_visible_indices =
-                nucleo.get_items_in_range(start as u32, count as u32);
-            self.cached_visible_start = start;
+        if let PickerBackend::Nucleo(ref mut s) = self.backend {
+            s.cached_visible_indices =
+                s.nucleo.get_items_in_range(start as u32, count as u32);
+            s.cached_visible_start = start;
         }
     }
 
     /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
     pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
-        if let Some(ref nucleo) = self.nucleo {
+        if let PickerBackend::Nucleo(ref s) = self.backend {
             // Try the prefetched cache first
-            if idx >= self.cached_visible_start {
-                let cache_idx = idx - self.cached_visible_start;
-                if cache_idx < self.cached_visible_indices.len() {
-                    let all_idx = self.cached_visible_indices[cache_idx] as usize;
+            if idx >= s.cached_visible_start {
+                let cache_idx = idx - s.cached_visible_start;
+                if cache_idx < s.cached_visible_indices.len() {
+                    let all_idx = s.cached_visible_indices[cache_idx] as usize;
                     return self.all_results.get(all_idx);
                 }
             }
-            // Fallback: per-item snapshot (e.g., selected_result outside visible range)
-            let all_idx = nucleo.get_item_at_rank(idx as u32)?;
+            let all_idx = s.nucleo.get_item_at_rank(idx as u32)?;
             self.all_results.get(all_idx as usize)
         } else {
             self.filtered_results.get(idx)
@@ -458,12 +311,12 @@ impl Picker {
     /// Drives the nucleo matcher forward and updates matched count.
     /// Returns `true` if results changed.
     pub fn tick(&mut self) -> bool {
-        if let Some(ref mut nucleo) = self.nucleo {
-            let changed = nucleo.tick();
+        if let PickerBackend::Nucleo(ref mut s) = self.backend {
+            let changed = s.nucleo.tick();
             if changed {
-                self.nucleo_matched_count = nucleo.matched_count() as usize;
-                if self.nucleo_matched_count > 0 {
-                    self.selected_index = self.selected_index.min(self.nucleo_matched_count - 1);
+                s.matched_count = s.nucleo.matched_count() as usize;
+                if s.matched_count > 0 {
+                    self.selected_index = self.selected_index.min(s.matched_count - 1);
                 } else {
                     self.selected_index = 0;
                 }
@@ -477,20 +330,21 @@ impl Picker {
     /// Updates the query and refreshes filtered results
     pub fn set_query(&mut self, query: String) {
         self.query = query;
-        if let Some(ref mut nucleo) = self.nucleo {
-            nucleo.update_query(&self.query);
+        if let PickerBackend::Nucleo(ref mut s) = self.backend {
+            s.nucleo.update_query(&self.query);
         } else {
             self.apply_filter_internal();
         }
     }
 
-    /// Internal filter logic - called by both set_query and apply_pending_filter
+    /// Internal filter logic
     fn apply_filter_internal(&mut self) {
-        match self.mode {
-            PickerMode::FindFiles
-            | PickerMode::Custom
-            | PickerMode::Completion
-            | PickerMode::LspLocations => {
+        match &self.backend {
+            PickerBackend::Nucleo(_) => {
+                // Nucleo handles its own filtering
+                unreachable!("apply_filter_internal should not be called for Nucleo backend");
+            }
+            PickerBackend::FuzzyList(_) => {
                 let mut scored_results: Vec<(PickerResult, i32, Vec<usize>)> = self
                     .all_results
                     .iter()
@@ -511,8 +365,7 @@ impl Picker {
                     })
                     .collect();
             }
-            PickerMode::LiveGrep => {
-                // Non-blocking: spawn grep search, results stream via channel
+            PickerBackend::Grep(_) => {
                 self.start_grep_search();
                 self.pending_filter = false;
                 return;
@@ -527,17 +380,21 @@ impl Picker {
 
     /// Marks that filtering is pending (query changed but not yet filtered).
     pub fn mark_filter_pending(&mut self) {
-        if let Some(ref mut nucleo) = self.nucleo {
-            nucleo.update_query(&self.query);
-        } else if self.mode == PickerMode::LiveGrep {
-            if self.query != self.last_grep_query {
-                self.pending_filter = true;
-            } else if self.file_filter != self.last_filtered_file_filter {
-                self.apply_file_filter();
-                self.last_filtered_file_filter = self.file_filter.clone();
+        match &mut self.backend {
+            PickerBackend::Nucleo(s) => {
+                s.nucleo.update_query(&self.query);
             }
-        } else {
-            self.pending_filter = true;
+            PickerBackend::Grep(_) => {
+                if self.query != self.last_grep_query {
+                    self.pending_filter = true;
+                } else if self.file_filter != self.last_filtered_file_filter {
+                    self.apply_file_filter();
+                    self.last_filtered_file_filter = self.file_filter.clone();
+                }
+            }
+            PickerBackend::FuzzyList(_) => {
+                self.pending_filter = true;
+            }
         }
     }
 
@@ -561,7 +418,6 @@ impl Picker {
         }
     }
 
-    /// Converts character position to byte position in a string
     fn char_pos_to_byte_pos_in(s: &str, char_pos: usize) -> usize {
         s.char_indices()
             .nth(char_pos)
@@ -683,19 +539,27 @@ impl Picker {
     /// Derives the action to execute for the currently selected result.
     pub fn selected_action(&self) -> Option<PickerAction> {
         let result = self.selected_result()?;
-        match self.mode {
-            PickerMode::Custom => Some(PickerAction::ApplyCodeAction { index: result.line }),
-            PickerMode::Completion => Some(PickerAction::ApplyCompletion { index: result.line }),
-            PickerMode::LspLocations => Some(PickerAction::OpenFileWithTag {
-                path: result.location.clone(),
-                line: result.line,
-                col: result.col,
-            }),
-            PickerMode::FindFiles | PickerMode::LiveGrep => Some(PickerAction::OpenFile {
-                path: result.location.clone(),
-                line: result.line,
-                col: result.col,
-            }),
+        match &self.backend {
+            PickerBackend::FuzzyList(FuzzyListKind::Custom) => {
+                Some(PickerAction::ApplyCodeAction { index: result.line })
+            }
+            PickerBackend::FuzzyList(FuzzyListKind::Completion) => {
+                Some(PickerAction::ApplyCompletion { index: result.line })
+            }
+            PickerBackend::FuzzyList(FuzzyListKind::LspLocations) => {
+                Some(PickerAction::OpenFileWithTag {
+                    path: result.location.clone(),
+                    line: result.line,
+                    col: result.col,
+                })
+            }
+            PickerBackend::Nucleo(_) | PickerBackend::Grep(_) => {
+                Some(PickerAction::OpenFile {
+                    path: result.location.clone(),
+                    line: result.line,
+                    col: result.col,
+                })
+            }
         }
     }
 
@@ -721,7 +585,18 @@ impl Picker {
 
     /// Gets picker mode
     pub fn mode(&self) -> &PickerMode {
-        &self.mode
+        // Return a reference to a static or compute it
+        // Since PickerMode is Clone + small, we can use a match
+        // But we need to return &PickerMode, so use a helper
+        match &self.backend {
+            PickerBackend::Nucleo(_) => &PickerMode::FindFiles,
+            PickerBackend::Grep(_) => &PickerMode::LiveGrep,
+            PickerBackend::FuzzyList(kind) => match kind {
+                FuzzyListKind::Custom => &PickerMode::Custom,
+                FuzzyListKind::Completion => &PickerMode::Completion,
+                FuzzyListKind::LspLocations => &PickerMode::LspLocations,
+            },
+        }
     }
 
     /// Gets the base directory for file operations
@@ -731,7 +606,7 @@ impl Picker {
 
     /// Returns true if this picker mode supports the file filter field
     pub fn has_file_filter(&self) -> bool {
-        matches!(self.mode, PickerMode::LiveGrep)
+        matches!(self.backend, PickerBackend::Grep(_))
     }
 
     /// Switches the active input field (only for modes with file filter)
@@ -781,8 +656,8 @@ impl Picker {
         let display = result.display.clone();
         self.all_results.push(result.clone());
 
-        if let Some(ref nucleo) = self.nucleo {
-            nucleo.inject(idx, &display);
+        if let PickerBackend::Nucleo(ref s) = self.backend {
+            s.nucleo.inject(idx, &display);
         } else {
             if self.query.is_empty() {
                 self.filtered_results.push(result);
@@ -796,6 +671,9 @@ impl Picker {
     /// Marks file loading as complete
     pub fn finish_loading(&mut self) {
         self.loading = false;
+        if let PickerBackend::Nucleo(ref mut s) = self.backend {
+            s.loading = false;
+        }
     }
 
     /// Returns whether files are still being loaded
@@ -805,12 +683,18 @@ impl Picker {
 
     /// Returns whether file loading should be spawned
     pub fn should_spawn_file_loading(&self) -> bool {
-        self.mode == PickerMode::FindFiles && self.loading && !self.loading_spawned
+        if let PickerBackend::Nucleo(ref s) = self.backend {
+            s.loading && !s.loading_spawned
+        } else {
+            false
+        }
     }
 
     /// Marks file loading as spawned
     pub fn mark_loading_spawned(&mut self) {
-        self.loading_spawned = true;
+        if let PickerBackend::Nucleo(ref mut s) = self.backend {
+            s.loading_spawned = true;
+        }
     }
 
     /// Truncates a path in the middle if it's too long
