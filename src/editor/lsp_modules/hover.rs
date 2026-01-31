@@ -153,12 +153,20 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
+        // Resolve all server_ids for this language (primary + companions)
+        let server_ids = lsp.servers_for_language(language_id);
+
         // Spawn hover request in background (non-blocking)
+        // Uses multi-server fan-out to query all servers concurrently
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = lsp.hover(&uri, line, character, language_id).await;
-            let _ = tx.send(result); // Send to receiver (ignore if dropped)
-            Ok(None) // Return dummy value for JoinHandle (we use receiver for actual result)
+            let result = if server_ids.len() > 1 {
+                lsp.hover_multi(&uri, line, character, &server_ids).await
+            } else {
+                lsp.hover(&uri, line, character, language_id).await
+            };
+            let _ = tx.send(result);
+            Ok(None)
         });
 
         // Store task handle and receiver for polling

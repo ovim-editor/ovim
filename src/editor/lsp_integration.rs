@@ -24,6 +24,8 @@ pub(in crate::editor) struct LspRequestContext {
     pub line: u32,
     pub character: u32,
     pub language_id: String,
+    /// All server_ids serving this language (primary + companions)
+    pub server_ids: Vec<String>,
 }
 
 impl Editor {
@@ -68,7 +70,7 @@ impl Editor {
 
         // Send LSP close notification
         let file_path_string = file_path.to_string();
-        let _ = lsp.did_close(uri, language_id).await;
+        let _ = lsp.did_close_broadcast(uri, language_id).await;
         self.lsp_state.document_sync.remove(&file_path_string);
     }
 
@@ -518,8 +520,8 @@ impl Editor {
                 .get(&state_key)
                 .and_then(|state| state.last_synced_content.clone());
 
-            // Send the didChange notification with old_text for incremental sync
-            let _ = lsp.did_change(uri, language_id, content.clone(), old_content).await;
+            // Send the didChange notification to all servers for this language
+            let _ = lsp.did_change_broadcast(uri, language_id, content.clone(), old_content).await;
 
             // Mark as sent AFTER sending and store the synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -562,8 +564,8 @@ impl Editor {
                 None => return,
             };
 
-            // Send the didSave notification
-            let _ = lsp.did_save(uri, language_id, Some(content)).await;
+            // Send the didSave notification to all servers for this language
+            let _ = lsp.did_save_broadcast(uri, language_id, Some(content)).await;
 
             // Mark as sent AFTER sending
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -610,9 +612,9 @@ impl Editor {
             .is_none_or(|state| !state.did_open_sent);
 
         if needs_did_open {
-            // Send didOpen notification (uri, language_id, version, text)
+            // Send didOpen notification to all servers for this language
             let _ = lsp
-                .did_open(uri.clone(), language_id, 1, content.clone())
+                .did_open_broadcast(uri.clone(), language_id, 1, content.clone())
                 .await;
 
             // Mark didOpen as sent
@@ -635,8 +637,8 @@ impl Editor {
                 .get(&state_key)
                 .and_then(|state| state.last_synced_content.clone());
 
-            // Send the didChange notification immediately (bypass debouncing) with incremental sync
-            let _ = lsp.did_change(uri, language_id, content.clone(), old_content).await;
+            // Send the didChange notification immediately (bypass debouncing) to all servers
+            let _ = lsp.did_change_broadcast(uri, language_id, content.clone(), old_content).await;
 
             // Mark as sent and store synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -669,7 +671,7 @@ impl Editor {
         };
 
         let file_path_string = file_path.to_string();
-        let _ = lsp.did_close(uri, language_id).await;
+        let _ = lsp.did_close_broadcast(uri, language_id).await;
         self.lsp_state.document_sync.remove(&file_path_string);
     }
 
@@ -838,6 +840,9 @@ impl Editor {
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
+        // Resolve all server_ids for this language (primary + companions)
+        let server_ids = lsp.servers_for_language(&language_id);
+
         Ok(LspRequestContext {
             lsp,
             uri,
@@ -845,6 +850,7 @@ impl Editor {
             line,
             character,
             language_id,
+            server_ids,
         })
     }
 

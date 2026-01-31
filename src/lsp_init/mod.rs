@@ -3,7 +3,8 @@ mod java;
 
 use auto_install::{attempt_auto_install, InstallResult};
 use ovim::editor::Editor;
-use ovim::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
+use ovim::language_config::{find_lsp_command, find_project_root, CompanionLspConfig, LanguageRegistry};
+use ovim::lsp::companion_server_id;
 use ovim::lsp::uri_from_file_path;
 use std::path::{Path, PathBuf};
 
@@ -168,6 +169,9 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                 }
 
                 editor.set_lsp_status(format!("LSP: {} ready", lang_config.name));
+
+                // Initialize companion LSP servers (e.g., Tailwind CSS for TypeScript)
+                initialize_companions(editor, &language_id, &abs_path).await;
             }
             Err(e) => {
                 editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
@@ -212,6 +216,151 @@ fn normalize_path(path: &Path, editor: &mut Editor) -> PathBuf {
         Ok(canonical) => canonical,
         Err(_) => absolute,
     }
+}
+
+/// Initialize companion LSP servers for a language
+///
+/// After the primary LSP server starts, this checks for configured companion
+/// servers (e.g., Tailwind CSS for TypeScript) and starts any that should be
+/// active for the current project.
+async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path: &Path) {
+    let companions = LanguageRegistry::get().companions_for_language(language_id);
+    if companions.is_empty() {
+        return;
+    }
+
+    let lsp_manager = match editor.lsp_manager() {
+        Some(lsp) => lsp.clone(),
+        None => return,
+    };
+
+    for companion in companions {
+        // Check activation markers - skip if none found in project tree
+        if !companion.activation_markers.is_empty()
+            && !has_activation_marker(abs_path, &companion.activation_markers)
+        {
+            ovim::lsp_debug!(
+                "LSP",
+                "Skipping companion {} - no activation markers found",
+                companion.name
+            );
+            continue;
+        }
+
+        // Find companion server command
+        let server_command = match find_companion_command(companion) {
+            Some(cmd) => cmd,
+            None => {
+                if let Some(hint) = &companion.install_hint {
+                    ovim::lsp_info!(
+                        "LSP",
+                        "Companion {} not found. {}",
+                        companion.name,
+                        hint
+                    );
+                } else {
+                    ovim::lsp_info!(
+                        "LSP",
+                        "Companion {} not found (command: {})",
+                        companion.name,
+                        companion.command
+                    );
+                }
+                continue;
+            }
+        };
+
+        // Find project root using companion's root markers
+        let root_path = if companion.root_markers.is_empty() {
+            find_project_root(abs_path, &[]) // Falls back to file's directory
+        } else {
+            find_project_root(abs_path, &companion.root_markers)
+        };
+
+        let server_id = companion_server_id(language_id, &companion.id);
+
+        ovim::lsp_info!(
+            "LSP",
+            "Starting companion {} (server_id={}, command={}, root={})",
+            companion.name,
+            server_id,
+            server_command,
+            root_path.display()
+        );
+
+        match lsp_manager
+            .start_companion_server(&server_id, &server_command, companion.args.clone(), &root_path)
+            .await
+        {
+            Ok(_) => {
+                // Start notification listener for companion
+                lsp_manager
+                    .start_notification_listener(server_id.clone())
+                    .await;
+
+                // Send didOpen to companion for current file
+                if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                    let content = editor.buffer().rope().to_string();
+                    if let Some(uri) = uri_from_file_path(&file_path) {
+                        let _ = lsp_manager.did_open(uri, &server_id, 1, content).await;
+                        ovim::lsp_debug!(
+                            "LSP",
+                            "Sent didOpen to companion {} for {}",
+                            companion.name,
+                            file_path
+                        );
+                    }
+                }
+
+                ovim::lsp_info!("LSP", "Companion {} ready", companion.name);
+            }
+            Err(e) => {
+                // Log but don't fail - companions are optional
+                ovim::lsp_warn!(
+                    "LSP",
+                    "Failed to start companion {}: {}",
+                    companion.name,
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// Check if any activation marker exists in the project tree
+/// Walks up from the file path looking for marker files
+fn has_activation_marker(file_path: &Path, markers: &[String]) -> bool {
+    let mut current = file_path.parent();
+    while let Some(dir) = current {
+        for marker in markers {
+            if dir.join(marker).exists() {
+                return true;
+            }
+        }
+        current = dir.parent();
+    }
+    false
+}
+
+/// Find companion server command (primary + fallbacks)
+fn find_companion_command(companion: &CompanionLspConfig) -> Option<String> {
+    // Try primary command in PATH
+    if which::which(&companion.command).is_ok() {
+        return Some(companion.command.clone());
+    }
+
+    // Try fallback commands
+    for fallback in &companion.fallback_commands {
+        let expanded = shellexpand::tilde(fallback).to_string();
+        if std::path::Path::new(&expanded).exists() {
+            return Some(expanded);
+        }
+        if which::which(&expanded).is_ok() {
+            return Some(expanded);
+        }
+    }
+
+    None
 }
 
 /// Determine language ID for LSP initialization

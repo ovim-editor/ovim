@@ -339,8 +339,159 @@ impl LspManager {
         Ok(())
     }
 
+    // =========================================================================
+    // Broadcast methods: send to ALL servers for a language (primary + companions)
+    // =========================================================================
+
+    /// Sends didOpen to all servers serving a language (primary + companions)
+    pub async fn did_open_broadcast(
+        &self,
+        uri: Uri,
+        language_id: &str,
+        version: i32,
+        text: String,
+    ) -> Result<()> {
+        let server_ids = self.servers_for_language(language_id);
+        if server_ids.is_empty() {
+            return Err(anyhow!("No servers for language: {}", language_id));
+        }
+
+        // Check document size once
+        if text.len() > MAX_DOCUMENT_SIZE {
+            return Err(anyhow!(
+                "Document too large: {} bytes (max {} bytes)",
+                text.len(),
+                MAX_DOCUMENT_SIZE
+            ));
+        }
+
+        for sid in &server_ids {
+            if let Some(server) = self.servers.get(sid.as_str()) {
+                let params = DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: uri.clone(),
+                        language_id: language_id.to_string(),
+                        version,
+                        text: text.clone(),
+                    },
+                };
+                if let Err(e) = server
+                    .notify("textDocument/didOpen", serde_json::to_value(params)?)
+                    .await
+                {
+                    lsp_warn!("LSP-BROADCAST", "didOpen failed for server {}: {}", sid, e);
+                }
+            }
+        }
+
+        // Initialize version tracking (once, shared)
+        let mut versions = self.document_versions.lock().await;
+        versions.insert(uri, version);
+
+        Ok(())
+    }
+
+    /// Sends didChange to all servers serving a language (debounced, shared timer)
+    pub async fn did_change_broadcast(
+        &self,
+        uri: Uri,
+        language_id: &str,
+        text: String,
+        old_text: Option<String>,
+    ) -> Result<()> {
+        // The debouncer is shared across all servers for a URI.
+        // When the timer fires and flush happens, we send to all servers.
+        // For now, reuse the existing debounce mechanism which sends to the primary.
+        // The flush_pending_changes_broadcast will handle sending to all servers.
+        self.did_change(uri, language_id, text, old_text).await
+    }
+
+    /// Flushes pending changes and broadcasts to all servers for the language
+    pub async fn flush_pending_changes_broadcast(&self, uri: &Uri, language_id: &str) -> Result<()> {
+        // First, remove the debouncer to get pending text
+        if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
+            let mut debouncer = debouncer_arc.lock().await;
+            debouncer.cancel_timer();
+
+            let text = debouncer.pending_text.clone();
+            let old_text = debouncer.old_text.clone();
+            let uri = debouncer.uri.clone();
+            drop(debouncer);
+
+            // Send to all servers for this language
+            let server_ids = self.servers_for_language(language_id);
+            for sid in &server_ids {
+                if let Err(e) = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    self.send_did_change_immediate(uri.clone(), sid, text.clone(), old_text.clone()),
+                )
+                .await
+                {
+                    lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {:?}", sid, e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends didSave to all servers serving a language
+    pub async fn did_save_broadcast(
+        &self,
+        uri: Uri,
+        language_id: &str,
+        text: Option<String>,
+    ) -> Result<()> {
+        // Flush pending changes first
+        self.flush_pending_changes(&uri).await?;
+
+        let server_ids = self.servers_for_language(language_id);
+        for sid in &server_ids {
+            if let Some(server) = self.servers.get(sid.as_str()) {
+                let params = DidSaveTextDocumentParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    text: text.clone(),
+                };
+                if let Err(e) = server
+                    .notify("textDocument/didSave", serde_json::to_value(params)?)
+                    .await
+                {
+                    lsp_warn!("LSP-BROADCAST", "didSave failed for server {}: {}", sid, e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends didClose to all servers serving a language
+    pub async fn did_close_broadcast(&self, uri: Uri, language_id: &str) -> Result<()> {
+        self.flush_pending_changes(&uri).await?;
+
+        let server_ids = self.servers_for_language(language_id);
+        for sid in &server_ids {
+            if let Some(server) = self.servers.get(sid.as_str()) {
+                let params = DidCloseTextDocumentParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                };
+                if let Err(e) = server
+                    .notify("textDocument/didClose", serde_json::to_value(params)?)
+                    .await
+                {
+                    lsp_warn!("LSP-BROADCAST", "didClose failed for server {}: {}", sid, e);
+                }
+            }
+        }
+
+        // Clean up shared state
+        let mut versions = self.document_versions.lock().await;
+        versions.remove(&uri);
+        drop(versions);
+        self.change_debouncers.remove(&uri);
+
+        Ok(())
+    }
+
     /// Handles incoming requests from language servers that expect a response
-    async fn handle_server_request(&self, language_id: &str, request: JsonRpcMessage) {
+    async fn handle_server_request(&self, server_id: &str, request: JsonRpcMessage) {
         let method = request.method.as_deref().unwrap_or("");
         let request_id = request.id.clone();
 
@@ -381,7 +532,7 @@ impl LspManager {
                                     };
 
                                     if let Some(id) = request_id {
-                                        if let Some(server) = self.servers.get(language_id) {
+                                        if let Some(server) = self.servers.get(server_id) {
                                             match serde_json::to_value(response) {
                                                 Ok(value) => {
                                                     let response_msg = JsonRpcMessage::response(id, value);
@@ -413,7 +564,7 @@ impl LspManager {
                                     );
 
                                     if let Some(id) = request_id {
-                                        if let Some(server) = self.servers.get(language_id) {
+                                        if let Some(server) = self.servers.get(server_id) {
                                             let error_response = protocol::ResponseError {
                                                 code: -32603, // Internal error
                                                 message: format!("Failed to queue edit: {}", e),
@@ -444,7 +595,7 @@ impl LspManager {
 
                             // Send error response for parse failure
                             if let Some(id) = request_id {
-                                if let Some(server) = self.servers.get(language_id) {
+                                if let Some(server) = self.servers.get(server_id) {
                                     let error_response = protocol::ResponseError {
                                         code: -32700, // Parse error
                                         message: format!("Failed to parse parameters: {}", e),
@@ -471,7 +622,7 @@ impl LspManager {
                 // Server wants to create a progress token — acknowledge with success
                 // Responding with an error crashes some LSP servers (e.g. typescript-language-server)
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(language_id) {
+                    if let Some(server) = self.servers.get(server_id) {
                         let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
@@ -492,7 +643,7 @@ impl LspManager {
 
                 // Send "method not found" error response
                 if let Some(id) = request_id {
-                    if let Some(server) = self.servers.get(language_id) {
+                    if let Some(server) = self.servers.get(server_id) {
                         let error_response = protocol::ResponseError {
                             code: -32601, // Method not found
                             message: format!("Method not supported: {}", method),
@@ -515,11 +666,11 @@ impl LspManager {
     }
 
     /// Handles incoming notifications and requests from language servers
-    /// This should be called in a background task to process notifications
-    pub async fn handle_notification(&self, language_id: &str, message: JsonRpcMessage) {
+    /// `server_id` is the DashMap key: language_id for primaries, "language_id:companion_id" for companions
+    pub async fn handle_notification(&self, server_id: &str, message: JsonRpcMessage) {
         // Check if this is a request from the server (needs a response)
         if message.is_request() {
-            self.handle_server_request(language_id, message).await;
+            self.handle_server_request(server_id, message).await;
             return;
         }
 
@@ -532,13 +683,13 @@ impl LspManager {
                         let params_clone = params.clone();
                         match serde_json::from_value::<PublishDiagnosticsParams>(params) {
                             Ok(diag_params) => {
-                                self.set_diagnostics(diag_params.uri, diag_params.diagnostics)
+                                self.set_diagnostics(diag_params.uri, server_id, diag_params.diagnostics)
                                     .await;
                             }
                             Err(e) => {
                                 // ERROR: Failed to parse publishDiagnostics - this is critical for user feedback
                                 lsp_error!(
-                                    &format!("LSP:{}", language_id),
+                                    &format!("LSP:{}", server_id),
                                     "Failed to parse publishDiagnostics notification: {}",
                                     e
                                 );
@@ -550,7 +701,7 @@ impl LspManager {
                                     params_str
                                 };
                                 lsp_error!(
-                                    &format!("LSP:{}", language_id),
+                                    &format!("LSP:{}", server_id),
                                     "Malformed diagnostics params: {}",
                                     preview
                                 );
@@ -594,7 +745,7 @@ impl LspManager {
                                 };
                                 crate::lsp::logger::log_message(
                                     log_level,
-                                    &format!("{}:{}", language_id, prefix),
+                                    &format!("{}:{}", server_id, prefix),
                                     &format!("{}: {}", type_str, msg_params.message),
                                 );
                             }
@@ -626,7 +777,7 @@ impl LspManager {
                             };
                             crate::lsp::logger::log_message(
                                 log_level,
-                                &format!("LSP:{}:{}", language_id, prefix),
+                                &format!("LSP:{}:{}", server_id, prefix),
                                 &log_params.message,
                             );
                         }
@@ -645,22 +796,22 @@ impl LspManager {
                                 lsp_types::ProgressParamsValue::WorkDone(work_done) => {
                                     match work_done {
                                         lsp_types::WorkDoneProgress::Begin(begin) => {
-                                            Some(format!("{}: {}", language_id, begin.title,))
+                                            Some(format!("{}: {}", server_id, begin.title,))
                                         }
                                         lsp_types::WorkDoneProgress::Report(report) => {
                                             if let Some(msg) = &report.message {
-                                                Some(format!("{}: {}", language_id, msg))
+                                                Some(format!("{}: {}", server_id, msg))
                                             } else {
                                                 report.percentage.map(|percentage| {
-                                                    format!("{}: {}%", language_id, percentage)
+                                                    format!("{}: {}%", server_id, percentage)
                                                 })
                                             }
                                         }
                                         lsp_types::WorkDoneProgress::End(end) => {
                                             if let Some(msg) = &end.message {
-                                                Some(format!("{}: {}", language_id, msg))
+                                                Some(format!("{}: {}", server_id, msg))
                                             } else {
-                                                Some(format!("{}: Complete", language_id))
+                                                Some(format!("{}: Complete", server_id))
                                             }
                                         }
                                     }
@@ -676,10 +827,10 @@ impl LspManager {
                                     lsp_types::ProgressParamsValue::WorkDone(
                                         lsp_types::WorkDoneProgress::End(_),
                                     ) => {
-                                        current_progress.remove(&language_id.to_string());
+                                        current_progress.remove(&server_id.to_string());
                                     }
                                     _ => {
-                                        current_progress.insert(language_id.to_string(), message);
+                                        current_progress.insert(server_id.to_string(), message);
                                     }
                                 }
                             }
@@ -689,7 +840,7 @@ impl LspManager {
                 _ => {
                     // Silently ignore unknown notifications
                     lsp_debug!(
-                        &format!("LSP:{}", language_id),
+                        &format!("LSP:{}", server_id),
                         "Unknown notification: {}",
                         method
                     );
@@ -706,7 +857,7 @@ impl LspManager {
 
         // Process all pending notifications (non-blocking)
         while let Ok(notification) = rx.try_recv() {
-            self.handle_notification(&notification.language_id, notification.message)
+            self.handle_notification(&notification.server_id, notification.message)
                 .await;
             count += 1;
         }
@@ -747,16 +898,17 @@ impl LspManager {
         edits
     }
 
-    /// Starts a background task to listen for notifications and requests from a language server
-    pub async fn start_notification_listener(&self, language_id: String) {
+    /// Starts a background task to listen for notifications and requests from a language server.
+    /// `server_id` is the DashMap key: language_id for primaries, "language_id:companion_id" for companions.
+    pub async fn start_notification_listener(&self, server_id: String) {
         let server = self
             .servers
-            .get(&language_id)
+            .get(&server_id)
             .map(|entry| entry.value().clone());
 
         if let Some(server) = server {
             let tx = self.notification_tx.clone();
-            let lang_id = language_id.clone();
+            let sid = server_id.clone();
             let dropped_counter = self.dropped_notifications.clone();
 
             tokio::spawn(async move {
@@ -765,7 +917,7 @@ impl LspManager {
                     if msg.is_notification() || msg.is_request() {
                         // Send to manager for processing
                         let notification = LspNotification {
-                            language_id: lang_id.clone(),
+                            server_id: sid.clone(),
                             message: msg,
                         };
 

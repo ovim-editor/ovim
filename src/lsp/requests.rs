@@ -1413,4 +1413,377 @@ impl LspManager {
         }
         Ok(None)
     }
+
+    // =========================================================================
+    // Multi-server fan-out methods
+    // =========================================================================
+
+    /// Hover from multiple servers, concatenating results with separator.
+    /// Queries all servers concurrently with a 3s per-server timeout.
+    pub async fn hover_multi(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        server_ids: &[String],
+    ) -> Result<Option<String>> {
+        use std::time::Duration;
+
+        let mut futures = Vec::new();
+        for sid in server_ids {
+            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
+            if let Some(server) = server {
+                let uri = uri.clone();
+                let sid = sid.clone();
+                futures.push(tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        Self::hover_on_server(&server, &uri, line, character),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(text)) => text,
+                        Ok(Err(e)) => {
+                            lsp_debug!("LSP-HOVER-MULTI", "Server {} failed: {}", sid, e);
+                            None
+                        }
+                        Err(_) => {
+                            lsp_debug!("LSP-HOVER-MULTI", "Server {} timed out", sid);
+                            None
+                        }
+                    }
+                }));
+            }
+        }
+
+        let mut texts = Vec::new();
+        for f in futures {
+            if let Ok(Some(text)) = f.await {
+                texts.push(text);
+            }
+        }
+
+        if texts.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(texts.join("\n\n---\n\n")))
+        }
+    }
+
+    /// Internal: hover on a single server (used by hover_multi)
+    async fn hover_on_server(
+        server: &super::LanguageServer,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<String>> {
+        use lsp_types::{
+            HoverParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
+        };
+
+        if !server.supports_hover().await {
+            return Ok(None);
+        }
+
+        let params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/hover", serde_json::to_value(params)?)
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let response: Option<lsp_types::Hover> = serde_json::from_value(result).ok();
+        Ok(response.and_then(|hover| match hover.contents {
+            lsp_types::HoverContents::Scalar(content) => {
+                Some(marked_string_to_text(content))
+            }
+            lsp_types::HoverContents::Array(mut contents) => {
+                if contents.is_empty() {
+                    None
+                } else if contents.len() == 1 {
+                    Some(marked_string_to_text(contents.remove(0)))
+                } else {
+                    let texts: Vec<String> =
+                        contents.into_iter().map(marked_string_to_text).collect();
+                    Some(texts.join("\n\n"))
+                }
+            }
+            lsp_types::HoverContents::Markup(content) => Some(content.value),
+        }))
+    }
+
+    /// Completion from multiple servers, concatenating result lists.
+    pub async fn completion_multi(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        server_ids: &[String],
+    ) -> Result<Vec<lsp_types::CompletionItem>> {
+        use std::time::Duration;
+
+        let mut futures = Vec::new();
+        for sid in server_ids {
+            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
+            if let Some(server) = server {
+                let uri = uri.clone();
+                let sid = sid.clone();
+                futures.push(tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        Self::completion_on_server(&server, &uri, line, character),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(items)) => items,
+                        Ok(Err(e)) => {
+                            lsp_debug!("LSP-COMPLETION-MULTI", "Server {} failed: {}", sid, e);
+                            Vec::new()
+                        }
+                        Err(_) => {
+                            lsp_debug!("LSP-COMPLETION-MULTI", "Server {} timed out", sid);
+                            Vec::new()
+                        }
+                    }
+                }));
+            }
+        }
+
+        let mut all_items = Vec::new();
+        for f in futures {
+            if let Ok(items) = f.await {
+                all_items.extend(items);
+            }
+        }
+
+        Ok(all_items)
+    }
+
+    /// Internal: completion on a single server
+    async fn completion_on_server(
+        server: &super::LanguageServer,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+    ) -> Result<Vec<lsp_types::CompletionItem>> {
+        use lsp_types::{
+            CompletionParams, CompletionResponse, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
+
+        if !server.supports_completion().await {
+            return Ok(Vec::new());
+        }
+
+        let params = CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        let result = server
+            .request("textDocument/completion", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<CompletionResponse> = serde_json::from_value(result).ok();
+        Ok(response
+            .map(|resp| match resp {
+                CompletionResponse::Array(items) => items,
+                CompletionResponse::List(list) => list.items,
+            })
+            .unwrap_or_default())
+    }
+
+    /// Goto definition from multiple servers, returning first non-empty result.
+    pub async fn goto_definition_multi(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        server_ids: &[String],
+    ) -> Result<Option<lsp_types::Location>> {
+        use std::time::Duration;
+
+        // Query all servers concurrently
+        let mut futures = Vec::new();
+        for sid in server_ids {
+            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
+            if let Some(server) = server {
+                let uri = uri.clone();
+                let sid = sid.clone();
+                futures.push(tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        Self::goto_definition_on_server(&server, &uri, line, character),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(loc)) => loc,
+                        Ok(Err(e)) => {
+                            lsp_debug!("LSP-GOTO-MULTI", "Server {} failed: {}", sid, e);
+                            None
+                        }
+                        Err(_) => {
+                            lsp_debug!("LSP-GOTO-MULTI", "Server {} timed out", sid);
+                            None
+                        }
+                    }
+                }));
+            }
+        }
+
+        // Return first non-empty result
+        for f in futures {
+            if let Ok(Some(loc)) = f.await {
+                return Ok(Some(loc));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Internal: goto definition on a single server
+    async fn goto_definition_on_server(
+        server: &super::LanguageServer,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<lsp_types::Location>> {
+        use lsp_types::{
+            GotoDefinitionParams, GotoDefinitionResponse, Position, TextDocumentIdentifier,
+            TextDocumentPositionParams,
+        };
+
+        if !server.supports_goto_definition().await {
+            return Ok(None);
+        }
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/definition", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+        Ok(response.and_then(|resp| match resp {
+            GotoDefinitionResponse::Scalar(location) => Some(location),
+            GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
+            GotoDefinitionResponse::Link(links) => {
+                links.into_iter().next().map(|link| lsp_types::Location {
+                    uri: link.target_uri,
+                    range: link.target_selection_range,
+                })
+            }
+        }))
+    }
+
+    /// Code actions from multiple servers, concatenating result lists.
+    pub async fn code_actions_multi(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        server_ids: &[String],
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
+        use std::time::Duration;
+
+        let mut futures = Vec::new();
+        for sid in server_ids {
+            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
+            if let Some(server) = server {
+                let uri = uri.clone();
+                let sid = sid.clone();
+                let diags = diagnostics.clone();
+                futures.push(tokio::spawn(async move {
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        Self::code_actions_on_server(&server, &uri, line, character, diags),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(actions)) => actions,
+                        Ok(Err(e)) => {
+                            lsp_debug!("LSP-ACTIONS-MULTI", "Server {} failed: {}", sid, e);
+                            Vec::new()
+                        }
+                        Err(_) => {
+                            lsp_debug!("LSP-ACTIONS-MULTI", "Server {} timed out", sid);
+                            Vec::new()
+                        }
+                    }
+                }));
+            }
+        }
+
+        let mut all_actions = Vec::new();
+        for f in futures {
+            if let Ok(actions) = f.await {
+                all_actions.extend(actions);
+            }
+        }
+
+        Ok(all_actions)
+    }
+
+    /// Internal: code actions on a single server
+    async fn code_actions_on_server(
+        server: &super::LanguageServer,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
+        use lsp_types::{
+            CodeActionContext, CodeActionParams, Position, Range, TextDocumentIdentifier,
+        };
+
+        if !server.supports_code_actions().await {
+            return Ok(Vec::new());
+        }
+
+        let range = Range {
+            start: Position { line, character },
+            end: Position { line, character },
+        };
+
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            range,
+            context: CodeActionContext {
+                diagnostics,
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = server
+            .request("textDocument/codeAction", serde_json::to_value(params)?)
+            .await?;
+
+        let response: Option<Vec<lsp_types::CodeActionOrCommand>> =
+            serde_json::from_value(result).ok();
+        Ok(response.unwrap_or_default())
+    }
 }
