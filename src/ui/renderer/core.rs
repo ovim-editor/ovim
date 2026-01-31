@@ -17,9 +17,11 @@ use super::buffer::render_buffer;
 use super::dashboard::render_dashboard;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
-use super::widgets::{
-    render_command_line, render_completion_menu, render_diagnostic_badge, render_file_tree,
-    render_hover_window, render_message_line, render_path_completion, render_picker,
+use super::file_tree_widget::render_file_tree;
+use super::overlays::{render_completion_menu, render_hover_window};
+use super::picker_widget::render_picker;
+use super::status_widgets::{
+    render_command_line, render_diagnostic_badge, render_message_line, render_path_completion,
     render_progress_line, render_rename_input, render_search_line, render_status_line,
     render_tab_bar,
 };
@@ -322,7 +324,7 @@ fn set_cursor_position(
 
     if editor.mode() == crate::mode::Mode::Picker {
         if let Some(picker) = editor.picker() {
-            let picker_area = super::widgets::get_picker_area(frame.area());
+            let picker_area = super::picker_widget::get_picker_area(frame.area());
             // Inner area is picker_area inset by 1 on each side (border)
             let inner_x = picker_area.x + 1;
             let inner_width = picker_area.width.saturating_sub(2) as usize;

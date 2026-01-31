@@ -1,18 +1,15 @@
 use crate::editor::Editor;
 use crate::syntax::HighlightGroup;
 use ratatui::{
-    buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
     Frame,
 };
 use std::ops::Range;
-use unicode_width::UnicodeWidthStr;
 
 use super::helpers::{expand_tabs, expand_tabs_with_mapping, truncate_to_width};
-use super::layout::OverlayContext;
 use super::styles::remap_highlights;
 
 // Picker color palette — single point of tuning for the entire fuzzy finder UI
@@ -51,7 +48,7 @@ impl Fill {
 }
 
 impl Widget for Fill {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    fn render(self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 buf[(x, y)].set_char(' ').set_style(self.style);
@@ -99,830 +96,6 @@ fn find_highlight_at_byte(
     None
 }
 
-/// Renders the LSP progress line (just above status line)
-pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
-    // Right-align the progress message
-    let padding_len = area.width.saturating_sub(progress_msg.len() as u16 + 2);
-    let progress_line = Line::from(vec![
-        Span::raw(" ".repeat(padding_len as usize)),
-        Span::styled(
-            format!(" {} ", progress_msg),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC),
-        ),
-    ]);
-
-    let paragraph = Paragraph::new(progress_line).style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, area);
-}
-
-/// Renders the tab bar with overflow handling
-pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let tabs = editor.tab_page_manager().tabs();
-    let current_index = editor.current_tab_index();
-
-    if tabs.is_empty() {
-        // No tabs to render
-        let tab_line = Line::from(Span::styled(
-            " ".repeat(area.width as usize),
-            Style::default().bg(Color::Black),
-        ));
-        let paragraph = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
-        frame.render_widget(paragraph, area);
-        return;
-    }
-
-    let mut spans = Vec::new();
-    let available_width = area.width as usize;
-
-    // Calculate tab widths
-    const MIN_TAB_WIDTH: usize = 10; // Minimum width per tab: " 1 file "
-    const SEPARATOR_WIDTH: usize = 1; // Space between tabs
-    const OVERFLOW_INDICATOR_WIDTH: usize = 12; // Width for " +N more"
-
-    // Calculate how much space each tab would need
-    let mut tab_widths: Vec<usize> = Vec::new();
-    let mut total_width = 0;
-
-    for (i, _tab) in tabs.iter().enumerate() {
-        let title = editor.get_tab_title(i);
-        let tab_text = format!(" {} {} ", i + 1, title);
-        let tab_width = tab_text.len();
-        tab_widths.push(tab_width);
-        total_width += tab_width;
-        if i < tabs.len() - 1 {
-            total_width += SEPARATOR_WIDTH; // Account for separators
-        }
-    }
-
-    // Check if we need to handle overflow
-    if total_width > available_width {
-        // Too many tabs - need to show subset
-        // Always show the current tab, then fill in surrounding tabs
-        let mut visible_tabs = Vec::new();
-
-        // Start with current tab
-        let current_tab_width = tab_widths[current_index].max(MIN_TAB_WIDTH);
-        visible_tabs.push(current_index);
-        let mut used_width = current_tab_width + OVERFLOW_INDICATOR_WIDTH;
-
-        // Try to add tabs before and after current tab alternately
-        let mut before_idx = current_index.saturating_sub(1);
-        let mut after_idx = current_index + 1;
-        let mut add_before = current_index > 0;
-        let mut add_after = after_idx < tabs.len();
-
-        while (add_before || add_after) && used_width < available_width {
-            if add_before {
-                let tab_width = tab_widths[before_idx].max(MIN_TAB_WIDTH) + SEPARATOR_WIDTH;
-                if used_width + tab_width <= available_width.saturating_sub(OVERFLOW_INDICATOR_WIDTH) {
-                    visible_tabs.insert(0, before_idx);
-                    used_width += tab_width;
-                    if before_idx > 0 {
-                        before_idx -= 1;
-                    } else {
-                        add_before = false;
-                    }
-                } else {
-                    add_before = false;
-                }
-            }
-
-            if add_after && used_width < available_width {
-                let tab_width = tab_widths[after_idx].max(MIN_TAB_WIDTH) + SEPARATOR_WIDTH;
-                if used_width + tab_width <= available_width.saturating_sub(OVERFLOW_INDICATOR_WIDTH) {
-                    visible_tabs.push(after_idx);
-                    used_width += tab_width;
-                    after_idx += 1;
-                    if after_idx >= tabs.len() {
-                        add_after = false;
-                    }
-                } else {
-                    add_after = false;
-                }
-            }
-        }
-
-        // Show overflow indicator at the beginning if needed
-        let hidden_before = visible_tabs.first().copied().unwrap_or(0);
-        if hidden_before > 0 {
-            let overflow_text = format!(" +{} ", hidden_before);
-            spans.push(Span::styled(
-                overflow_text,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ));
-            spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
-        }
-
-        // Render visible tabs
-        for (idx, &tab_idx) in visible_tabs.iter().enumerate() {
-            let is_current = tab_idx == current_index;
-            let title = editor.get_tab_title(tab_idx);
-            let tab_text = format!(" {} {} ", tab_idx + 1, title);
-
-            let style = if is_current {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White).bg(Color::DarkGray)
-            };
-
-            spans.push(Span::styled(tab_text, style));
-
-            // Add separator between tabs
-            if idx < visible_tabs.len() - 1 {
-                spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
-            }
-        }
-
-        // Show overflow indicator at the end if needed
-        let hidden_after = tabs.len().saturating_sub(visible_tabs.last().copied().unwrap_or(0) + 1);
-        if hidden_after > 0 {
-            spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
-            let overflow_text = format!(" +{} ", hidden_after);
-            spans.push(Span::styled(
-                overflow_text,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ));
-        }
-    } else {
-        // All tabs fit - render normally
-        for (i, _tab) in tabs.iter().enumerate() {
-            let is_current = i == current_index;
-            let title = editor.get_tab_title(i);
-            let tab_text = format!(" {} {} ", i + 1, title);
-
-            let style = if is_current {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White).bg(Color::DarkGray)
-            };
-
-            spans.push(Span::styled(tab_text, style));
-
-            // Add separator between tabs
-            if i < tabs.len() - 1 {
-                spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
-            }
-        }
-    }
-
-    // Fill rest of line with background color
-    let content_width: usize = spans.iter().map(|s| s.content.len()).sum();
-    let remaining = (area.width as usize).saturating_sub(content_width);
-    if remaining > 0 {
-        spans.push(Span::styled(
-            " ".repeat(remaining),
-            Style::default().bg(Color::Black),
-        ));
-    }
-
-    let tab_line = Line::from(spans);
-    let paragraph = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, area);
-}
-
-/// Renders the status line
-pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let mode = editor.mode();
-    let buffer = editor.buffer();
-    let cursor = buffer.cursor();
-
-    // Build status line content
-    let mode_indicator = format!(" {} ", mode.display_name());
-    let recording_indicator = if editor.is_recording_macro() {
-        if let Some(reg) = editor.recording_register() {
-            format!(" recording @{} ", reg)
-        } else {
-            " recording ".to_string()
-        }
-    } else {
-        String::new()
-    };
-    let position = format!(" {}:{} ", cursor.line() + 1, cursor.col() + 1);
-    let modified = if editor.is_modified() { " [+] " } else { " " };
-    let file = buffer.file_path().unwrap_or("[No Name]");
-
-    // Get diagnostic counts
-    let (errors, warnings, _info, _hints) = editor.cached_diagnostic_count();
-    let diagnostics = if errors > 0 || warnings > 0 {
-        format!(" E:{} W:{} ", errors, warnings)
-    } else {
-        String::new()
-    };
-
-    // Get LSP status
-    let lsp_status = if !editor.lsp_status().is_empty() {
-        format!(" {} ", editor.lsp_status())
-    } else if !editor.active_lsp_servers().is_empty() {
-        " LSP ".to_string()
-    } else {
-        String::new()
-    };
-
-    // Calculate padding accounting for all elements including recording indicator
-    let recording_len = if !recording_indicator.is_empty() {
-        recording_indicator.len() + 1 // +1 for space after mode
-    } else {
-        1 // just the space after mode
-    };
-
-    let padding_len = (area.width as usize)
-        .saturating_sub(mode_indicator.len())
-        .saturating_sub(recording_len)
-        .saturating_sub(file.len())
-        .saturating_sub(modified.len())
-        .saturating_sub(diagnostics.len())
-        .saturating_sub(lsp_status.len())
-        .saturating_sub(position.len());
-
-    let mut spans = vec![Span::styled(
-        &mode_indicator,
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )];
-
-    // Add recording indicator if recording
-    if !recording_indicator.is_empty() {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            &recording_indicator,
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else {
-        spans.push(Span::raw(" "));
-    }
-
-    spans.push(Span::raw(file));
-    spans.push(Span::raw(modified));
-    spans.push(Span::raw(" ".repeat(padding_len)));
-
-    // Add diagnostics indicator if present
-    if !diagnostics.is_empty() {
-        spans.push(Span::styled(
-            &diagnostics,
-            Style::default().fg(Color::Black).bg(if errors > 0 {
-                Color::Red
-            } else {
-                Color::Yellow
-            }),
-        ));
-    }
-
-    // Add LSP status if present
-    if !lsp_status.is_empty() {
-        let lsp_color = if editor.lsp_status().contains("Failed")
-            || editor.lsp_status().contains("Error")
-        {
-            Color::Red
-        } else if editor.lsp_status().contains("ready") {
-            Color::Green
-        } else {
-            Color::Blue
-        };
-        spans.push(Span::styled(
-            &lsp_status,
-            Style::default().fg(Color::Black).bg(lsp_color),
-        ));
-    }
-
-    spans.push(Span::styled(
-        position,
-        Style::default().fg(Color::Black).bg(Color::Gray),
-    ));
-
-    let status_line = Line::from(spans);
-
-    let paragraph = Paragraph::new(status_line).style(Style::default().bg(Color::DarkGray));
-    frame.render_widget(paragraph, area);
-}
-
-/// Renders hover information as a floating window positioned near the cursor
-///
-/// In preview mode: renders markdown, any key dismisses
-/// In navigate mode: shows raw text, scrollable
-#[allow(clippy::too_many_arguments)]
-pub fn render_hover_window(
-    frame: &mut Frame,
-    editor: &Editor,
-    hover_text: &str,
-    scroll_offset: usize,
-    ctx: &OverlayContext,
-    hover_position: Option<(usize, usize)>,
-    is_preview: bool,
-    theme: &crate::syntax::Theme,
-    content_type: crate::editor::HoverContentType,
-) {
-    let layout = ctx.layout;
-    let viewport_start = ctx.viewport_start;
-    let buffer_area = layout.buffer_area;
-    use super::markdown::{colors, parse_markdown, render_markdown};
-
-    const MIN_WIDTH: u16 = 30;
-    const MAX_WIDTH: u16 = 80;
-    const MIN_HEIGHT: u16 = 3;
-    const MAX_HEIGHT: u16 = 15;
-
-    // Parse markdown for preview mode
-    let elements = parse_markdown(hover_text);
-    let rendered_lines = render_markdown(&elements, MAX_WIDTH as usize, Some(theme));
-    let total_lines = if is_preview {
-        rendered_lines.len()
-    } else {
-        hover_text.lines().count()
-    };
-
-    // Calculate content dimensions
-    let content_width = if is_preview {
-        rendered_lines
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.len())
-                    .sum::<usize>()
-            })
-            .max()
-            .unwrap_or(30)
-    } else {
-        hover_text.lines().map(|l| l.len()).max().unwrap_or(30)
-    };
-
-    let window_width = (content_width as u16 + 4)
-        .clamp(MIN_WIDTH, MAX_WIDTH)
-        .min(buffer_area.width.saturating_sub(4));
-
-    let window_height = (total_lines as u16 + 2)
-        .clamp(MIN_HEIGHT, MAX_HEIGHT)
-        .min(buffer_area.height.saturating_sub(2));
-
-    // Calculate cursor screen position
-    let (cursor_line, cursor_col) = hover_position.unwrap_or_else(|| {
-        let cursor = editor.buffer().cursor();
-        (cursor.line(), cursor.col())
-    });
-
-    let gutter_width = layout.gutter_width;
-
-    // Convert cursor to screen coordinates
-    let screen_line = cursor_line.saturating_sub(viewport_start);
-    let rope = editor.buffer().rope();
-    let line_text = if cursor_line < editor.buffer().line_count() {
-        rope.line(cursor_line).to_string()
-    } else {
-        String::new()
-    };
-    let line_text = line_text.trim_end_matches('\n');
-    let tab_width = editor.options.tab_width;
-    let display_col = super::helpers::char_col_to_display_col(line_text, cursor_col, tab_width);
-
-    let cursor_screen_x = buffer_area.x + gutter_width as u16 + display_col as u16;
-    let cursor_screen_y = buffer_area.y + screen_line as u16;
-
-    // Determine vertical position (prefer below, fallback to above)
-    let space_below = buffer_area.bottom().saturating_sub(cursor_screen_y + 1);
-    let space_above = cursor_screen_y.saturating_sub(buffer_area.y);
-
-    let window_y = if space_below >= window_height || space_below >= space_above {
-        // Position below cursor
-        (cursor_screen_y + 1).min(buffer_area.bottom().saturating_sub(window_height))
-    } else {
-        // Position above cursor
-        cursor_screen_y.saturating_sub(window_height)
-    };
-
-    // Determine horizontal position (start at cursor, shift left if needed)
-    let window_x = cursor_screen_x
-        .min(buffer_area.right().saturating_sub(window_width))
-        .max(buffer_area.x);
-
-    let window_area = Rect {
-        x: window_x,
-        y: window_y,
-        width: window_width,
-        height: window_height,
-    };
-
-    // Calculate visible content height
-    let content_height = window_height.saturating_sub(2) as usize;
-
-    // Clamp scroll offset
-    let max_scroll = total_lines.saturating_sub(content_height);
-    let clamped_scroll = scroll_offset.min(max_scroll);
-
-    // Create title based on content type
-    let title = match (is_preview, content_type) {
-        (true, crate::editor::HoverContentType::Diagnostic) => " Diagnostic ".to_string(),
-        (true, crate::editor::HoverContentType::LspHover) => " K: navigate ".to_string(),
-        (false, _) if total_lines > content_height => {
-            format!(" {}/{} j/k:scroll q:close ", clamped_scroll + 1, total_lines)
-        }
-        _ => " q to close ".to_string(),
-    };
-
-    // Render content based on mode
-    if is_preview {
-        // Render styled markdown
-        let visible_lines: Vec<ratatui::text::Line> = rendered_lines
-            .into_iter()
-            .skip(clamped_scroll)
-            .take(content_height)
-            .collect();
-
-        let paragraph = Paragraph::new(visible_lines)
-            .style(Style::default().bg(colors::BG))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(ratatui::widgets::BorderType::Rounded)
-                    .border_style(Style::default().fg(colors::BORDER))
-                    .title(title)
-                    .title_style(
-                        Style::default()
-                            .fg(colors::BORDER)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-            );
-
-        frame.render_widget(ratatui::widgets::Clear, window_area);
-        frame.render_widget(paragraph, window_area);
-    } else {
-        // Render raw text (navigate mode)
-        let all_lines: Vec<&str> = hover_text.lines().collect();
-        let visible_lines: Vec<String> = all_lines
-            .iter()
-            .skip(clamped_scroll)
-            .take(content_height)
-            .map(|line| format!(" {} ", line))
-            .collect();
-
-        let text = visible_lines.join("\n");
-
-        let paragraph = Paragraph::new(text)
-            .style(
-                Style::default()
-                    .bg(Color::Rgb(30, 30, 40))
-                    .fg(Color::Rgb(230, 230, 230)),
-            )
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(ratatui::widgets::BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Rgb(137, 180, 250)))
-                    .title(title)
-                    .title_style(
-                        Style::default()
-                            .fg(Color::Rgb(137, 180, 250))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-            )
-            .wrap(ratatui::widgets::Wrap { trim: false });
-
-        frame.render_widget(ratatui::widgets::Clear, window_area);
-        frame.render_widget(paragraph, window_area);
-    }
-}
-
-/// Renders the completion menu popup
-pub fn render_completion_menu(
-    frame: &mut Frame,
-    editor: &Editor,
-    ctx: &OverlayContext,
-) {
-    let layout = ctx.layout;
-    let viewport_start = ctx.viewport_start;
-    let buffer_area = layout.buffer_area;
-    let completion_menu = editor.completion_menu();
-    if !completion_menu.is_visible() {
-        return;
-    }
-
-    let items = completion_menu.items();
-    if items.is_empty() {
-        return;
-    }
-
-    // Get cursor position on screen
-    let cursor = editor.buffer().cursor();
-    let cursor_line = cursor.line();
-    let cursor_col = cursor.col();
-    let screen_line = cursor_line.saturating_sub(viewport_start);
-
-    // Get the line text and convert character column to display column
-    let rope = editor.buffer().rope();
-    let line_count = editor.buffer().line_count();
-    let line_text = if cursor_line < line_count {
-        rope.line(cursor_line).to_string()
-    } else {
-        String::new()
-    };
-    let line_text = line_text.trim_end_matches('\n');
-
-    // Convert character column to display column (accounting for tabs and emojis)
-    let tab_width = editor.options.tab_width;
-    let display_col = super::helpers::char_col_to_display_col(line_text, cursor_col, tab_width);
-
-    let gutter_width = layout.gutter_width;
-
-    // Position menu below cursor
-    let menu_x = buffer_area.x + gutter_width as u16 + display_col as u16;
-    let menu_y = buffer_area.y + screen_line as u16 + 1; // Below current line
-
-    // Determine menu dimensions
-    let max_items_to_show = 10;
-    let num_items = items.len().min(max_items_to_show);
-    let menu_height = num_items as u16 + 2; // +2 for borders
-
-    // Calculate width based on longest label
-    // Use UnicodeWidthStr::width() instead of len() because CJK characters
-    // are 2 columns wide while ASCII characters are 1 column wide
-    let max_label_len = items
-        .iter()
-        .take(max_items_to_show)
-        .map(|item| item.label.width())
-        .max()
-        .unwrap_or(20);
-    let menu_width = (max_label_len + 4).min(60) as u16; // +4 for padding and borders
-
-    // Adjust position if menu would go off screen
-    let menu_x = menu_x.min(buffer_area.width.saturating_sub(menu_width));
-    let menu_y = if menu_y + menu_height > buffer_area.y + buffer_area.height {
-        // Show above cursor if not enough space below
-        (buffer_area.y + screen_line as u16)
-            .saturating_sub(menu_height)
-            .max(buffer_area.y)
-    } else {
-        menu_y
-    };
-
-    let menu_area = Rect::new(
-        menu_x,
-        menu_y,
-        menu_width,
-        menu_height.min(buffer_area.height),
-    );
-
-    // Build menu lines
-    let selected_index = completion_menu.selected_index();
-    let mut lines = Vec::new();
-
-    for (idx, item) in items.iter().take(max_items_to_show).enumerate() {
-        let is_selected = idx == selected_index;
-        let style = if is_selected {
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().bg(Color::Rgb(40, 44, 52)).fg(Color::White)
-        };
-
-        // Format: "label"  or "  label" with selection indicator
-        let prefix = if is_selected { "> " } else { "  " };
-        let text = format!("{}{}", prefix, item.label);
-
-        lines.push(Line::from(Span::styled(text, style)));
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .style(Style::default().bg(Color::Rgb(40, 44, 52)));
-
-    let paragraph = Paragraph::new(lines).block(block);
-
-    // Clear background and render menu
-    frame.render_widget(ratatui::widgets::Clear, menu_area);
-    frame.render_widget(paragraph, menu_area);
-}
-
-/// Renders the file tree explorer
-pub fn render_file_tree(frame: &mut Frame, editor: &Editor, area: Rect) {
-    if !editor.file_tree().is_visible() {
-        return;
-    }
-
-    let tree = editor.file_tree();
-    let flattened = tree.flattened();
-    let selected_index = tree.selected_index();
-    let scroll_offset = tree.scroll_offset();
-
-    // Calculate viewport height (area height minus border rows)
-    let viewport_height = area.height.saturating_sub(1) as usize; // -1 for right border title area
-
-    // Create list items from the visible portion of the flattened tree
-    let items: Vec<ListItem> = flattened
-        .iter()
-        .enumerate()
-        .skip(scroll_offset)
-        .take(viewport_height)
-        .map(|(idx, node)| {
-            let indent = "  ".repeat(node.depth());
-            let icon = if node.is_dir() {
-                if node.is_expanded() {
-                    "▼ "
-                } else {
-                    "▶ "
-                }
-            } else {
-                "  "
-            };
-
-            let name = node.name();
-            let display = format!("{}{}{}", indent, icon, name);
-
-            let style = if idx == selected_index {
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else if node.is_dir() {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            ListItem::new(display).style(style)
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::RIGHT)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" Files ")
-                .title_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-        )
-        .style(Style::default().bg(Color::Rgb(30, 34, 42)));
-
-    frame.render_widget(list, area);
-}
-
-/// Renders the command line
-pub fn render_command_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let command_text = format!(":{}", editor.command_line());
-
-    let command_line = Line::from(vec![Span::styled(
-        command_text,
-        Style::default().fg(Color::White).bg(Color::Black),
-    )]);
-
-    let paragraph = Paragraph::new(command_line).style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, area);
-}
-
-/// Renders the path completion popup above the command line.
-pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: Rect) {
-    let state = editor.path_completion();
-    if !state.is_visible() {
-        return;
-    }
-
-    let entries = state.entries();
-    let selected = state.selected_index();
-
-    let max_visible = 10usize;
-    let num_items = entries.len().min(max_visible);
-    if num_items == 0 {
-        return;
-    }
-
-    // Scroll window so selected item is always visible.
-    let scroll_offset = if selected >= max_visible {
-        selected - max_visible + 1
-    } else {
-        0
-    };
-
-    let menu_height = num_items as u16 + 2; // +2 for borders
-    let max_name_len = entries
-        .iter()
-        .skip(scroll_offset)
-        .take(max_visible)
-        .map(|e| {
-            let display_len = e.name.width();
-            if e.is_dir { display_len + 1 } else { display_len }
-        })
-        .max()
-        .unwrap_or(20);
-    let menu_width = (max_name_len + 4).min(60).max(20) as u16;
-
-    // Position above the status line, left-aligned.
-    let menu_y = status_area.y.saturating_sub(menu_height);
-    let menu_x = status_area.x;
-    let menu_area = Rect::new(
-        menu_x,
-        menu_y,
-        menu_width.min(status_area.width),
-        menu_height,
-    );
-
-    // Build list items.
-    let items: Vec<ListItem> = entries
-        .iter()
-        .skip(scroll_offset)
-        .take(max_visible)
-        .enumerate()
-        .map(|(i, entry)| {
-            let display = if entry.is_dir {
-                format!("{}/", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            let is_selected = (i + scroll_offset) == selected;
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if entry.is_dir {
-                Style::default().fg(Color::Blue)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            ListItem::new(Line::from(Span::styled(display, style)))
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .style(Style::default().bg(Color::Black)),
-    );
-
-    frame.render_widget(ratatui::widgets::Clear, menu_area);
-    frame.render_widget(list, menu_area);
-}
-
-/// Renders the message line (command line area when not in command/search mode).
-/// Shows LSP status messages, command feedback, or blank.
-pub fn render_message_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let message = editor.lsp_status();
-    let text = if message.is_empty() {
-        String::new()
-    } else {
-        message.to_string()
-    };
-
-    let line = Line::from(vec![Span::styled(
-        text,
-        Style::default().fg(Color::White).bg(Color::Black),
-    )]);
-
-    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, area);
-}
-
-/// Renders the search line
-pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let search_prefix = if editor.search.search_forward { "/" } else { "?" };
-    let search_text = format!("{}{}", search_prefix, &editor.search.search_buffer);
-
-    let search_line = Line::from(vec![Span::styled(
-        search_text,
-        Style::default().fg(Color::White).bg(Color::Black),
-    )]);
-
-    let paragraph = Paragraph::new(search_line).style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, area);
-}
-
-/// Renders the rename input line
-pub fn render_rename_input(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let text = format!("rename: {}", editor.rename_buffer());
-
-    let line = Line::from(vec![Span::styled(
-        text,
-        Style::default().fg(Color::White).bg(Color::Black),
-    )]);
-
-    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
-    frame.render_widget(paragraph, area);
-}
-
 /// Calculates the picker overlay area (centered, takes up 80% of screen)
 pub fn get_picker_area(full_area: Rect) -> Rect {
     let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
@@ -955,11 +128,11 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
     frame.render_widget(Fill::bg(picker_colors::BG), picker_area);
 
     let mode_name = match picker.mode() {
-        crate::editor::PickerMode::FindFiles => " 󰈞 Find Files ",
-        crate::editor::PickerMode::LiveGrep => " 󰺮 Live Grep ",
-        crate::editor::PickerMode::Custom => " 󰒉 Select ",
-        crate::editor::PickerMode::Completion => "  Completion ",
-        crate::editor::PickerMode::LspLocations => " 󰘧 Navigation ",
+        crate::editor::PickerMode::FindFiles => " \u{f0224} Find Files ",
+        crate::editor::PickerMode::LiveGrep => " \u{f0dae} Live Grep ",
+        crate::editor::PickerMode::Custom => " \u{f0489} Select ",
+        crate::editor::PickerMode::Completion => " \u{f0} Completion ",
+        crate::editor::PickerMode::LspLocations => " \u{f0627} Navigation ",
     };
 
     // Build right-aligned result count for the title bar
@@ -1132,7 +305,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
         return;
     }
 
-    // Dual field mode: [search icon] query │ [filter icon] file_filter
+    // Dual field mode: [search icon] query | [filter icon] file_filter
     let active = picker.active_field();
     let filter_text = picker.file_filter();
     let total_width = area.width as usize;
@@ -1173,7 +346,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
 
     // Separator
     spans.push(Span::styled(
-        "│",
+        "\u{2502}",
         Style::default().fg(picker_colors::SEPARATOR).bg(picker_colors::BG),
     ));
 
@@ -1196,9 +369,9 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
     if filter_text.is_empty() && !filter_active {
         // Show placeholder hint
         let hint = if cfg!(target_os = "macos") {
-            "⌥→ file filter"
+            "\u{2325}\u{2192} file filter"
         } else {
-            "C-→ file filter"
+            "C-\u{2192} file filter"
         };
         let hint_len = 2 + hint.chars().count(); // icon + space + hint
         let hint_padding = filter_width.saturating_sub(hint_len);
@@ -1232,7 +405,7 @@ fn render_picker_query(frame: &mut Frame, picker: &crate::editor::Picker, area: 
 
 /// Renders the picker separator line
 fn render_picker_separator(frame: &mut Frame, area: Rect) {
-    let separator = "─".repeat(area.width as usize);
+    let separator = "\u{2500}".repeat(area.width as usize);
     let separator_line = Line::from(Span::styled(
         separator,
         Style::default()
@@ -1378,7 +551,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
             let icon_style = Style::default().fg(icon_color).bg(bg_color)
                 .add_modifier(if is_selected { Modifier::BOLD } else { Modifier::empty() });
 
-            let prefix = if is_selected { " ▸ " } else { "   " };
+            let prefix = if is_selected { " \u{25b8} " } else { "   " };
 
             let mut spans = vec![
                 Span::styled(icon.to_string(), icon_style),
@@ -1458,7 +631,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     let mut all_lines = visible_results;
 
     if total == 0 {
-        let text = "  󰍉 No matches found";
+        let text = "  \u{f0349} No matches found";
         let padding = result_width.saturating_sub(text.chars().count());
         all_lines.push(Line::from(vec![
             Span::styled(
@@ -1515,7 +688,7 @@ fn render_picker_preview(
         Some((p, is_stale)) => (p, is_stale),
         None => {
             // No preview available at all (first time opening picker)
-            let loading_msg = " 󰦖  Loading preview...";
+            let loading_msg = " \u{f0996}  Loading preview...";
             let paragraph = Paragraph::new(loading_msg)
                 .style(
                     Style::default()
@@ -1643,7 +816,7 @@ fn render_preview_with_syntax(
         // Expand tabs in preview content and get byte mapping
         let (line_text, tab_mapping) = expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
 
-        // Truncate line to fit width (line number prefix is 7 chars: "  1 │ ")
+        // Truncate line to fit width (line number prefix is 7 chars: "  1 | ")
         let content_width = area.width.saturating_sub(7) as usize;
         let line_text = truncate_to_width(&line_text, content_width);
 
@@ -1661,7 +834,7 @@ fn render_preview_with_syntax(
         let mut spans = Vec::new();
 
         // Add line number prefix
-        let line_num = format!("{:>4} │ ", line_idx + 1);
+        let line_num = format!("{:>4} \u{2502} ", line_idx + 1);
         let line_num_style = if is_target_line {
             Style::default()
                 .fg(picker_colors::GREEN)
@@ -1753,13 +926,13 @@ fn render_plain_preview(
         // Expand tabs in plain preview
         let line_text = expand_tabs(line_text, 4);
 
-        // Truncate line to fit width (line number prefix is 7 chars: "  1 │ ")
+        // Truncate line to fit width (line number prefix is 7 chars: "  1 | ")
         let content_width = area.width.saturating_sub(7) as usize;
         let line_text = truncate_to_width(&line_text, content_width);
 
         let is_target_line = result.line > 0 && result.line < total_lines && line_idx == result.line;
 
-        let line_num = format!("{:>4} │ ", line_idx + 1);
+        let line_num = format!("{:>4} \u{2502} ", line_idx + 1);
         let line_num_style = if is_target_line {
             Style::default()
                 .fg(picker_colors::GREEN)
@@ -1793,7 +966,7 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
-    let empty_msg = " 󰈈  No file selected";
+    let empty_msg = " \u{f0208}  No file selected";
     let paragraph = Paragraph::new(empty_msg)
         .style(
             Style::default()
@@ -1811,63 +984,4 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
         height: 1,
     };
     frame.render_widget(paragraph, centered_area);
-}
-
-/// Renders a diagnostic badge overlay in the top-right corner of the buffer area.
-///
-/// Shows error/warning counts as a colored badge (red bg for errors, yellow for warnings only).
-/// Hidden when: counts are zero, badge is dismissed, or buffer is too narrow.
-pub fn render_diagnostic_badge(
-    frame: &mut Frame,
-    editor: &Editor,
-    buffer_area: Rect,
-) {
-    if editor.diagnostic_badge_dismissed() {
-        return;
-    }
-
-    let (errors, warnings, _, _) = editor.cached_diagnostic_count();
-    if errors == 0 && warnings == 0 {
-        return;
-    }
-
-    // Build badge text
-    let badge_text = if errors > 0 && warnings > 0 {
-        format!(" E:{} W:{} ", errors, warnings)
-    } else if errors > 0 {
-        format!(" E:{} ", errors)
-    } else {
-        format!(" W:{} ", warnings)
-    };
-
-    let badge_width = badge_text.len() as u16;
-
-    // Guard: skip if buffer area is too narrow
-    if buffer_area.width < badge_width + 2 {
-        return;
-    }
-
-    // Position: top-right of buffer area, 1 cell from right edge
-    let badge_x = buffer_area.right().saturating_sub(badge_width + 1);
-    let badge_y = buffer_area.y;
-
-    let badge_area = Rect {
-        x: badge_x,
-        y: badge_y,
-        width: badge_width,
-        height: 1,
-    };
-
-    let bg_color = if errors > 0 { Color::Red } else { Color::Yellow };
-    let fg_color = if errors > 0 { Color::White } else { Color::Black };
-
-    let badge = Paragraph::new(Span::styled(
-        badge_text,
-        Style::default()
-            .fg(fg_color)
-            .bg(bg_color)
-            .add_modifier(Modifier::BOLD),
-    ));
-
-    frame.render_widget(badge, badge_area);
 }

@@ -13,4 +13,7 @@ mod layout;
 pub mod lsp_manager;
 mod markdown;
 mod styles;
-mod widgets;
+mod file_tree_widget;
+mod overlays;
+mod picker_widget;
+mod status_widgets;
