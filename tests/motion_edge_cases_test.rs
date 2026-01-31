@@ -60,13 +60,13 @@ fn test_w_at_last_word() {
     let mut test = EditorTest::new("hello world");
 
     test.keys("w") // Move to "world"
-        .press('w') // Move past last word to trailing newline
-        .press('w'); // Stay at trailing newline
+        .press('w') // At last word — stays put
+        .press('w'); // Still stays
 
     assert_eq!(test.buffer_content(), "hello world\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At last word on last line — cursor stays at "world" start
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -86,13 +86,13 @@ fn test_e_at_last_char() {
     let mut test = EditorTest::new("hello");
 
     test.keys("$") // Last char
-        .press('e') // Move past last word to trailing newline
-        .press('e'); // Stay at trailing newline
+        .press('e') // At end of last word — stays put
+        .press('e'); // Still stays
 
     assert_eq!(test.buffer_content(), "hello\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At end of last word on last line — cursor stays at last char
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -406,8 +406,8 @@ fn test_w_count_exceeds_words() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Ends at last word "three" start
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -689,24 +689,24 @@ fn test_t_last_char() {
 fn test_w_on_single_char() {
     let mut test = EditorTest::new("a");
 
-    test.press('w'); // Move past single word to trailing newline
+    test.press('w'); // No next word — stays at start
 
     assert_eq!(test.buffer_content(), "a\n");
 
-    // Motion goes past single word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Single char, no next word — cursor stays at (0, 0)
+    test.assert_cursor(0, 0);
 }
 
 #[test]
 fn test_e_on_single_char() {
     let mut test = EditorTest::new("a");
 
-    test.press('e'); // Move past single word to trailing newline
+    test.press('e'); // Already at end of single char word — stays put
 
     assert_eq!(test.buffer_content(), "a\n");
 
-    // Motion goes past single word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Single char word, already at end — cursor stays at (0, 0)
+    test.assert_cursor(0, 0);
 }
 
 #[test]

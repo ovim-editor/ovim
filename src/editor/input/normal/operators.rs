@@ -753,14 +753,17 @@ fn handle_dw(editor: &mut Editor, count: usize) -> Result<()> {
             end_col = line_text.chars().count();
         }
     } else if end_line == start_line {
-        // Handle end-of-line clamping: when word_forward lands at the last character
-        // of the line (clamped from past-end), extend to include the last character
         if let Some(line) = editor.buffer().line(end_line) {
             let line_text = line.trim_end_matches('\n');
             let line_len = line_text.chars().count();
-            // Check if cursor was clamped (at last char position)
-            if line_len > 0 && end_col == line_len.saturating_sub(1) && end_col >= start_col {
-                // At EOF or end of last line - include the last character
+
+            if end_col == start_col && end_line + 1 >= editor.buffer().line_count() {
+                // Motion didn't move — last word on last line.
+                // Vim deletes to end of line in this case.
+                end_col = line_len;
+            } else if line_len > 0 && end_col == line_len.saturating_sub(1) && end_col >= start_col {
+                // Handle end-of-line clamping: when word_forward lands at the last character
+                // of the line (clamped from past-end), extend to include the last character
                 let at_end_of_file = end_line + 1 >= editor.buffer().line_count();
                 if at_end_of_file {
                     end_col = line_len;

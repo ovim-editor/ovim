@@ -14,8 +14,8 @@ fn test_w_at_last_word() {
 
     assert_eq!(test.buffer_content(), "hello world\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At last word on last line — cursor stays at "world" start
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -27,21 +27,21 @@ fn test_w_multiple_at_end() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At last word on last line — cursor stays at "three" start
+    test.assert_cursor(0, 8);
 }
 
 #[test]
 fn test_w_single_word() {
     let mut test = EditorTest::new("word");
 
-    test.press('w') // Move to trailing newline
+    test.press('w') // No next word — stays at start
         .press('w');
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    // Motion goes past single word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Single word, no next word — cursor stays at (0, 0)
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -53,8 +53,8 @@ fn test_w_at_eof_no_newline() {
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\n");
 
-    // Motion goes past last word to trailing newline (line 2, col 0)
-    test.assert_cursor(2, 0);
+    // At last char of last line — cursor stays put
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -65,8 +65,8 @@ fn test_w_with_count_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Ends at last word "three" start
+    test.assert_cursor(0, 8);
 }
 
 #[test]
@@ -89,8 +89,8 @@ fn test_w_on_whitespace_only() {
 
     assert_eq!(test.buffer_content(), "     \n");
 
-    // Motion on whitespace-only line goes to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // No next word — cursor stays at (0, 0)
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -106,8 +106,8 @@ fn test_W_at_last_WORD() {
 
     assert_eq!(test.buffer_content(), "hello-world test\n");
 
-    // Motion goes past last WORD to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At last WORD on last line — cursor stays at "test" start
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -118,8 +118,8 @@ fn test_W_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one\n");
 
-    // Motion goes past last WORD to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Single WORD, no next — cursor stays at (0, 0)
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -214,8 +214,8 @@ fn test_e_at_last_word() {
 
     assert_eq!(test.buffer_content(), "hello world\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At end of last word — cursor stays at end of "world"
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -227,8 +227,8 @@ fn test_e_single_word() {
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    // Motion goes past single word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At end of single word — cursor stays at end of "word"
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -239,8 +239,8 @@ fn test_e_with_count_beyond() {
 
     assert_eq!(test.buffer_content(), "one two\n");
 
-    // Motion goes past last word to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Only 2 words — cursor ends at end of "two"
+    test.assert_cursor(0, 6);
 }
 
 #[test]
@@ -252,8 +252,8 @@ fn test_e_at_eof() {
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\n");
 
-    // Motion goes past last word to trailing newline (line 2, col 0)
-    test.assert_cursor(2, 0);
+    // Already at end of last word — cursor stays put
+    test.assert_cursor(1, 5);
 }
 
 // ============================================================================
@@ -270,8 +270,8 @@ fn test_E_at_last_WORD() {
 
     assert_eq!(test.buffer_content(), "hello-world test-case\n");
 
-    // Motion goes past last WORD to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // At end of last WORD — cursor stays at end of "test-case"
+    test.assert_cursor(0, 20);
 }
 
 #[test]
@@ -282,8 +282,8 @@ fn test_E_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one\n");
 
-    // Motion goes past last WORD to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Single WORD — cursor at end of "one"
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================
@@ -488,17 +488,14 @@ fn test_h_empty_line() {
 fn test_w_then_b_at_boundary() {
     let mut test = EditorTest::new("word");
 
-    test.press('w') // Move forward past word to trailing newline (line 1, col 0)
-        .press('b') // Back to end of "word" (line 0, col 3) - b goes to end of previous word
-        .press('w') // Forward again to trailing newline (line 1, col 0)
-        .press('b'); // Back to end of "word" (line 0, col 3)
+    test.press('w') // No next word — stays at (0, 0)
+        .press('b') // Already at start — stays at (0, 0)
+        .press('w') // Still no next word
+        .press('b');
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    // b from empty line moves to end of last word (col 3), not start
-    // This is consistent with Vim: b moves to the beginning of the *current* or *previous* word,
-    // but from an empty/whitespace-only position, it finds the end of the last word
-    test.assert_cursor(0, 3);
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -506,13 +503,12 @@ fn test_e_then_ge_at_boundary() {
     let mut test = EditorTest::new("word");
 
     test.press('e') // To end of "word" (col 3)
-        .keys("ge") // Try backward - but ge at start of file stays at col 3
-        .press('e'); // Forward - goes to trailing newline
+        .keys("ge") // Try backward — ge at start of file stays at col 3
+        .press('e'); // Forward — already at end, stays at col 3
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    // e goes to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
@@ -747,14 +743,13 @@ fn test_cw_at_last_word() {
 fn test_yw_at_eof() {
     let mut test = EditorTest::new("last");
 
-    test.keys("yw") // Yank word "last" (includes trailing newline motion)
+    test.keys("yw") // Yank word "last"
         .press('p'); // Paste after cursor
 
-    // yw yanks "last\n" (to end of motion which is trailing newline)
-    // p pastes after cursor (cursor at col 0), so "last\n" is inserted after 'l'
-    // Result: "l" + "last\n" + "ast\n" = "llast\nast\n"
-    assert_eq!(test.buffer_content(), "llast\nast\n");
+    // yw yanks "last" (to end of word on last line)
+    // p pastes after cursor char 'l': "l" + "last" + "ast"
+    assert_eq!(test.buffer_content(), "llastast\n");
 
-    // Cursor ends on the trailing newline line after paste (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // Cursor after paste is at end of pasted text
+    test.assert_cursor(0, 4);
 }
