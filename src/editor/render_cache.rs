@@ -9,6 +9,8 @@ pub struct RenderCache {
     pub last_buffer_area: Option<ratatui::layout::Rect>,
     /// Cached gutter width from last render
     pub last_gutter_width: usize,
+    /// Cached text width from last render (buffer area width minus gutter, used for wrap calculations)
+    pub last_text_width: usize,
 }
 
 impl Default for RenderCache {
@@ -17,6 +19,7 @@ impl Default for RenderCache {
             mouse_state: super::MouseState::default(),
             last_buffer_area: None,
             last_gutter_width: 0,
+            last_text_width: 0,
         }
     }
 }

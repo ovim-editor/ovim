@@ -41,8 +41,27 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
         return None;
     }
 
-    let display_col = rel_col - gutter_width + editor.horizontal_offset();
-    let buffer_line = (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+    let text_width = editor.render_cache.last_text_width;
+    let display_col_in_row = rel_col - gutter_width;
+
+    // Determine buffer line and full display column, accounting for wrap
+    let (buffer_line, display_col) = if editor.options.wrap {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+            let absolute_visual_row = rel_row + viewport_visual_row;
+            let (logical_line, sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
+            let line = logical_line.min(editor.buffer().line_count().saturating_sub(1));
+            // In wrap mode, display column = sub_line * wrap_width + col within row
+            let col = sub_line * text_width + display_col_in_row;
+            (line, col)
+        } else {
+            let line = (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+            (line, display_col_in_row + editor.horizontal_offset())
+        }
+    } else {
+        let line = (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+        (line, display_col_in_row + editor.horizontal_offset())
+    };
 
     // Convert display column to character column using tab/wide-char aware function
     let line_text = editor
@@ -86,8 +105,18 @@ fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<
     let rel_row = (screen_row - area.y) as usize;
 
     if rel_col < gutter_width {
-        let buffer_line =
-            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1));
+        let buffer_line = if editor.options.wrap {
+            if let Some(wrap_map) = editor.wrap_map() {
+                let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+                let absolute_visual_row = rel_row + viewport_visual_row;
+                let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
+                logical_line.min(editor.buffer().line_count().saturating_sub(1))
+            } else {
+                (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+            }
+        } else {
+            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+        };
         Some(buffer_line)
     } else {
         None
@@ -199,6 +228,29 @@ fn handle_scroll(editor: &mut Editor, up: bool) -> Result<()> {
             editor.mark_picker_selection_changed();
         }
         return Ok(());
+    }
+
+    // In wrap mode, scroll by visual rows instead of logical lines.
+    // We compute the target logical line from visual row arithmetic and
+    // set the scroll offset directly via scroll_viewport_up/down with
+    // the appropriate logical line delta.
+    if editor.options.wrap {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let scroll_offset = editor.scroll_offset();
+            let current_visual = wrap_map.logical_to_visual(scroll_offset);
+            let target_visual = if up {
+                current_visual.saturating_sub(SCROLL_LINES)
+            } else {
+                (current_visual + SCROLL_LINES).min(wrap_map.total_visual_lines().saturating_sub(1))
+            };
+            let (target_line, _) = wrap_map.visual_to_logical(target_visual);
+            if target_line < scroll_offset {
+                editor.scroll_viewport_up(scroll_offset - target_line);
+            } else if target_line > scroll_offset {
+                editor.scroll_viewport_down(target_line - scroll_offset);
+            }
+            return Ok(());
+        }
     }
 
     if up {
