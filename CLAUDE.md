@@ -539,3 +539,11 @@ Document usage in the user-docs/ folder. It should be well organized and easy to
 ## User instructions
 
 User instructions are located in PRIORITIES.md and should be prioritized before other tasks. Only check off the tasks (when done and verified), don't edit the text.
+
+## "Pre-existing test failures"? Also avoid running the full test suite
+
+This likely means that another agent is working on unrelated functionality. It is critical that you don't `git stash` to check if it is pre-existing. The user will handle consolidation and running the full test suite in such cases. If you stash another agent's progress, they'll get confused and mess up.
+
+## Committing
+
+Commit early and often when the code is in a good state. Commit your changes. If your changes overlap with changes from another agent, don't commit.
