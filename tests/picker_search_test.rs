@@ -17,20 +17,31 @@ fn file_result(display: &str) -> PickerResult {
     }
 }
 
+/// Drives the nucleo background matcher until results stabilize.
+/// FindFiles mode uses nucleo for async matching — we need to give
+/// the background threads time to process injected items and queries.
+fn tick_picker(picker: &mut Picker) {
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    for _ in 0..20 {
+        picker.tick();
+    }
+}
+
 fn file_picker(files: &[&str]) -> Picker {
     let mut picker = Picker::new_file_finder(PathBuf::from("/project"));
     for f in files {
         picker.add_file_result(file_result(f));
     }
     picker.finish_loading();
+    tick_picker(&mut picker);
     picker
 }
 
+/// Returns the top N results using the nucleo-compatible API.
 fn top_results(picker: &Picker, n: usize) -> Vec<String> {
-    picker
-        .filtered_results()
-        .iter()
-        .take(n)
+    let count = picker.filtered_result_count().min(n);
+    (0..count)
+        .filter_map(|i| picker.filtered_result(i))
         .map(|r| r.display.clone())
         .collect()
 }
@@ -47,6 +58,7 @@ fn exact_substring_ranks_above_fuzzy() {
     ]);
 
     picker.set_query("sg".to_string());
+    tick_picker(&mut picker);
     assert_eq!(top_results(&picker, 1), vec!["src/msg.rs"]);
 }
 
@@ -59,6 +71,7 @@ fn exact_substring_at_word_boundary_preferred() {
     ]);
 
     picker.set_query("msg".to_string());
+    tick_picker(&mut picker);
     let results = top_results(&picker, 2);
     // Word-boundary match should rank first
     assert_eq!(results[0], "src/a/msg.rs");
@@ -72,6 +85,7 @@ fn exact_match_at_start_of_filename() {
     ]);
 
     picker.set_query("main".to_string());
+    tick_picker(&mut picker);
     assert_eq!(top_results(&picker, 1), vec!["src/main.rs"]);
 }
 
@@ -87,6 +101,7 @@ fn filename_match_ranks_above_path_match() {
     ]);
 
     picker.set_query("picker".to_string());
+    tick_picker(&mut picker);
     assert_eq!(top_results(&picker, 1), vec!["src/picker.rs"]);
 }
 
@@ -103,6 +118,7 @@ fn multi_token_all_must_match() {
     ]);
 
     picker.set_query("editor picker".to_string());
+    tick_picker(&mut picker);
     let results = top_results(&picker, 10);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], "src/editor/picker.rs");
@@ -116,7 +132,8 @@ fn multi_token_no_match_if_token_missing() {
     ]);
 
     picker.set_query("editor xyz".to_string());
-    assert!(picker.filtered_results().is_empty());
+    tick_picker(&mut picker);
+    assert_eq!(picker.filtered_result_count(), 0);
 }
 
 // ============================================================================
@@ -128,6 +145,7 @@ fn case_insensitive_matching() {
     let mut picker = file_picker(&["src/MyComponent.tsx"]);
 
     picker.set_query("mycomponent".to_string());
+    tick_picker(&mut picker);
     assert_eq!(top_results(&picker, 1), vec!["src/MyComponent.tsx"]);
 }
 
@@ -136,6 +154,7 @@ fn case_insensitive_uppercase_query() {
     let mut picker = file_picker(&["src/utils.rs"]);
 
     picker.set_query("UTILS".to_string());
+    tick_picker(&mut picker);
     assert_eq!(top_results(&picker, 1), vec!["src/utils.rs"]);
 }
 
@@ -148,7 +167,7 @@ fn empty_query_returns_all_results() {
     let files = &["a.rs", "b.rs", "c.rs"];
     let picker = file_picker(files);
 
-    assert_eq!(picker.filtered_results().len(), 3);
+    assert_eq!(picker.filtered_result_count(), 3);
 }
 
 #[test]
@@ -156,16 +175,21 @@ fn no_match_returns_empty() {
     let mut picker = file_picker(&["src/main.rs"]);
 
     picker.set_query("zzzzz".to_string());
-    assert!(picker.filtered_results().is_empty());
+    tick_picker(&mut picker);
+    assert_eq!(picker.filtered_result_count(), 0);
 }
 
 // ============================================================================
-// Match positions are populated
+// Match positions are populated (uses Custom mode which keeps the
+// synchronous fuzzy scorer — nucleo handles positions internally)
 // ============================================================================
 
 #[test]
 fn match_positions_populated_on_exact_substring() {
-    let mut picker = file_picker(&["src/mod.rs"]);
+    let mut picker = Picker::new_custom(
+        PathBuf::from("/project"),
+        vec!["src/mod.rs".to_string()],
+    );
 
     picker.set_query("mod".to_string());
     let result = &picker.filtered_results()[0];
@@ -175,7 +199,10 @@ fn match_positions_populated_on_exact_substring() {
 
 #[test]
 fn match_positions_populated_on_fuzzy() {
-    let mut picker = file_picker(&["abcdef"]);
+    let mut picker = Picker::new_custom(
+        PathBuf::from("/project"),
+        vec!["abcdef".to_string()],
+    );
 
     // "adf" — a at 0, d at 3, f at 5 (no contiguous substring → fuzzy)
     picker.set_query("adf".to_string());
@@ -218,7 +245,10 @@ fn set_query_resets_selection_to_zero() {
     picker.move_down();
     assert_eq!(picker.selected_index(), 2);
 
+    // Query "a" matches only "a.rs" (1 result), so selected_index
+    // gets clamped from 2 to 0.
     picker.set_query("a".to_string());
+    tick_picker(&mut picker);
     assert_eq!(picker.selected_index(), 0);
 }
 
@@ -275,12 +305,16 @@ fn delete_char_at_cursor() {
 }
 
 // ============================================================================
-// Debounced filtering
+// Debounced filtering (uses Custom mode — nucleo pushes queries immediately
+// and never sets pending_filter)
 // ============================================================================
 
 #[test]
 fn pending_filter_applied_on_demand() {
-    let mut picker = file_picker(&["src/main.rs", "src/lib.rs"]);
+    let mut picker = Picker::new_custom(
+        PathBuf::from("/project"),
+        vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+    );
 
     // insert_char marks filter pending but doesn't apply it
     picker.insert_char('m');
@@ -311,7 +345,8 @@ fn add_file_result_during_loading() {
 
     picker.add_file_result(file_result("a.rs"));
     picker.add_file_result(file_result("b.rs"));
-    assert_eq!(picker.filtered_results().len(), 2);
+    tick_picker(&mut picker);
+    assert_eq!(picker.filtered_result_count(), 2);
 
     picker.finish_loading();
     assert!(!picker.is_loading());
@@ -324,10 +359,12 @@ fn add_file_result_with_active_query_filters_incrementally() {
 
     picker.add_file_result(file_result("src/main.rs"));
     picker.add_file_result(file_result("src/lib.rs")); // doesn't match
+    tick_picker(&mut picker);
 
     // Only matching result appears
-    assert_eq!(picker.filtered_results().len(), 1);
-    assert_eq!(picker.filtered_results()[0].display, "src/main.rs");
+    assert_eq!(picker.filtered_result_count(), 1);
+    let first = picker.filtered_result(0).unwrap();
+    assert_eq!(first.display, "src/main.rs");
 }
 
 // ============================================================================
@@ -342,6 +379,7 @@ fn shorter_filename_ranks_higher() {
     ]);
 
     picker.set_query("mod".to_string());
+    tick_picker(&mut picker);
     // Shorter target gets higher length bonus
     assert_eq!(top_results(&picker, 1), vec!["src/mod.rs"]);
 }
@@ -368,24 +406,37 @@ fn live_grep_searches_real_files() {
     fs::write(dir_path.join("hello.txt"), "needle in haystack\nother line\n").unwrap();
     fs::write(dir_path.join("empty.txt"), "nothing here\n").unwrap();
 
-    let mut picker = Picker::new_live_grep(dir_path.clone());
-    picker.set_query("needle".to_string());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut picker = Picker::new_live_grep(dir_path.clone());
+        picker.set_query("needle".to_string());
 
-    let results = picker.filtered_results();
-    assert_eq!(results.len(), 1, "expected 1 grep result, got {}", results.len());
+        // Drain streaming results
+        loop {
+            picker.drain_grep_results();
+            if !picker.is_loading() {
+                picker.drain_grep_results();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
 
-    let r = &results[0];
-    assert!(r.display.contains("hello.txt"), "display should contain filename: {}", r.display);
-    assert!(r.display.contains("1"), "display should contain line number: {}", r.display);
-    assert_eq!(r.line, 0, "line should be 0-indexed");
-    assert_eq!(r.content.as_deref(), Some("needle in haystack"));
+        let results = picker.filtered_results();
+        assert_eq!(results.len(), 1, "expected 1 grep result, got {}", results.len());
 
-    // Location should be absolute path
-    assert!(
-        r.location.starts_with('/') || r.location.starts_with('\\'),
-        "location should be absolute: {}",
-        r.location
-    );
+        let r = &results[0];
+        assert!(r.display.contains("hello.txt"), "display should contain filename: {}", r.display);
+        assert!(r.display.contains("1"), "display should contain line number: {}", r.display);
+        assert_eq!(r.line, 0, "line should be 0-indexed");
+        assert_eq!(r.content.as_deref(), Some("needle in haystack"));
+
+        // Location should be absolute path
+        assert!(
+            r.location.starts_with('/') || r.location.starts_with('\\'),
+            "location should be absolute: {}",
+            r.location
+        );
+    });
 }
 
 #[test]
@@ -398,11 +449,23 @@ fn live_grep_multiple_matches() {
     fs::write(dir_path.join("a.txt"), "foo bar\nfoo baz\n").unwrap();
     fs::write(dir_path.join("b.txt"), "foo qux\n").unwrap();
 
-    let mut picker = Picker::new_live_grep(dir_path);
-    picker.set_query("foo".to_string());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut picker = Picker::new_live_grep(dir_path);
+        picker.set_query("foo".to_string());
 
-    let results = picker.filtered_results();
-    assert_eq!(results.len(), 3, "expected 3 grep matches across 2 files");
+        loop {
+            picker.drain_grep_results();
+            if !picker.is_loading() {
+                picker.drain_grep_results();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let results = picker.filtered_results();
+        assert_eq!(results.len(), 3, "expected 3 grep matches across 2 files");
+    });
 }
 
 #[test]
@@ -412,10 +475,22 @@ fn live_grep_no_match() {
     let dir = tempfile::tempdir().expect("create temp dir");
     fs::write(dir.path().join("a.txt"), "hello world\n").unwrap();
 
-    let mut picker = Picker::new_live_grep(dir.path().to_path_buf());
-    picker.set_query("zzzznotfound".to_string());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut picker = Picker::new_live_grep(dir.path().to_path_buf());
+        picker.set_query("zzzznotfound".to_string());
 
-    assert!(picker.filtered_results().is_empty());
+        loop {
+            picker.drain_grep_results();
+            if !picker.is_loading() {
+                picker.drain_grep_results();
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        assert!(picker.filtered_results().is_empty());
+    });
 }
 
 // ============================================================================
