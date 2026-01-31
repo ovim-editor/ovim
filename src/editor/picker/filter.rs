@@ -87,6 +87,21 @@ pub fn matches_file_filter(filter: &str, path: &str) -> bool {
     true
 }
 
+/// Applies the file filter to all_results, replacing filtered_results and resetting selected_index.
+pub fn apply_file_filter_to(
+    file_filter: &str,
+    all_results: &[super::result::PickerResult],
+    filtered_results: &mut Vec<super::result::PickerResult>,
+    selected_index: &mut usize,
+) {
+    *filtered_results = all_results
+        .iter()
+        .filter(|r| matches_file_filter(file_filter, &r.display))
+        .cloned()
+        .collect();
+    *selected_index = 0;
+}
+
 /// Truncates a path in the middle if it's too long
 /// Prioritizes showing the filename and immediate parent directories
 pub fn truncate_path(path: &str, max_len: usize) -> String {
