@@ -21,8 +21,8 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<()> 
 /// Converts screen coordinates to buffer (line, col).
 /// Returns `None` if the click is outside the buffer area.
 fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<(usize, usize)> {
-    let area = editor.last_buffer_area?;
-    let gutter_width = editor.last_gutter_width;
+    let area = editor.render_cache.last_buffer_area?;
+    let gutter_width = editor.render_cache.last_gutter_width;
 
     // Hit-test: must be within buffer area
     if screen_col < area.x
@@ -67,8 +67,8 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
 
 /// Returns the buffer line if the click lands in the gutter area.
 fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
-    let area = editor.last_buffer_area?;
-    let gutter_width = editor.last_gutter_width;
+    let area = editor.render_cache.last_buffer_area?;
+    let gutter_width = editor.render_cache.last_gutter_width;
 
     if gutter_width == 0 {
         return None;
@@ -135,23 +135,23 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
         editor.buffer_mut().cursor_mut().set_position(line, 0);
         editor.set_visual_start(line, 0);
         editor.set_mode(Mode::VisualLine);
-        editor.mouse_state.is_dragging = true;
-        editor.mouse_state.drag_origin = Some((line, 0));
+        editor.render_cache.mouse_state.is_dragging = true;
+        editor.render_cache.mouse_state.drag_origin = Some((line, 0));
         return Ok(());
     }
 
     // Buffer click → move cursor
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
         editor.buffer_mut().cursor_mut().set_position(line, char_col);
-        editor.mouse_state.is_dragging = true;
-        editor.mouse_state.drag_origin = Some((line, char_col));
+        editor.render_cache.mouse_state.is_dragging = true;
+        editor.render_cache.mouse_state.drag_origin = Some((line, char_col));
     }
 
     Ok(())
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
-    if !editor.mouse_state.is_dragging {
+    if !editor.render_cache.mouse_state.is_dragging {
         return Ok(());
     }
 
@@ -163,7 +163,7 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
         // Enter visual mode on first drag movement (if not already visual)
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
-            if let Some((origin_line, origin_col)) = editor.mouse_state.drag_origin {
+            if let Some((origin_line, origin_col)) = editor.render_cache.mouse_state.drag_origin {
                 editor.set_visual_start(origin_line, origin_col);
             }
             // If we started from a gutter click, stay in VisualLine
@@ -179,7 +179,7 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 }
 
 fn handle_left_release(editor: &mut Editor) -> Result<()> {
-    editor.mouse_state.is_dragging = false;
+    editor.render_cache.mouse_state.is_dragging = false;
     Ok(())
 }
 
