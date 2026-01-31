@@ -223,8 +223,8 @@
 
 ; JSX expression braces
 (jsx_expression
-  "{" @punctuation.delimiter
-  "}" @punctuation.delimiter)
+  "{" @punctuation
+  "}" @punctuation)
 
 ; JSX text content
 (jsx_text) @string

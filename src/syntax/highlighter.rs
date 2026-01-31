@@ -390,6 +390,48 @@ const user: User = { name: "Alice", age: 30 };"#;
     }
 
     #[test]
+    fn test_jsx_comment_brace_not_comment_colored() {
+        // Regression: JSX comment braces {/* */} should not appear as comments.
+        // The `}` was highlighted as PunctuationDelimiter which shared Comment's color.
+        let mut h = SyntaxHighlighter::new(Language::Tsx)
+            .expect("TSX highlighter should be created");
+
+        let code = "<div>\n  {/* comment */}\n</div>";
+
+        h.parse(code);
+        let highlights = h.highlights_for_all_lines(code);
+
+        let line1_text = code.lines().nth(1).unwrap();
+        let line1 = &highlights[1];
+
+        // The closing } should be Punctuation (not PunctuationDelimiter, which is comment-colored)
+        let closing_brace_byte = line1_text.len() - 1;
+        let brace_highlight = line1
+            .iter()
+            .filter(|(range, _)| range.contains(&closing_brace_byte))
+            .min_by_key(|(range, _)| range.end - range.start)
+            .map(|(_, group)| *group);
+        assert_eq!(
+            brace_highlight,
+            Some(HighlightGroup::Punctuation),
+            "Closing brace of JSX comment should be Punctuation, not PunctuationDelimiter"
+        );
+
+        // Opening { too
+        let opening_brace_byte = 2; // "  {" -> byte 2
+        let brace_highlight = line1
+            .iter()
+            .filter(|(range, _)| range.contains(&opening_brace_byte))
+            .min_by_key(|(range, _)| range.end - range.start)
+            .map(|(_, group)| *group);
+        assert_eq!(
+            brace_highlight,
+            Some(HighlightGroup::Punctuation),
+            "Opening brace of JSX comment should be Punctuation, not PunctuationDelimiter"
+        );
+    }
+
+    #[test]
     fn test_javascript_highlighter() {
         let mut h = SyntaxHighlighter::new(Language::JavaScript)
             .expect("JavaScript highlighter should be created");
