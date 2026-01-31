@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::helpers::expand_tabs_with_mapping;
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
-use super::styles::{get_diagnostic_sign_style, get_git_sign_style, get_line_number_style, remap_highlights};
+use super::styles::{get_diagnostic_sign_style, get_diagnostic_virtual_text_style, get_git_sign_style, get_line_number_style, remap_highlights};
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
 
@@ -500,27 +500,21 @@ pub fn render_buffer(frame: &mut Frame, editor: &Editor, theme: &Theme, layout: 
 
                 // Add diagnostic virtual text if present (only on first visual row in wrap mode)
                 if has_diagnostics {
-                    use lsp_types::DiagnosticSeverity;
                     // Get the first (most severe) diagnostic
                     let diag = line_diagnostics[0];
-                    let diag_color = match diag.severity {
-                        Some(DiagnosticSeverity::ERROR) => Color::Red,
-                        Some(DiagnosticSeverity::WARNING) => Color::Yellow,
-                        Some(DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                        Some(DiagnosticSeverity::HINT) => Color::Gray,
-                        _ => Color::Gray,
-                    };
+                    let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
                     // Truncate message to fit on screen
-                    let max_msg_len = text_width.saturating_sub(line_text.chars().count() + 3);
+                    let max_msg_len = text_width.saturating_sub(line_text.chars().count() + 4);
                     let msg = diag.message.lines().next().unwrap_or("");
                     let msg = if msg.chars().count() > max_msg_len {
                         format!("{}...", msg.chars().take(max_msg_len.saturating_sub(3)).collect::<String>())
                     } else {
                         msg.to_string()
                     };
+                    let vtext_style = Style::default().fg(fg_color).bg(bg_color).add_modifier(Modifier::ITALIC);
                     line.spans.push(Span::styled(
-                        format!(" ■ {}", msg),
-                        Style::default().fg(diag_color).add_modifier(Modifier::ITALIC),
+                        format!(" {} {}", icon, msg),
+                        vtext_style,
                     ));
                 }
 
