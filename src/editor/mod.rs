@@ -41,6 +41,7 @@ mod textobjects;
 mod theme;
 mod theme_state;
 mod ui_features;
+mod ui_panels;
 mod undo;
 mod visual_context;
 mod viewport_state;
@@ -83,6 +84,7 @@ pub use editing_state::EditingState;
 pub use navigation_state::NavigationState;
 pub use render_cache::RenderCache;
 pub use theme_state::ThemeState;
+pub use ui_panels::UiPanels;
 pub use viewport_state::ViewportState;
 pub use wrap_map::WrapMap;
 
@@ -241,34 +243,20 @@ pub struct Editor {
     pub(crate) editing: EditingState,
     /// Completion menu popup (LSP)
     completion_menu: CompletionMenu,
-    /// Path completion state for command-line mode
-    path_completion: PathCompletionState,
     /// Theme and color scheme state
     theme: ThemeState,
     /// Editor options and settings
     pub options: EditorOptions,
     /// Viewport and scroll state
     pub(crate) viewport: ViewportState,
-    /// File tree explorer
-    file_tree: FileTree,
-    /// Quickfix list (global error/location list)
-    quickfix_list: QuickfixList,
-    /// Location list (per-window error/location list)
-    location_list: LocationList,
-    /// Whether quickfix window is open
-    quickfix_window_open: bool,
-    /// Whether location list window is open
-    location_window_open: bool,
     /// Tab page manager
     tab_page_manager: TabPageManager,
     /// Performance metrics
     metrics: PerformanceMetrics,
-    /// Dashboard menu selected index (0-5)
-    dashboard_selected: usize,
     /// Cached rendering state (mouse, layout geometry)
     pub(crate) render_cache: RenderCache,
-    /// Dashboard cat animation state
-    cat_animation: Option<crate::ui::CatAnimation>,
+    /// UI panels (file tree, quickfix, path completion, dashboard, diagnostic badge)
+    pub(crate) ui_panels: UiPanels,
     /// LSP Manager panel state
     lsp_manager_panel: Option<LspManagerPanel>,
     /// Channel for receiving LSP install progress updates
@@ -277,12 +265,6 @@ pub struct Editor {
     install_progress_tx: Option<tokio::sync::mpsc::UnboundedSender<lsp_manager_panel::InstallProgress>>,
     /// Pending install requests to be picked up by the event loop
     pending_installs: Vec<lsp_manager_panel::PendingInstallRequest>,
-    /// Whether the diagnostic badge overlay has been dismissed (double-Escape)
-    diagnostic_badge_dismissed: bool,
-    /// Last diagnostic count when badge state was set (for detecting changes)
-    diagnostic_badge_last_count: (usize, usize),
-    /// Last time Escape was pressed in normal mode (for double-Escape detection)
-    last_escape_time: Option<std::time::Instant>,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -391,27 +373,17 @@ impl Editor {
             editor_bridge: None,
             editing: EditingState::default(),
             completion_menu: CompletionMenu::new(),
-            path_completion: PathCompletionState::new(),
             theme: ThemeState::default(),
             options: EditorOptions::default(),
             viewport: ViewportState::default(),
-            file_tree: FileTree::new(),
-            quickfix_list: QuickfixList::new(),
-            location_list: LocationList::new(),
-            quickfix_window_open: false,
-            location_window_open: false,
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
-            dashboard_selected: 0,
             render_cache: RenderCache::default(),
-            cat_animation: Some(crate::ui::CatAnimation::new()),
+            ui_panels: UiPanels::default(),
             lsp_manager_panel: None,
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
-            diagnostic_badge_dismissed: false,
-            diagnostic_badge_last_count: (0, 0),
-            last_escape_time: None,
         }
     }
 
@@ -441,27 +413,17 @@ impl Editor {
             editor_bridge: None,
             editing: EditingState::default(),
             completion_menu: CompletionMenu::new(),
-            path_completion: PathCompletionState::new(),
             theme: ThemeState::default(),
             options: EditorOptions::default(),
             viewport: ViewportState::default(),
-            file_tree: FileTree::new(),
-            quickfix_list: QuickfixList::new(),
-            location_list: LocationList::new(),
-            quickfix_window_open: false,
-            location_window_open: false,
             tab_page_manager: TabPageManager::new(),
             metrics: PerformanceMetrics::new(),
-            dashboard_selected: 0,
             render_cache: RenderCache::default(),
-            cat_animation: Some(crate::ui::CatAnimation::new()),
+            ui_panels: UiPanels::default(),
             lsp_manager_panel: None,
             install_progress_rx: None,
             install_progress_tx: None,
             pending_installs: Vec::new(),
-            diagnostic_badge_dismissed: false,
-            diagnostic_badge_last_count: (0, 0),
-            last_escape_time: None,
         }
     }
 
@@ -557,12 +519,12 @@ impl Editor {
 
     /// Gets the dashboard selected menu index
     pub fn dashboard_selected(&self) -> usize {
-        self.dashboard_selected
+        self.ui_panels.dashboard_selected
     }
 
     /// Sets the dashboard selected menu index
     pub fn set_dashboard_selected(&mut self, index: usize) {
-        self.dashboard_selected = index;
+        self.ui_panels.dashboard_selected = index;
     }
 
     /// Returns true if the dashboard should be shown
@@ -573,24 +535,24 @@ impl Editor {
 
     /// Returns a mutable reference to the cat animation (if active).
     pub fn cat_animation_mut(&mut self) -> Option<&mut crate::ui::CatAnimation> {
-        self.cat_animation.as_mut()
+        self.ui_panels.cat_animation.as_mut()
     }
 
     /// Startle the cat (e.g. on terminal resize while it's on the logo).
     pub fn startle_cat(&mut self) {
-        if let Some(ref mut anim) = self.cat_animation {
+        if let Some(ref mut anim) = self.ui_panels.cat_animation {
             anim.startle();
         }
     }
 
     /// Tick the cat animation. Returns true if a frame advanced (needs redraw).
     pub fn tick_cat_animation(&mut self) -> bool {
-        if let Some(ref mut anim) = self.cat_animation {
+        if let Some(ref mut anim) = self.ui_panels.cat_animation {
             if anim.is_active() {
                 return anim.tick();
             }
             // Animation finished — drop it
-            self.cat_animation = None;
+            self.ui_panels.cat_animation = None;
         }
         false
     }
@@ -1305,36 +1267,36 @@ impl Editor {
 
     /// Whether the diagnostic badge has been dismissed by double-Escape
     pub fn diagnostic_badge_dismissed(&self) -> bool {
-        self.diagnostic_badge_dismissed
+        self.ui_panels.diagnostic_badge_dismissed
     }
 
     /// Dismiss the diagnostic badge (called on double-Escape)
     pub fn dismiss_diagnostic_badge(&mut self) {
-        self.diagnostic_badge_dismissed = true;
+        self.ui_panels.diagnostic_badge_dismissed = true;
     }
 
     /// Called when diagnostic counts change to potentially un-dismiss the badge
     pub fn on_diagnostic_counts_changed(&mut self, errors: usize, warnings: usize) {
         let new_count = (errors, warnings);
-        if new_count != self.diagnostic_badge_last_count {
-            self.diagnostic_badge_last_count = new_count;
-            self.diagnostic_badge_dismissed = false;
+        if new_count != self.ui_panels.diagnostic_badge_last_count {
+            self.ui_panels.diagnostic_badge_last_count = new_count;
+            self.ui_panels.diagnostic_badge_dismissed = false;
         }
     }
 
     /// Get last escape time for double-Escape detection
     pub fn last_escape_time(&self) -> Option<std::time::Instant> {
-        self.last_escape_time
+        self.ui_panels.last_escape_time
     }
 
     /// Set last escape time
     pub fn set_last_escape_time(&mut self, time: std::time::Instant) {
-        self.last_escape_time = Some(time);
+        self.ui_panels.last_escape_time = Some(time);
     }
 
     /// Clear last escape time
     pub fn clear_last_escape_time(&mut self) {
-        self.last_escape_time = None;
+        self.ui_panels.last_escape_time = None;
     }
 
     /// Gets a reference to the last change

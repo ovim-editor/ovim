@@ -15,12 +15,12 @@ impl Editor {
 
     /// Gets a reference to the path completion state
     pub fn path_completion(&self) -> &PathCompletionState {
-        &self.path_completion
+        &self.ui_panels.path_completion
     }
 
     /// Gets a mutable reference to the path completion state
     pub fn path_completion_mut(&mut self) -> &mut PathCompletionState {
-        &mut self.path_completion
+        &mut self.ui_panels.path_completion
     }
 
     /// Hides the completion menu
@@ -86,12 +86,12 @@ impl Editor {
 
     /// Gets the file tree
     pub fn file_tree(&self) -> &FileTree {
-        &self.file_tree
+        &self.ui_panels.file_tree
     }
 
     /// Gets mutable file tree
     pub fn file_tree_mut(&mut self) -> &mut FileTree {
-        &mut self.file_tree
+        &mut self.ui_panels.file_tree
     }
 
     /// Opens the file tree explorer at the project root
@@ -127,7 +127,7 @@ impl Editor {
             std::env::current_dir().unwrap_or_default()
         };
 
-        self.file_tree.open(&root);
+        self.ui_panels.file_tree.open(&root);
     }
 
     /// Toggles the file tree with reveal semantics:
@@ -137,16 +137,16 @@ impl Editor {
     pub fn toggle_file_tree(&mut self) {
         if self.mode() == Mode::FileTree {
             // Focused on tree → close it
-            self.file_tree.close();
+            self.ui_panels.file_tree.close();
             self.set_mode(Mode::Normal);
         } else {
             // Not focused → open/reveal + focus
-            if !self.file_tree.is_visible() {
+            if !self.ui_panels.file_tree.is_visible() {
                 self.open_file_tree();
             }
             if self.options.file_tree_reveal {
                 if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
-                    self.file_tree.reveal_path(std::path::Path::new(&path));
+                    self.ui_panels.file_tree.reveal_path(std::path::Path::new(&path));
                 }
             }
             self.set_mode(Mode::FileTree);
@@ -156,16 +156,16 @@ impl Editor {
     /// Opens the file selected in the file tree.
     /// Opens file and closes the tree, or toggles directory expansion.
     pub fn open_file_from_tree(&mut self) {
-        if let Some(node) = self.file_tree.selected_node() {
+        if let Some(node) = self.ui_panels.file_tree.selected_node() {
             if node.is_dir() {
                 // Toggle directory expansion
-                self.file_tree.toggle_selected();
+                self.ui_panels.file_tree.toggle_selected();
             } else {
                 // Open file (checks for existing buffer)
                 let path = node.path().to_path_buf();
                 if let Ok(()) = self.open_file(&path) {
                     // Close tree and switch to Normal mode
-                    self.file_tree.close();
+                    self.ui_panels.file_tree.close();
                     self.set_mode(Mode::Normal);
                 }
             }
@@ -174,43 +174,43 @@ impl Editor {
 
     /// Gets the quickfix list
     pub fn quickfix_list(&self) -> &QuickfixList {
-        &self.quickfix_list
+        &self.ui_panels.quickfix_list
     }
 
     /// Gets mutable quickfix list
     pub fn quickfix_list_mut(&mut self) -> &mut QuickfixList {
-        &mut self.quickfix_list
+        &mut self.ui_panels.quickfix_list
     }
 
     /// Sets the quickfix list entries
     pub fn set_quickfix_list(&mut self, entries: Vec<QuickfixEntry>, title: String) {
-        self.quickfix_list.set_entries(entries, title);
+        self.ui_panels.quickfix_list.set_entries(entries, title);
     }
 
     /// Opens the quickfix window
     pub fn open_quickfix_window(&mut self) {
-        self.quickfix_window_open = true;
+        self.ui_panels.quickfix_window_open = true;
     }
 
     /// Closes the quickfix window
     pub fn close_quickfix_window(&mut self) {
-        self.quickfix_window_open = false;
+        self.ui_panels.quickfix_window_open = false;
     }
 
     /// Toggles the quickfix window
     pub fn toggle_quickfix_window(&mut self) {
-        self.quickfix_window_open = !self.quickfix_window_open;
+        self.ui_panels.quickfix_window_open = !self.ui_panels.quickfix_window_open;
     }
 
     /// Whether the quickfix window is open
     pub fn is_quickfix_window_open(&self) -> bool {
-        self.quickfix_window_open
+        self.ui_panels.quickfix_window_open
     }
 
     /// Jumps to the current quickfix entry
     pub fn jump_to_quickfix_entry(&mut self) {
         // Extract values first to avoid borrow issues
-        let (path, lnum, qcol) = if let Some(entry) = self.quickfix_list.current_entry() {
+        let (path, lnum, qcol) = if let Some(entry) = self.ui_panels.quickfix_list.current_entry() {
             (entry.filename.clone(), entry.lnum, entry.col)
         } else {
             return;
@@ -231,43 +231,43 @@ impl Editor {
 
     /// Gets the location list
     pub fn location_list(&self) -> &LocationList {
-        &self.location_list
+        &self.ui_panels.location_list
     }
 
     /// Gets mutable location list
     pub fn location_list_mut(&mut self) -> &mut LocationList {
-        &mut self.location_list
+        &mut self.ui_panels.location_list
     }
 
     /// Sets the location list entries
     pub fn set_location_list(&mut self, entries: Vec<QuickfixEntry>, title: String) {
-        self.location_list.set_entries(entries, title);
+        self.ui_panels.location_list.set_entries(entries, title);
     }
 
     /// Opens the location list window
     pub fn open_location_window(&mut self) {
-        self.location_window_open = true;
+        self.ui_panels.location_window_open = true;
     }
 
     /// Closes the location list window
     pub fn close_location_window(&mut self) {
-        self.location_window_open = false;
+        self.ui_panels.location_window_open = false;
     }
 
     /// Toggles the location list window
     pub fn toggle_location_window(&mut self) {
-        self.location_window_open = !self.location_window_open;
+        self.ui_panels.location_window_open = !self.ui_panels.location_window_open;
     }
 
     /// Whether the location list window is open
     pub fn is_location_window_open(&self) -> bool {
-        self.location_window_open
+        self.ui_panels.location_window_open
     }
 
     /// Jumps to the current location list entry
     pub fn jump_to_location_entry(&mut self) {
         // Extract values first to avoid borrow issues
-        let (path, lnum, lcol) = if let Some(entry) = self.location_list.current_entry() {
+        let (path, lnum, lcol) = if let Some(entry) = self.ui_panels.location_list.current_entry() {
             (entry.filename.clone(), entry.lnum, entry.col)
         } else {
             return;
