@@ -1,11 +1,11 @@
 use super::state::{ApiRequest, ApiState};
+use crate::metrics;
 use axum::{
     extract::State,
     http::{header, StatusCode},
     response::{IntoResponse, Json, Response},
     Json as JsonExtractor,
 };
-use crate::metrics;
 use serde::Deserialize;
 use tokio::sync::oneshot;
 
@@ -403,6 +403,161 @@ pub async fn get_diagnostics(State(state): State<ApiState>) -> Response {
     match rx.await {
         Ok(response) => Json(response).into_response(),
         Err(_) => error_response("Failed to get diagnostics"),
+    }
+}
+
+/// Handler for POST /edit
+#[derive(Deserialize)]
+pub struct EditRequest {
+    pub line: Option<usize>,
+    pub old: String,
+    pub new: String,
+}
+
+pub async fn edit_line(
+    State(state): State<ApiState>,
+    JsonExtractor(payload): JsonExtractor<EditRequest>,
+) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    let (tx, rx) = oneshot::channel();
+
+    // Convert 1-indexed line to 0-indexed
+    let line = payload.line.map(|l| l.saturating_sub(1));
+
+    if state
+        .tx
+        .send(ApiRequest::EditLine {
+            line,
+            old: payload.old,
+            new: payload.new,
+            tx,
+        })
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to edit line"),
+    }
+}
+
+/// Handler for POST /insert
+#[derive(Deserialize)]
+pub struct InsertRequest {
+    pub after: Option<usize>,
+    pub before: Option<usize>,
+    pub text: String,
+}
+
+pub async fn insert_lines(
+    State(state): State<ApiState>,
+    JsonExtractor(payload): JsonExtractor<InsertRequest>,
+) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    // Determine insert position (0-indexed) and direction
+    let (line, is_before) = match (payload.after, payload.before) {
+        (Some(after), None) => (after, false), // after line N means insert at line N+1 (but after=0 means before line 1)
+        (None, Some(before)) => (before.saturating_sub(1), true), // before line N (1-indexed) -> 0-indexed
+        (None, None) => {
+            return validation_error("Either 'after' or 'before' must be specified");
+        }
+        (Some(_), Some(_)) => {
+            return validation_error("Cannot specify both 'after' and 'before'");
+        }
+    };
+
+    let (tx, rx) = oneshot::channel();
+
+    if state
+        .tx
+        .send(ApiRequest::InsertLines {
+            line,
+            before: is_before,
+            text: payload.text,
+            tx,
+        })
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to insert lines"),
+    }
+}
+
+/// Handler for POST /delete-lines
+#[derive(Deserialize)]
+pub struct DeleteLinesRequest {
+    pub from: usize,
+    pub to: usize,
+}
+
+pub async fn delete_lines(
+    State(state): State<ApiState>,
+    JsonExtractor(payload): JsonExtractor<DeleteLinesRequest>,
+) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    // Convert 1-indexed to 0-indexed
+    let from = payload.from.saturating_sub(1);
+    let to = payload.to.saturating_sub(1);
+
+    let (tx, rx) = oneshot::channel();
+
+    if state
+        .tx
+        .send(ApiRequest::DeleteLines { from, to, tx })
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to delete lines"),
+    }
+}
+
+/// Handler for GET /lines?from=N&to=M
+#[derive(Deserialize)]
+pub struct ReadLinesQuery {
+    pub from: usize,
+    pub to: usize,
+}
+
+pub async fn read_lines(
+    State(state): State<ApiState>,
+    axum::extract::Query(params): axum::extract::Query<ReadLinesQuery>,
+) -> Response {
+    let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
+    metrics::HTTP_REQUESTS_TOTAL.inc();
+
+    // Convert 1-indexed to 0-indexed
+    let from = params.from.saturating_sub(1);
+    let to = params.to.saturating_sub(1);
+
+    let (tx, rx) = oneshot::channel();
+
+    if state
+        .tx
+        .send(ApiRequest::ReadLines { from, to, tx })
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to read lines"),
     }
 }
 

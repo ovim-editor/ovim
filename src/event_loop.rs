@@ -8,9 +8,9 @@ use tokio::time::{interval, Duration, Instant};
 
 use ovim::api::{
     parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DiagnosticCounts,
-    DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem,
-    LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo, RenderInfo, SuccessResponse,
-    VisualSelection,
+    DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo, LineEntry,
+    LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo,
+    RenderInfo, SuccessResponse, VisualSelection,
 };
 use ovim::commands;
 use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
@@ -152,18 +152,21 @@ fn spawn_pending_installs(editor: &mut Editor) {
                 status: InstallStatus::Installing(format!("Installing {lang_name}...")),
             });
 
-            let result = crate::lsp_init::auto_install::attempt_auto_install(
-                &lang_name,
-                &command,
-                &config,
-            )
-            .await;
+            let result =
+                crate::lsp_init::auto_install::attempt_auto_install(&lang_name, &command, &config)
+                    .await;
 
             let status = match result {
                 crate::lsp_init::auto_install::InstallResult::Success(_) => InstallStatus::Success,
-                crate::lsp_init::auto_install::InstallResult::Failed(msg) => InstallStatus::Failed(msg),
-                crate::lsp_init::auto_install::InstallResult::PrerequisitesMissing(msg) => InstallStatus::Failed(msg),
-                crate::lsp_init::auto_install::InstallResult::Declined => InstallStatus::Failed("Declined".to_string()),
+                crate::lsp_init::auto_install::InstallResult::Failed(msg) => {
+                    InstallStatus::Failed(msg)
+                }
+                crate::lsp_init::auto_install::InstallResult::PrerequisitesMissing(msg) => {
+                    InstallStatus::Failed(msg)
+                }
+                crate::lsp_init::auto_install::InstallResult::Declined => {
+                    InstallStatus::Failed("Declined".to_string())
+                }
             };
 
             let _ = tx.send(InstallProgress {
@@ -715,7 +718,281 @@ async fn handle_api_request(
 
             let _ = tx.send(ApiResponse::ContextWindow(context_info));
         }
+        ApiRequest::EditLine { line, old, new, tx } => {
+            let response = handle_edit_line(editor, line, &old, &new);
+            let _ = tx.send(response);
+        }
+        ApiRequest::InsertLines {
+            line,
+            before,
+            text,
+            tx,
+        } => {
+            let response = handle_insert_lines(editor, line, before, &text);
+            let _ = tx.send(response);
+        }
+        ApiRequest::DeleteLines { from, to, tx } => {
+            let response = handle_delete_lines(editor, from, to);
+            let _ = tx.send(response);
+        }
+        ApiRequest::ReadLines { from, to, tx } => {
+            let response = handle_read_lines(editor, from, to);
+            let _ = tx.send(response);
+        }
     }
+}
+
+/// Handle edit-line API request: find and replace text on a specific line or whole buffer
+fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &str) -> ApiResponse {
+    let rope = editor.buffer().rope();
+    let total_lines = rope.len_lines();
+
+    // Find the match
+    let matches: Vec<(usize, usize)> = if let Some(line_idx) = line {
+        // Search within a specific line (0-indexed)
+        if line_idx >= total_lines {
+            return ApiResponse::Error(ErrorResponse {
+                error: format!(
+                    "Line {} out of range (buffer has {} lines)",
+                    line_idx + 1,
+                    total_lines
+                ),
+            });
+        }
+        let line_text = rope.line(line_idx).to_string();
+        // Trim trailing newline for matching
+        let line_content = line_text.trim_end_matches('\n');
+        let mut found = Vec::new();
+        let mut search_start = 0;
+        while let Some(pos) = line_content[search_start..].find(old) {
+            found.push((line_idx, search_start + pos));
+            search_start += pos + old.len();
+        }
+        found
+    } else {
+        // Search whole buffer
+        let mut found = Vec::new();
+        for line_idx in 0..total_lines {
+            let line_text = rope.line(line_idx).to_string();
+            let line_content = line_text.trim_end_matches('\n');
+            let mut search_start = 0;
+            while let Some(pos) = line_content[search_start..].find(old) {
+                found.push((line_idx, search_start + pos));
+                search_start += pos + old.len();
+            }
+        }
+        found
+    };
+
+    if matches.is_empty() {
+        return ApiResponse::Error(ErrorResponse {
+            error: "Text not found".to_string(),
+        });
+    }
+
+    if matches.len() > 1 && line.is_none() {
+        return ApiResponse::Error(ErrorResponse {
+            error: format!(
+                "Ambiguous: found {} matches. Use --line to specify which line.",
+                matches.len()
+            ),
+        });
+    }
+
+    let (match_line, match_col) = matches[0];
+
+    // Record cursor position before change
+    let cursor_before = {
+        let c = editor.buffer().cursor();
+        (c.line(), c.col())
+    };
+
+    // Perform the edit: delete old text, insert new text
+    let end_col = match_col + old.len();
+    let deleted = editor
+        .buffer_mut()
+        .delete_range(match_line, match_col, match_line, end_col);
+    editor.buffer_mut().insert_text_at(match_line, match_col, new);
+
+    // Record composite change for undo
+    let change = ovim::editor::Change::composite(
+        vec![
+            ovim::editor::Change::delete(
+                ovim::editor::Range::new((match_line, match_col), (match_line, end_col)),
+                deleted,
+                cursor_before,
+            ),
+            ovim::editor::Change::insert((match_line, match_col), new.to_string(), cursor_before),
+        ],
+        cursor_before,
+        (match_line, match_col + new.len()),
+    );
+    editor.add_change(change);
+
+    ApiResponse::Success(SuccessResponse {
+        success: true,
+        message: Some(format!("Replaced on line {}", match_line + 1)),
+        line_count: Some(editor.buffer().rope().len_lines()),
+    })
+}
+
+/// Handle insert-lines API request: insert text before a specific line
+fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &str) -> ApiResponse {
+    let total_lines = editor.buffer().rope().len_lines();
+
+    // `line` is 0-indexed insert position
+    // Clamp to valid range
+    if line > total_lines {
+        return ApiResponse::Error(ErrorResponse {
+            error: format!(
+                "Line {} out of range (buffer has {} lines)",
+                line + 1,
+                total_lines
+            ),
+        });
+    }
+
+    // Calculate char position for insertion
+    let char_idx = if line >= total_lines {
+        editor.buffer().rope().len_chars()
+    } else {
+        editor.buffer().rope().line_to_char(line)
+    };
+
+    // Ensure text ends with newline
+    let text_with_nl = if text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{}\n", text)
+    };
+
+    let cursor_before = {
+        let c = editor.buffer().cursor();
+        (c.line(), c.col())
+    };
+
+    // Convert char_idx to line/col for insert_text_at
+    let rope = editor.buffer().rope();
+    let ins_line = rope.char_to_line(char_idx);
+    let ins_col = char_idx - rope.line_to_char(ins_line);
+
+    editor
+        .buffer_mut()
+        .insert_text_at(ins_line, ins_col, &text_with_nl);
+
+    // Record change for undo
+    let change = ovim::editor::Change::insert(
+        (ins_line, ins_col),
+        text_with_nl,
+        cursor_before,
+    );
+    editor.add_change(change);
+
+    ApiResponse::Success(SuccessResponse {
+        success: true,
+        message: Some(format!("Inserted at line {}", line + 1)),
+        line_count: Some(editor.buffer().rope().len_lines()),
+    })
+}
+
+/// Handle delete-lines API request: delete a range of lines (0-indexed, inclusive)
+fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiResponse {
+    let total_lines = editor.buffer().rope().len_lines();
+
+    if from >= total_lines {
+        return ApiResponse::Error(ErrorResponse {
+            error: format!(
+                "Line {} out of range (buffer has {} lines)",
+                from + 1,
+                total_lines
+            ),
+        });
+    }
+
+    let to = to.min(total_lines.saturating_sub(1));
+
+    if from > to {
+        return ApiResponse::Error(ErrorResponse {
+            error: format!("Invalid range: from {} > to {}", from + 1, to + 1),
+        });
+    }
+
+    let cursor_before = {
+        let c = editor.buffer().cursor();
+        (c.line(), c.col())
+    };
+
+    // Calculate end position for delete_range
+    let end_line = if to + 1 >= total_lines {
+        total_lines.saturating_sub(1)
+    } else {
+        to + 1
+    };
+    let end_col = if to + 1 >= total_lines {
+        let last_line = editor.buffer().rope().line(total_lines - 1);
+        last_line.len_chars()
+    } else {
+        0
+    };
+
+    let deleted = editor
+        .buffer_mut()
+        .delete_range(from, 0, end_line, end_col);
+
+    // Record change for undo
+    let change = ovim::editor::Change::delete(
+        ovim::editor::Range::new((from, 0), (end_line, end_col)),
+        deleted,
+        cursor_before,
+    );
+    editor.add_change(change);
+
+    // Adjust cursor if it was in deleted range
+    let new_total = editor.buffer().rope().len_lines();
+    let cursor = editor.buffer().cursor();
+    if cursor.line() >= new_total && new_total > 0 {
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(new_total - 1, 0);
+    }
+
+    ApiResponse::Success(SuccessResponse {
+        success: true,
+        message: Some(format!("Deleted lines {}-{}", from + 1, to + 1)),
+        line_count: Some(new_total),
+    })
+}
+
+/// Handle read-lines API request: read a range of lines (0-indexed, inclusive)
+fn handle_read_lines(editor: &Editor, from: usize, to: usize) -> ApiResponse {
+    let rope = editor.buffer().rope();
+    let total_lines = rope.len_lines();
+
+    if from >= total_lines {
+        return ApiResponse::Error(ErrorResponse {
+            error: format!(
+                "Line {} out of range (buffer has {} lines)",
+                from + 1,
+                total_lines
+            ),
+        });
+    }
+
+    let to = to.min(total_lines.saturating_sub(1));
+
+    let mut lines = Vec::new();
+    for idx in from..=to {
+        let line_text = rope.line(idx).to_string();
+        // Strip trailing newline
+        let text = line_text.trim_end_matches('\n').to_string();
+        lines.push(LineEntry {
+            number: idx + 1, // 1-indexed for display
+            text,
+        });
+    }
+
+    ApiResponse::Lines(LinesResponse { lines, total_lines })
 }
 
 /// Spawns a background task to load picker preview if debounce time has elapsed
@@ -838,15 +1115,19 @@ fn spawn_file_finder_loading(
 
             // Store collected files in a static to be picked up by cache update
             // This is a workaround since we can't update Editor state from within a spawned task
-            FILE_LIST_CACHE_RESULTS.lock().await.replace((base_dir_clone, collected_files));
+            FILE_LIST_CACHE_RESULTS
+                .lock()
+                .await
+                .replace((base_dir_clone, collected_files));
         });
     }
 }
 
 /// Temporary storage for file list results from background task
 /// The main event loop will pick these up and update the Editor cache
-static FILE_LIST_CACHE_RESULTS: tokio::sync::Mutex<Option<(std::path::PathBuf, Vec<editor::PickerResult>)>> =
-    tokio::sync::Mutex::const_new(None);
+static FILE_LIST_CACHE_RESULTS: tokio::sync::Mutex<
+    Option<(std::path::PathBuf, Vec<editor::PickerResult>)>,
+> = tokio::sync::Mutex::const_new(None);
 
 /// Picks up cached file list results from the background task and updates Editor cache
 pub fn update_file_list_cache_from_background(editor: &mut Editor) {

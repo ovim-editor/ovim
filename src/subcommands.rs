@@ -11,11 +11,35 @@ use crate::session::SessionInfo;
 /// Helper to resolve session - auto-discover if not provided
 fn resolve_session(session_name: Option<String>) -> Result<SessionInfo> {
     match session_name {
-        Some(name) => SessionInfo::read(&name)
-            .context(format!("Failed to find session '{}'", name)),
-        None => SessionInfo::auto_discover()
-            .context("Failed to auto-discover session")
+        Some(name) => {
+            SessionInfo::read(&name).context(format!("Failed to find session '{}'", name))
+        }
+        None => SessionInfo::auto_discover().context("Failed to auto-discover session"),
     }
+}
+
+/// Expand \n escape sequences in a string (consistent with send_keys)
+fn expand_escapes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some('n') => {
+                    chars.next();
+                    result.push('\n');
+                }
+                Some('\\') => {
+                    chars.next();
+                    result.push('\\');
+                }
+                _ => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
 
 /// Execute a subcommand
@@ -60,6 +84,25 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::CheckLsp { file, verbose } => cmd_check_lsp(&file, verbose),
         Command::WaitLsp { session, timeout } => cmd_wait_lsp(session, timeout),
         Command::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
+        Command::Edit {
+            line,
+            old,
+            new,
+            session,
+        } => cmd_edit(session, line, &old, &new),
+        Command::Insert {
+            after,
+            before,
+            text,
+            session,
+        } => cmd_insert(session, after, before, &text),
+        Command::DeleteLines { from, to, session } => cmd_delete_lines(session, from, to),
+        Command::ReadLines {
+            from,
+            to,
+            json,
+            session,
+        } => cmd_read_lines(session, from, to, json),
     }
 }
 
@@ -148,7 +191,10 @@ fn cmd_snapshot(session_name: Option<String>, format: &str) -> Result<()> {
         "pretty" => {
             println!("Session: {}", session.session_name);
             println!("Mode: {}", snapshot.mode);
-            println!("Cursor: line {}, col {}", snapshot.cursor.line, snapshot.cursor.column);
+            println!(
+                "Cursor: line {}, col {}",
+                snapshot.cursor.line, snapshot.cursor.column
+            );
             println!("Buffer: {} lines", snapshot.buffer.line_count);
             if let Some(path) = &snapshot.buffer.file_path {
                 println!("File: {}", path);
@@ -205,7 +251,10 @@ fn cmd_kill(session_name: Option<String>) -> Result<()> {
         .kill_session(&session)
         .context("Failed to kill session")?;
 
-    println!("\x1b[32mSession '{}' (PID: {}) killed\x1b[0m", session.session_name, session.pid);
+    println!(
+        "\x1b[32mSession '{}' (PID: {}) killed\x1b[0m",
+        session.session_name, session.pid
+    );
     Ok(())
 }
 
@@ -299,7 +348,12 @@ fn cmd_context(session_name: Option<String>) -> Result<()> {
 
     // Extract the context string from the MCP response
     // The response structure is: result.content[0].text contains JSON-serialized ContextWindowInfo
-    if let Some(text_field) = response.get("result").and_then(|r| r.get("content")).and_then(|c| c.get(0)).and_then(|c| c.get("text")) {
+    if let Some(text_field) = response
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("text"))
+    {
         if let Some(text_str) = text_field.as_str() {
             // Parse the JSON string to extract ContextWindowInfo
             if let Ok(context_info) = serde_json::from_str::<serde_json::Value>(text_str) {
@@ -396,8 +450,8 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
 
     // Read existing config or create new one
     let mut config: serde_json::Value = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .context("Failed to read existing .mcp.json")?;
+        let content =
+            fs::read_to_string(&config_path).context("Failed to read existing .mcp.json")?;
         serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
@@ -413,13 +467,25 @@ fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Res
 
     if show_config {
         println!("\n📋 Claude Code config to be added/merged to .mcp.json:");
-        println!("{}", serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
+        );
         println!("\nWill be saved to: {}", abs_path.display());
         println!("\n📋 Claude Code hook config (UserPromptSubmit event):");
         let parent = abs_path.parent().unwrap_or(&abs_path);
-        println!("Hooks directory: {}", parent.join(".claude/hooks").display());
-        println!("Settings file: {}", parent.join(".claude/settings.json").display());
-        println!("Hook script: {}", parent.join(".claude/hooks/inject_context.sh").display());
+        println!(
+            "Hooks directory: {}",
+            parent.join(".claude/hooks").display()
+        );
+        println!(
+            "Settings file: {}",
+            parent.join(".claude/settings.json").display()
+        );
+        println!(
+            "Hook script: {}",
+            parent.join(".claude/hooks/inject_context.sh").display()
+        );
     } else {
         // Create .claude directory and hooks subdirectory
         fs::create_dir_all(claude_dir.join("hooks"))
@@ -446,8 +512,7 @@ if [ -n \"$context_output\" ]; then\n\
   echo \"$context_output\"\n\
 fi\n\
 ";
-        fs::write(&hook_script_path, hook_script)
-            .context("Failed to write hook script")?;
+        fs::write(&hook_script_path, hook_script).context("Failed to write hook script")?;
 
         // Make hook executable
         #[cfg(unix)]
@@ -496,14 +561,15 @@ fi\n\
             println!("✓ Hook already exists in .claude/settings.json (skipped)");
         }
 
-        fs::write(&claude_settings_path, serde_json::to_string_pretty(&claude_settings)?)
-            .context("Failed to write .claude/settings.json")?;
+        fs::write(
+            &claude_settings_path,
+            serde_json::to_string_pretty(&claude_settings)?,
+        )
+        .context("Failed to write .claude/settings.json")?;
 
         // Write MCP config
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config)?,
-        ).context("Failed to write .mcp.json")?;
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
+            .context("Failed to write .mcp.json")?;
 
         println!("✓ Updated .mcp.json for Claude Code");
         println!("  Location: {}", abs_path.display());
@@ -552,17 +618,15 @@ fn install_claude_desktop(mcp_config: &serde_json::Value, show_config: bool) -> 
 
     if show_config {
         println!("\n📋 Claude Desktop config to be added/merged:");
-        println!("{}", serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?);
         println!(
-            "\nWill be saved to: {}",
-            config_path.to_string_lossy()
+            "{}",
+            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
         );
+        println!("\nWill be saved to: {}", config_path.to_string_lossy());
     } else {
         // Write updated config
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config)?,
-        ).context("Failed to write Claude Desktop config")?;
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
+            .context("Failed to write Claude Desktop config")?;
         println!("✓ Updated Claude Desktop config");
     }
 
@@ -601,17 +665,15 @@ fn install_cursor(mcp_config: &serde_json::Value, show_config: bool) -> Result<(
 
     if show_config {
         println!("\n📋 Cursor IDE config to be added/merged:");
-        println!("{}", serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?);
         println!(
-            "\nWill be saved to: {}",
-            config_path.to_string_lossy()
+            "{}",
+            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
         );
+        println!("\nWill be saved to: {}", config_path.to_string_lossy());
     } else {
         // Write updated config
-        fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config)?,
-        ).context("Failed to write Cursor MCP config")?;
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
+            .context("Failed to write Cursor MCP config")?;
         println!("✓ Updated Cursor IDE config");
     }
 
@@ -640,76 +702,99 @@ fn cmd_mcp_server(
 
 /// Trigger goto-definition and return new location as JSON
 fn cmd_goto_definition(session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
     use std::thread;
     use std::time::Duration;
-    use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    let before = client.get_snapshot().context("Failed to get snapshot before goto-definition")?;
-    client.send_keys("gd").context("Failed to send goto-definition keys")?;
+    let before = client
+        .get_snapshot()
+        .context("Failed to get snapshot before goto-definition")?;
+    client
+        .send_keys("gd")
+        .context("Failed to send goto-definition keys")?;
     thread::sleep(Duration::from_millis(300));
-    let after = client.get_snapshot().context("Failed to get snapshot after goto-definition")?;
+    let after = client
+        .get_snapshot()
+        .context("Failed to get snapshot after goto-definition")?;
 
-    let moved = (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column)
+    let moved = (before.cursor.line, before.cursor.column)
+        != (after.cursor.line, after.cursor.column)
         || before.buffer.file_path != after.buffer.file_path;
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": moved,
-        "file": after.buffer.file_path,
-        "line": after.cursor.line + 1,
-        "column": after.cursor.column + 1
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": moved,
+            "file": after.buffer.file_path,
+            "line": after.cursor.line + 1,
+            "column": after.cursor.column + 1
+        }))?
+    );
 
     Ok(())
 }
 
 /// Trigger find-references and return list from picker
 fn cmd_find_references(session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
     use std::thread;
     use std::time::Duration;
-    use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    client.send_keys("gr").context("Failed to send find-references keys")?;
+    client
+        .send_keys("gr")
+        .context("Failed to send find-references keys")?;
     thread::sleep(Duration::from_millis(500));
-    let snapshot = client.get_snapshot().context("Failed to get snapshot after find-references")?;
+    let snapshot = client
+        .get_snapshot()
+        .context("Failed to get snapshot after find-references")?;
 
     let references = if let Some(picker) = &snapshot.picker {
-        picker.results.iter().map(|r| {
-            json!({
-                "display": r.display,
-                "file": r.location,
-                "line": r.line,
-                "column": r.col
+        picker
+            .results
+            .iter()
+            .map(|r| {
+                json!({
+                    "display": r.display,
+                    "file": r.location,
+                    "line": r.line,
+                    "column": r.col
+                })
             })
-        }).collect::<Vec<_>>()
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": !references.is_empty(),
-        "references": references
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": !references.is_empty(),
+            "references": references
+        }))?
+    );
 
     Ok(())
 }
 
 /// Trigger hover and return hover_info
 fn cmd_hover(session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
     use std::thread;
     use std::time::Duration;
-    use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
     // Ensure NORMAL mode before triggering hover (clears any previous hover state)
-    client.set_mode("NORMAL").context("Failed to set NORMAL mode")?;
+    client
+        .set_mode("NORMAL")
+        .context("Failed to set NORMAL mode")?;
     thread::sleep(Duration::from_millis(50));
 
     client.send_keys("K").context("Failed to send hover keys")?;
@@ -729,65 +814,88 @@ fn cmd_hover(session_name: Option<String>) -> Result<()> {
     // Dismiss hover popup
     let _ = client.set_mode("NORMAL");
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": hover_info.is_some(),
-        "hover": hover_info
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": hover_info.is_some(),
+            "hover": hover_info
+        }))?
+    );
 
     Ok(())
 }
 
 /// Search for pattern and jump to first match
 fn cmd_search(pattern: &str, session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
     use std::thread;
     use std::time::Duration;
-    use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    let before = client.get_snapshot().context("Failed to get snapshot before search")?;
+    let before = client
+        .get_snapshot()
+        .context("Failed to get snapshot before search")?;
 
     // Enter search mode with / and the pattern, then press Enter
     let search_cmd = format!("/{}<CR>", pattern);
-    client.send_keys(&search_cmd).context("Failed to send search keys")?;
+    client
+        .send_keys(&search_cmd)
+        .context("Failed to send search keys")?;
     thread::sleep(Duration::from_millis(200));
-    let after = client.get_snapshot().context("Failed to get snapshot after search")?;
+    let after = client
+        .get_snapshot()
+        .context("Failed to get snapshot after search")?;
 
-    let found = (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
+    let found =
+        (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": found,
-        "file": after.buffer.file_path,
-        "line": after.cursor.line + 1,
-        "column": after.cursor.column + 1
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": found,
+            "file": after.buffer.file_path,
+            "line": after.cursor.line + 1,
+            "column": after.cursor.column + 1
+        }))?
+    );
 
     Ok(())
 }
 
 /// Jump to next match and return position
 fn cmd_next_match(session_name: Option<String>) -> Result<()> {
+    use serde_json::json;
     use std::thread;
     use std::time::Duration;
-    use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    let before = client.get_snapshot().context("Failed to get snapshot before next match")?;
-    client.send_keys("n").context("Failed to send next match keys")?;
+    let before = client
+        .get_snapshot()
+        .context("Failed to get snapshot before next match")?;
+    client
+        .send_keys("n")
+        .context("Failed to send next match keys")?;
     thread::sleep(Duration::from_millis(100));
-    let after = client.get_snapshot().context("Failed to get snapshot after next match")?;
+    let after = client
+        .get_snapshot()
+        .context("Failed to get snapshot after next match")?;
 
-    let moved = (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
+    let moved =
+        (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": moved,
-        "file": after.buffer.file_path,
-        "line": after.cursor.line + 1,
-        "column": after.cursor.column + 1
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": moved,
+            "file": after.buffer.file_path,
+            "line": after.cursor.line + 1,
+            "column": after.cursor.column + 1
+        }))?
+    );
 
     Ok(())
 }
@@ -797,9 +905,7 @@ fn cmd_outline(session_name: Option<String>) -> Result<()> {
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    let outline = client
-        .get_outline()
-        .context("Failed to get outline")?;
+    let outline = client.get_outline().context("Failed to get outline")?;
 
     println!("{}", serde_json::to_string_pretty(&outline)?);
     Ok(())
@@ -823,9 +929,7 @@ fn cmd_trace(session_name: Option<String>) -> Result<()> {
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    let trace = client
-        .get_trace()
-        .context("Failed to get trace")?;
+    let trace = client.get_trace().context("Failed to get trace")?;
 
     println!("{}", serde_json::to_string_pretty(&trace)?);
     Ok(())
@@ -839,17 +943,20 @@ fn cmd_diagnostics(session_name: Option<String>) -> Result<()> {
     let client = OvimClient::new(&session);
 
     // Use MCP to call get_diagnostics tool
-    let response = client.send_mcp_request(
-        "tools/call",
-        json!({
-            "name": "get_diagnostics",
-            "arguments": {}
-        }),
-        1,
-    ).context("Failed to get diagnostics via MCP")?;
+    let response = client
+        .send_mcp_request(
+            "tools/call",
+            json!({
+                "name": "get_diagnostics",
+                "arguments": {}
+            }),
+            1,
+        )
+        .context("Failed to get diagnostics via MCP")?;
 
     // Extract diagnostics from MCP response
-    if let Some(text_field) = response.get("result")
+    if let Some(text_field) = response
+        .get("result")
         .and_then(|r| r.get("content"))
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("text"))
@@ -862,10 +969,13 @@ fn cmd_diagnostics(session_name: Option<String>) -> Result<()> {
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": false,
-        "diagnostics": []
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": false,
+            "diagnostics": []
+        }))?
+    );
 
     Ok(())
 }
@@ -878,17 +988,20 @@ fn cmd_symbols(session_name: Option<String>) -> Result<()> {
     let client = OvimClient::new(&session);
 
     // Use MCP to call get_outline tool (provides document symbols)
-    let response = client.send_mcp_request(
-        "tools/call",
-        json!({
-            "name": "get_outline",
-            "arguments": {}
-        }),
-        1,
-    ).context("Failed to get symbols via MCP")?;
+    let response = client
+        .send_mcp_request(
+            "tools/call",
+            json!({
+                "name": "get_outline",
+                "arguments": {}
+            }),
+            1,
+        )
+        .context("Failed to get symbols via MCP")?;
 
     // Extract symbols from MCP response
-    if let Some(text_field) = response.get("result")
+    if let Some(text_field) = response
+        .get("result")
         .and_then(|r| r.get("content"))
         .and_then(|c| c.get(0))
         .and_then(|c| c.get("text"))
@@ -901,19 +1014,22 @@ fn cmd_symbols(session_name: Option<String>) -> Result<()> {
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&json!({
-        "success": false,
-        "symbols": []
-    }))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": false,
+            "symbols": []
+        }))?
+    );
 
     Ok(())
 }
 
 /// Wait for LSP to be ready (blocks until ready or timeout)
 fn cmd_wait_lsp(session_name: Option<String>, timeout_ms: u64) -> Result<()> {
+    use serde_json::json;
     use std::thread;
     use std::time::{Duration, Instant};
-    use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
@@ -927,20 +1043,26 @@ fn cmd_wait_lsp(session_name: Option<String>, timeout_ms: u64) -> Result<()> {
                 && lsp_status.servers.iter().all(|s| s.has_capabilities);
 
             if all_ready {
-                println!("{}", serde_json::to_string_pretty(&json!({
-                    "success": true,
-                    "elapsed_ms": start.elapsed().as_millis()
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "success": true,
+                        "elapsed_ms": start.elapsed().as_millis()
+                    }))?
+                );
                 return Ok(());
             }
         }
 
         if start.elapsed() >= timeout {
-            println!("{}", serde_json::to_string_pretty(&json!({
-                "success": false,
-                "error": "Timeout waiting for LSP to be ready",
-                "elapsed_ms": start.elapsed().as_millis()
-            }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "success": false,
+                    "error": "Timeout waiting for LSP to be ready",
+                    "elapsed_ms": start.elapsed().as_millis()
+                }))?
+            );
             anyhow::bail!("Timeout waiting for LSP");
         }
 
@@ -966,8 +1088,7 @@ fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
         println!("Maximum session age: {} days\n", days);
     }
 
-    let result = cleanup_stale_sessions(max_age, dry_run)
-        .context("Failed to clean up sessions")?;
+    let result = cleanup_stale_sessions(max_age, dry_run).context("Failed to clean up sessions")?;
 
     // Report results
     if result.total_removed() == 0 {
@@ -979,23 +1100,38 @@ fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
     println!("─────────────────────────────────────────────");
 
     if result.stale_removed > 0 {
-        println!("  Stale sessions (dead processes):  {}", result.stale_removed);
+        println!(
+            "  Stale sessions (dead processes):  {}",
+            result.stale_removed
+        );
     }
 
     if result.expired_removed > 0 {
-        println!("  Expired sessions (too old):       {}", result.expired_removed);
+        println!(
+            "  Expired sessions (too old):       {}",
+            result.expired_removed
+        );
     }
 
     if result.corrupted_removed > 0 {
-        println!("  Corrupted session files:          {}", result.corrupted_removed);
+        println!(
+            "  Corrupted session files:          {}",
+            result.corrupted_removed
+        );
     }
 
     if result.temp_files_removed > 0 {
-        println!("  Orphaned temp files:              {}", result.temp_files_removed);
+        println!(
+            "  Orphaned temp files:              {}",
+            result.temp_files_removed
+        );
     }
 
     println!("─────────────────────────────────────────────");
-    println!("  Total removed:                    {}", result.total_removed());
+    println!(
+        "  Total removed:                    {}",
+        result.total_removed()
+    );
 
     if !result.removed_sessions.is_empty() {
         println!("\nRemoved sessions:");
@@ -1135,7 +1271,10 @@ fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
         }
     };
 
-    println!("✓ Language Detected: {} ({})", lang_config.name, lang_config.id);
+    println!(
+        "✓ Language Detected: {} ({})",
+        lang_config.name, lang_config.id
+    );
     println!("  Extensions: {}", lang_config.extensions.join(", "));
 
     // Check syntax highlighting
@@ -1185,7 +1324,10 @@ fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
 
                 if lsp.auto_install.is_some() {
                     println!("\n  Auto-install is configured for this language.");
-                    println!("  LSP will be installed automatically when you open a {} file in ovim.", lang_config.id);
+                    println!(
+                        "  LSP will be installed automatically when you open a {} file in ovim.",
+                        lang_config.id
+                    );
                 }
             }
         }
@@ -1199,6 +1341,99 @@ fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
         println!("\n❌ LSP: Not configured for {}", lang_config.name);
         println!("\nYou can add LSP support by creating ~/.config/ovim/languages.toml");
         println!("See: user-docs/LANGUAGE_SUPPORT.md");
+    }
+
+    Ok(())
+}
+
+/// Replace text on a line or in the buffer
+fn cmd_edit(
+    session_name: Option<String>,
+    line: Option<usize>,
+    old: &str,
+    new: &str,
+) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let old_expanded = expand_escapes(old);
+    let new_expanded = expand_escapes(new);
+
+    let result = client
+        .edit_line(line, &old_expanded, &new_expanded)
+        .context("Failed to edit")?;
+
+    if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
+        println!("{}", msg);
+    }
+
+    Ok(())
+}
+
+/// Insert text after or before a line
+fn cmd_insert(
+    session_name: Option<String>,
+    after: Option<usize>,
+    before: Option<usize>,
+    text: &str,
+) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let text_expanded = expand_escapes(text);
+
+    let result = client
+        .insert_lines(after, before, &text_expanded)
+        .context("Failed to insert")?;
+
+    if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
+        println!("{}", msg);
+    }
+
+    Ok(())
+}
+
+/// Delete a range of lines
+fn cmd_delete_lines(session_name: Option<String>, from: usize, to: usize) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let result = client
+        .delete_lines(from, to)
+        .context("Failed to delete lines")?;
+
+    if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
+        println!("{}", msg);
+    }
+
+    Ok(())
+}
+
+/// Read a range of lines
+fn cmd_read_lines(
+    session_name: Option<String>,
+    from: usize,
+    to: usize,
+    json_output: bool,
+) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let result = client
+        .read_lines(from, to)
+        .context("Failed to read lines")?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        // Plain text output with line numbers
+        if let Some(lines) = result.get("lines").and_then(|v| v.as_array()) {
+            for line in lines {
+                let number = line.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                let text = line.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                println!("{:>4} | {}", number, text);
+            }
+        }
     }
 
     Ok(())

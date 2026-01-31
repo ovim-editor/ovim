@@ -242,6 +242,67 @@ pub enum Command {
         timeout: u64,
     },
 
+    /// Replace text on a specific line or in the whole buffer
+    Edit {
+        /// Line number (1-indexed) to restrict the search to
+        #[arg(long)]
+        line: Option<usize>,
+        /// Text to find (literal match, use \n for newlines)
+        #[arg(long)]
+        old: String,
+        /// Replacement text (use \n for newlines)
+        #[arg(long)]
+        new: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Insert text after or before a line
+    Insert {
+        /// Insert after this line number (1-indexed, 0 = before first line)
+        #[arg(long, conflicts_with = "before")]
+        after: Option<usize>,
+        /// Insert before this line number (1-indexed)
+        #[arg(long, conflicts_with = "after")]
+        before: Option<usize>,
+        /// Text to insert (use \n for newlines)
+        #[arg(long)]
+        text: String,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Delete a range of lines
+    DeleteLines {
+        /// First line to delete (1-indexed)
+        #[arg(long)]
+        from: usize,
+        /// Last line to delete (1-indexed, inclusive)
+        #[arg(long)]
+        to: usize,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
+    /// Read a range of lines with line numbers
+    ReadLines {
+        /// First line to read (1-indexed)
+        #[arg(long)]
+        from: usize,
+        /// Last line to read (1-indexed, inclusive)
+        #[arg(long)]
+        to: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Session name (auto-discovered if not provided)
+        #[arg(short, long)]
+        session: Option<String>,
+    },
+
     /// Clean up stale, expired, and corrupted session files
     Cleanup {
         /// Maximum session age in days (sessions older than this will be removed)

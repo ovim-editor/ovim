@@ -23,6 +23,28 @@ pub enum ApiRequest {
     SearchSymbol(String, oneshot::Sender<ApiResponse>),
     GetTrace(oneshot::Sender<ApiResponse>),
     GetDiagnostics(oneshot::Sender<ApiResponse>),
+    EditLine {
+        line: Option<usize>,
+        old: String,
+        new: String,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    InsertLines {
+        line: usize,
+        before: bool,
+        text: String,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    DeleteLines {
+        from: usize,
+        to: usize,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    ReadLines {
+        from: usize,
+        to: usize,
+        tx: oneshot::Sender<ApiResponse>,
+    },
 }
 
 /// Response types that can be returned from the editor
@@ -43,6 +65,7 @@ pub enum ApiResponse {
     SymbolSearch(SymbolSearchInfo),
     Trace(TraceInfo),
     Diagnostics(DiagnosticsInfo),
+    Lines(LinesResponse),
     Success(SuccessResponse),
     Error(ErrorResponse),
 }
@@ -277,6 +300,20 @@ pub struct DiagnosticCounts {
     pub hints: usize,
 }
 
+/// Response for read-lines: a slice of the buffer with line numbers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinesResponse {
+    pub lines: Vec<LineEntry>,
+    pub total_lines: usize,
+}
+
+/// A single line entry with its 1-indexed line number
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LineEntry {
+    pub number: usize,
+    pub text: String,
+}
+
 /// Visual selection range
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisualSelection {
@@ -445,7 +482,10 @@ pub fn format_context_window(
         .unwrap_or("unnamed");
     let header = format!(
         "[ovim: {} | {} | L{}:C{}]",
-        file_display, mode, cursor_line + 1, cursor_column + 1
+        file_display,
+        mode,
+        cursor_line + 1,
+        cursor_column + 1
     );
 
     let mut result = String::new();
