@@ -199,6 +199,7 @@ fn apply_operator_to_range(
         Operator::Yank => {
             // For yank, we don't modify the buffer
             // Just restore cursor to start position
+            editor.set_yank_flash_range(start_line, start_col, end_line, end_col.saturating_sub(1));
             editor
                 .buffer_mut()
                 .cursor_mut()

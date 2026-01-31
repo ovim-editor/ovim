@@ -451,9 +451,16 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Yank selection
         KeyCode::Char('y') => {
             // Move cursor to start of selection before yanking (Vim behavior)
-            if let Some(((start_line, start_col), _)) = editor.visual_selection() {
+            if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() {
+                let mode = editor.mode();
                 helpers::yank_visual_selection(editor)?;
                 editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+                // Flash the yanked region
+                if mode == Mode::VisualLine {
+                    editor.set_yank_flash_lines(start_line, end_line);
+                } else {
+                    editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+                }
             }
             helpers::exit_visual_mode_to_normal(editor);
         }

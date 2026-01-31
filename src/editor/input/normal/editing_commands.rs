@@ -348,8 +348,11 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
 /// Y - yank line
 fn yank_line(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
+    let start_line = editor.buffer().cursor().line();
+    let end_line = (start_line + count).min(editor.buffer().line_count()) - 1;
     let yanked = helpers::yank_line(editor.buffer(), count)?;
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
+    editor.set_yank_flash_lines(start_line, end_line);
     editor.clear_count();
     Ok(())
 }

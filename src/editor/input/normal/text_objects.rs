@@ -214,6 +214,11 @@ fn apply_yank_operator(
         RegisterType::Character
     };
     editor.yank_to_register_with_type(yanked, reg_type);
+    if reg_type == RegisterType::Line {
+        editor.set_yank_flash_lines(range.start_line, range.end_line);
+    } else {
+        editor.set_yank_flash_range(range.start_line, range.start_col, range.end_line, range.end_col);
+    }
     Ok(())
 }
 
