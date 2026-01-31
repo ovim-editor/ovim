@@ -616,7 +616,9 @@ impl Editor {
         }
         let width = text_width.max(1);
         let tab_width = self.options.tab_width;
-        let line_count = self.buffer().line_count();
+        // Use rope's raw line count (includes trailing empty line after final \n)
+        // so the wrap map covers all valid cursor positions.
+        let line_count = self.buffer().rope().len_lines();
         let buf_version = self.buffer().version();
 
         // Check if existing map is up to date or can be incrementally updated

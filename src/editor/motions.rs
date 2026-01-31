@@ -162,7 +162,16 @@ impl Motions {
         start_line: usize,
         _big_word: bool,
     ) -> Option<(usize, usize)> {
-        let total_lines = rope.len_lines();
+        // Use Vim-compatible line count: exclude the phantom empty line that
+        // ropey appends after a trailing '\n'. Motions should not land there.
+        let total_lines = {
+            let raw = rope.len_lines();
+            if raw > 1 && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) == '\n' {
+                raw - 1
+            } else {
+                raw
+            }
+        };
         for line_idx in start_line..total_lines {
             let line = rope.line(line_idx).to_string();
             let content = line.trim_end_matches('\n');
@@ -295,7 +304,13 @@ impl Motions {
             let cursor = buffer.cursor();
             line_idx = cursor.line();
             col = cursor.col();
-            total_lines = rope.len_lines();
+            // Use Vim-compatible line count: exclude phantom empty line after trailing '\n'.
+            let raw = rope.len_lines();
+            total_lines = if raw > 1 && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) == '\n' {
+                raw - 1
+            } else {
+                raw
+            };
 
             if line_idx >= total_lines {
                 return;

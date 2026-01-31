@@ -74,8 +74,12 @@ impl WrapMap {
     }
 
     /// Returns the first visual row index for a given logical line.
+    /// For out-of-bounds lines, returns total_visual_lines (one past last row).
     pub fn logical_to_visual(&self, line: usize) -> usize {
-        self.visual_offsets.get(line).copied().unwrap_or(0)
+        self.visual_offsets
+            .get(line)
+            .copied()
+            .unwrap_or(self.total_visual_lines)
     }
 
     /// Converts a visual row index to (logical_line, sub_line) within that line.
