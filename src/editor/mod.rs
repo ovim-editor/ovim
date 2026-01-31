@@ -6,6 +6,7 @@ mod command_history;
 mod completion;
 mod filetree;
 mod fold;
+pub(crate) mod fuzzy;
 mod input;
 mod input_context;
 mod input_state;
