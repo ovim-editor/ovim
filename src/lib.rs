@@ -11,7 +11,6 @@ pub mod buffer;
 pub mod cli;
 pub mod client;
 pub mod commands;
-pub mod config;
 pub mod daemon;
 pub mod display;
 pub mod language_config;
