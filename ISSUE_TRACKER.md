@@ -49,6 +49,8 @@
 | OV-00045 | Won't Fix | LOW | Medium | [SEARCH] Backward search at col=0 produces empty search range — Investigation shows find_backward correctly falls through to previous lines when from_col=0. Not a bug in practice. |
 | OV-00046 | Pending | HIGH | High | [ARCH] `commands.rs` is 2K+ line monolith with duplicated handlers — `:bn`/`:bnext` handled in both top-level match AND else-if chain; `:set` has 400 lines of near-identical arms. Needs command table or macro. (src/commands.rs) |
 | OV-00047 | Pending | MEDIUM | High | [ARCH] `lsp/server.rs` has 24 AtomicBool fields + 290 lines of capability boilerplate — adding a capability requires changes in 4 places. File is 1900+ lines. Replace with bitflags. (src/lsp/server.rs) |
+| OV-00048 | Fixed | MEDIUM | Medium | [RENDER] ANSI escape codes in buffer content interpreted by terminal — control chars (0x00-0x1F excl tab/newline, and 0x7F) now rendered as caret notation (e.g. `^[` for ESC, `^@` for NUL) with SpecialKey highlight group. Buffer stores original bytes untouched for round-trip fidelity. |
+| OV-00049 | Pending | LOW | Low | [WINDOW] Window focus overlap preference is dead code — `focus_left/right/up/down` originally had overlap preference checks (`vertical_overlap > 0`) but `|| true` made them no-ops. Now removed. To restore overlap preference, `focus_directional` sort should weight overlapping candidates higher (e.g., multi-key sort: overlap then distance). |
 
 ## Bugs Filed Against Hyperion (if any)
 
