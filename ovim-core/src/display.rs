@@ -1,5 +1,36 @@
 use unicode_width::UnicodeWidthChar;
 
+/// Returns true for control characters that should be displayed as caret notation.
+/// Covers 0x00–0x1F (excluding \t and \n) and 0x7F (DEL).
+pub fn is_control_char(ch: char) -> bool {
+    let c = ch as u32;
+    (c <= 0x1F && ch != '\t' && ch != '\n') || c == 0x7F
+}
+
+/// Returns the display width of a character, accounting for control chars (2 columns),
+/// wide characters (2 columns), and normal characters (1 column).
+pub fn char_display_width(ch: char) -> usize {
+    if is_control_char(ch) {
+        2
+    } else {
+        ch.width().unwrap_or(1)
+    }
+}
+
+/// Returns the caret notation for a control character, or None if not a control char.
+/// ESC → ['^','['], NUL → ['^','@'], DEL → ['^','?'], etc.
+pub fn control_char_caret(ch: char) -> Option<[char; 2]> {
+    let c = ch as u32;
+    if c <= 0x1F && ch != '\t' && ch != '\n' {
+        // 0x00 → '@', 0x01 → 'A', ..., 0x1A → 'Z', 0x1B → '[', etc.
+        Some(['^', (c as u8 + b'@') as char])
+    } else if c == 0x7F {
+        Some(['^', '?'])
+    } else {
+        None
+    }
+}
+
 /// Converts a character column index to a display column, accounting for tabs and wide characters.
 pub fn char_col_to_display_col(text: &str, char_col: usize, tab_width: usize) -> usize {
     let mut display_col = 0;
@@ -13,7 +44,7 @@ pub fn char_col_to_display_col(text: &str, char_col: usize, tab_width: usize) ->
             let spaces_to_add = tab_width - (display_col % tab_width);
             display_col += spaces_to_add;
         } else {
-            display_col += ch.width().unwrap_or(1);
+            display_col += char_display_width(ch);
         }
     }
 
@@ -34,7 +65,7 @@ pub fn display_col_to_char_col(text: &str, display_col: usize, tab_width: usize)
             let spaces = tab_width - (current_display % tab_width);
             current_display += spaces;
         } else {
-            current_display += ch.width().unwrap_or(1);
+            current_display += char_display_width(ch);
         }
 
         if current_display > display_col {
@@ -53,7 +84,7 @@ pub fn display_width(text: &str, tab_width: usize) -> usize {
         if ch == '\t' {
             width += tab_width - (width % tab_width);
         } else {
-            width += ch.width().unwrap_or(1);
+            width += char_display_width(ch);
         }
     }
     width
@@ -112,5 +143,59 @@ mod tests {
     fn test_display_col_beyond_text() {
         let text = "abc";
         assert_eq!(display_col_to_char_col(text, 10, 4), 3);
+    }
+
+    #[test]
+    fn test_is_control_char() {
+        assert!(is_control_char('\x00')); // NUL
+        assert!(is_control_char('\x01')); // SOH
+        assert!(is_control_char('\x1b')); // ESC
+        assert!(is_control_char('\x7f')); // DEL
+        assert!(!is_control_char('\t'));   // tab excluded
+        assert!(!is_control_char('\n'));   // newline excluded
+        assert!(!is_control_char('a'));
+        assert!(!is_control_char(' '));    // space is 0x20, not control
+    }
+
+    #[test]
+    fn test_control_char_caret() {
+        assert_eq!(control_char_caret('\x00'), Some(['^', '@']));  // NUL
+        assert_eq!(control_char_caret('\x01'), Some(['^', 'A']));  // SOH
+        assert_eq!(control_char_caret('\x1b'), Some(['^', '[']));  // ESC
+        assert_eq!(control_char_caret('\x7f'), Some(['^', '?']));  // DEL
+        assert_eq!(control_char_caret('\t'), None);
+        assert_eq!(control_char_caret('a'), None);
+    }
+
+    #[test]
+    fn test_char_display_width() {
+        assert_eq!(char_display_width('\x00'), 2); // control char = 2
+        assert_eq!(char_display_width('\x1b'), 2); // ESC = 2
+        assert_eq!(char_display_width('a'), 1);
+        assert_eq!(char_display_width('世'), 2);   // wide char = 2
+    }
+
+    #[test]
+    fn test_display_width_with_control_chars() {
+        // "a\x1b[b" = 'a'(1) + ESC(2) + '['(1) + 'b'(1) = 5
+        assert_eq!(display_width("a\x1b[b", 4), 5);
+    }
+
+    #[test]
+    fn test_control_char_roundtrip() {
+        let text = "a\x01b";
+        // 'a'=1, '\x01'=2, 'b'=1 → total width=4
+        assert_eq!(display_width(text, 4), 4);
+        // char_col 0 → display 0
+        assert_eq!(char_col_to_display_col(text, 0, 4), 0);
+        // char_col 1 → display 1 (after 'a')
+        assert_eq!(char_col_to_display_col(text, 1, 4), 1);
+        // char_col 2 → display 3 (after control char width 2)
+        assert_eq!(char_col_to_display_col(text, 2, 4), 3);
+        // roundtrip
+        assert_eq!(display_col_to_char_col(text, 0, 4), 0);
+        assert_eq!(display_col_to_char_col(text, 1, 4), 1);
+        assert_eq!(display_col_to_char_col(text, 2, 4), 1); // mid-control → char 1
+        assert_eq!(display_col_to_char_col(text, 3, 4), 2);
     }
 }

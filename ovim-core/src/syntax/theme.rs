@@ -36,6 +36,8 @@ pub enum HighlightGroup {
     MarkupHeading,
     /// Markup raw/code (`code` or code blocks)
     MarkupRaw,
+    /// Control characters displayed as caret notation (^[, ^@, etc.)
+    SpecialKey,
     Other,
 }
 
@@ -145,6 +147,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, Color::Yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, Color::Magenta);
         scheme.set_syntax(HighlightGroup::MarkupRaw, Color::Green);
+        scheme.set_syntax(HighlightGroup::SpecialKey, Color::DarkGray);
         scheme.set_syntax(HighlightGroup::Other, Color::White);
 
         // UI colors
@@ -208,6 +211,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, red);
         scheme.set_syntax(HighlightGroup::MarkupRaw, green);
+        scheme.set_syntax(HighlightGroup::SpecialKey, gray);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -271,6 +275,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, red);
         scheme.set_syntax(HighlightGroup::MarkupRaw, green);
+        scheme.set_syntax(HighlightGroup::SpecialKey, gray);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -336,6 +341,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, orange);
         scheme.set_syntax(HighlightGroup::MarkupRaw, green);
+        scheme.set_syntax(HighlightGroup::SpecialKey, base01);
         scheme.set_syntax(HighlightGroup::Other, base0);
 
         // UI colors
@@ -401,6 +407,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, yellow);
         scheme.set_syntax(HighlightGroup::MarkupHeading, orange);
         scheme.set_syntax(HighlightGroup::MarkupRaw, green);
+        scheme.set_syntax(HighlightGroup::SpecialKey, base1);
         scheme.set_syntax(HighlightGroup::Other, base00);
 
         // UI colors
@@ -463,6 +470,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, pink);
         scheme.set_syntax(HighlightGroup::MarkupRaw, yellow);
+        scheme.set_syntax(HighlightGroup::SpecialKey, gray);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -527,6 +535,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, purple);
         scheme.set_syntax(HighlightGroup::MarkupRaw, yellow);
+        scheme.set_syntax(HighlightGroup::SpecialKey, comment);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
@@ -597,6 +606,7 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, blue);
         scheme.set_syntax(HighlightGroup::MarkupRaw, green);
+        scheme.set_syntax(HighlightGroup::SpecialKey, comment);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
         // UI colors
