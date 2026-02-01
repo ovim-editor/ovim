@@ -144,7 +144,7 @@ impl LuaContext {
                             if init_path.exists() {
                                 // Load the plugin, log errors but continue
                                 if let Err(e) = self.execute_file(&init_path) {
-                                    crate::log_error!(
+                                    ovim_core::log_error!(
                                         "lua",
                                         "Failed to load plugin {:?}: {}",
                                         entry.path(),
