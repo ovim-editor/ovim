@@ -1,0 +1,518 @@
+//! Data-driven `:set` command handler.
+//!
+//! Replaces the ~400-line match/else-if chain in `commands.rs` with a
+//! declarative option table. Adding a new boolean or integer option
+//! requires adding a single entry to `BOOL_OPTIONS` or handling it
+//! in `handle_value_option`.
+
+use crate::command_result::{CommandResult, ErrorResponse, SuccessResponse};
+use crate::editor::Editor;
+
+// ---------------------------------------------------------------------------
+// Boolean option table
+// ---------------------------------------------------------------------------
+
+struct BoolOption {
+    /// Primary name (e.g. "number")
+    name: &'static str,
+    /// Short alias (e.g. "nu"), or empty if none
+    alias: &'static str,
+    /// Getter: reads the current value from EditorOptions
+    get: fn(&Editor) -> bool,
+    /// Setter: writes a value to EditorOptions
+    set: fn(&mut Editor, bool),
+}
+
+/// All boolean options recognised by `:set`.
+///
+/// To add a new boolean option, add an entry here. The handler automatically
+/// supports `name`, `noname`, `alias`, `noalias`, and `name?` / `alias?`.
+const BOOL_OPTIONS: &[BoolOption] = &[
+    BoolOption {
+        name: "number",
+        alias: "nu",
+        get: |e| e.options.number,
+        set: |e, v| e.options.number = v,
+    },
+    BoolOption {
+        name: "relativenumber",
+        alias: "rnu",
+        get: |e| e.options.relative_number,
+        set: |e, v| e.options.relative_number = v,
+    },
+    BoolOption {
+        name: "expandtab",
+        alias: "et",
+        get: |e| e.options.expand_tab,
+        set: |e, v| e.options.expand_tab = v,
+    },
+    BoolOption {
+        name: "ignorecase",
+        alias: "ic",
+        get: |e| e.options.ignorecase,
+        set: |e, v| e.options.ignorecase = v,
+    },
+    BoolOption {
+        name: "smartcase",
+        alias: "scs",
+        get: |e| e.options.smartcase,
+        set: |e, v| e.options.smartcase = v,
+    },
+    BoolOption {
+        name: "cursorline",
+        alias: "cul",
+        get: |e| e.options.cursorline,
+        set: |e, v| e.options.cursorline = v,
+    },
+    BoolOption {
+        name: "showmatch",
+        alias: "sm",
+        get: |e| e.options.showmatch,
+        set: |e, v| e.options.showmatch = v,
+    },
+    BoolOption {
+        name: "swapfile",
+        alias: "swf",
+        get: |e| e.options.swapfile,
+        set: |e, v| e.options.swapfile = v,
+    },
+    BoolOption {
+        name: "backup",
+        alias: "bk",
+        get: |e| e.options.backup,
+        set: |e, v| e.options.backup = v,
+    },
+    BoolOption {
+        name: "wrap",
+        alias: "",
+        get: |e| e.options.wrap,
+        set: |e, v| e.options.wrap = v,
+    },
+    BoolOption {
+        name: "filetreereveal",
+        alias: "",
+        get: |e| e.options.file_tree_reveal,
+        set: |e, v| e.options.file_tree_reveal = v,
+    },
+];
+
+fn ok(message: Option<String>) -> CommandResult {
+    CommandResult::Success(SuccessResponse {
+        success: true,
+        message,
+        line_count: None,
+    })
+}
+
+fn err(msg: impl Into<String>) -> CommandResult {
+    CommandResult::Error(ErrorResponse {
+        error: msg.into(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Query handling (`:set option?`)
+// ---------------------------------------------------------------------------
+
+fn query_bool(opt: &BoolOption, editor: &Editor) -> String {
+    let val = (opt.get)(editor);
+    format!("  {}{}", if val { "" } else { "no" }, opt.name)
+}
+
+fn query_option(name: &str, editor: &Editor) -> Option<CommandResult> {
+    // Check boolean options
+    for opt in BOOL_OPTIONS {
+        if name == opt.name || (!opt.alias.is_empty() && name == opt.alias) {
+            return Some(ok(Some(query_bool(opt, editor))));
+        }
+    }
+
+    // Value options
+    let opts = &editor.options;
+    let msg = match name {
+        "tabstop" | "ts" => format!("  tabstop={}", opts.tab_width),
+        "shiftwidth" | "sw" => format!("  shiftwidth={}", opts.shift_width),
+        "scroll" => format!(
+            "  scroll={}",
+            opts.scroll
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "auto".to_string()),
+        ),
+        "textwidth" | "tw" => format!(
+            "  textwidth={}",
+            opts.textwidth
+                .map(|w| w.to_string())
+                .unwrap_or_else(|| "0".to_string()),
+        ),
+        "clipboard" | "cb" => {
+            if opts.clipboard.is_empty() {
+                "  clipboard=".to_string()
+            } else {
+                format!("  clipboard={}", opts.clipboard)
+            }
+        }
+        "mapleader" => format!("  mapleader={}", editor.leader_key()),
+        "margincolor" => format!(
+            "  margincolor={}",
+            opts.margin_color
+                .map(|(r, g, b)| format!("#{:02x}{:02x}{:02x}", r, g, b))
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        "marginpadding" => format!("  marginpadding={}", opts.margin_padding),
+        _ => return None,
+    };
+    Some(ok(Some(msg)))
+}
+
+// ---------------------------------------------------------------------------
+// Boolean set/unset
+// ---------------------------------------------------------------------------
+
+/// Try to match `opt_name` against the boolean option table.
+/// Handles `name`, `noname`, `alias`, `noalias`.
+fn try_set_bool(opt_name: &str, editor: &mut Editor) -> Option<CommandResult> {
+    for opt in BOOL_OPTIONS {
+        // Set: "number", "nu"
+        if opt_name == opt.name || (!opt.alias.is_empty() && opt_name == opt.alias) {
+            (opt.set)(editor, true);
+            return Some(ok(None));
+        }
+        // Unset: "nonumber", "nonu"
+        let no_name = format!("no{}", opt.name);
+        let no_alias = if opt.alias.is_empty() {
+            String::new()
+        } else {
+            format!("no{}", opt.alias)
+        };
+        if opt_name == no_name || (!no_alias.is_empty() && opt_name == no_alias) {
+            (opt.set)(editor, false);
+            return Some(ok(None));
+        }
+    }
+
+    // Special case: "noclipboard" / "nocb"
+    if opt_name == "noclipboard" || opt_name == "nocb" {
+        editor.options.clipboard = String::new();
+        return Some(ok(None));
+    }
+
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Value options (`:set option=value`)
+// ---------------------------------------------------------------------------
+
+/// Parse a hex color string like "#1a1a1e" into (r, g, b).
+fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
+fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<CommandResult> {
+    let result = match name {
+        "tabstop" | "ts" => match value.parse::<usize>() {
+            Ok(n) if n > 0 && n <= 16 => {
+                editor.options.tab_width = n;
+                ok(Some(format!("  tabstop={}", n)))
+            }
+            Ok(_) => err("tabstop must be between 1 and 16"),
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        "shiftwidth" | "sw" => match value.parse::<usize>() {
+            Ok(n) if n > 0 && n <= 16 => {
+                editor.options.shift_width = n;
+                ok(Some(format!("  shiftwidth={}", n)))
+            }
+            Ok(_) => err("shiftwidth must be between 1 and 16"),
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        "scroll" => match value.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                editor.options.scroll = Some(n);
+                ok(Some(format!("  scroll={}", n)))
+            }
+            Ok(_) => err("scroll must be greater than 0"),
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        "textwidth" | "tw" => match value.parse::<usize>() {
+            Ok(0) => {
+                editor.options.textwidth = None;
+                ok(Some("  textwidth=0".to_string()))
+            }
+            Ok(n) if n >= 20 => {
+                editor.options.textwidth = Some(n);
+                ok(Some(format!("  textwidth={}", n)))
+            }
+            Ok(_) => err("textwidth must be 0 (disabled) or at least 20"),
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        "mapleader" => {
+            let chars: Vec<char> = value.chars().collect();
+            if chars.len() == 1 {
+                editor.set_leader_key(chars[0]);
+                ok(Some(format!("  mapleader={}", chars[0])))
+            } else {
+                err("mapleader must be a single character")
+            }
+        }
+        "clipboard" | "cb" => match value {
+            "unnamedplus" | "unnamed" | "" => {
+                editor.options.clipboard = value.to_string();
+                ok(Some(if value.is_empty() {
+                    "  clipboard=".to_string()
+                } else {
+                    format!("  clipboard={}", value)
+                }))
+            }
+            _ => err(format!(
+                "Invalid clipboard value: {} (use 'unnamedplus', 'unnamed', or '')",
+                value
+            )),
+        },
+        "margincolor" => {
+            if value == "none" {
+                editor.options.margin_color = None;
+                ok(Some("  margincolor=none".to_string()))
+            } else if let Some(rgb) = parse_hex_color(value) {
+                editor.options.margin_color = Some(rgb);
+                ok(Some(format!("  margincolor={}", value)))
+            } else {
+                err(format!(
+                    "Invalid color: {} (use hex like #1a1a1e or 'none')",
+                    value
+                ))
+            }
+        }
+        "marginpadding" => match value.parse::<usize>() {
+            Ok(n) => {
+                editor.options.margin_padding = n;
+                ok(Some(format!("  marginpadding={}", n)))
+            }
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        _ => return None,
+    };
+    Some(result)
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/// Handle `:set` commands for options.
+///
+/// This replaces `handle_set_command` in `commands.rs`.
+pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
+    // Handle empty :set (show all options)
+    if args.is_empty() {
+        let opts = &editor.options;
+        let msg = format!(
+            "  {}number\n  {}relativenumber\n  {}expandtab\n  tabstop={}\n  shiftwidth={}\n  scroll={}",
+            if opts.number { "" } else { "no" },
+            if opts.relative_number { "" } else { "no" },
+            if opts.expand_tab { "" } else { "no" },
+            opts.tab_width,
+            opts.shift_width,
+            opts.scroll
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "auto".to_string())
+        );
+        return ok(Some(msg));
+    }
+
+    // Parse option name and optional value
+    let (opt_name, opt_value) = if let Some((name, value)) = args.split_once('=') {
+        (name.trim(), Some(value.trim()))
+    } else {
+        (args, None)
+    };
+
+    // Check for query (option?)
+    if let Some(query_opt) = opt_name.strip_suffix('?') {
+        return match query_option(query_opt, editor) {
+            Some(result) => result,
+            None => err(format!("Unknown option: {}", query_opt)),
+        };
+    }
+
+    // Try boolean set/unset
+    if opt_value.is_none() {
+        if let Some(result) = try_set_bool(opt_name, editor) {
+            return result;
+        }
+    }
+
+    // Try value-based options
+    if let Some(value) = opt_value {
+        if let Some(result) = handle_value_option(opt_name, value, editor) {
+            return result;
+        }
+    }
+
+    err(format!("Unknown option: {}", opt_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::Editor;
+
+    fn make_editor() -> Editor {
+        Editor::new()
+    }
+
+    #[test]
+    fn set_bool_option() {
+        let mut ed = make_editor();
+        ed.options.number = false;
+        let result = handle_set_command(&mut ed, "number");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(ed.options.number);
+    }
+
+    #[test]
+    fn unset_bool_option() {
+        let mut ed = make_editor();
+        ed.options.number = true;
+        let result = handle_set_command(&mut ed, "nonumber");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.number);
+    }
+
+    #[test]
+    fn set_bool_alias() {
+        let mut ed = make_editor();
+        ed.options.number = false;
+        let result = handle_set_command(&mut ed, "nu");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(ed.options.number);
+    }
+
+    #[test]
+    fn unset_bool_alias() {
+        let mut ed = make_editor();
+        ed.options.number = true;
+        let result = handle_set_command(&mut ed, "nonu");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.number);
+    }
+
+    #[test]
+    fn query_bool_option() {
+        let mut ed = make_editor();
+        ed.options.number = true;
+        let result = handle_set_command(&mut ed, "number?");
+        match result {
+            CommandResult::Success(s) => {
+                assert_eq!(s.message.as_deref(), Some("  number"));
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[test]
+    fn query_bool_option_disabled() {
+        let mut ed = make_editor();
+        ed.options.number = false;
+        let result = handle_set_command(&mut ed, "number?");
+        match result {
+            CommandResult::Success(s) => {
+                assert_eq!(s.message.as_deref(), Some("  nonumber"));
+            }
+            _ => panic!("expected success"),
+        }
+    }
+
+    #[test]
+    fn set_tabstop() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "tabstop=8");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(ed.options.tab_width, 8);
+    }
+
+    #[test]
+    fn set_tabstop_invalid() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "tabstop=0");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn set_tabstop_alias() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "ts=2");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(ed.options.tab_width, 2);
+    }
+
+    #[test]
+    fn unknown_option() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "foobar");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn unknown_option_query() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "foobar?");
+        assert!(matches!(result, CommandResult::Error(_)));
+    }
+
+    #[test]
+    fn set_wrap() {
+        let mut ed = make_editor();
+        ed.options.wrap = false;
+        let result = handle_set_command(&mut ed, "wrap");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(ed.options.wrap);
+    }
+
+    #[test]
+    fn set_nowrap() {
+        let mut ed = make_editor();
+        ed.options.wrap = true;
+        let result = handle_set_command(&mut ed, "nowrap");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.wrap);
+    }
+
+    #[test]
+    fn set_textwidth() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "textwidth=80");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(ed.options.textwidth, Some(80));
+    }
+
+    #[test]
+    fn set_textwidth_zero_disables() {
+        let mut ed = make_editor();
+        ed.options.textwidth = Some(80);
+        let result = handle_set_command(&mut ed, "tw=0");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(ed.options.textwidth, None);
+    }
+
+    #[test]
+    fn empty_set_shows_options() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "");
+        match result {
+            CommandResult::Success(s) => {
+                let msg = s.message.unwrap();
+                assert!(msg.contains("number"));
+                assert!(msg.contains("tabstop="));
+            }
+            _ => panic!("expected success"),
+        }
+    }
+}

@@ -24,6 +24,7 @@ pub mod navigation_types;
 pub mod lua;
 pub mod wrap;
 pub mod editor;
+pub mod cmd_set;
 pub mod commands;
 
 pub use key::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
