@@ -138,6 +138,11 @@ pub struct EditorOptions {
     pub clipboard: String,
     /// Whether `-` key auto-reveals current file in the file tree (default: true)
     pub file_tree_reveal: bool,
+    /// Background color for textwidth margins as RGB tuple (default: Some((26, 26, 30)) = #1a1a1e)
+    /// Set to None to disable margin shading
+    pub margin_color: Option<(u8, u8, u8)>,
+    /// Extra columns of normal background between text edge and shaded margin area (default: 0)
+    pub margin_padding: usize,
 }
 
 impl Default for EditorOptions {
@@ -162,6 +167,8 @@ impl Default for EditorOptions {
             sidescrolloff: 5,
             clipboard: "unnamedplus".to_string(),
             file_tree_reveal: true,
+            margin_color: Some((26, 26, 30)),
+            margin_padding: 0,
         }
     }
 }
