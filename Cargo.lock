@@ -2019,6 +2019,7 @@ name = "ovim-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "bitflags 2.9.4",
  "chardetng",
  "chrono",
@@ -2026,9 +2027,14 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "git2",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
  "lazy_static",
  "lsp-types",
+ "mlua",
  "nix",
+ "nucleo",
  "prometheus",
  "regex",
  "reqwest",

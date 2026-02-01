@@ -67,8 +67,8 @@ sysinfo = "0.32"
 
 [features]
 default = ["lua"]
-lua = ["mlua"]
-metrics = ["prometheus"]
+lua = ["mlua", "ovim-core/lua"]
+metrics = ["prometheus", "ovim-core/metrics"]
 
 [dev-dependencies]
 ovim-core = { path = "../ovim-core" }
