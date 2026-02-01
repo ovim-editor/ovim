@@ -120,6 +120,7 @@ impl Buffer {
                     self.build_highlight_cache(&highlighter, &source);
 
                     self.syntax = Some(highlighter);
+                    self.version += 1;
                 }
             }
         }

@@ -1005,3 +1005,62 @@ fn test_visual_block_lowercase_u_undo_single_step() {
     test.keys("u");
     assert_eq!(test.buffer_content(), "HELLO\nWORLD\nFOOBA\n");
 }
+
+// ============================================================================
+// Visual mode toggling (v/V/Ctrl-V toggle their own mode off)
+// ============================================================================
+
+#[test]
+fn test_v_toggles_visual_mode() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('v');
+    test.assert_mode(Mode::Visual);
+
+    test.press('v');
+    test.assert_mode(Mode::Normal);
+}
+
+#[test]
+fn test_shift_v_toggles_visual_line_mode() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('V');
+    test.assert_mode(Mode::VisualLine);
+
+    test.press('V');
+    test.assert_mode(Mode::Normal);
+}
+
+#[test]
+fn test_ctrl_v_toggles_visual_block_mode() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL);
+    test.assert_mode(Mode::VisualBlock);
+
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL);
+    test.assert_mode(Mode::Normal);
+}
+
+#[test]
+fn test_v_switches_from_visual_line_to_visual() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('V');
+    test.assert_mode(Mode::VisualLine);
+
+    test.press('v');
+    test.assert_mode(Mode::Visual);
+}
+
+#[test]
+fn test_shift_v_switches_from_visual_to_visual_line() {
+    let mut test = EditorTest::new("hello world");
+
+    test.press('v');
+    test.assert_mode(Mode::Visual);
+
+    test.press('V');
+    test.assert_mode(Mode::VisualLine);
+}
