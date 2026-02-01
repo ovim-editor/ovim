@@ -191,31 +191,38 @@ fn render_buffer_area(
                 let margin = (areas.buffer_chunk.width - max_width) / 2;
 
                 // Render margin shading if configured
-                if let Some((r, g, b)) = editor.options.margin_color {
-                    let padding = editor.options.margin_padding as u16;
-                    let shaded_margin = margin.saturating_sub(padding);
-                    if shaded_margin > 0 {
-                        let color = Color::Rgb(r, g, b);
-                        let chunk = areas.buffer_chunk;
-                        // Left margin shading
-                        let left = Rect {
-                            x: chunk.x,
-                            y: chunk.y,
-                            width: shaded_margin,
-                            height: chunk.height,
-                        };
-                        frame.render_widget(Fill::bg(color), left);
-                        // Right margin shading
-                        let right_x = chunk.x + margin + max_width + padding;
-                        let right_width = (chunk.x + chunk.width).saturating_sub(right_x);
-                        if right_width > 0 {
-                            let right = Rect {
-                                x: right_x,
+                {
+                    use crate::syntax::UiGroup;
+                    let bg = match theme.get_ui_color(UiGroup::Background) {
+                        crate::color::Color::Rgb(r, g, b) => (r, g, b),
+                        _ => (30, 30, 30), // sensible dark fallback
+                    };
+                    if let Some((r, g, b)) = editor.options.margin_color.resolve(bg) {
+                        let padding = editor.options.margin_padding as u16;
+                        let shaded_margin = margin.saturating_sub(padding);
+                        if shaded_margin > 0 {
+                            let color = Color::Rgb(r, g, b);
+                            let chunk = areas.buffer_chunk;
+                            // Left margin shading
+                            let left = Rect {
+                                x: chunk.x,
                                 y: chunk.y,
-                                width: right_width,
+                                width: shaded_margin,
                                 height: chunk.height,
                             };
-                            frame.render_widget(Fill::bg(color), right);
+                            frame.render_widget(Fill::bg(color), left);
+                            // Right margin shading
+                            let right_x = chunk.x + margin + max_width + padding;
+                            let right_width = (chunk.x + chunk.width).saturating_sub(right_x);
+                            if right_width > 0 {
+                                let right = Rect {
+                                    x: right_x,
+                                    y: chunk.y,
+                                    width: right_width,
+                                    height: chunk.height,
+                                };
+                                frame.render_widget(Fill::bg(color), right);
+                            }
                         }
                     }
                 }

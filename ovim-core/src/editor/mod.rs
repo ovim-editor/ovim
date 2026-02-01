@@ -94,6 +94,35 @@ pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use wrap_map::WrapMap;
 
+/// Margin background color for textwidth shading
+#[derive(Debug, Clone, PartialEq)]
+pub enum MarginColor {
+    /// No margin shading
+    None,
+    /// Solid RGB color
+    Solid(u8, u8, u8),
+    /// Translucent overlay: RGB + alpha (0.0 = transparent, 1.0 = opaque)
+    /// Blended with the existing cell background at render time
+    Translucent(u8, u8, u8, f32),
+}
+
+impl MarginColor {
+    /// Resolve to a final RGB color, blending against `bg` for translucent variants.
+    pub fn resolve(&self, bg: (u8, u8, u8)) -> Option<(u8, u8, u8)> {
+        match self {
+            MarginColor::None => Option::None,
+            MarginColor::Solid(r, g, b) => Some((*r, *g, *b)),
+            MarginColor::Translucent(r, g, b, a) => {
+                let a = a.clamp(0.0, 1.0);
+                let blend = |fg: u8, bg: u8| -> u8 {
+                    (fg as f32 * a + bg as f32 * (1.0 - a)).round() as u8
+                };
+                Some((blend(*r, bg.0), blend(*g, bg.1), blend(*b, bg.2)))
+            }
+        }
+    }
+}
+
 /// Editor options and settings
 #[derive(Debug, Clone)]
 pub struct EditorOptions {
@@ -138,9 +167,8 @@ pub struct EditorOptions {
     pub clipboard: String,
     /// Whether `-` key auto-reveals current file in the file tree (default: true)
     pub file_tree_reveal: bool,
-    /// Background color for textwidth margins as RGB tuple (default: Some((26, 26, 30)) = #1a1a1e)
-    /// Set to None to disable margin shading
-    pub margin_color: Option<(u8, u8, u8)>,
+    /// Background color for textwidth margins
+    pub margin_color: MarginColor,
     /// Extra columns of normal background between text edge and shaded margin area (default: 0)
     pub margin_padding: usize,
 }
@@ -167,7 +195,7 @@ impl Default for EditorOptions {
             sidescrolloff: 5,
             clipboard: "unnamedplus".to_string(),
             file_tree_reveal: true,
-            margin_color: Some((26, 26, 30)),
+            margin_color: MarginColor::Translucent(0, 0, 0, 0.3),
             margin_padding: 0,
         }
     }
@@ -690,17 +718,17 @@ impl Editor {
             Some(true) => {
                 // Incremental: only invalidate cursor line
                 let map = self.viewport.wrap_map.as_mut().unwrap();
-                map.invalidate_line(cursor_line, &make_line_text);
+                map.invalidate_line(cursor_line, make_line_text);
                 map.set_buffer_version(buf_version);
             }
             Some(false) => {
                 // Full rebuild (width or line count changed)
                 let map = self.viewport.wrap_map.as_mut().unwrap();
-                map.rebuild(line_count, width, tab_width, buf_version, &make_line_text);
+                map.rebuild(line_count, width, tab_width, buf_version, make_line_text);
             }
             None => {
                 // Build from scratch
-                let map = WrapMap::new(line_count, width, tab_width, buf_version, &make_line_text);
+                let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_text);
                 self.viewport.wrap_map = Some(map);
             }
         }
