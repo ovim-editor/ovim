@@ -97,30 +97,10 @@ pub use wrap_map::WrapMap;
 /// Margin background color for textwidth shading
 #[derive(Debug, Clone, PartialEq)]
 pub enum MarginColor {
-    /// No margin shading
+    /// No margin shading (default — preserves terminal transparency)
     None,
     /// Solid RGB color
     Solid(u8, u8, u8),
-    /// Translucent overlay: RGB + alpha (0.0 = transparent, 1.0 = opaque)
-    /// Blended with the existing cell background at render time
-    Translucent(u8, u8, u8, f32),
-}
-
-impl MarginColor {
-    /// Resolve to a final RGB color, blending against `bg` for translucent variants.
-    pub fn resolve(&self, bg: (u8, u8, u8)) -> Option<(u8, u8, u8)> {
-        match self {
-            MarginColor::None => Option::None,
-            MarginColor::Solid(r, g, b) => Some((*r, *g, *b)),
-            MarginColor::Translucent(r, g, b, a) => {
-                let a = a.clamp(0.0, 1.0);
-                let blend = |fg: u8, bg: u8| -> u8 {
-                    (fg as f32 * a + bg as f32 * (1.0 - a)).round() as u8
-                };
-                Some((blend(*r, bg.0), blend(*g, bg.1), blend(*b, bg.2)))
-            }
-        }
-    }
 }
 
 /// Editor options and settings
@@ -195,7 +175,7 @@ impl Default for EditorOptions {
             sidescrolloff: 5,
             clipboard: "unnamedplus".to_string(),
             file_tree_reveal: true,
-            margin_color: MarginColor::Translucent(0, 0, 0, 0.3),
+            margin_color: MarginColor::None,
             margin_padding: 0,
         }
     }
