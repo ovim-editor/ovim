@@ -98,22 +98,37 @@ fn shift_highlights_for_viewport(
         .collect()
 }
 
-/// Apply a style to a specific column in a line
+/// Apply a style to a specific column in a line, splitting spans as needed.
 fn apply_style_at_column(line: &mut Line<'static>, target_col: usize, style: Style) {
     let mut current_col = 0;
-    for span in &mut line.spans {
-        let span_len = span.content.chars().count();
+    for i in 0..line.spans.len() {
+        let span_len = line.spans[i].content.chars().count();
         if target_col >= current_col && target_col < current_col + span_len {
-            // Target column is in this span - need to split it
             let offset = target_col - current_col;
-            let chars: Vec<char> = span.content.chars().collect();
-            if offset == 0 && chars.len() == 1 {
-                // Simple case: span is exactly the bracket character
-                span.style = span.style.patch(style);
+            if offset == 0 && span_len == 1 {
+                // Span is exactly the target character
+                line.spans[i].style = line.spans[i].style.patch(style);
             } else {
-                // Need to split: this is complex, so just apply style to whole span for now
-                // A proper implementation would split the span into 3 parts
-                span.style = span.style.patch(style);
+                // Split the span into up to 3 parts: before, target char, after
+                let chars: Vec<char> = line.spans[i].content.chars().collect();
+                let base_style = line.spans[i].style;
+                let mut new_spans = Vec::with_capacity(3);
+
+                if offset > 0 {
+                    let before: String = chars[..offset].iter().collect();
+                    new_spans.push(Span::styled(before, base_style));
+                }
+
+                let target: String = chars[offset..=offset].iter().collect();
+                new_spans.push(Span::styled(target, base_style.patch(style)));
+
+                if offset + 1 < chars.len() {
+                    let after: String = chars[offset + 1..].iter().collect();
+                    new_spans.push(Span::styled(after, base_style));
+                }
+
+                // Replace the original span with the split parts
+                line.spans.splice(i..=i, new_spans);
             }
             return;
         }
