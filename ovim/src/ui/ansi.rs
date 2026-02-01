@@ -3,6 +3,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::editor::Editor;
+use super::renderer::line_cache::LineRenderCache;
 
 /// Renders the editor to an in-memory buffer and returns ANSI output.
 /// Used for headless mode to get pixel-perfect terminal representation.
@@ -13,8 +14,9 @@ pub fn render_editor_to_ansi(editor: &mut Editor, width: u16, height: u16) -> Re
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend)?;
 
+    let mut line_cache = LineRenderCache::new();
     terminal.draw(|f| {
-        super::Renderer::render_to_frame(f, editor);
+        super::Renderer::render_to_frame(f, editor, &mut line_cache);
     })?;
 
     let buffer = terminal.backend().buffer();

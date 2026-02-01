@@ -529,6 +529,7 @@ pub fn render_buffer(
     editor: &Editor,
     theme: &Theme,
     layout: &BufferLayout,
+    line_cache: &mut super::line_cache::LineRenderCache,
 ) -> usize {
     let area = layout.buffer_area;
     let buffer = editor.buffer();
@@ -592,10 +593,66 @@ pub fn render_buffer(
     let wrap_map = editor.wrap_map();
     let has_wrap = wrap && wrap_map.is_some();
     let mut visual_rows_used = 0;
+    let buffer_version = buffer.version();
+
+    // Reset per-frame cache stats
+    line_cache.reset_stats();
 
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < visible_lines {
         if line_idx < rope.len_lines() {
+            // --- Cache check: try to reuse a previously rendered stable line ---
+            // Determine upfront if this line has transient overlays that prevent caching.
+            let has_visual_on_line = visual_selection
+                .map(|((sl, _), (el, _))| line_idx >= sl && line_idx <= el)
+                .unwrap_or(false);
+            let is_cursor_line_early = cursorline && line_idx == cursor_line_idx;
+            let has_yank_flash = editor.yank_flash.as_ref().map_or(false, |f| f.contains_line(line_idx));
+            let line_diagnostics_early = editor.diagnostics_for_line(line_idx);
+            let has_bracket = bracket_positions.map_or(false, |((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
+            let has_search = current_search.is_some();
+            let is_stable = !has_visual_on_line && !is_cursor_line_early && !has_yank_flash
+                && !has_bracket && !has_search && line_diagnostics_early.is_empty();
+
+            if is_stable {
+                if let Some(cached_line) = line_cache.get(line_idx, buffer_version, h_offset, text_width, wrap, tab_width) {
+                    let cached_line = cached_line.clone();
+                    // Use cached line — skip all expensive computation
+                    if has_wrap {
+                        let visual_rows = split_line_into_rows(cached_line, text_width);
+                        for (row_idx, row) in visual_rows.into_iter().enumerate() {
+                            if visual_rows_used >= visible_lines {
+                                break;
+                            }
+                            if gutter_area.is_some() {
+                                gutter_lines.push(build_gutter_line(
+                                    editor, buffer, line_idx, line_num_width,
+                                    cursor_line_idx, row_idx > 0, &line_diagnostics_early,
+                                ));
+                            }
+                            lines.push(row);
+                            visual_rows_used += 1;
+                        }
+                    } else {
+                        let line_len: usize = cached_line.spans.iter().map(|s| s.content.chars().count()).sum();
+                        let mut padded = cached_line;
+                        if line_len < text_width {
+                            padded.spans.push(Span::raw(" ".repeat(text_width - line_len)));
+                        }
+                        if gutter_area.is_some() {
+                            gutter_lines.push(build_gutter_line(
+                                editor, buffer, line_idx, line_num_width,
+                                cursor_line_idx, false, &line_diagnostics_early,
+                            ));
+                        }
+                        lines.push(padded);
+                        visual_rows_used += 1;
+                    }
+                    line_idx += 1;
+                    continue;
+                }
+            }
+
             let line_text_raw = rope.line(line_idx).to_string();
             // Remove trailing newline if present
             let line_text_original = line_text_raw.trim_end_matches('\n');
@@ -630,11 +687,7 @@ pub fn render_buffer(
             }
 
             // Check if we need special highlighting (visual selection or search)
-            let has_visual_selection = visual_selection
-                .map(|((start_line, _), (end_line, _))| {
-                    line_idx >= start_line && line_idx <= end_line
-                })
-                .unwrap_or(false);
+            let has_visual_selection = has_visual_on_line;
 
             let search_matches = if let Some(search) = current_search {
                 search.find_all_in_line(&line_text)
@@ -643,7 +696,7 @@ pub fn render_buffer(
             };
 
             // Check if this is the cursor line and cursorline option is on
-            let is_cursor_line = cursorline && line_idx == cursor_line_idx;
+            let is_cursor_line = is_cursor_line_early;
 
             // Remap visual selection columns from original to expanded char indices
             let remapped_visual_selection = visual_selection.map(|((sl, sc), (el, ec))| {
@@ -700,8 +753,8 @@ pub fn render_buffer(
                 bracket_col
             };
 
-            // Get diagnostics for this line and remap their ranges to expanded char indices
-            let line_diagnostics = editor.diagnostics_for_line(line_idx);
+            // Reuse diagnostics already fetched for cache check
+            let line_diagnostics = line_diagnostics_early;
             let has_diagnostics = !line_diagnostics.is_empty();
             let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics.iter().filter_map(|d| {
                 // Convert UTF-16 offsets to char indices, then remap through expansion
@@ -827,6 +880,9 @@ pub fn render_buffer(
                     apply_style_at_column(&mut line, col, bracket_style);
                 }
 
+                // Store in cache (stable lines will be served from cache next frame)
+                line_cache.put(line_idx, buffer_version, h_offset, text_width, wrap, tab_width, line.clone(), is_stable);
+
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
                     let visual_rows = split_line_into_rows(line, text_width);
@@ -871,7 +927,10 @@ pub fn render_buffer(
                     visual_rows_used += 1;
                 }
             } else {
-                // Simple rendering path (no highlighting)
+                // Simple rendering path (no highlighting) — always stable
+                let simple_line = Line::from(line_text.to_string());
+                line_cache.put(line_idx, buffer_version, h_offset, text_width, wrap, tab_width, simple_line, true);
+
                 if has_wrap {
                     let chars: Vec<char> = line_text.chars().collect();
                     if chars.is_empty() {

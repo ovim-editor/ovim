@@ -5,6 +5,7 @@ pub use dashboard::MENU_ITEMS;
 
 // Internal modules
 mod buffer;
+pub mod line_cache;
 pub mod cat_animation;
 mod core;
 pub mod dashboard;
