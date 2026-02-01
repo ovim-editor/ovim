@@ -10,6 +10,9 @@ pub mod git;
 pub mod session;
 pub mod metrics;
 pub mod lsp;
+pub mod fold;
+pub mod color;
+pub mod syntax;
 
 pub use key::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use rect::Rect;

@@ -42,7 +42,7 @@ pub fn get_char_style(
     } else if is_search_match {
         Style::default().bg(Color::Yellow).fg(Color::Black)
     } else if let Some(group) = syntax_group {
-        let color = theme.get_color(group);
+        let color = crate::key_convert::convert_core_color(theme.get_color(group));
         Style::default().fg(color)
     } else {
         Style::default()

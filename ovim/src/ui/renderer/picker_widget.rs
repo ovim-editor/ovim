@@ -935,7 +935,7 @@ fn render_preview_with_syntax(
 
             let text: String = chars[col_idx..end_col].iter().collect();
             let mut style = if let Some(group) = syntax_group {
-                let color = theme.get_color(group);
+                let color = crate::key_convert::convert_core_color(theme.get_color(group));
                 Style::default().fg(color)
             } else {
                 Style::default().fg(Color::White)
