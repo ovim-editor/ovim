@@ -181,11 +181,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-/// Calculates the display width of a string, accounting for tabs and wide characters.
-fn display_width(text: &str, tab_width: usize) -> usize {
-    crate::display::display_width(text, tab_width)
-}
-
 /// Commands sent from background tasks to the LSP manager via channel
 #[derive(Debug)]
 pub enum LspCommand {
@@ -681,14 +676,13 @@ impl Editor {
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let cursor_line = self.buffer().cursor().line();
         let rope = self.buffer().rope().clone();
-        let make_line_len = |line_idx: usize| -> usize {
+        let make_line_text = |line_idx: usize| -> String {
             if line_idx < rope.len_lines() {
                 let line = rope.line(line_idx);
                 let text = line.to_string();
-                let text = text.trim_end_matches('\n');
-                display_width(text, tab_width)
+                text.trim_end_matches('\n').to_string()
             } else {
-                0
+                String::new()
             }
         };
 
@@ -696,17 +690,17 @@ impl Editor {
             Some(true) => {
                 // Incremental: only invalidate cursor line
                 let map = self.viewport.wrap_map.as_mut().unwrap();
-                map.invalidate_line(cursor_line, make_line_len);
+                map.invalidate_line(cursor_line, &make_line_text);
                 map.set_buffer_version(buf_version);
             }
             Some(false) => {
                 // Full rebuild (width or line count changed)
                 let map = self.viewport.wrap_map.as_mut().unwrap();
-                map.rebuild(line_count, width, tab_width, buf_version, make_line_len);
+                map.rebuild(line_count, width, tab_width, buf_version, &make_line_text);
             }
             None => {
                 // Build from scratch
-                let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_len);
+                let map = WrapMap::new(line_count, width, tab_width, buf_version, &make_line_text);
                 self.viewport.wrap_map = Some(map);
             }
         }
@@ -774,7 +768,7 @@ impl Editor {
                     cursor_col,
                     self.options.tab_width,
                 );
-                let (cursor_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, disp_col);
+                let (cursor_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, disp_col, &line_text);
                 let viewport_visual_start = wrap_map.logical_to_visual(current_offset);
 
                 if cursor_visual_row < viewport_visual_start + scrolloff {

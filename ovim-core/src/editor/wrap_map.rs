@@ -3,6 +3,10 @@
 /// Each logical line may span multiple visual rows when its content
 /// exceeds the available width. This structure precomputes the mapping
 /// so rendering and scrolling can work in visual-line space.
+///
+/// Uses [`crate::wrap::visual_line_count`] as the single source of truth
+/// for wrap computation, ensuring agreement with the renderer's
+/// `split_line_into_rows`.
 #[derive(Debug, Clone)]
 pub struct WrapMap {
     /// Number of visual lines each logical line occupies (minimum 1)
@@ -22,15 +26,17 @@ pub struct WrapMap {
 
 impl WrapMap {
     /// Creates a new WrapMap by computing visual line counts for all lines.
+    ///
+    /// `line_text` returns the text of a given line index (without trailing newline).
     pub fn new<F>(
         line_count: usize,
         wrap_width: usize,
         tab_width: usize,
         buffer_version: usize,
-        line_len: F,
+        line_text: F,
     ) -> Self
     where
-        F: Fn(usize) -> usize,
+        F: Fn(usize) -> String,
     {
         let width = wrap_width.max(1);
         let mut visual_counts = Vec::with_capacity(line_count);
@@ -39,8 +45,8 @@ impl WrapMap {
 
         for i in 0..line_count {
             visual_offsets.push(total);
-            let len = line_len(i);
-            let count = Self::compute_visual_lines(len, width);
+            let text = line_text(i);
+            let count = crate::wrap::visual_line_count(&text, width, tab_width) as u16;
             visual_counts.push(count);
             total += count as usize;
         }
@@ -63,15 +69,6 @@ impl WrapMap {
     /// Updates the stored buffer version without rebuilding.
     pub fn set_buffer_version(&mut self, version: usize) {
         self.buffer_version = version;
-    }
-
-    /// Computes how many visual lines a line of the given display width needs.
-    fn compute_visual_lines(display_width: usize, wrap_width: usize) -> u16 {
-        if display_width == 0 {
-            1
-        } else {
-            display_width.div_ceil(wrap_width) as u16
-        }
     }
 
     /// Returns the number of visual lines for a given logical line.
@@ -116,15 +113,19 @@ impl WrapMap {
     }
 
     /// Recompute a single line after its content changed.
-    pub fn invalidate_line<F>(&mut self, line: usize, line_len: F)
+    ///
+    /// `line_text` returns the text of a given line index (without trailing newline).
+    pub fn invalidate_line<F>(&mut self, line: usize, line_text: F)
     where
-        F: Fn(usize) -> usize,
+        F: Fn(usize) -> String,
     {
         if line >= self.visual_counts.len() {
             return;
         }
         let old_count = self.visual_counts[line] as usize;
-        let new_count = Self::compute_visual_lines(line_len(line), self.wrap_width) as usize;
+        let text = line_text(line);
+        let new_count =
+            crate::wrap::visual_line_count(&text, self.wrap_width, self.tab_width) as usize;
         if old_count == new_count {
             return;
         }
@@ -138,15 +139,17 @@ impl WrapMap {
     }
 
     /// Rebuild the entire map (e.g., after resize or wrap toggle).
+    ///
+    /// `line_text` returns the text of a given line index (without trailing newline).
     pub fn rebuild<F>(
         &mut self,
         line_count: usize,
         wrap_width: usize,
         tab_width: usize,
         buffer_version: usize,
-        line_len: F,
+        line_text: F,
     ) where
-        F: Fn(usize) -> usize,
+        F: Fn(usize) -> String,
     {
         let width = wrap_width.max(1);
         self.wrap_width = width;
@@ -160,16 +163,65 @@ impl WrapMap {
 
         for i in 0..line_count {
             self.visual_offsets.push(total);
-            let len = line_len(i);
-            let count = Self::compute_visual_lines(len, width);
+            let text = line_text(i);
+            let count = crate::wrap::visual_line_count(&text, width, tab_width) as u16;
             self.visual_counts.push(count);
             total += count as usize;
         }
         self.total_visual_lines = total;
     }
 
-    /// Maps a cursor position (line, col) to a visual position (visual_row, visual_col).
-    pub fn cursor_to_visual(&self, line: usize, col: usize) -> (usize, usize) {
+    /// Maps a cursor position (line, display_col) to a visual position (visual_row, visual_col).
+    ///
+    /// Requires the line text to properly compute wrap points for wide chars.
+    pub fn cursor_to_visual(&self, line: usize, col: usize, line_text: &str) -> (usize, usize) {
+        let base_row = self.logical_to_visual(line);
+        let wrap_points = crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
+
+        if wrap_points.is_empty() {
+            return (base_row, col);
+        }
+
+        // Find which sub-line the column falls on.
+        // `col` is a display column. We need to figure out which wrap segment it lands in.
+        // The wrap_points are char indices, but col is a display column.
+        // For cursor_to_visual, we work in display columns per segment.
+        let mut segment_start_display = 0;
+        let mut current_display = 0;
+        let mut sub_line = 0;
+        let mut wp_idx = 0;
+
+        for (char_idx, ch) in line_text.chars().enumerate() {
+            // Check if we've crossed a wrap point
+            if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
+                if col < current_display || (col >= segment_start_display && col < current_display) {
+                    break;
+                }
+                segment_start_display = current_display;
+                sub_line += 1;
+                wp_idx += 1;
+            }
+
+            let ch_width = if ch == '\t' {
+                self.tab_width - (current_display % self.tab_width)
+            } else {
+                crate::display::char_display_width(ch)
+            };
+            current_display += ch_width;
+        }
+
+        // col might be beyond all wrap points
+        if col >= segment_start_display {
+            let visual_col = col - segment_start_display;
+            (base_row + sub_line, visual_col)
+        } else {
+            (base_row, col)
+        }
+    }
+
+    /// Simpler cursor_to_visual that works like the old API when line text isn't available.
+    /// Uses simple division — less accurate for lines with wide chars at wrap boundaries.
+    pub fn cursor_to_visual_simple(&self, line: usize, col: usize) -> (usize, usize) {
         let base_row = self.logical_to_visual(line);
         let sub_line = col / self.wrap_width;
         let visual_col = col % self.wrap_width;
@@ -195,37 +247,49 @@ impl WrapMap {
 mod tests {
     use super::*;
 
+    fn make_text<'a>(lines: &'a [&'a str]) -> impl Fn(usize) -> String + 'a {
+        move |i| {
+            if i < lines.len() {
+                lines[i].to_string()
+            } else {
+                String::new()
+            }
+        }
+    }
+
     #[test]
     fn test_single_line_fits() {
-        let map = WrapMap::new(1, 80, 4, 0, |_| 40);
+        let map = WrapMap::new(1, 80, 4, 0, make_text(&["a".repeat(40).as_str()]));
         assert_eq!(map.visual_lines_for(0), 1);
         assert_eq!(map.total_visual_lines(), 1);
     }
 
     #[test]
     fn test_line_exactly_fits() {
-        let map = WrapMap::new(1, 80, 4, 0, |_| 80);
+        let text = "a".repeat(80);
+        let map = WrapMap::new(1, 80, 4, 0, make_text(&[text.as_str()]));
         assert_eq!(map.visual_lines_for(0), 1);
     }
 
     #[test]
     fn test_line_wraps_once() {
-        let map = WrapMap::new(1, 80, 4, 0, |_| 81);
+        let text = "a".repeat(81);
+        let map = WrapMap::new(1, 80, 4, 0, make_text(&[text.as_str()]));
         assert_eq!(map.visual_lines_for(0), 2);
         assert_eq!(map.total_visual_lines(), 2);
     }
 
     #[test]
     fn test_empty_line() {
-        let map = WrapMap::new(1, 80, 4, 0, |_| 0);
+        let map = WrapMap::new(1, 80, 4, 0, make_text(&[""]));
         assert_eq!(map.visual_lines_for(0), 1);
     }
 
     #[test]
     fn test_multiple_lines() {
-        // Line 0: 40 chars (1 visual), Line 1: 160 chars (2 visual), Line 2: 0 (1 visual)
-        let widths = [40, 160, 0];
-        let map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
+        let l0 = "a".repeat(40);
+        let l1 = "a".repeat(160);
+        let map = WrapMap::new(3, 80, 4, 0, make_text(&[l0.as_str(), l1.as_str(), ""]));
         assert_eq!(map.visual_lines_for(0), 1);
         assert_eq!(map.visual_lines_for(1), 2);
         assert_eq!(map.visual_lines_for(2), 1);
@@ -234,8 +298,9 @@ mod tests {
 
     #[test]
     fn test_logical_to_visual() {
-        let widths = [40, 160, 0];
-        let map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
+        let l0 = "a".repeat(40);
+        let l1 = "a".repeat(160);
+        let map = WrapMap::new(3, 80, 4, 0, make_text(&[l0.as_str(), l1.as_str(), ""]));
         assert_eq!(map.logical_to_visual(0), 0);
         assert_eq!(map.logical_to_visual(1), 1);
         assert_eq!(map.logical_to_visual(2), 3);
@@ -243,8 +308,9 @@ mod tests {
 
     #[test]
     fn test_visual_to_logical() {
-        let widths = [40, 160, 0];
-        let map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
+        let l0 = "a".repeat(40);
+        let l1 = "a".repeat(160);
+        let map = WrapMap::new(3, 80, 4, 0, make_text(&[l0.as_str(), l1.as_str(), ""]));
         assert_eq!(map.visual_to_logical(0), (0, 0));
         assert_eq!(map.visual_to_logical(1), (1, 0));
         assert_eq!(map.visual_to_logical(2), (1, 1));
@@ -252,19 +318,28 @@ mod tests {
     }
 
     #[test]
-    fn test_cursor_to_visual() {
-        let map = WrapMap::new(2, 80, 4, 0, |i| if i == 0 { 200 } else { 40 });
-        // Line 0: 200 chars -> 3 visual lines
+    fn test_cursor_to_visual_simple() {
+        let l0 = "a".repeat(200);
+        let l1 = "a".repeat(40);
+        let map = WrapMap::new(2, 80, 4, 0, make_text(&[l0.as_str(), l1.as_str()]));
+        // Line 0: 200 ASCII chars -> 3 visual lines
         // Cursor at col 85 -> sub_line 1, visual_col 5
-        let (row, col) = map.cursor_to_visual(0, 85);
+        let (row, col) = map.cursor_to_visual_simple(0, 85);
         assert_eq!(row, 1);
         assert_eq!(col, 5);
     }
 
     #[test]
     fn test_roundtrip() {
-        let widths = [80, 161, 50, 240, 0];
-        let map = WrapMap::new(5, 80, 4, 0, |i| widths[i]);
+        let lines: Vec<String> = vec![
+            "a".repeat(80),
+            "a".repeat(161),
+            "a".repeat(50),
+            "a".repeat(240),
+            String::new(),
+        ];
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let map = WrapMap::new(5, 80, 4, 0, make_text(&refs));
         for line in 0..5 {
             let visual = map.logical_to_visual(line);
             let (got_line, got_sub) = map.visual_to_logical(visual);
@@ -275,12 +350,14 @@ mod tests {
 
     #[test]
     fn test_invalidate_line() {
-        let widths = [40usize, 160, 0];
-        let mut map = WrapMap::new(3, 80, 4, 0, |i| widths[i]);
+        let l0 = "a".repeat(40);
+        let l1 = "a".repeat(160);
+        let mut map = WrapMap::new(3, 80, 4, 0, make_text(&[l0.as_str(), l1.as_str(), ""]));
         assert_eq!(map.total_visual_lines(), 4);
 
         // Line 1 changed from 160 to 40 chars (2 -> 1 visual)
-        map.invalidate_line(1, |_| 40);
+        let new_l1 = "a".repeat(40);
+        map.invalidate_line(1, |_| new_l1.clone());
         assert_eq!(map.visual_lines_for(1), 1);
         assert_eq!(map.total_visual_lines(), 3);
         assert_eq!(map.logical_to_visual(2), 2);
@@ -288,11 +365,30 @@ mod tests {
 
     #[test]
     fn test_visual_lines_in_range() {
-        let widths = [40, 160, 0, 80];
-        let map = WrapMap::new(4, 80, 4, 0, |i| widths[i]);
+        let l0 = "a".repeat(40);
+        let l1 = "a".repeat(160);
+        let l3 = "a".repeat(80);
+        let map = WrapMap::new(
+            4,
+            80,
+            4,
+            0,
+            make_text(&[l0.as_str(), l1.as_str(), "", l3.as_str()]),
+        );
         // Lines: 1 + 2 + 1 + 1 = 5 total
         assert_eq!(map.visual_lines_in_range(0, 4), 5);
         assert_eq!(map.visual_lines_in_range(1, 3), 3); // 2 + 1
         assert_eq!(map.visual_lines_in_range(0, 1), 1);
+    }
+
+    #[test]
+    fn test_wide_chars_increase_row_count() {
+        // This is the key test: wide chars at wrap boundaries cause more rows
+        // than a naïve div_ceil calculation would predict.
+        // Width 3: "世世世" = 6 display cols, but each 世 (width 2) gets its own row
+        // because 2+2 = 4 > 3
+        let map = WrapMap::new(1, 3, 4, 0, make_text(&["世世世"]));
+        assert_eq!(map.visual_lines_for(0), 3); // not 2!
+        assert_eq!(map.total_visual_lines(), 3);
     }
 }

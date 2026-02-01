@@ -22,6 +22,7 @@ pub mod command_result;
 pub mod navigation_types;
 #[cfg(feature = "lua")]
 pub mod lua;
+pub mod wrap;
 pub mod editor;
 pub mod commands;
 
