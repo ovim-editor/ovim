@@ -13,6 +13,10 @@ pub mod lsp;
 pub mod fold;
 pub mod color;
 pub mod syntax;
+pub mod change;
+pub mod search;
+pub mod textobjects;
+pub mod buffer;
 
 pub use key::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use rect::Rect;

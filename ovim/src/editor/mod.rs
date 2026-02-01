@@ -1,12 +1,10 @@
 mod buffer_manager;
-mod change;
 mod change_tracking;
 mod command_context;
 mod command_history;
 mod completion;
 mod editing_state;
 mod filetree;
-use ovim_core::fold;
 pub(crate) mod fuzzy;
 pub(crate) mod grep;
 mod input;
@@ -33,12 +31,10 @@ pub(crate) mod picker_state;
 mod quickfix;
 mod register;
 mod render_cache;
-mod search;
 mod search_context;
 mod search_manager;
 mod tab_manager;
 mod tabpage;
-mod textobjects;
 mod theme;
 mod theme_state;
 mod ui_features;
@@ -52,7 +48,13 @@ mod window_viewport;
 mod wrap_map;
 mod yank_flash;
 
-pub use change::{
+// Re-export from ovim-core
+use ovim_core::fold;
+pub(crate) use ovim_core::search;
+pub(crate) use ovim_core::textobjects;
+pub(crate) use ovim_core::change;
+
+pub use ovim_core::change::{
     Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType,
 };
 pub use command_context::CommandContext;
