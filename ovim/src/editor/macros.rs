@@ -1,4 +1,4 @@
-use crossterm::event::KeyEvent;
+use ovim_core::KeyEvent;
 use std::collections::HashMap;
 
 /// Manages macro recording and playback

@@ -7,7 +7,7 @@ use crate::editor::input::helpers;
 use crate::editor::{Editor, InsertEntryMode, Motions};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Try to handle a mode transition command.
 ///
@@ -39,7 +39,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // i - insert before cursor
-        KeyCode::Char('i') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('i') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
@@ -50,7 +50,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // a - insert after cursor
-        KeyCode::Char('a') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('a') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
@@ -97,7 +97,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // o - open line below
-        KeyCode::Char('o') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('o') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
@@ -123,7 +123,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // v - visual mode
-        KeyCode::Char('v') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('v') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             let cursor = editor.buffer().cursor();
             editor.set_visual_start(cursor.line(), cursor.col());
             editor.set_mode(Mode::Visual);
@@ -137,7 +137,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // Ctrl-V - visual block mode
-        KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let cursor = editor.buffer().cursor();
             editor.set_visual_start(cursor.line(), cursor.col());
             editor.set_mode(Mode::VisualBlock);

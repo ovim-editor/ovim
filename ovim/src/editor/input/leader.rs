@@ -8,7 +8,7 @@
 //! - etc.
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 use crate::editor::input_state::InputState;
 use crate::editor::{Editor, Picker};

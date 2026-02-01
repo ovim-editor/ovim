@@ -5,7 +5,7 @@
 //! like df, dt, cf, ct.
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 use crate::editor::input_state::CharMotion;
 use crate::editor::motions::Motions;

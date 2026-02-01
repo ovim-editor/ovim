@@ -5,7 +5,7 @@ pub use test_session::TestSession;
 #[allow(unused_imports)]
 pub use viewport_assertions::ViewportAssertion;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
 
@@ -33,13 +33,13 @@ impl EditorTest {
 
     /// Press a character key
     pub fn press(&mut self, c: char) -> &mut Self {
-        let event = KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty());
+        let event = KeyEvent::new(KeyCode::Char(c), Modifiers::NONE);
         InputHandler::handle_key_event(&mut self.editor, event).unwrap();
         self
     }
 
     /// Press a key with modifiers
-    pub fn press_with(&mut self, code: KeyCode, modifiers: KeyModifiers) -> &mut Self {
+    pub fn press_with(&mut self, code: KeyCode, modifiers: Modifiers) -> &mut Self {
         let event = KeyEvent::new(code, modifiers);
         InputHandler::handle_key_event(&mut self.editor, event).unwrap();
         self
@@ -62,7 +62,7 @@ impl EditorTest {
 
     /// Press any KeyCode
     pub fn press_key(&mut self, key: KeyCode) -> &mut Self {
-        let event = KeyEvent::new(key, KeyModifiers::empty());
+        let event = KeyEvent::new(key, Modifiers::NONE);
         InputHandler::handle_key_event(&mut self.editor, event).unwrap();
         self
     }
@@ -111,20 +111,20 @@ impl EditorTest {
                             let char_part = &key[2..];
                             if char_part.len() == 1 {
                                 let c = char_part.chars().next().unwrap().to_ascii_lowercase();
-                                self.press_with(KeyCode::Char(c), KeyModifiers::CONTROL)
+                                self.press_with(KeyCode::Char(c), Modifiers::CONTROL)
                             } else {
                                 match char_part {
                                     "[" => {
-                                        self.press_with(KeyCode::Char('['), KeyModifiers::CONTROL)
+                                        self.press_with(KeyCode::Char('['), Modifiers::CONTROL)
                                     }
                                     "]" => {
-                                        self.press_with(KeyCode::Char(']'), KeyModifiers::CONTROL)
+                                        self.press_with(KeyCode::Char(']'), Modifiers::CONTROL)
                                     }
                                     "^" => {
-                                        self.press_with(KeyCode::Char('^'), KeyModifiers::CONTROL)
+                                        self.press_with(KeyCode::Char('^'), Modifiers::CONTROL)
                                     }
                                     " " => {
-                                        self.press_with(KeyCode::Char(' '), KeyModifiers::CONTROL)
+                                        self.press_with(KeyCode::Char(' '), Modifiers::CONTROL)
                                     }
                                     _ => panic!("Unknown Ctrl key: <{}>", special_key),
                                 }

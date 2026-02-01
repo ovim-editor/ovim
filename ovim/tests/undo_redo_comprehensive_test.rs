@@ -23,8 +23,8 @@ fn test_redo_single_change() {
     test.press('x') // Delete
         .press('u') // Undo
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ); // Redo
 
     assert_snapshot!(test.snapshot_state());
@@ -52,12 +52,12 @@ fn test_redo_multiple_changes() {
         .press('u')
         .press('u')
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         );
 
     assert_snapshot!(test.snapshot_state());
@@ -89,8 +89,8 @@ fn test_undo_redo_branch() {
         .keys("dw") // New branch
         .press('u') // Undo dw
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ); // Redo dw
 
     assert_snapshot!(test.snapshot_state());
@@ -196,8 +196,8 @@ fn test_redo_paste() {
     let mut test = EditorTest::new("hello world");
 
     test.keys("yiw").keys("$").press('p').press('u').press_with(
-        crossterm::event::KeyCode::Char('r'),
-        crossterm::event::KeyModifiers::CONTROL,
+        ovim_core::KeyCode::Char('r'),
+        ovim_core::Modifiers::CONTROL,
     );
 
     assert_snapshot!(test.snapshot_state());
@@ -256,16 +256,16 @@ fn test_redo_sequence() {
         .press('u')
         .press('u')
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         );
 
     assert_snapshot!(test.snapshot_state());
@@ -289,8 +289,8 @@ fn test_redo_at_end() {
     let mut test = EditorTest::new("hello");
 
     test.press_with(
-        crossterm::event::KeyCode::Char('r'),
-        crossterm::event::KeyModifiers::CONTROL,
+        ovim_core::KeyCode::Char('r'),
+        ovim_core::Modifiers::CONTROL,
     ); // Nothing to redo
 
     assert_snapshot!(test.snapshot_state());
@@ -307,16 +307,16 @@ fn test_undo_all_then_redo_all() {
         .press('u')
         .press('u') // Undo all
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ); // Redo all
 
     assert_snapshot!(test.snapshot_state());
@@ -345,8 +345,8 @@ fn test_redo_with_count() {
         .keys("3u")
         .keys("3")
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ); // Redo 3 times
 
     assert_snapshot!(test.snapshot_state());
@@ -658,8 +658,8 @@ fn test_ctrl_r_redo() {
     let mut test = EditorTest::new("hello");
 
     test.press('x').press('u').press_with(
-        crossterm::event::KeyCode::Char('r'),
-        crossterm::event::KeyModifiers::CONTROL,
+        ovim_core::KeyCode::Char('r'),
+        ovim_core::Modifiers::CONTROL,
     );
 
     assert_snapshot!(test.snapshot_state());
@@ -685,8 +685,8 @@ fn test_complex_undo_redo_sequence() {
         .press_esc()
         .press('u') // Undo new change
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ); // Redo
 
     assert_snapshot!(test.snapshot_state());

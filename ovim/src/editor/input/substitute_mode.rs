@@ -5,7 +5,7 @@
 
 use crate::editor::Editor;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Handles input in SubstituteConfirm mode
 /// Keys: y (yes), n (no/skip), a (all), q (quit), l (last - substitute and quit)

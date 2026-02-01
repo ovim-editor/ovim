@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -375,31 +375,31 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
             match next {
                 'e' => {
                     // \e = Escape
-                    events.push(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                    events.push(KeyEvent::new(KeyCode::Esc, Modifiers::NONE));
                     i += 2;
                     continue;
                 }
                 'c' => {
                     // \c = Ctrl+C
-                    events.push(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+                    events.push(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL));
                     i += 2;
                     continue;
                 }
                 'n' => {
                     // \n = Enter/newline
-                    events.push(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                    events.push(KeyEvent::new(KeyCode::Enter, Modifiers::NONE));
                     i += 2;
                     continue;
                 }
                 '\\' => {
                     // \\ = Literal backslash
-                    events.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+                    events.push(KeyEvent::new(KeyCode::Char('\\'), Modifiers::NONE));
                     i += 2;
                     continue;
                 }
                 _ => {
                     // Not a recognized escape sequence, treat backslash as literal
-                    events.push(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE));
+                    events.push(KeyEvent::new(KeyCode::Char('\\'), Modifiers::NONE));
                     i += 1;
                     continue;
                 }
@@ -424,7 +424,7 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
         }
 
         // Regular character
-        events.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        events.push(KeyEvent::new(KeyCode::Char(c), Modifiers::NONE));
         i += 1;
     }
 
@@ -436,20 +436,20 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
     // Handle Ctrl- prefix
     if key_name.starts_with("C-") && key_name.len() == 3 {
         let c = key_name.chars().nth(2)?;
-        return Some(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        return Some(KeyEvent::new(KeyCode::Char(c), Modifiers::CONTROL));
     }
 
     // Handle common special keys
     match key_name {
-        "CR" | "Enter" => Some(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        "Esc" => Some(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-        "Tab" => Some(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-        "BS" | "Backspace" => Some(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
-        "Del" | "Delete" => Some(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)),
-        "Up" => Some(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
-        "Down" => Some(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-        "Left" => Some(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
-        "Right" => Some(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+        "CR" | "Enter" => Some(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+        "Esc" => Some(KeyEvent::new(KeyCode::Esc, Modifiers::NONE)),
+        "Tab" => Some(KeyEvent::new(KeyCode::Tab, Modifiers::NONE)),
+        "BS" | "Backspace" => Some(KeyEvent::new(KeyCode::Backspace, Modifiers::NONE)),
+        "Del" | "Delete" => Some(KeyEvent::new(KeyCode::Delete, Modifiers::NONE)),
+        "Up" => Some(KeyEvent::new(KeyCode::Up, Modifiers::NONE)),
+        "Down" => Some(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
+        "Left" => Some(KeyEvent::new(KeyCode::Left, Modifiers::NONE)),
+        "Right" => Some(KeyEvent::new(KeyCode::Right, Modifiers::NONE)),
         _ => None,
     }
 }

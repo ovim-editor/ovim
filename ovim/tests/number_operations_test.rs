@@ -1,5 +1,5 @@
 mod helpers;
-use crossterm::event::{KeyCode, KeyModifiers};
+use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
 
 // ============================================================================
@@ -11,7 +11,7 @@ fn test_ctrl_a_increment_decimal() {
     let mut test = EditorTest::new("count: 42");
 
     test.keys("w") // Move to number
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "count: 43\n");
     // ovim: cursor on last digit for consistency
@@ -24,7 +24,7 @@ fn test_ctrl_a_increment_from_any_digit() {
 
     // Move to middle of the number: w moves to '1', l moves to '2'
     test.keys("wl")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "number 124 end\n");
     test.assert_cursor(0, 9);
@@ -35,7 +35,7 @@ fn test_ctrl_a_negative_number() {
     let mut test = EditorTest::new("temp: -5");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "temp: -4\n");
     // ovim: cursor on last digit (the '4')
@@ -47,7 +47,7 @@ fn test_ctrl_a_zero() {
     let mut test = EditorTest::new("value: 0");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "value: 1\n");
     test.assert_cursor(0, 7);
@@ -58,7 +58,7 @@ fn test_ctrl_a_large_number() {
     let mut test = EditorTest::new("big: 999999");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "big: 1000000\n");
     test.assert_cursor(0, 11);
@@ -70,7 +70,7 @@ fn test_ctrl_a_with_count() {
 
     test.keys("w")
         .keys("5") // Count of 5
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: 15\n");
     test.assert_cursor(0, 6);
@@ -81,7 +81,7 @@ fn test_ctrl_a_hex_number() {
     let mut test = EditorTest::new("color: 0xff");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Should increment hex: 0xff -> 0x100
     assert_eq!(test.buffer_content(), "color: 0x100\n");
@@ -94,7 +94,7 @@ fn test_ctrl_a_octal_number() {
     let mut test = EditorTest::new("perms: 0o644");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "perms: 0o645\n");
     test.assert_cursor(0, 11);
@@ -105,7 +105,7 @@ fn test_ctrl_a_binary_number() {
     let mut test = EditorTest::new("bits: 0b1010");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "bits: 0b1011\n");
     test.assert_cursor(0, 11);
@@ -116,7 +116,7 @@ fn test_ctrl_a_no_number_on_line() {
     let mut test = EditorTest::new("no numbers here");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Should not change anything
     assert_eq!(test.buffer_content(), "no numbers here\n");
@@ -128,7 +128,7 @@ fn test_ctrl_a_search_forward() {
     let mut test = EditorTest::new("text 123 more");
 
     // Cursor at beginning - should find first number
-    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "text 124 more\n");
     test.assert_cursor(0, 7);
@@ -139,7 +139,7 @@ fn test_ctrl_a_negative_to_positive() {
     let mut test = EditorTest::new("value: -1");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "value: 0\n");
     test.assert_cursor(0, 7);
@@ -150,7 +150,7 @@ fn test_ctrl_a_multiple_numbers_on_line() {
     let mut test = EditorTest::new("x: 10, y: 20");
 
     test.keys("w") // Move to first number
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "x: 11, y: 20\n");
     test.assert_cursor(0, 4);
@@ -165,7 +165,7 @@ fn test_ctrl_x_decrement_decimal() {
     let mut test = EditorTest::new("count: 42");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "count: 41\n");
     // ovim: cursor on last digit for consistency
@@ -177,7 +177,7 @@ fn test_ctrl_x_to_zero() {
     let mut test = EditorTest::new("value: 1");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "value: 0\n");
     test.assert_cursor(0, 7);
@@ -188,7 +188,7 @@ fn test_ctrl_x_to_negative() {
     let mut test = EditorTest::new("value: 0");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "value: -1\n");
     // ovim: cursor on last digit (the '1')
@@ -200,7 +200,7 @@ fn test_ctrl_x_negative_number() {
     let mut test = EditorTest::new("temp: -5");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "temp: -6\n");
     // ovim: cursor on last digit
@@ -213,7 +213,7 @@ fn test_ctrl_x_with_count() {
 
     test.keys("w")
         .keys("7") // Count of 7
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: 13\n");
     // ovim: cursor on last digit
@@ -225,7 +225,7 @@ fn test_ctrl_x_hex_number() {
     let mut test = EditorTest::new("color: 0x10");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "color: 0xf\n");
     test.assert_cursor(0, 9);
@@ -237,7 +237,7 @@ fn test_ctrl_x_octal_number() {
     let mut test = EditorTest::new("perms: 0o755");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "perms: 0o754\n");
     test.assert_cursor(0, 11);
@@ -248,7 +248,7 @@ fn test_ctrl_x_binary_number() {
     let mut test = EditorTest::new("bits: 0b1010");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "bits: 0b1001\n");
     test.assert_cursor(0, 11);
@@ -263,7 +263,7 @@ fn test_ctrl_a_undo() {
     let mut test = EditorTest::new("value: 10");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL)
         .press('u'); // Undo
 
     assert_eq!(test.buffer_content(), "value: 10\n");
@@ -277,7 +277,7 @@ fn test_ctrl_x_undo() {
     let mut test = EditorTest::new("value: 10");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL)
         .press('u');
 
     assert_eq!(test.buffer_content(), "value: 10\n");
@@ -290,9 +290,9 @@ fn test_ctrl_a_redo() {
     let mut test = EditorTest::new("value: 10");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL)
         .press('u')
-        .press_with(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('r'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "value: 11\n");
     // ovim: redo should restore cursor to where operation left it (last digit)
@@ -308,7 +308,7 @@ fn test_ctrl_a_dot_repeat() {
     let mut test = EditorTest::new("a: 1\nb: 2\nc: 3");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL) // Increment to 2
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL) // Increment to 2
         .press('j')
         .press('.'); // Repeat on next line
 
@@ -321,7 +321,7 @@ fn test_ctrl_x_dot_repeat() {
     let mut test = EditorTest::new("a: 5\nb: 4\nc: 3");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL) // Decrement to 4
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL) // Decrement to 4
         .press('j')
         .press('.'); // Repeat
 
@@ -335,7 +335,7 @@ fn test_ctrl_a_with_count_dot_repeat() {
 
     test.keys("w")
         .keys("5")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL) // +5 to 15
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL) // +5 to 15
         .press('j')
         .press('.'); // Repeat (should add 5 again)
 
@@ -355,7 +355,7 @@ fn test_g_ctrl_a_sequential_increment() {
         .press('V') // Visual line mode
         .keys("jj") // Select 3 lines
         .press('g')
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Should increment sequentially: 1, 2, 3
     assert_eq!(test.buffer_content(), "item 1\nitem 2\nitem 3\n");
@@ -370,7 +370,7 @@ fn test_g_ctrl_a_with_start_value() {
         .press('V')
         .keys("jj")
         .press('g')
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "step 0\nstep 1\nstep 2\n");
     test.assert_cursor(0, 5);
@@ -380,10 +380,10 @@ fn test_g_ctrl_a_with_start_value() {
 fn test_g_ctrl_a_visual_block() {
     let mut test = EditorTest::new("1. item\n1. item\n1. item");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Select column
         .press('g')
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Should increment the column of numbers sequentially
     assert_eq!(test.buffer_content(), "1. item\n2. item\n3. item\n");
@@ -402,7 +402,7 @@ fn test_g_ctrl_x_sequential_decrement() {
         .press('V')
         .keys("jj")
         .press('g')
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     // Should decrement sequentially: 5, 4, 3
     assert_eq!(test.buffer_content(), "item 5\nitem 4\nitem 3\n");
@@ -418,7 +418,7 @@ fn test_ctrl_a_at_line_end() {
     let mut test = EditorTest::new("value: 99");
 
     test.keys("$") // End of line
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "value: 100\n");
     test.assert_cursor(0, 9);
@@ -430,7 +430,7 @@ fn test_ctrl_a_before_number() {
 
     // w moves to "123", Ctrl-A increments it
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "prefix 124 suffix\n");
     test.assert_cursor(0, 9);
@@ -441,7 +441,7 @@ fn test_ctrl_a_signed_number() {
     let mut test = EditorTest::new("delta: +5");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "delta: +6\n");
     // ovim: cursor on last digit (the '6')
@@ -454,7 +454,7 @@ fn test_ctrl_x_underflow() {
 
     test.keys("w")
         .keys("99") // Large count
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: -99\n");
     // ovim: cursor on last digit (second '9' at position 7)
@@ -466,7 +466,7 @@ fn test_ctrl_a_float_number() {
     let mut test = EditorTest::new("pi: 3.14");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Behavior: only increment integer part or whole number?
     // Document actual behavior
@@ -479,7 +479,7 @@ fn test_ctrl_a_scientific_notation() {
     let mut test = EditorTest::new("val: 1e10");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // How should scientific notation be handled?
     assert_eq!(test.buffer_content(), "val: 2e10\n");
@@ -490,7 +490,7 @@ fn test_ctrl_a_scientific_notation() {
 fn test_ctrl_a_empty_line() {
     let mut test = EditorTest::new("\n");
 
-    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Should not crash or change anything
     assert_eq!(test.buffer_content(), "\n");
@@ -501,7 +501,7 @@ fn test_ctrl_a_empty_line() {
 fn test_ctrl_a_letters_only() {
     let mut test = EditorTest::new("abc");
 
-    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // Some versions of vim increment letters (a->b)
     // Document actual behavior
@@ -515,7 +515,7 @@ fn test_ctrl_a_number_with_leading_zeros() {
     let mut test = EditorTest::new("id: 007");
 
     test.keys("w")
-        .press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     // ovim treats as decimal: 007 -> 8 (not 010 like Vim's octal)
     assert_eq!(test.buffer_content(), "id: 8\n");
@@ -532,7 +532,7 @@ fn test_ctrl_x_hex_to_negative() {
     let mut test = EditorTest::new("val: 0x00");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: -0x1\n");
 }
@@ -543,7 +543,7 @@ fn test_ctrl_x_hex_from_one() {
     let mut test = EditorTest::new("val: 0x01");
 
     test.keys("w")
-        .press_with(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: 0x0\n");
 }
@@ -559,7 +559,7 @@ fn test_ctrl_a_hex_cursor_on_hex_digit() {
 
     // Move to the last 'f'
     test.keys("$");
-    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "val: 0x100\n");
 }
@@ -574,7 +574,7 @@ fn test_ctrl_a_forward_search_only() {
     let mut test = EditorTest::new("abc 42 def");
 
     // Cursor at col 0, not on a digit — should find 42 forward
-    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
     assert_eq!(test.buffer_content(), "abc 43 def\n");
 }

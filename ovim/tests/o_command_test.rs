@@ -1,9 +1,9 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::empty())
+    KeyEvent::new(code, Modifiers::NONE)
 }
 
 /// Helper function to handle a key press
@@ -303,7 +303,7 @@ fn test_o_undo_redo_cursor_valid() {
     // Redo (Ctrl-R)
     InputHandler::handle_key_event(
         &mut editor,
-        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('r'), Modifiers::CONTROL),
     )
     .unwrap();
 

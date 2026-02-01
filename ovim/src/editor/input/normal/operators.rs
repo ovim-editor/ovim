@@ -16,7 +16,7 @@ use crate::editor::{
 };
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 use super::super::case;
 

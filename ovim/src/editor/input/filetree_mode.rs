@@ -7,7 +7,7 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Handles input in FileTree mode
 pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

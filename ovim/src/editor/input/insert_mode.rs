@@ -12,7 +12,7 @@
 use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 use super::helpers;
 
@@ -258,7 +258,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-[ is equivalent to Esc
-        KeyCode::Char('[') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('[') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.hide_completion_menu();
             } else {
@@ -266,7 +266,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-C exits insert mode (like Esc but without triggering InsertLeave)
-        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('c') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.hide_completion_menu();
             } else {
@@ -274,41 +274,41 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-W - Delete word backward
-        KeyCode::Char('w') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('w') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             helpers::delete_word_backward_insert(editor)?;
         }
         // Ctrl-U - Delete to start of line
-        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             helpers::delete_to_line_start_insert(editor)?;
         }
         // Ctrl-T - Indent current line in insert mode
-        KeyCode::Char('t') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('t') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             helpers::indent_line_insert(editor)?;
         }
         // Ctrl-D - Dedent current line in insert mode
-        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             helpers::dedent_line_insert(editor)?;
         }
         // Ctrl-H is equivalent to Backspace
-        KeyCode::Char('h') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('h') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             helpers::delete_char_before_cursor(editor)?;
         }
         // Ctrl-Space - Request code completion
-        KeyCode::Char(' ') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char(' ') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.request_completion();
         }
         // Ctrl-O - Request code completion (vim omni-completion)
-        KeyCode::Char('o') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.request_completion();
         }
         // Ctrl-N - Next completion item
-        KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('n') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.completion_next();
             }
         }
         // Ctrl-P - Previous completion item
-        KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('p') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.completion_previous();
             }

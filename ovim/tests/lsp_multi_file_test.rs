@@ -147,8 +147,8 @@ fn main() {
 
     // Go back with Ctrl-O
     test.press_with(
-        crossterm::event::KeyCode::Char('o'),
-        crossterm::event::KeyModifiers::CONTROL,
+        ovim_core::KeyCode::Char('o'),
+        ovim_core::Modifiers::CONTROL,
     );
 
     // Should be back at original position (or close to it)

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::Event;
+use ovim::key_convert::{convert_key_event, convert_mouse_event};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -312,7 +313,8 @@ pub async fn run_event_loop(
             for event in events {
                 match event {
                     Event::Key(key_event) => {
-                        InputHandler::handle_key_event_no_dirty(editor, key_event)?;
+                        let key = convert_key_event(key_event);
+                        InputHandler::handle_key_event_no_dirty(editor, key)?;
                         last_edit = Instant::now();
                     }
                     Event::Paste(text) => {
@@ -334,7 +336,8 @@ pub async fn run_event_loop(
                         }
                     }
                     Event::Mouse(mouse_event) => {
-                        handle_mouse_event(editor, mouse_event)?;
+                        let mouse = convert_mouse_event(mouse_event);
+                        handle_mouse_event(editor, mouse)?;
                         last_edit = Instant::now();
                     }
                     _ => {

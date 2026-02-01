@@ -547,8 +547,8 @@ fn test_dot_after_undo_redo() {
     test.press('x') // Delete 'h'
         .press('u') // Undo
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ) // Redo
         .press('.'); // Repeat
 

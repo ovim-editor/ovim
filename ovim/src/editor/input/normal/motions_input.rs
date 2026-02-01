@@ -6,14 +6,14 @@
 use crate::editor::input::helpers;
 use crate::editor::{Editor, FindDirection, FindType, Motions, Search};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Try to handle a motion command.
 ///
 /// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     // Handle Ctrl key combinations first (must be checked before regular keys)
-    if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+    if key_event.modifiers.contains(Modifiers::CONTROL) {
         return try_handle_ctrl_motion(editor, key_event);
     }
 

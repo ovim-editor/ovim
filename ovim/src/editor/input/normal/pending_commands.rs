@@ -9,7 +9,7 @@ use crate::editor::{
 };
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Try to handle a pending command.
 ///

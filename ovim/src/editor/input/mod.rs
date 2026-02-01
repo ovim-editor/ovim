@@ -1,7 +1,8 @@
 use crate::editor::{Editor, InputState};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Command handling submodule
 mod commands;
@@ -89,7 +90,7 @@ impl InputHandler {
 
         // Global keybindings (work in any mode)
         // Cmd+1 - toggle file tree
-        if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(KeyModifiers::SUPER)
+        if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(Modifiers::SUPER)
         {
             editor.toggle_file_tree();
             return Ok(());
