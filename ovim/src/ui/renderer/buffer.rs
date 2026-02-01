@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::display::char_display_width;
 
-use super::helpers::expand_tabs_with_mapping;
+use super::helpers::{expand_tabs_with_mapping, remap_char_col};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
     get_diagnostic_sign_style, get_diagnostic_virtual_text_style, get_git_sign_style,
@@ -18,6 +18,19 @@ use super::styles::{
 };
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
+
+/// Converts a UTF-16 offset to a char index within a line of text.
+/// LSP uses UTF-16 offsets for character positions.
+fn utf16_offset_to_char_idx(text: &str, utf16_offset: usize) -> usize {
+    let mut utf16_count = 0;
+    for (char_idx, ch) in text.chars().enumerate() {
+        if utf16_count >= utf16_offset {
+            return char_idx;
+        }
+        utf16_count += ch.len_utf16();
+    }
+    text.chars().count()
+}
 
 /// Slices a line for horizontal viewport with visual indicators
 /// Returns (sliced_text, precedes_indicator, extends_indicator)
@@ -471,12 +484,12 @@ pub fn render_buffer(
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < visible_lines {
         if line_idx < rope.len_lines() {
-            let line_text = rope.line(line_idx).to_string();
+            let line_text_raw = rope.line(line_idx).to_string();
             // Remove trailing newline if present
-            let line_text = line_text.trim_end_matches('\n');
+            let line_text_original = line_text_raw.trim_end_matches('\n');
 
             // Expand tabs to spaces for proper rendering and get byte mapping
-            let (line_text, byte_mapping, control_ranges, char_mapping) = expand_tabs_with_mapping(line_text, tab_width);
+            let (line_text, byte_mapping, control_ranges, char_mapping) = expand_tabs_with_mapping(line_text_original, tab_width);
 
             // Apply horizontal viewport slicing if nowrap is set
             let (line_text, precedes, _extends) = if !wrap {
@@ -515,12 +528,19 @@ pub fn render_buffer(
             // Check if this is the cursor line and cursorline option is on
             let is_cursor_line = cursorline && line_idx == cursor_line_idx;
 
-            // Check if this line has a bracket to highlight
+            // Remap visual selection columns from original to expanded char indices
+            let remapped_visual_selection = visual_selection.map(|((sl, sc), (el, ec))| {
+                let sc = if line_idx == sl { remap_char_col(sc, &char_mapping) } else { sc };
+                let ec = if line_idx == el { remap_char_col(ec, &char_mapping) } else { ec };
+                ((sl, sc), (el, ec))
+            });
+
+            // Check if this line has a bracket to highlight (remap through char_mapping)
             let bracket_col = bracket_positions.and_then(|((l1, c1), (l2, c2))| {
                 if line_idx == l1 {
-                    Some(c1)
+                    Some(remap_char_col(c1, &char_mapping))
                 } else if line_idx == l2 {
-                    Some(c2)
+                    Some(remap_char_col(c2, &char_mapping))
                 } else {
                     None
                 }
@@ -541,9 +561,26 @@ pub fn render_buffer(
                 bracket_col
             };
 
-            // Get diagnostics for this line
+            // Get diagnostics for this line and remap their ranges to expanded char indices
             let line_diagnostics = editor.diagnostics_for_line(line_idx);
             let has_diagnostics = !line_diagnostics.is_empty();
+            let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics.iter().map(|d| {
+                // Convert UTF-16 offsets to char indices, then remap through expansion
+                let start_char = utf16_offset_to_char_idx(line_text_original, d.range.start.character as usize);
+                let end_char = utf16_offset_to_char_idx(line_text_original, d.range.end.character as usize);
+                let color = match d.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
+                    Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                    Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
+                    _ => Color::Red,
+                };
+                RemappedDiagnostic {
+                    start: remap_char_col(start_char, &char_mapping),
+                    end: remap_char_col(end_char, &char_mapping),
+                    color,
+                }
+            }).collect();
 
             // Check if this line is in a yank flash region
             let yank_flash = editor.yank_flash.as_ref().and_then(|flash| {
@@ -568,11 +605,11 @@ pub fn render_buffer(
                     theme,
                     &line_text,
                     line_idx,
-                    visual_selection,
+                    remapped_visual_selection,
                     editor.mode(),
                     &search_matches,
                     &syntax_highlights,
-                    &line_diagnostics,
+                    &remapped_diagnostics,
                     &control_ranges,
                 );
 
@@ -777,6 +814,13 @@ pub fn render_buffer(
     start_line
 }
 
+/// A diagnostic range remapped to expanded char indices for rendering
+pub struct RemappedDiagnostic {
+    pub start: usize,
+    pub end: usize,
+    pub color: Color,
+}
+
 /// Renders a single line with all highlighting (syntax, visual selection, search, diagnostics, control chars)
 #[allow(clippy::too_many_arguments)]
 pub fn render_line_with_highlights(
@@ -787,7 +831,7 @@ pub fn render_line_with_highlights(
     mode: crate::mode::Mode,
     search_matches: &[(usize, usize)],
     syntax_highlights: &[(std::ops::Range<usize>, crate::syntax::HighlightGroup)],
-    diagnostics: &[&lsp_types::Diagnostic],
+    diagnostics: &[RemappedDiagnostic],
     control_ranges: &[std::ops::Range<usize>],
 ) -> Line<'static> {
     let chars: Vec<char> = line_text.chars().collect();
@@ -848,16 +892,8 @@ pub fn render_line_with_highlights(
 
         // Check if this character falls within a diagnostic range (underline)
         let diag_underline_color = diagnostics.iter().find_map(|d| {
-            let start = d.range.start.character as usize;
-            let end = d.range.end.character as usize;
-            if col_idx >= start && col_idx < end {
-                Some(match d.severity {
-                    Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
-                    Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                    Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                    Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                    _ => Color::Red,
-                })
+            if col_idx >= d.start && col_idx < d.end {
+                Some(d.color)
             } else {
                 None
             }
@@ -912,16 +948,8 @@ pub fn render_line_with_highlights(
 
             // Check diagnostic underline for next character
             let next_diag_underline_color = diagnostics.iter().find_map(|d| {
-                let start = d.range.start.character as usize;
-                let end = d.range.end.character as usize;
-                if end_col >= start && end_col < end {
-                    Some(match d.severity {
-                        Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
-                        Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                        Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                        _ => Color::Red,
-                    })
+                if end_col >= d.start && end_col < d.end {
+                    Some(d.color)
                 } else {
                     None
                 }
