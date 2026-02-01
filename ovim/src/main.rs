@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
     // This path outputs to stdout and never starts the TUI, so print! is safe
     if args.render {
         let (width, height) = args.dimension.unwrap_or((80, 24));
-        match editor.render_to_ansi(width, height) {
+        match ovim::ui::render_editor_to_ansi(&mut editor, width, height) {
             Ok(ansi) => {
                 #[allow(clippy::print_stdout)]
                 {

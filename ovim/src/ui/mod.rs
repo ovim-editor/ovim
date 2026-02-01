@@ -3,6 +3,7 @@ mod renderer;
 mod terminal;
 
 pub use ansi::buffer_to_ansi;
+pub use ansi::render_editor_to_ansi;
 pub use renderer::CatAnimation;
 pub use renderer::Renderer;
 pub use renderer::MENU_ITEMS;

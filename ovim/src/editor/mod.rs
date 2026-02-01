@@ -274,11 +274,11 @@ pub struct Editor {
 #[derive(Debug, Clone)]
 pub struct PickerLayout {
     /// Search input area
-    pub query_field: ratatui::layout::Rect,
+    pub query_field: ovim_core::Rect,
     /// File filter area (LiveGrep only)
-    pub filter_field: Option<ratatui::layout::Rect>,
+    pub filter_field: Option<ovim_core::Rect>,
     /// Results list area
-    pub results_area: ratatui::layout::Rect,
+    pub results_area: ovim_core::Rect,
     /// Scroll offset of results (for mapping row to result index)
     pub results_scroll_offset: usize,
 }
@@ -426,27 +426,6 @@ impl Editor {
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
         }
-    }
-
-    /// Renders the editor to an in-memory buffer and returns ANSI output
-    /// Used for headless mode to get pixel-perfect terminal representation
-    pub fn render_to_ansi(&mut self, width: u16, height: u16) -> Result<String> {
-        use crate::ui::buffer_to_ansi;
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        // Create a test backend with specified dimensions
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend)?;
-
-        // Render using the normal UI rendering code
-        terminal.draw(|f| {
-            crate::ui::Renderer::render_to_frame(f, self);
-        })?;
-
-        // Convert buffer to ANSI string
-        let buffer = terminal.backend().buffer();
-        Ok(buffer_to_ansi(buffer))
     }
 
     // ==================== Rename Input ====================
@@ -620,7 +599,7 @@ impl Editor {
     /// Caches the buffer layout from the last render (for mouse coordinate conversion)
     pub fn set_last_layout(
         &mut self,
-        buffer_area: ratatui::layout::Rect,
+        buffer_area: ovim_core::Rect,
         gutter_width: usize,
         text_width: usize,
     ) {

@@ -66,7 +66,7 @@ fn test_mixed_width_rendering() {
     assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 
     // Try to render (just make sure it doesn't panic)
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -104,7 +104,7 @@ fn test_rendering_with_emojis_no_panic() {
 
     for content in test_cases {
         let mut editor = Editor::with_content(content);
-        let result = editor.render_to_ansi(80, 24);
+        let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
         assert!(result.is_ok(), "Failed to render: {}", content);
     }
 }
@@ -117,7 +117,7 @@ fn test_tab_alignment_with_emoji() {
 
     // Emoji is 2 columns wide, so tab should go to column 4 (next tab stop)
     // When expanded: "😀  x" (emoji + 2 spaces + x)
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -127,7 +127,7 @@ fn test_multiple_tabs_with_emojis() {
     let mut editor = Editor::with_content(content);
 
     // Each emoji + tab should align to tab stops
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -149,7 +149,7 @@ fn test_skin_tone_emojis() {
     // Buffer adds trailing newline
     assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -161,7 +161,7 @@ fn test_flag_emojis() {
     // Buffer adds trailing newline
     assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
 
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -172,7 +172,7 @@ fn test_line_padding_with_emojis() {
     let mut editor = Editor::with_content(content);
 
     // Render and ensure no panic
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -187,7 +187,7 @@ fn test_long_line_with_mixed_content() {
     assert!(editor.buffer().rope().to_string().contains("🎉"));
     assert!(editor.buffer().rope().to_string().contains('\t'));
 
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -202,7 +202,7 @@ function test() {
     let mut editor = Editor::with_content(content);
 
     // Should not panic during syntax highlighting
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -216,7 +216,7 @@ fn test_cursor_position_tracking() {
     assert_eq!(editor.buffer().cursor().line(), 0);
 
     // Rendering should not panic
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -232,7 +232,7 @@ fn test_tab_width_option() {
     assert_eq!(editor.options.tab_width, 8);
 
     // Render should use new tab width
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -242,7 +242,7 @@ fn test_render_with_emojis_no_panic() {
     let mut editor = Editor::with_content("😀😁😂");
 
     // Should not panic
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -265,7 +265,7 @@ fn test_cursor_with_tabs() {
     assert_eq!(editor.buffer().cursor().col(), 0);
 
     // Rendering should handle cursor display correctly with tabs
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -278,7 +278,7 @@ fn test_cursor_with_emoji_and_tabs() {
     assert_eq!(editor.buffer().cursor().col(), 0);
 
     // Cursor should handle display correctly even with emoji + tab
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -289,7 +289,7 @@ fn test_long_lines_with_tabs() {
     let mut editor = Editor::with_content(&long_line);
 
     // Should not panic even with extreme tab expansion
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }
 
@@ -300,6 +300,6 @@ fn test_preview_with_long_lines() {
     let mut editor = Editor::with_content(&content);
 
     // Should render without panic
-    let result = editor.render_to_ansi(80, 24);
+    let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
     assert!(result.is_ok());
 }

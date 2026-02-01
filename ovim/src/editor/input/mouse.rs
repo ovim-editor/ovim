@@ -348,7 +348,6 @@ fn handle_picker_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 }
 
 /// Returns true if the screen point (col, row) is inside the rect.
-fn rect_contains(rect: &ratatui::layout::Rect, point: (u16, u16)) -> bool {
-    let (col, row) = point;
-    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+fn rect_contains(rect: &ovim_core::Rect, point: (u16, u16)) -> bool {
+    rect.contains(point.0, point.1)
 }
