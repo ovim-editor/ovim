@@ -163,13 +163,11 @@ fn shift_highlights_for_viewport(
     // Build display-column-to-byte-offset mapping for the sliced text
     let sliced_display_to_byte: Vec<usize> = {
         let mut mapping = Vec::new();
-        let mut display_col = 0;
         for (byte_idx, ch) in sliced_text.char_indices() {
             let ch_width = char_display_width(ch);
             for _ in 0..ch_width {
                 mapping.push(byte_idx);
             }
-            display_col += ch_width;
         }
         mapping.push(sliced_text.len()); // sentinel
         mapping
