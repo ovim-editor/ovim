@@ -157,9 +157,6 @@ fn query_option(name: &str, editor: &Editor) -> Option<CommandResult> {
             match &opts.margin_color {
                 MarginColor::None => "none".to_string(),
                 MarginColor::Solid(r, g, b) => format!("#{:02x}{:02x}{:02x}", r, g, b),
-                MarginColor::Translucent(r, g, b, a) => {
-                    format!("rgba({},{},{},{:.2})", r, g, b, a)
-                }
             }
         ),
         "marginpadding" => format!("  marginpadding={}", opts.margin_padding),
@@ -217,29 +214,6 @@ fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
     let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
     Some((r, g, b))
-}
-
-/// Parse a margin color from string. Supports:
-/// - `#rrggbb` → Solid
-/// - `rgba(r,g,b,a)` → Translucent (a is 0.0-1.0)
-fn parse_margin_color(s: &str) -> Option<MarginColor> {
-    if let Some(hex) = parse_hex_color(s) {
-        return Some(MarginColor::Solid(hex.0, hex.1, hex.2));
-    }
-    // rgba(r,g,b,a)
-    let inner = s.strip_prefix("rgba(")?.strip_suffix(')')?;
-    let parts: Vec<&str> = inner.split(',').collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let r = parts[0].trim().parse::<u8>().ok()?;
-    let g = parts[1].trim().parse::<u8>().ok()?;
-    let b = parts[2].trim().parse::<u8>().ok()?;
-    let a = parts[3].trim().parse::<f32>().ok()?;
-    if !(0.0..=1.0).contains(&a) {
-        return None;
-    }
-    Some(MarginColor::Translucent(r, g, b, a))
 }
 
 fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<CommandResult> {
@@ -307,12 +281,12 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
             if value == "none" {
                 editor.options.margin_color = MarginColor::None;
                 ok(Some("  margincolor=none".to_string()))
-            } else if let Some(color) = parse_margin_color(value) {
-                editor.options.margin_color = color;
+            } else if let Some((r, g, b)) = parse_hex_color(value) {
+                editor.options.margin_color = MarginColor::Solid(r, g, b);
                 ok(Some(format!("  margincolor={}", value)))
             } else {
                 err(format!(
-                    "Invalid color: {} (use hex like #1a1a1e, rgba(0,0,0,0.3), or 'none')",
+                    "Invalid color: {} (use hex like #1a1a1e or 'none')",
                     value
                 ))
             }
