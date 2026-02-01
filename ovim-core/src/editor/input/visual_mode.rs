@@ -487,30 +487,33 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Switch to other visual modes
         KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            // Switching to VisualBlock - preserve both line and column of anchor
-            editor.set_mode(Mode::VisualBlock);
+            if editor.mode() == Mode::VisualBlock {
+                helpers::exit_visual_mode_to_normal(editor);
+            } else {
+                editor.set_mode(Mode::VisualBlock);
+            }
         }
         KeyCode::Char('v') => {
-            // Switching to Visual mode
-            if editor.mode() == Mode::VisualLine {
-                // When switching from VisualLine to Visual, preserve anchor line
-                // The column is already 0 from VisualLine, which is fine
-                // (we don't track the original column before entering VisualLine)
+            if editor.mode() == Mode::Visual {
+                helpers::exit_visual_mode_to_normal(editor);
+            } else {
+                // Switching to Visual mode from VisualLine or VisualBlock
+                editor.set_mode(Mode::Visual);
             }
-            // For VisualBlock to Visual, preserve anchor as-is
-            editor.set_mode(Mode::Visual);
         }
         KeyCode::Char('V') => {
-            // Switching to VisualLine mode
-            if let Some((anchor_line, _)) = editor.visual_start() {
-                // Preserve anchor line, but set column to 0 for line-wise selection
-                editor.set_visual_start(anchor_line, 0);
+            if editor.mode() == Mode::VisualLine {
+                helpers::exit_visual_mode_to_normal(editor);
             } else {
-                // Fallback: use cursor position (shouldn't happen in visual mode)
-                let cursor = editor.buffer().cursor();
-                editor.set_visual_start(cursor.line(), 0);
+                // Switching to VisualLine mode
+                if let Some((anchor_line, _)) = editor.visual_start() {
+                    editor.set_visual_start(anchor_line, 0);
+                } else {
+                    let cursor = editor.buffer().cursor();
+                    editor.set_visual_start(cursor.line(), 0);
+                }
+                editor.set_mode(Mode::VisualLine);
             }
-            editor.set_mode(Mode::VisualLine);
         }
         // Visual block insert/append
         KeyCode::Char('I') => {
