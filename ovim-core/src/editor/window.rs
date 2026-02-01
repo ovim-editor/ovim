@@ -1,5 +1,6 @@
 use crate::buffer::Buffer;
 use crate::buffer::Cursor;
+use crate::coordinates::DisplayCol;
 
 /// Represents a window - a viewport into a buffer
 #[derive(Debug, Clone)]
@@ -10,8 +11,8 @@ pub struct Window {
     cursor: Cursor,
     /// Scroll offset (top line visible in window)
     scroll_offset: usize,
-    /// Horizontal scroll offset (leftmost visible column)
-    horizontal_offset: usize,
+    /// Horizontal scroll offset (leftmost visible display column)
+    horizontal_offset: DisplayCol,
     /// Window width (columns)
     width: u16,
     /// Window height (rows)
@@ -25,7 +26,7 @@ impl Window {
             buffer_id,
             cursor: Cursor::new(0, 0),
             scroll_offset: 0,
-            horizontal_offset: 0,
+            horizontal_offset: DisplayCol::ZERO,
             width,
             height,
         }
@@ -56,14 +57,19 @@ impl Window {
         self.scroll_offset = offset;
     }
 
-    /// Gets the horizontal scroll offset
+    /// Gets the horizontal scroll offset (display columns).
     pub fn horizontal_offset(&self) -> usize {
+        self.horizontal_offset.as_usize()
+    }
+
+    /// Gets the horizontal scroll offset as a typed `DisplayCol`.
+    pub fn horizontal_offset_display(&self) -> DisplayCol {
         self.horizontal_offset
     }
 
-    /// Sets the horizontal scroll offset
+    /// Sets the horizontal scroll offset (display columns).
     pub fn set_horizontal_offset(&mut self, offset: usize) {
-        self.horizontal_offset = offset;
+        self.horizontal_offset = DisplayCol(offset);
     }
 
     /// Gets the window width
@@ -107,8 +113,10 @@ impl Window {
         }
     }
 
-    /// Ensures the cursor column is visible horizontally, adjusting horizontal offset if needed
-    /// Returns true if horizontal offset changed
+    /// Ensures the cursor column is visible horizontally, adjusting horizontal offset if needed.
+    ///
+    /// `cursor_col` is a **display column** (accounts for wide chars and tabs).
+    /// Returns true if horizontal offset changed.
     pub fn ensure_cursor_visible_horizontal(
         &mut self,
         cursor_col: usize,
@@ -118,46 +126,52 @@ impl Window {
     ) -> bool {
         // If wrap enabled, no horizontal scrolling needed
         if wrap {
-            if self.horizontal_offset != 0 {
-                self.horizontal_offset = 0;
+            if self.horizontal_offset != DisplayCol::ZERO {
+                self.horizontal_offset = DisplayCol::ZERO;
                 return true;
             }
             return false;
         }
 
         let visible_width = self.width as usize;
-        let old_offset = self.horizontal_offset;
+        let h_off = self.horizontal_offset.as_usize();
+        let old_offset = h_off;
 
         // Calculate bounds with sidescrolloff
-        let left_bound = self.horizontal_offset + sidescrolloff;
-        let right_bound = self.horizontal_offset + visible_width.saturating_sub(sidescrolloff + 1);
+        let left_bound = h_off + sidescrolloff;
+        let right_bound = h_off + visible_width.saturating_sub(sidescrolloff + 1);
+
+        let new_offset;
 
         // Cursor is too far left
         if cursor_col < left_bound {
             if sidescroll == 0 {
                 // Jump to center cursor horizontally
-                self.horizontal_offset = cursor_col.saturating_sub(visible_width / 2);
+                new_offset = cursor_col.saturating_sub(visible_width / 2);
             } else {
                 // Scroll left by sidescroll amount
                 let scroll_amount = left_bound - cursor_col;
                 let scroll_step = scroll_amount.div_ceil(sidescroll) * sidescroll;
-                self.horizontal_offset = self.horizontal_offset.saturating_sub(scroll_step);
+                new_offset = h_off.saturating_sub(scroll_step);
             }
         }
         // Cursor is too far right
         else if cursor_col > right_bound {
             if sidescroll == 0 {
                 // Jump to center cursor horizontally
-                self.horizontal_offset = cursor_col.saturating_sub(visible_width / 2);
+                new_offset = cursor_col.saturating_sub(visible_width / 2);
             } else {
                 // Scroll right by sidescroll amount
                 let scroll_amount = cursor_col - right_bound;
                 let scroll_step = scroll_amount.div_ceil(sidescroll) * sidescroll;
-                self.horizontal_offset += scroll_step;
+                new_offset = h_off + scroll_step;
             }
+        } else {
+            new_offset = h_off;
         }
 
-        old_offset != self.horizontal_offset
+        self.horizontal_offset = DisplayCol(new_offset);
+        old_offset != new_offset
     }
 
     /// Centers the cursor in the window
