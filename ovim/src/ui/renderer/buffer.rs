@@ -1209,4 +1209,101 @@ mod tests {
         let text: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "ab  "); // padded
     }
+
+    // --- slice_horizontal_viewport tests ---
+
+    #[test]
+    fn test_slice_viewport_ascii_fits() {
+        let (text, precedes, extends) = slice_horizontal_viewport("hello", 0, 10);
+        assert_eq!(text, "hello");
+        assert!(!precedes);
+        assert!(!extends);
+    }
+
+    #[test]
+    fn test_slice_viewport_ascii_extends() {
+        let (text, precedes, extends) = slice_horizontal_viewport("hello world!", 0, 6);
+        assert_eq!(text.len(), 6);
+        assert!(!precedes);
+        assert!(extends);
+        assert!(text.ends_with('>'));
+    }
+
+    #[test]
+    fn test_slice_viewport_ascii_scrolled() {
+        // "hello world!" scrolled 3 display cols, width 6
+        let (text, precedes, extends) = slice_horizontal_viewport("hello world!", 3, 6);
+        assert!(precedes);
+        assert!(extends);
+        assert_eq!(text.chars().next(), Some('<'));
+        assert!(text.ends_with('>'));
+        assert_eq!(text.chars().count(), 6);
+    }
+
+    #[test]
+    fn test_slice_viewport_cjk_fits() {
+        // "a世b" has display width 4 (1+2+1)
+        let (text, precedes, extends) = slice_horizontal_viewport("a世b", 0, 5);
+        assert_eq!(text, "a世b");
+        assert!(!precedes);
+        assert!(!extends);
+    }
+
+    #[test]
+    fn test_slice_viewport_cjk_extends() {
+        // "a世b世c" has display width 8 (1+2+1+2+1), viewport width 5
+        let (text, precedes, extends) = slice_horizontal_viewport("a世b世c", 0, 5);
+        assert!(!precedes);
+        assert!(extends);
+        // Should fit "a世b" (4 cols) + '>' = 5 display cols total
+        assert!(text.ends_with('>'));
+    }
+
+    #[test]
+    fn test_slice_viewport_cjk_scrolled() {
+        // "a世b世c" scrolled past 'a' and '世' (3 display cols), width 5
+        let (text, precedes, extends) = slice_horizontal_viewport("a世b世c", 3, 5);
+        assert!(precedes);
+        // Should show '<' + content from display col 3 + possibly '>'
+        assert_eq!(text.chars().next(), Some('<'));
+    }
+
+    #[test]
+    fn test_slice_viewport_zero_width() {
+        let (text, precedes, extends) = slice_horizontal_viewport("hello", 0, 0);
+        assert_eq!(text, "");
+        assert!(!precedes);
+        assert!(!extends);
+    }
+
+    // --- Helper function tests ---
+
+    #[test]
+    fn test_expanded_char_to_display_col() {
+        // "a世b" → char 0='a'(width 1), char 1='世'(width 2), char 2='b'(width 1)
+        assert_eq!(expanded_char_to_display_col("a世b", 0), 0);
+        assert_eq!(expanded_char_to_display_col("a世b", 1), 1);
+        assert_eq!(expanded_char_to_display_col("a世b", 2), 3);
+    }
+
+    #[test]
+    fn test_display_col_to_char_idx_basic() {
+        // "a世b" display cols: a=0, 世=1-2, b=3
+        assert_eq!(display_col_to_char_idx("a世b", 0), 0);
+        assert_eq!(display_col_to_char_idx("a世b", 1), 1);
+        assert_eq!(display_col_to_char_idx("a世b", 2), 1); // mid-wide → same char
+        assert_eq!(display_col_to_char_idx("a世b", 3), 2);
+    }
+
+    #[test]
+    fn test_utf16_offset_to_char_idx() {
+        // ASCII: 1 UTF-16 unit per char
+        assert_eq!(utf16_offset_to_char_idx("hello", 2), 2);
+        // BMP CJK: 1 UTF-16 unit per char
+        assert_eq!(utf16_offset_to_char_idx("a世b", 1), 1);
+        assert_eq!(utf16_offset_to_char_idx("a世b", 2), 2);
+        // Supplementary (emoji): 2 UTF-16 units
+        assert_eq!(utf16_offset_to_char_idx("a😀b", 1), 1); // start of emoji
+        assert_eq!(utf16_offset_to_char_idx("a😀b", 3), 2); // after emoji (2 UTF-16 units)
+    }
 }
