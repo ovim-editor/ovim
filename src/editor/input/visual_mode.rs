@@ -8,7 +8,7 @@
 //! - Visual mode commands (o to swap cursor, gv to reselect)
 //! - Visual mode search (/ and ?)
 
-use crate::editor::{Change, Editor, Motions, Range, TextObjects};
+use crate::editor::{Change, Editor, Motions, Range, TextObjectRange, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -17,6 +17,23 @@ use super::char_motion;
 use super::helpers;
 use super::numbers;
 use crate::editor::input_state::InputState;
+
+/// Apply a text object range to the visual selection.
+/// If `inclusive` is true, end_col is used directly; otherwise it's decremented by 1.
+fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclusive: bool) {
+    if let Some(range) = range {
+        editor.set_visual_start(range.start_line, range.start_col);
+        let end_col = if inclusive {
+            range.end_col
+        } else {
+            range.end_col.saturating_sub(1)
+        };
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(range.end_line, end_col);
+    }
+}
 
 /// Handles input in Visual mode (Visual, VisualLine, VisualBlock)
 pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
@@ -132,152 +149,59 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
             }
             ('i', KeyCode::Char('w')) => {
-                // viw - visual inner word
-                if let Some(range) = TextObjects::inner_word(editor.buffer()) {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::inner_word(editor.buffer()), false);
                 return Ok(());
             }
             ('a', KeyCode::Char('w')) => {
-                // vaw - visual around word
-                if let Some(range) = TextObjects::around_word(editor.buffer()) {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::around_word(editor.buffer()), false);
                 return Ok(());
             }
             ('i', KeyCode::Char('p')) => {
-                // vip - visual inner paragraph
-                if let Some(range) = TextObjects::inner_paragraph(editor.buffer()) {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col);
-                }
+                apply_text_object(editor, TextObjects::inner_paragraph(editor.buffer()), true);
                 return Ok(());
             }
             ('a', KeyCode::Char('p')) => {
-                // vap - visual around paragraph
-                if let Some(range) = TextObjects::around_paragraph(editor.buffer()) {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col);
-                }
+                apply_text_object(editor, TextObjects::around_paragraph(editor.buffer()), true);
                 return Ok(());
             }
             ('i', KeyCode::Char('"')) | ('i', KeyCode::Char('\'')) | ('i', KeyCode::Char('`')) => {
-                // vi" vi' vi` - visual inner quoted string
                 let quote = match key_event.code {
                     KeyCode::Char(c) => c,
                     _ => return Ok(()),
                 };
-                if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, false) {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::quoted_string(editor.buffer(), quote, false), false);
                 return Ok(());
             }
             ('a', KeyCode::Char('"')) | ('a', KeyCode::Char('\'')) | ('a', KeyCode::Char('`')) => {
-                // va" va' va` - visual around quoted string
                 let quote = match key_event.code {
                     KeyCode::Char(c) => c,
                     _ => return Ok(()),
                 };
-                if let Some(range) = TextObjects::quoted_string(editor.buffer(), quote, true) {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::quoted_string(editor.buffer(), quote, true), false);
                 return Ok(());
             }
             ('i', KeyCode::Char('(')) | ('i', KeyCode::Char(')')) | ('i', KeyCode::Char('b')) => {
-                // vi( vi) vib - visual inner parentheses
-                if let Some(range) =
-                    TextObjects::paired_delimiters(editor.buffer(), '(', ')', false)
-                {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '(', ')', false), false);
                 return Ok(());
             }
             ('a', KeyCode::Char('(')) | ('a', KeyCode::Char(')')) | ('a', KeyCode::Char('b')) => {
-                // va( va) vab - visual around parentheses
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '(', ')', true)
-                {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '(', ')', true), false);
                 return Ok(());
             }
             ('i', KeyCode::Char('[')) | ('i', KeyCode::Char(']')) => {
-                // vi[ vi] - visual inner brackets
-                if let Some(range) =
-                    TextObjects::paired_delimiters(editor.buffer(), '[', ']', false)
-                {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '[', ']', false), false);
                 return Ok(());
             }
             ('a', KeyCode::Char('[')) | ('a', KeyCode::Char(']')) => {
-                // va[ va] - visual around brackets
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '[', ']', true)
-                {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '[', ']', true), false);
                 return Ok(());
             }
             ('i', KeyCode::Char('{')) | ('i', KeyCode::Char('}')) | ('i', KeyCode::Char('B')) => {
-                // vi{ vi} viB - visual inner braces
-                if let Some(range) =
-                    TextObjects::paired_delimiters(editor.buffer(), '{', '}', false)
-                {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '{', '}', false), false);
                 return Ok(());
             }
             ('a', KeyCode::Char('{')) | ('a', KeyCode::Char('}')) | ('a', KeyCode::Char('B')) => {
-                // va{ va} vaB - visual around braces
-                if let Some(range) = TextObjects::paired_delimiters(editor.buffer(), '{', '}', true)
-                {
-                    editor.set_visual_start(range.start_line, range.start_col);
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_position(range.end_line, range.end_col.saturating_sub(1));
-                }
+                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '{', '}', true), false);
                 return Ok(());
             }
             _ => {
