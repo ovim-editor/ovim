@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use unicode_width::UnicodeWidthChar;
+use crate::display::char_display_width;
 
 use super::helpers::expand_tabs_with_mapping;
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
@@ -325,7 +325,7 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
         .map(|s| {
             s.content
                 .chars()
-                .map(|c| c.width().unwrap_or(1))
+                .map(char_display_width)
                 .sum::<usize>()
         })
         .sum();
@@ -350,7 +350,7 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
         let mut chunk = String::new();
 
         for ch in span.content.chars() {
-            let ch_width = ch.width().unwrap_or(1);
+            let ch_width = char_display_width(ch);
 
             if current_width + ch_width > width {
                 // Flush accumulated chunk for this span
@@ -476,7 +476,7 @@ pub fn render_buffer(
             let line_text = line_text.trim_end_matches('\n');
 
             // Expand tabs to spaces for proper rendering and get byte mapping
-            let (line_text, byte_mapping) = expand_tabs_with_mapping(line_text, tab_width);
+            let (line_text, byte_mapping, control_ranges) = expand_tabs_with_mapping(line_text, tab_width);
 
             // Apply horizontal viewport slicing if nowrap is set
             let (line_text, precedes, _extends) = if !wrap {
@@ -573,6 +573,7 @@ pub fn render_buffer(
                     &search_matches,
                     &syntax_highlights,
                     &line_diagnostics,
+                    &control_ranges,
                 );
 
                 // Add diagnostic virtual text if present (only on first visual row in wrap mode)
@@ -776,7 +777,8 @@ pub fn render_buffer(
     start_line
 }
 
-/// Renders a single line with all highlighting (syntax, visual selection, search, diagnostics)
+/// Renders a single line with all highlighting (syntax, visual selection, search, diagnostics, control chars)
+#[allow(clippy::too_many_arguments)]
 pub fn render_line_with_highlights(
     theme: &Theme,
     line_text: &str,
@@ -786,6 +788,7 @@ pub fn render_line_with_highlights(
     search_matches: &[(usize, usize)],
     syntax_highlights: &[(std::ops::Range<usize>, crate::syntax::HighlightGroup)],
     diagnostics: &[&lsp_types::Diagnostic],
+    control_ranges: &[std::ops::Range<usize>],
 ) -> Line<'static> {
     let chars: Vec<char> = line_text.chars().collect();
     let mut spans = Vec::new();
@@ -860,6 +863,9 @@ pub fn render_line_with_highlights(
             }
         });
 
+        // Check if this character is in a control char range
+        let is_control = control_ranges.iter().any(|r| r.contains(&byte_idx));
+
         // Determine how many characters share the same styling
         let mut end_col = col_idx + 1;
         while end_col < chars.len() {
@@ -921,11 +927,14 @@ pub fn render_line_with_highlights(
                 }
             });
 
+            let next_is_control = control_ranges.iter().any(|r| r.contains(&next_byte_idx));
+
             // If styling changes, break
             if next_selected != is_selected
                 || next_search_match != is_search_match
                 || next_syntax_group != syntax_group
                 || next_diag_underline_color != diag_underline_color
+                || next_is_control != is_control
             {
                 break;
             }
@@ -936,11 +945,14 @@ pub fn render_line_with_highlights(
         // Build the span for this range
         let text: String = chars[col_idx..end_col].iter().collect();
 
-        // Apply styling based on priority: visual selection > search match > syntax > normal
+        // Apply styling based on priority: visual selection > search match > control char > syntax > normal
         let mut style = if is_selected {
             Style::default().bg(Color::Blue).fg(Color::White)
         } else if is_search_match {
             Style::default().bg(Color::Yellow).fg(Color::Black)
+        } else if is_control {
+            let color = crate::key_convert::convert_core_color(theme.get_color(HighlightGroup::SpecialKey));
+            Style::default().fg(color)
         } else if let Some(group) = syntax_group {
             let color = crate::key_convert::convert_core_color(theme.get_color(group));
             let mut style = Style::default().fg(color);
