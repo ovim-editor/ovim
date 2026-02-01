@@ -280,6 +280,60 @@ fn test_o_mixed_indentation() {
 }
 
 // ============================================================================
+// Trailing newline: o should not create a phantom extra line
+// ============================================================================
+
+#[test]
+fn test_o_then_dd_no_phantom_line() {
+    // Regression: 'o' on the last line created a visible phantom line because
+    // the renderer used raw_line_count (which includes Ropey's phantom empty
+    // line after a trailing newline). This test verifies the buffer state is
+    // correct after: insert text -> o -> Esc -> G -> dd -> dd
+    //
+    // Sequence: o<Esc>Gdddd on a 5-line buffer
+    // Expected: 4 lines, cursor on line 4 (the empty line)
+    let mut editor = Editor::with_content("Hello world\nFoo bar\nBar baz\n\nHello");
+
+    assert_eq!(editor.buffer().line_count(), 5);
+
+    // Move to last line
+    press_char(&mut editor, 'G');
+
+    // o - open line below (creates line 6), then Esc
+    press_char(&mut editor, 'o');
+    assert_eq!(editor.buffer().line_count(), 6);
+    press(&mut editor, KeyCode::Esc);
+
+    // G - go to last line
+    press_char(&mut editor, 'G');
+    assert_eq!(
+        editor.buffer().cursor().line(),
+        5,
+        "G should go to last real line (0-indexed: 5)"
+    );
+
+    // dd - delete line 6 (the empty line from 'o')
+    press_char(&mut editor, 'd');
+    press_char(&mut editor, 'd');
+    assert_eq!(editor.buffer().line_count(), 5);
+    // Cursor should now be on line 5 (0-indexed: 4) = "Hello"
+    assert_eq!(editor.buffer().cursor().line(), 4);
+    assert!(editor.buffer().line(4).unwrap().starts_with("Hello"));
+
+    // dd - delete "Hello"
+    press_char(&mut editor, 'd');
+    press_char(&mut editor, 'd');
+    assert_eq!(editor.buffer().line_count(), 4);
+    // Cursor should be on line 4 (0-indexed: 3) = the empty line
+    assert_eq!(
+        editor.buffer().cursor().line(),
+        3,
+        "After two dd's from end, cursor should be on line 4 (0-indexed: 3)"
+    );
+    assert_eq!(editor.buffer().line(3).unwrap(), "\n");
+}
+
+// ============================================================================
 // Redo cursor validation after o
 // ============================================================================
 
