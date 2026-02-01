@@ -65,14 +65,14 @@ impl Editor {
 
     /// Implementation of hover request
     pub(in crate::editor) async fn hover_impl(&mut self) -> Result<bool> {
-        crate::lsp_debug!("LSP-HOVER", "hover_impl() called");
+        ovim_core::lsp_debug!("LSP-HOVER", "hover_impl() called");
         let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => {
-                crate::lsp_debug!("LSP-HOVER", "LSP manager found, cloning Arc");
+                ovim_core::lsp_debug!("LSP-HOVER", "LSP manager found, cloning Arc");
                 lsp.clone()
             }
             None => {
-                crate::lsp_debug!("LSP-HOVER", "No LSP manager in hover_impl");
+                ovim_core::lsp_debug!("LSP-HOVER", "No LSP manager in hover_impl");
                 self.set_lsp_status("LSP not available".to_string());
                 return Ok(false);
             }
@@ -92,7 +92,7 @@ impl Editor {
 
         if let Some(ref cache) = self.lsp_state.hover_cache {
             if cache.is_valid(&file_path, cursor_line, cursor_col, buffer_version) {
-                crate::lsp_info!("LSP-HOVER", "Cache HIT");
+                ovim_core::lsp_info!("LSP-HOVER", "Cache HIT");
                 self.lsp_state.hover_info = Some(cache.hover_text.clone());
                 self.lsp_state.hover_scroll = 0;
                 self.lsp_state.hover_position = Some((cursor_line, cursor_col));
@@ -109,7 +109,7 @@ impl Editor {
         if let Some(crate::editor::lsp_state::PendingLspResponse::Hover(old)) =
             self.lsp_state.pending_lsp_response.take()
         {
-            crate::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
+            ovim_core::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
             old.task.abort();
         }
 
@@ -139,7 +139,7 @@ impl Editor {
             }
         };
 
-        crate::lsp_debug!(
+        ovim_core::lsp_debug!(
             "LSP-HOVER",
             "Requesting hover: file={}, line={}, col={}, char={}, uri={:?}",
             file_path,
@@ -184,7 +184,7 @@ impl Editor {
 
         // Show loading status
         self.set_lsp_status("Loading hover...".to_string());
-        crate::lsp_debug!("LSP-HOVER", "Spawned hover request, waiting for response");
+        ovim_core::lsp_debug!("LSP-HOVER", "Spawned hover request, waiting for response");
 
         // Return immediately - no blocking!
         Ok(false) // No state change yet

@@ -139,7 +139,7 @@ impl Editor {
                 match pending.receiver.try_recv() {
                     Ok(Ok(Some(hover_text))) => {
                         // Success! Set hover info and cache
-                        crate::lsp_debug!("LSP-HOVER", "Received hover response");
+                        ovim_core::lsp_debug!("LSP-HOVER", "Received hover response");
 
                         // Get current position and buffer version for caching
                         let cursor = self.buffer().cursor();
@@ -170,20 +170,20 @@ impl Editor {
                     }
                     Ok(Ok(None)) => {
                         // No hover info available
-                        crate::lsp_debug!("LSP-HOVER", "No hover info available");
+                        ovim_core::lsp_debug!("LSP-HOVER", "No hover info available");
                         self.set_lsp_status("No hover info available".to_string());
                         false
                     }
                     Ok(Err(e)) => {
                         // LSP error
-                        crate::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
+                        ovim_core::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
                         self.set_lsp_status(format!("Hover failed: {}", e));
                         false
                     }
                     Err(TryRecvError::Empty) => {
                         // Check for timeout
                         if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!(
+                            ovim_core::lsp_debug!(
                                 "LSP-HOVER",
                                 "Hover request timed out, aborting task"
                             );
@@ -199,7 +199,7 @@ impl Editor {
                     }
                     Err(TryRecvError::Closed) => {
                         // Sender dropped (shouldn't happen)
-                        crate::lsp_debug!("LSP-HOVER", "Hover request cancelled (sender dropped)");
+                        ovim_core::lsp_debug!("LSP-HOVER", "Hover request cancelled (sender dropped)");
                         self.set_lsp_status("Hover request cancelled".to_string());
                         false
                     }
@@ -236,7 +236,7 @@ impl Editor {
 
         match pending.receiver.try_recv() {
             Ok(Ok(Some(location))) => {
-                crate::lsp_debug!(log_tag, "Received {} response", label.to_lowercase());
+                ovim_core::lsp_debug!(log_tag, "Received {} response", label.to_lowercase());
 
                 let Some(path) = crate::lsp::uri_to_file_path(&location.uri) else {
                     self.set_lsp_status("Invalid file path in LSP response".to_string());
@@ -287,18 +287,18 @@ impl Editor {
                 true
             }
             Ok(Ok(None)) => {
-                crate::lsp_debug!(log_tag, "No {} found", label.to_lowercase());
+                ovim_core::lsp_debug!(log_tag, "No {} found", label.to_lowercase());
                 self.set_lsp_status(format!("No {} found", label.to_lowercase()));
                 false
             }
             Ok(Err(e)) => {
-                crate::lsp_debug!(log_tag, "{} request failed: {:?}", label, e);
+                ovim_core::lsp_debug!(log_tag, "{} request failed: {:?}", label, e);
                 self.set_lsp_status(format!("{} failed: {}", label, e));
                 false
             }
             Err(TryRecvError::Empty) => {
                 if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                    crate::lsp_debug!(log_tag, "{} request timed out, aborting task", label);
+                    ovim_core::lsp_debug!(log_tag, "{} request timed out, aborting task", label);
                     pending.task.abort();
                     self.set_lsp_status(format!("{} request timed out", label));
                     return false;
@@ -317,7 +317,7 @@ impl Editor {
                 false
             }
             Err(TryRecvError::Closed) => {
-                crate::lsp_debug!(log_tag, "{} request cancelled (sender dropped)", label);
+                ovim_core::lsp_debug!(log_tag, "{} request cancelled (sender dropped)", label);
                 self.set_lsp_status(format!("{} request cancelled", label));
                 false
             }
@@ -710,7 +710,7 @@ impl Editor {
     /// Called from the event loop to handle LSP requests asynchronously
     pub async fn process_pending_lsp_actions(&mut self) {
         if let Some(action) = self.lsp_state.pending_lsp_action.take() {
-            crate::lsp_debug!(
+            ovim_core::lsp_debug!(
                 "LSP-ACTION",
                 "process_pending_lsp_actions() - processing action: {:?}",
                 action
@@ -721,7 +721,7 @@ impl Editor {
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
                 LspAction::GoToType => self.goto_type_impl().await,
                 LspAction::ShowHover => {
-                    crate::lsp_debug!("LSP-HOVER", "About to call hover_impl()");
+                    ovim_core::lsp_debug!("LSP-HOVER", "About to call hover_impl()");
                     self.hover_impl().await
                 }
                 LspAction::Completion => self.completion_impl().await,

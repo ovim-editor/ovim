@@ -14,7 +14,7 @@ pub mod client;
 pub mod commands;
 pub mod daemon;
 pub mod editor;
-pub mod lsp;
+pub use ovim_core::lsp;
 pub mod lua;
 pub mod mcp_stdio_server;
 pub mod subcommands;

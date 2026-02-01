@@ -87,7 +87,7 @@ pub async fn initialize_hyperion_lsp_background(
     lsp_manager: Option<Arc<ovim::lsp::LspManager>>,
     file_path: PathBuf,
 ) {
-    ovim::lsp_debug!("Java", "Starting Hyperion LSP for {:?}", file_path);
+    ovim_core::lsp_debug!("Java", "Starting Hyperion LSP for {:?}", file_path);
 
     let Some(lsp_manager) = lsp_manager else {
         send_java_status("No LSP manager available".to_string());
@@ -96,14 +96,14 @@ pub async fn initialize_hyperion_lsp_background(
 
     // Find project root
     let project_root = find_jvm_project_root(&file_path);
-    ovim::lsp_debug!("Java", "Project root: {:?}", project_root);
+    ovim_core::lsp_debug!("Java", "Project root: {:?}", project_root);
 
     send_java_status("Finding Hyperion LSP...".to_string());
 
     // Find the hyperion-lsp binary
     let hyperion_bin = match find_hyperion_binary() {
         Some(bin) => {
-            ovim::lsp_debug!("Java", "Found Hyperion at {:?}", bin);
+            ovim_core::lsp_debug!("Java", "Found Hyperion at {:?}", bin);
             bin
         }
         None => {
@@ -178,7 +178,7 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
                     if let Some(uri) = uri_from_file_path(&file_path_str) {
                         let _ = lsp_manager.did_open(uri, "java", 1, content).await;
                         editor.mark_document_opened(&file_path_str);
-                        ovim::lsp_debug!("Java", "Pre-warmed didOpen for {}", file_path_str);
+                        ovim_core::lsp_debug!("Java", "Pre-warmed didOpen for {}", file_path_str);
                     }
                 }
 

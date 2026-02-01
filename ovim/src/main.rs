@@ -124,7 +124,7 @@ async fn main() -> Result<()> {
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
-            ovim::lsp_error!("API", "API server error: {}", e);
+            ovim_core::lsp_error!("API", "API server error: {}", e);
         }
     });
 
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
     let port = match port_rx.await {
         Ok(port) => port,
         Err(_) => {
-            ovim::lsp_error!("API", "Failed to receive port from API server");
+            ovim_core::lsp_error!("API", "Failed to receive port from API server");
             return Err(anyhow::anyhow!("API server port channel closed"));
         }
     };

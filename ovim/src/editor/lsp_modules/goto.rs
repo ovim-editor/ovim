@@ -74,7 +74,7 @@ impl Editor {
             }
         };
 
-        crate::lsp_debug!(
+        ovim_core::lsp_debug!(
             "LSP-REQUEST",
             "goto_definition: file={}, line={}, col={}, char={}, uri={:?}",
             file_path,
@@ -88,7 +88,7 @@ impl Editor {
         if let Some(crate::editor::lsp_state::PendingLspResponse::Definition(old)) =
             self.lsp_state.pending_lsp_response.take()
         {
-            crate::lsp_debug!(
+            ovim_core::lsp_debug!(
                 "LSP-DEFINITION",
                 "Aborting previous pending definition request"
             );
@@ -193,7 +193,7 @@ impl Editor {
         if let Some(crate::editor::lsp_state::PendingLspResponse::Implementation(old)) =
             self.lsp_state.pending_lsp_response.take()
         {
-            crate::lsp_debug!(
+            ovim_core::lsp_debug!(
                 "LSP-IMPLEMENTATION",
                 "Aborting previous pending implementation request"
             );
@@ -275,7 +275,7 @@ impl Editor {
         if let Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(old)) =
             self.lsp_state.pending_lsp_response.take()
         {
-            crate::lsp_debug!(
+            ovim_core::lsp_debug!(
                 "LSP-TYPE",
                 "Aborting previous pending type definition request"
             );

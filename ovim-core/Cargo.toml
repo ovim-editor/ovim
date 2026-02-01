@@ -27,6 +27,11 @@ git2 = "0.19"
 anyhow = "1.0"
 # session.rs
 reqwest = { version = "0.12.23", features = ["json", "blocking"] }
+# lsp/
+lsp-types = "0.97"
+dashmap = "6.0"
+tokio = { version = "1.35", features = ["full"] }
+url = "2.5"
 # metrics/
 prometheus = { version = "0.13", optional = true }
 
