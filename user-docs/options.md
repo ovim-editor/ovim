@@ -17,6 +17,31 @@ When set, the buffer content is horizontally centered with margins on both sides
 
 **Minimum value:** 20 columns (or 0 to disable)
 
+## Margin Color
+
+Controls the background color of the textwidth margin areas. By default, margins use a translucent black overlay that blends with your theme's background color.
+
+```vim
+:set margincolor=rgba(0,0,0,0.3)   " Translucent black overlay (default)
+:set margincolor=rgba(0,0,0,0.5)   " Darker translucent overlay
+:set margincolor=#1a1a1e            " Solid hex color
+:set margincolor=none               " Disable margin shading
+:set margincolor?                   " Show current value
+```
+
+**Translucent colors** (`rgba`) blend against your theme's background at render time, so they adapt automatically when you switch themes.
+
+**Solid colors** (`#rrggbb`) are used as-is regardless of theme.
+
+### Margin Padding
+
+Add extra columns of normal (unshaded) background between the text edge and the shaded margin area.
+
+```vim
+:set marginpadding=2    " 2 columns of breathing room
+:set marginpadding=0    " No padding (default)
+```
+
 ## Line Numbers
 
 ```vim
