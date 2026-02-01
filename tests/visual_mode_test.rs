@@ -977,3 +977,31 @@ fn test_visual_tilde_multi_line_single_undo() {
     test.keys("u");
     assert_eq!(test.buffer_content(), "aaa\nbbb\nccc\n");
 }
+
+#[test]
+fn test_visual_uppercase_u_undo_single_step() {
+    // VjjU then u should revert all 3 lines in one undo
+    let mut test = EditorTest::new("hello\nworld\nfoo");
+
+    test.keys("VjjU");
+    assert_eq!(test.buffer_content(), "HELLO\nWORLD\nFOO\n");
+
+    // Single undo should revert ALL lines
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello\nworld\nfoo\n");
+}
+
+#[test]
+fn test_visual_block_lowercase_u_undo_single_step() {
+    // Visual block select, lowercase u, then undo should revert in one step
+    let mut test = EditorTest::new("HELLO\nWORLD\nFOOBA");
+
+    // Enter visual block mode with Ctrl-V, then select first 3 chars of 3 lines
+    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    test.keys("jjllu");
+    assert_eq!(test.buffer_content(), "helLO\nworLD\nfooBA\n");
+
+    // Single undo should revert ALL lines
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "HELLO\nWORLD\nFOOBA\n");
+}
