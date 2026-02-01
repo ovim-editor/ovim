@@ -1954,6 +1954,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "axum",
+ "bitflags 2.9.4",
  "chardetng",
  "chrono",
  "clap",
@@ -1974,6 +1975,7 @@ dependencies = [
  "mlua",
  "nix",
  "nucleo",
+ "ovim-core",
  "prometheus",
  "proptest",
  "rand 0.8.5",
@@ -2010,6 +2012,13 @@ dependencies = [
  "unicode-width 0.1.14",
  "url",
  "which",
+]
+
+[[package]]
+name = "ovim-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.9.4",
 ]
 
 [[package]]
