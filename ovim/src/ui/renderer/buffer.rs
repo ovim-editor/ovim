@@ -19,6 +19,34 @@ use super::styles::{
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
 
+/// Converts an expanded char index to a display column.
+fn expanded_char_to_display_col(text: &str, char_idx: usize) -> usize {
+    let mut display_col = 0;
+    for (i, ch) in text.chars().enumerate() {
+        if i >= char_idx {
+            break;
+        }
+        display_col += char_display_width(ch);
+    }
+    display_col
+}
+
+/// Converts a display column to a char index within a string.
+/// If the display column falls in the middle of a wide char, returns that char's index.
+fn display_col_to_char_idx(text: &str, target_display_col: usize) -> usize {
+    let mut display_col = 0;
+    for (char_idx, ch) in text.chars().enumerate() {
+        if display_col >= target_display_col {
+            return char_idx;
+        }
+        display_col += char_display_width(ch);
+        if display_col > target_display_col {
+            return char_idx;
+        }
+    }
+    text.chars().count()
+}
+
 /// Converts a UTF-16 offset to a char index within a line of text.
 /// LSP uses UTF-16 offsets for character positions.
 fn utf16_offset_to_char_idx(text: &str, utf16_offset: usize) -> usize {
@@ -32,7 +60,8 @@ fn utf16_offset_to_char_idx(text: &str, utf16_offset: usize) -> usize {
     text.chars().count()
 }
 
-/// Slices a line for horizontal viewport with visual indicators
+/// Slices a line for horizontal viewport with visual indicators.
+/// h_offset and width are in display columns.
 /// Returns (sliced_text, precedes_indicator, extends_indicator)
 fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (String, bool, bool) {
     // Safety check: if width is 0 or too small, return empty or minimal content
@@ -40,37 +69,58 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (Stri
         return (String::new(), false, false);
     }
 
-    let chars: Vec<char> = line.chars().collect();
-    let line_len = chars.len();
+    // Calculate total display width of the line
+    let total_display_width: usize = line.chars().map(char_display_width).sum();
 
     // Line fits entirely in viewport
-    if line_len <= width {
-        return (chars.iter().collect(), false, false);
+    if total_display_width <= width {
+        return (line.to_string(), false, false);
     }
 
     let precedes = h_offset > 0;
-    let extends = h_offset + width < line_len;
+    let extends = h_offset + width < total_display_width;
 
-    let start = h_offset.min(line_len);
-    let mut end = (h_offset + width).min(line_len);
+    // Available width for actual content (reserve space for indicators)
+    let indicator_cols = (if precedes { 1 } else { 0 }) + (if extends { 1 } else { 0 });
+    let content_width = width.saturating_sub(indicator_cols);
 
     let mut result = String::new();
 
     // Add precedes indicator (<) if scrolled right
     if precedes {
         result.push('<');
-        // Take one less char to make room for indicator
-        end = (start + width - 1).min(line_len);
-        if extends {
-            end = end.saturating_sub(1); // Make room for extends indicator too
+    }
+
+    // Walk chars to find the start position (skip h_offset display columns)
+    let mut display_col = 0;
+    let mut chars = line.chars().peekable();
+
+    // Skip characters until we reach h_offset
+    while let Some(&ch) = chars.peek() {
+        let ch_width = char_display_width(ch);
+        if display_col + ch_width > h_offset {
+            break;
         }
-        result.push_str(&chars[start..end].iter().collect::<String>());
-    } else {
-        // Not scrolled right, but might need extends indicator
-        if extends {
-            end = (start + width - 1).min(line_len);
+        display_col += ch_width;
+        chars.next();
+    }
+
+    // Collect characters that fit within content_width display columns
+    let mut content_display_width = 0;
+    while let Some(&ch) = chars.peek() {
+        let ch_width = char_display_width(ch);
+        if content_display_width + ch_width > content_width {
+            break;
         }
-        result.push_str(&chars[start..end].iter().collect::<String>());
+        result.push(ch);
+        content_display_width += ch_width;
+        chars.next();
+    }
+
+    // Pad if a wide char didn't fit exactly
+    while content_display_width < content_width {
+        result.push(' ');
+        content_display_width += 1;
     }
 
     // Add extends indicator (>) if content continues right
@@ -81,32 +131,96 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (Stri
     (result, precedes, extends)
 }
 
-/// Shifts syntax highlight ranges for horizontal viewport
+/// Shifts syntax highlight ranges for horizontal viewport.
+/// Highlights are in expanded byte ranges; h_offset and width are in display columns.
+/// Returns byte ranges into the sliced text.
 fn shift_highlights_for_viewport(
     highlights: &[(Range<usize>, HighlightGroup)],
+    expanded_text: &str,
+    sliced_text: &str,
     h_offset: usize,
     width: usize,
     precedes: bool,
 ) -> Vec<(Range<usize>, HighlightGroup)> {
     let offset_adjustment = if precedes { 1 } else { 0 }; // Account for '<' indicator
 
+    // Build a byte-offset-to-display-column mapping for the expanded text
+    let byte_to_display: Vec<usize> = {
+        let mut mapping = Vec::with_capacity(expanded_text.len() + 1);
+        let mut display_col = 0;
+        for (byte_idx, ch) in expanded_text.char_indices() {
+            while mapping.len() <= byte_idx {
+                mapping.push(display_col);
+            }
+            display_col += char_display_width(ch);
+        }
+        while mapping.len() <= expanded_text.len() {
+            mapping.push(display_col);
+        }
+        mapping
+    };
+
+    // Build display-column-to-byte-offset mapping for the sliced text
+    let sliced_display_to_byte: Vec<usize> = {
+        let mut mapping = Vec::new();
+        let mut display_col = 0;
+        for (byte_idx, ch) in sliced_text.char_indices() {
+            let ch_width = char_display_width(ch);
+            for _ in 0..ch_width {
+                mapping.push(byte_idx);
+            }
+            display_col += ch_width;
+        }
+        mapping.push(sliced_text.len()); // sentinel
+        mapping
+    };
+
+    let viewport_end = h_offset + width;
+
     highlights
         .iter()
         .filter_map(|(range, group)| {
+            let start_display = if range.start < byte_to_display.len() {
+                byte_to_display[range.start]
+            } else {
+                *byte_to_display.last().unwrap_or(&0)
+            };
+            let end_display = if range.end < byte_to_display.len() {
+                byte_to_display[range.end]
+            } else {
+                *byte_to_display.last().unwrap_or(&0)
+            };
+
             // Highlight is completely before viewport
-            if range.end <= h_offset {
+            if end_display <= h_offset {
                 return None;
             }
             // Highlight is completely after viewport
-            if range.start >= h_offset + width {
+            if start_display >= viewport_end {
                 return None;
             }
 
-            // Clip highlight range to viewport and shift to screen coordinates
-            let start = range.start.saturating_sub(h_offset).max(0) + offset_adjustment;
-            let end = (range.end.saturating_sub(h_offset)).min(width) + offset_adjustment;
+            // Clip to viewport display columns
+            let clipped_start = start_display.saturating_sub(h_offset) + offset_adjustment;
+            let clipped_end = end_display.saturating_sub(h_offset).min(width) + offset_adjustment;
 
-            Some((start..end, *group))
+            // Convert viewport display columns to byte offsets in sliced text
+            let byte_start = if clipped_start < sliced_display_to_byte.len() {
+                sliced_display_to_byte[clipped_start]
+            } else {
+                sliced_text.len()
+            };
+            let byte_end = if clipped_end < sliced_display_to_byte.len() {
+                sliced_display_to_byte[clipped_end]
+            } else {
+                sliced_text.len()
+            };
+
+            if byte_start < byte_end {
+                Some((byte_start..byte_end, *group))
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -491,6 +605,9 @@ pub fn render_buffer(
             // Expand tabs to spaces for proper rendering and get byte mapping
             let (line_text, byte_mapping, control_ranges, char_mapping) = expand_tabs_with_mapping(line_text_original, tab_width);
 
+            // Keep a reference to expanded text before slicing (for highlight remapping)
+            let expanded_text = line_text.clone();
+
             // Apply horizontal viewport slicing if nowrap is set
             let (line_text, precedes, _extends) = if !wrap {
                 slice_horizontal_viewport(&line_text, h_offset, text_width)
@@ -506,6 +623,8 @@ pub fn render_buffer(
             if !wrap {
                 syntax_highlights = shift_highlights_for_viewport(
                     &syntax_highlights,
+                    &expanded_text,
+                    &line_text,
                     h_offset,
                     text_width,
                     precedes,
@@ -535,6 +654,23 @@ pub fn render_buffer(
                 ((sl, sc), (el, ec))
             });
 
+            // Adjust visual selection for horizontal viewport if nowrap
+            let remapped_visual_selection = if !wrap {
+                remapped_visual_selection.map(|((sl, sc), (el, ec))| {
+                    let adjust = |expanded_char_col: usize| -> usize {
+                        let display_col = expanded_char_to_display_col(&expanded_text, expanded_char_col);
+                        let viewport_display_col = display_col.saturating_sub(h_offset);
+                        let offset_adjustment = if precedes { 1 } else { 0 };
+                        display_col_to_char_idx(&line_text, viewport_display_col + offset_adjustment)
+                    };
+                    let sc = if line_idx == sl { adjust(sc) } else { sc };
+                    let ec = if line_idx == el { adjust(ec) } else { ec };
+                    ((sl, sc), (el, ec))
+                })
+            } else {
+                remapped_visual_selection
+            };
+
             // Check if this line has a bracket to highlight (remap through char_mapping)
             let bracket_col = bracket_positions.and_then(|((l1, c1), (l2, c2))| {
                 if line_idx == l1 {
@@ -548,11 +684,16 @@ pub fn render_buffer(
 
             // Adjust bracket column for horizontal viewport if nowrap
             let bracket_col = if !wrap {
-                bracket_col.and_then(|col| {
+                bracket_col.and_then(|expanded_char_col| {
+                    // Convert expanded char index to display column
+                    let display_col = expanded_char_to_display_col(&expanded_text, expanded_char_col);
                     // Check if bracket is in visible horizontal range
-                    if col >= h_offset && col < h_offset + text_width {
+                    if display_col >= h_offset && display_col < h_offset + text_width {
+                        // Convert to char index in the sliced text
+                        let viewport_display_col = display_col - h_offset;
                         let offset_adjustment = if precedes { 1 } else { 0 };
-                        Some(col - h_offset + offset_adjustment)
+                        let sliced_char_idx = display_col_to_char_idx(&line_text, viewport_display_col + offset_adjustment);
+                        Some(sliced_char_idx)
                     } else {
                         None // Bracket is outside viewport
                     }
@@ -564,7 +705,7 @@ pub fn render_buffer(
             // Get diagnostics for this line and remap their ranges to expanded char indices
             let line_diagnostics = editor.diagnostics_for_line(line_idx);
             let has_diagnostics = !line_diagnostics.is_empty();
-            let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics.iter().map(|d| {
+            let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics.iter().filter_map(|d| {
                 // Convert UTF-16 offsets to char indices, then remap through expansion
                 let start_char = utf16_offset_to_char_idx(line_text_original, d.range.start.character as usize);
                 let end_char = utf16_offset_to_char_idx(line_text_original, d.range.end.character as usize);
@@ -575,10 +716,23 @@ pub fn render_buffer(
                     Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
                     _ => Color::Red,
                 };
-                RemappedDiagnostic {
-                    start: remap_char_col(start_char, &char_mapping),
-                    end: remap_char_col(end_char, &char_mapping),
-                    color,
+                let expanded_start = remap_char_col(start_char, &char_mapping);
+                let expanded_end = remap_char_col(end_char, &char_mapping);
+
+                // Adjust for horizontal viewport in nowrap mode
+                if !wrap {
+                    let start_display = expanded_char_to_display_col(&expanded_text, expanded_start);
+                    let end_display = expanded_char_to_display_col(&expanded_text, expanded_end);
+                    // Skip if entirely outside viewport
+                    if end_display <= h_offset || start_display >= h_offset + text_width {
+                        return None;
+                    }
+                    let offset_adj = if precedes { 1 } else { 0 };
+                    let sliced_start = display_col_to_char_idx(&line_text, start_display.saturating_sub(h_offset) + offset_adj);
+                    let sliced_end = display_col_to_char_idx(&line_text, end_display.saturating_sub(h_offset) + offset_adj);
+                    Some(RemappedDiagnostic { start: sliced_start, end: sliced_end, color })
+                } else {
+                    Some(RemappedDiagnostic { start: expanded_start, end: expanded_end, color })
                 }
             }).collect();
 
