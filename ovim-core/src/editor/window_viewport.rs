@@ -345,11 +345,18 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
+        // Convert char column to display column for proper horizontal scrolling
         let cursor_col = self.buffer().cursor().col();
+        let cursor_line = self.buffer().cursor().line();
+        let tab_width = self.options.tab_width;
+        let cursor_display_col = {
+            let line_text = self.buffer().line(cursor_line).unwrap_or_default();
+            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width)
+        };
 
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
-                window.set_horizontal_offset(cursor_col);
+                window.set_horizontal_offset(cursor_display_col);
             }
         }
 
@@ -363,12 +370,19 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
+        // Convert char column to display column for proper horizontal scrolling
         let cursor_col = self.buffer().cursor().col();
+        let cursor_line = self.buffer().cursor().line();
+        let tab_width = self.options.tab_width;
+        let cursor_display_col = {
+            let line_text = self.buffer().line(cursor_line).unwrap_or_default();
+            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width)
+        };
 
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 let width = window.width() as usize;
-                let new_offset = cursor_col.saturating_sub(width.saturating_sub(1));
+                let new_offset = cursor_display_col.saturating_sub(width.saturating_sub(1));
                 window.set_horizontal_offset(new_offset);
             }
         }

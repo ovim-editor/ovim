@@ -819,7 +819,14 @@ impl Editor {
         self.viewport.scroll_offset = new_offset;
 
         // Extract cursor column and options before mutably borrowing window_manager
+        // Convert char column to display column for proper horizontal scrolling
         let cursor_col = self.buffer().cursor().col();
+        let cursor_line = self.buffer().cursor().line();
+        let tab_width = self.options.tab_width;
+        let cursor_display_col = {
+            let line_text = self.buffer().line(cursor_line).unwrap_or_default();
+            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width)
+        };
         let wrap = self.options.wrap;
         let sidescroll = self.options.sidescroll;
         let sidescrolloff = self.options.sidescrolloff;
@@ -830,7 +837,7 @@ impl Editor {
 
                 // Update horizontal scroll offset to keep cursor visible horizontally
                 if window.ensure_cursor_visible_horizontal(
-                    cursor_col,
+                    cursor_display_col,
                     wrap,
                     sidescroll,
                     sidescrolloff,
