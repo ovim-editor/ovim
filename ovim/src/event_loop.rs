@@ -1,5 +1,6 @@
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, EventStream};
+use futures::StreamExt;
 use ovim::key_convert::{convert_key_event, convert_mouse_event};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -253,6 +254,42 @@ pub async fn run_headless_loop(
     Ok(())
 }
 
+/// Process a batch of terminal input events.
+/// Returns true if any events were edit-related (for debounce tracking).
+fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool> {
+    let mut had_edit = false;
+    for event in events {
+        match event {
+            Event::Key(key_event) => {
+                let key = convert_key_event(key_event);
+                InputHandler::handle_key_event_no_dirty(editor, key)?;
+                had_edit = true;
+            }
+            Event::Paste(text) => {
+                editor.handle_paste_event(&text)?;
+                had_edit = true;
+            }
+            Event::Resize(_, _) => {
+                editor.startle_cat();
+            }
+            Event::FocusGained => {
+                if let Ok(true) = editor.buffer_mut().reload_if_changed_sync() {
+                    if editor.buffer().needs_rehighlight() {
+                        editor.process_viewport_rehighlight();
+                    }
+                }
+            }
+            Event::Mouse(mouse_event) => {
+                let mouse = convert_mouse_event(mouse_event);
+                handle_mouse_event(editor, mouse)?;
+                had_edit = true;
+            }
+            _ => {}
+        }
+    }
+    Ok(had_edit)
+}
+
 /// TUI event loop (optionally with API).
 pub async fn run_event_loop(
     ui: &mut UI,
@@ -263,28 +300,88 @@ pub async fn run_event_loop(
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(200);
     let mut last_input_time: Option<Instant> = None;
-    let mut skip_render = false;
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
 
+    let mut event_stream = EventStream::new();
+    let mut tick_interval = interval(Duration::from_millis(16));
+    tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     while !editor.should_quit() {
-        process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
+        // Wait for input, API request, or tick — input has priority via `biased`
+        tokio::select! {
+            biased;
 
-        // Drain pending picker results
-        process_picker_results(editor, &mut preview_rx, &mut file_rx);
+            // Terminal input (highest priority)
+            maybe_event = event_stream.next() => {
+                if let Some(Ok(first_event)) = maybe_event {
+                    last_input_time = Some(Instant::now());
 
-        // Tick dashboard cat animation
-        if editor.tick_cat_animation() {
-            editor.mark_dirty();
+                    // Batch: collect first event + drain all queued events
+                    let mut events = vec![first_event];
+                    while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                        if let Ok(ev) = event::read() {
+                            events.push(ev);
+                        }
+                    }
+
+                    let had_edit = process_input_events(editor, events)?;
+                    if had_edit {
+                        last_edit = Instant::now();
+                    }
+
+                    // Mark dirty ONCE after all events processed
+                    editor.mark_dirty();
+
+                    // Immediate viewport rehighlight
+                    if editor.buffer().needs_rehighlight() {
+                        editor.process_viewport_rehighlight();
+                    }
+
+                    // Immediately process LSP actions triggered by input
+                    if !editor.has_pending_lsp_response() {
+                        editor.process_pending_lsp_actions().await;
+                    }
+
+                    // If more input queued, skip render to keep input flowing
+                    if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+                        continue;
+                    }
+                }
+            }
+
+            // API requests
+            Some(request) = async {
+                if let Some(ref mut rx) = api_rx { rx.recv().await } else { std::future::pending().await }
+            } => {
+                let dummy_start = SystemTime::now();
+                let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".into())));
+                handle_api_request(editor, request, dummy_start, &dummy_session).await;
+                // Drain remaining queued API requests
+                if let Some(ref mut rx) = api_rx {
+                    while let Ok(req) = rx.try_recv() {
+                        handle_api_request(editor, req, dummy_start, &dummy_session).await;
+                    }
+                }
+            }
+
+            // Tick timer — background work (LSP, picker, animations)
+            _ = tick_interval.tick() => {
+                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
+                process_picker_results(editor, &mut preview_rx, &mut file_rx);
+
+                if editor.tick_cat_animation() {
+                    editor.mark_dirty();
+                }
+                if editor.tick_yank_flash() {
+                    editor.mark_dirty();
+                }
+            }
         }
 
-        // Tick yank flash (clears after ~150ms)
-        if editor.tick_yank_flash() {
-            editor.mark_dirty();
-        }
-
-        if editor.is_dirty() && !skip_render {
+        // Render after any select branch (if dirty)
+        if editor.is_dirty() {
             let start = Instant::now();
             ui.renderer_mut().render(editor)?;
             editor.record_render_duration(start.elapsed().as_micros() as u64);
@@ -294,95 +391,13 @@ pub async fn run_event_loop(
                 editor.record_input_latency(input_time.elapsed().as_micros() as u64);
             }
         }
-        skip_render = false;
 
-        if let Some(ref mut rx) = api_rx {
-            while let Ok(request) = rx.try_recv() {
-                let dummy_start = SystemTime::now();
-                let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".into())));
-                handle_api_request(editor, request, dummy_start, &dummy_session).await;
-            }
-        }
-
-        // Batch all pending events before rendering (improves paste performance)
-        let events = {
-            let mut evts = Vec::new();
-            if event::poll(std::time::Duration::from_millis(16))? {
-                evts.push(event::read()?);
-                while event::poll(std::time::Duration::from_millis(0))? {
-                    evts.push(event::read()?);
-                }
-            }
-            evts
-        };
-
-        if !events.is_empty() {
-            last_input_time = Some(Instant::now());
-
-            for event in events {
-                match event {
-                    Event::Key(key_event) => {
-                        let key = convert_key_event(key_event);
-                        InputHandler::handle_key_event_no_dirty(editor, key)?;
-                        last_edit = Instant::now();
-                    }
-                    Event::Paste(text) => {
-                        editor.handle_paste_event(&text)?;
-                        last_edit = Instant::now();
-                    }
-                    Event::Resize(_, _) => {
-                        // Terminal was resized - handled by dirty flag below
-                        // Startle the dashboard cat if it's on the logo
-                        editor.startle_cat();
-                    }
-                    Event::FocusGained => {
-                        // Auto-reload file if changed externally while terminal was unfocused
-                        if let Ok(true) = editor.buffer_mut().reload_if_changed_sync() {
-                            // File was reloaded - trigger rehighlight
-                            if editor.buffer().needs_rehighlight() {
-                                editor.process_viewport_rehighlight();
-                            }
-                        }
-                    }
-                    Event::Mouse(mouse_event) => {
-                        let mouse = convert_mouse_event(mouse_event);
-                        handle_mouse_event(editor, mouse)?;
-                        last_edit = Instant::now();
-                    }
-                    _ => {
-                        // Ignore other events (focus lost, etc.)
-                    }
-                }
-            }
-
-            // Mark dirty ONCE after all events processed
-            editor.mark_dirty();
-
-            // Immediate viewport rehighlight for accurate visible highlights (no debounce)
-            if editor.buffer().needs_rehighlight() {
-                editor.process_viewport_rehighlight();
-            }
-
-            // Immediately process any LSP actions triggered by input (don't wait for tick)
-            // This makes hover/goto/completion feel much snappier
-            if !editor.has_pending_lsp_response() {
-                editor.process_pending_lsp_actions().await;
-            }
-
-            // If more input is already queued, skip the next render frame
-            // so keystrokes flow through without delay
-            if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-                skip_render = true;
-            }
-        }
-
+        // Debounced rehighlight
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
             editor.process_pending_rehighlight().await;
         }
 
         editor.send_lsp_close_if_needed().await;
-
-        tokio::task::yield_now().await;
     }
 
     editor.close_current_file_lsp().await;
