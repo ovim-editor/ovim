@@ -18,6 +18,7 @@ use super::dashboard::render_dashboard;
 use super::file_tree_widget::render_file_tree;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
+use super::line_cache::LineRenderCache;
 use super::overlays::{render_completion_menu, render_hover_window};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
@@ -142,6 +143,7 @@ fn render_buffer_area(
     editor: &mut Editor,
     theme: &Theme,
     areas: &FrameAreas,
+    line_cache: &mut LineRenderCache,
 ) -> (usize, BufferLayout) {
     let has_splits = editor
         .window_manager()
@@ -168,16 +170,17 @@ fn render_buffer_area(
                 areas.buffer_chunk,
                 focused_index,
                 &mut current_index,
+                line_cache,
             ) {
                 (vs, ly)
             } else {
                 let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-                let viewport_start = render_buffer(frame, editor, theme, &fallback_layout);
+                let viewport_start = render_buffer(frame, editor, theme, &fallback_layout, line_cache);
                 (viewport_start, fallback_layout)
             }
         } else {
             let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-            let viewport_start = render_buffer(frame, editor, theme, &fallback_layout);
+            let viewport_start = render_buffer(frame, editor, theme, &fallback_layout, line_cache);
             (viewport_start, fallback_layout)
         }
     } else {
@@ -236,7 +239,7 @@ fn render_buffer_area(
             editor.ensure_wrap_map(single_layout.text_width);
         }
 
-        let viewport_start = render_buffer(frame, editor, theme, &single_layout);
+        let viewport_start = render_buffer(frame, editor, theme, &single_layout, line_cache);
         (viewport_start, single_layout)
     }
 }
@@ -464,6 +467,7 @@ fn render_window_tree(
     area: Rect,
     focused_index: usize,
     current_index: &mut usize,
+    line_cache: &mut LineRenderCache,
 ) -> Option<(usize, BufferLayout)> {
     match node {
         WindowNode::Leaf(_window) => {
@@ -471,7 +475,7 @@ fn render_window_tree(
             *current_index += 1;
 
             let layout = BufferLayout::compute(editor, area);
-            let viewport_start = render_buffer(frame, editor, theme, &layout);
+            let viewport_start = render_buffer(frame, editor, theme, &layout, line_cache);
 
             if is_focused {
                 Some((viewport_start, layout))
@@ -548,6 +552,7 @@ fn render_window_tree(
                 first_area,
                 focused_index,
                 current_index,
+                line_cache,
             );
             let second_result = render_window_tree(
                 frame,
@@ -557,6 +562,7 @@ fn render_window_tree(
                 second_area,
                 focused_index,
                 current_index,
+                line_cache,
             );
 
             first_result.or(second_result)
@@ -602,6 +608,8 @@ pub struct Renderer {
     /// Reserved for future theme application
     #[allow(dead_code)]
     theme: Theme,
+    /// Per-line render cache to avoid recomputing unchanged lines
+    line_cache: LineRenderCache,
 }
 
 impl Default for Renderer {
@@ -618,11 +626,12 @@ impl Renderer {
         Self {
             terminal,
             theme: Theme::default(),
+            line_cache: LineRenderCache::new(),
         }
     }
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
-    pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor) {
+    pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor, line_cache: &mut LineRenderCache) {
         clear_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {
@@ -649,7 +658,7 @@ impl Renderer {
         }
 
         // Render buffer content
-        let (viewport_start, layout) = render_buffer_area(frame, editor, &theme, &areas);
+        let (viewport_start, layout) = render_buffer_area(frame, editor, &theme, &areas, line_cache);
 
         // Update viewport dimensions and cache layout for mouse coordinate conversion
         editor.set_viewport_height(layout.buffer_area.height as usize);
@@ -699,9 +708,12 @@ impl Renderer {
 
         self.terminal.autoresize()?;
 
+        // Take the line cache out to avoid borrow conflict with terminal.draw()
+        let mut line_cache = std::mem::take(&mut self.line_cache);
         self.terminal.draw(|frame| {
-            Self::render_to_frame(frame, editor);
+            Self::render_to_frame(frame, editor, &mut line_cache);
         })?;
+        self.line_cache = line_cache;
 
         use std::io::Write;
         io::stdout().flush()?;
