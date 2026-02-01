@@ -1013,7 +1013,7 @@ pub fn save_and_clear_visual(editor: &mut Editor) {
     editor.clear_visual_start();
 }
 
-/// Transform visual selection text using the given function (shared by uppercase/lowercase)
+/// Transform visual selection text using the given function (shared by uppercase/lowercase/toggle case)
 fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String) -> Result<()> {
     let mode = editor.mode();
     let cursor_before = (
@@ -1024,6 +1024,8 @@ fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String
     let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() else {
         return Ok(());
     };
+
+    let mut all_changes = Vec::new();
 
     match mode {
         Mode::VisualLine => {
@@ -1040,19 +1042,13 @@ fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String
                         .buffer_mut()
                         .insert_text_at(line_idx, 0, &transformed);
 
-                    let change = Change::composite(
-                        vec![
-                            Change::delete(
-                                Range::new((line_idx, 0), (line_idx, char_count)),
-                                line_text.to_string(),
-                                cursor_before,
-                            ),
-                            Change::insert((line_idx, 0), transformed, cursor_before),
-                        ],
+                    all_changes.push(Change::delete(
+                        Range::new((line_idx, 0), (line_idx, char_count)),
+                        line_text.to_string(),
                         cursor_before,
-                        cursor_before,
-                    );
-                    editor.add_change(change);
+                    ));
+                    all_changes
+                        .push(Change::insert((line_idx, 0), transformed, cursor_before));
                 }
             }
         }
@@ -1072,19 +1068,16 @@ fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String
                             .buffer_mut()
                             .insert_text_at(line_idx, line_start, &transformed);
 
-                        let change = Change::composite(
-                            vec![
-                                Change::delete(
-                                    Range::new((line_idx, line_start), (line_idx, line_end)),
-                                    deleted,
-                                    cursor_before,
-                                ),
-                                Change::insert((line_idx, line_start), transformed, cursor_before),
-                            ],
+                        all_changes.push(Change::delete(
+                            Range::new((line_idx, line_start), (line_idx, line_end)),
+                            deleted,
                             cursor_before,
+                        ));
+                        all_changes.push(Change::insert(
+                            (line_idx, line_start),
+                            transformed,
                             cursor_before,
-                        );
-                        editor.add_change(change);
+                        ));
                     }
                 }
             }
@@ -1100,19 +1093,24 @@ fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String
                 .buffer_mut()
                 .insert_text_at(start_line, start_col, &transformed);
 
-            let change = Change::composite(
-                vec![
-                    Change::delete(
-                        Range::new((start_line, start_col), (end_line, end_col + 1)),
-                        deleted,
-                        cursor_before,
-                    ),
-                    Change::insert((start_line, start_col), transformed, cursor_before),
-                ],
+            all_changes.push(Change::delete(
+                Range::new((start_line, start_col), (end_line, end_col + 1)),
+                deleted,
                 cursor_before,
+            ));
+            all_changes.push(Change::insert(
+                (start_line, start_col),
+                transformed,
                 cursor_before,
-            );
-            editor.add_change(change);
+            ));
+        }
+    }
+
+    if !all_changes.is_empty() {
+        if all_changes.len() == 1 {
+            editor.add_change(all_changes.remove(0));
+        } else {
+            editor.add_change(Change::composite(all_changes, cursor_before, cursor_before));
         }
     }
 
@@ -1127,6 +1125,21 @@ pub fn uppercase_visual_selection(editor: &mut Editor) -> Result<()> {
 /// Convert visual selection to lowercase
 pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
     transform_visual_selection(editor, |s| s.to_lowercase())
+}
+
+/// Toggle case of visual selection (~)
+pub fn toggle_case_visual_selection(editor: &mut Editor) -> Result<()> {
+    transform_visual_selection(editor, |s| {
+        s.chars()
+            .map(|ch| {
+                if ch.is_uppercase() {
+                    ch.to_lowercase().to_string()
+                } else {
+                    ch.to_uppercase().to_string()
+                }
+            })
+            .collect()
+    })
 }
 
 /// Extracts the word under the cursor
