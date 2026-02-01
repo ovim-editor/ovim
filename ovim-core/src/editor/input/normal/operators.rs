@@ -746,25 +746,16 @@ fn handle_dd(editor: &mut Editor, count: usize) -> Result<()> {
     let line_count = editor.buffer().line_count();
     let end_line = (start_line + count).min(line_count);
 
-    let (delete_start_line, delete_start_col) = if end_line >= line_count && start_line > 0 {
-        if let Some(prev_line) = editor.buffer().line(start_line - 1) {
-            let prev_line_text = prev_line.trim_end_matches('\n');
-            let prev_line_len = prev_line_text.chars().count();
-            (start_line - 1, prev_line_len)
-        } else {
-            (start_line, 0)
-        }
-    } else {
-        (start_line, 0)
-    };
-
-    let start_pos = (delete_start_line, delete_start_col);
+    // Delete from start of first line to start of line after last.
+    // When end_line >= line_count, delete_range handles it by deleting to
+    // end of buffer — which correctly removes the trailing newline.
+    // No special last-line case needed since the buffer always has a trailing newline.
+    let start_pos = (start_line, 0);
     let end_pos = (end_line, 0);
 
-    let deleted =
-        editor
-            .buffer_mut()
-            .delete_range(delete_start_line, delete_start_col, end_line, 0);
+    let deleted = editor
+        .buffer_mut()
+        .delete_range(start_line, 0, end_line, 0);
     let range = Range::new(start_pos, end_pos);
     let change = Change::delete(range, deleted.clone(), cursor_before);
 
