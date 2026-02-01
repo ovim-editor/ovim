@@ -143,8 +143,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                             editor.add_change(composite);
                         }
                     }
-                    editor.clear_visual_start();
-                    editor.set_mode(Mode::Normal);
+                    helpers::exit_visual_mode_to_normal(editor);
                     return Ok(());
                 }
             }
