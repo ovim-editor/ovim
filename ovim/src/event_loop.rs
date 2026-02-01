@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::Event;
+use crossterm::event::{self, Event};
 use ovim::key_convert::{convert_key_event, convert_mouse_event};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -305,7 +305,16 @@ pub async fn run_event_loop(
         }
 
         // Batch all pending events before rendering (improves paste performance)
-        let events = InputHandler::poll_all_events()?;
+        let events = {
+            let mut evts = Vec::new();
+            if event::poll(std::time::Duration::from_millis(16))? {
+                evts.push(event::read()?);
+                while event::poll(std::time::Duration::from_millis(0))? {
+                    evts.push(event::read()?);
+                }
+            }
+            evts
+        };
 
         if !events.is_empty() {
             last_input_time = Some(Instant::now());
@@ -503,7 +512,7 @@ async fn handle_api_request(
             }));
         }
         ApiRequest::ExecuteCommand(command, tx) => {
-            let response = commands::execute_command(editor, &command);
+            let response: ApiResponse = commands::execute_command(editor, &command).into();
             let _ = tx.send(response);
         }
         ApiRequest::GetRender(tx) => {

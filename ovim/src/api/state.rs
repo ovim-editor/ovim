@@ -208,65 +208,10 @@ pub struct ContextWindowInfo {
     pub column: usize,
 }
 
-/// Document outline information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutlineInfo {
-    pub file: Option<String>,
-    pub symbols: Vec<OutlineSymbol>,
-    pub source: String,
-    pub symbol_count: usize,
-}
-
-/// A symbol in the document outline
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutlineSymbol {
-    pub name: String,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub children: Vec<OutlineSymbol>,
-}
-
-/// Workspace symbol search results
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SymbolSearchInfo {
-    pub query: String,
-    pub results: Vec<SymbolSearchResult>,
-    pub result_count: usize,
-    pub source: String,
-}
-
-/// A single workspace symbol search result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SymbolSearchResult {
-    pub name: String,
-    pub kind: String,
-    pub file: String,
-    pub line: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<String>,
-}
-
-/// Call hierarchy trace information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraceInfo {
-    pub target: Option<TraceNode>,
-    pub incoming: Vec<TraceNode>,
-    pub outgoing: Vec<TraceNode>,
-}
-
-/// A node in the call hierarchy trace
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraceNode {
-    pub name: String,
-    pub kind: String,
-    pub file: String,
-    pub line: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
+// Re-export navigation types from ovim-core
+pub use ovim_core::navigation_types::{
+    OutlineInfo, OutlineSymbol, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode,
+};
 
 /// Diagnostics information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,20 +266,16 @@ pub struct VisualSelection {
     pub end: CursorPosition,
 }
 
-/// Success response
-#[derive(Debug, Clone, Serialize)]
-pub struct SuccessResponse {
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_count: Option<usize>,
-}
+// Re-export from ovim-core
+pub use ovim_core::command_result::{SuccessResponse, ErrorResponse};
 
-/// Error response
-#[derive(Debug, Clone, Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
+impl From<ovim_core::CommandResult> for ApiResponse {
+    fn from(cr: ovim_core::CommandResult) -> Self {
+        match cr {
+            ovim_core::CommandResult::Success(s) => ApiResponse::Success(s),
+            ovim_core::CommandResult::Error(e) => ApiResponse::Error(e),
+        }
+    }
 }
 
 /// Shared API state

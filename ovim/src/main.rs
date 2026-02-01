@@ -78,6 +78,8 @@ async fn main() -> Result<()> {
         // No file specified, start with empty buffer (dashboard will show)
         Editor::new()
     };
+    // Set up cat animation (concrete type lives in binary crate)
+    editor.ui_panels.cat_animation = Some(Box::new(ovim::ui::CatAnimation::new()));
 
     // Handle --render flag (render to ANSI and exit)
     // This path outputs to stdout and never starts the TUI, so print! is safe

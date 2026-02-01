@@ -496,3 +496,18 @@ impl CatAnimation {
         (area.y + area.height).saturating_sub(2)
     }
 }
+
+impl ovim_core::dashboard::DashboardAnimation for CatAnimation {
+    fn tick(&mut self) -> bool {
+        CatAnimation::tick(self)
+    }
+    fn is_active(&self) -> bool {
+        CatAnimation::is_active(self)
+    }
+    fn startle(&mut self) {
+        CatAnimation::startle(self)
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}

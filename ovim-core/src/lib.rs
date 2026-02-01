@@ -17,8 +17,18 @@ pub mod change;
 pub mod search;
 pub mod textobjects;
 pub mod buffer;
+pub mod dashboard;
+pub mod command_result;
+pub mod navigation_types;
+#[cfg(feature = "lua")]
+pub mod lua;
+pub mod editor;
+pub mod commands;
 
 pub use key::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use rect::Rect;
 pub use git::{GitStatus, LineStatus};
 pub use mode::Mode;
+pub use command_result::{CommandResult, SuccessResponse, ErrorResponse};
+pub use dashboard::{DashboardAnimation, MENU_ITEMS};
+pub use navigation_types::{OutlineInfo, OutlineSymbol, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode};
