@@ -195,7 +195,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let disp_col =
                     crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
 
-                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col);
+                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col, &line_text);
                 let target_row = visual_row + count;
                 let (new_line, sub_line) = wrap_map.visual_to_logical(
                     target_row.min(wrap_map.total_visual_lines().saturating_sub(1)),
@@ -244,7 +244,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let disp_col =
                     crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
 
-                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col);
+                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col, &line_text);
                 let target_row = visual_row.saturating_sub(count);
                 let (new_line, sub_line) = wrap_map.visual_to_logical(target_row);
                 let target_disp_col =

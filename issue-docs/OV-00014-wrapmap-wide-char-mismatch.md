@@ -1,6 +1,6 @@
 # OV-00014: WrapMap compute_visual_lines disagrees with renderer for wide chars
 
-**Status:** Pending | **Priority:** HIGH | **Complexity:** Medium
+**Status:** Fixed | **Priority:** HIGH | **Complexity:** Medium
 
 ## Problem
 
