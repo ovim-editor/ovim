@@ -1073,10 +1073,6 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 return Ok(());
             }
         }
-        _ => {
-            // Other response types from commands module - just ignore
-            return Ok(());
-        }
     }
 
     // If we reach here, it's an unknown command - try custom input-specific handling

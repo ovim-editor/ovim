@@ -1394,7 +1394,7 @@ pub fn yank_word(buffer: &mut crate::buffer::Buffer, count: usize) -> anyhow::Re
     crate::editor::Motions::word_forward(buffer, count);
 
     let end_cursor = buffer.cursor();
-    let mut end_line = end_cursor.line();
+    let end_line = end_cursor.line();
     let mut end_col = end_cursor.col();
 
     // When the motion didn't move (last word on last line), yank to end of line
