@@ -1014,7 +1014,7 @@ pub fn save_and_clear_visual(editor: &mut Editor) {
 }
 
 /// Transform visual selection text using the given function (shared by uppercase/lowercase/toggle case)
-fn transform_visual_selection(editor: &mut Editor, transform: fn(&str) -> String) -> Result<()> {
+fn transform_visual_selection(editor: &mut Editor, transform: impl Fn(&str) -> String) -> Result<()> {
     let mode = editor.mode();
     let cursor_before = (
         editor.buffer().cursor().line(),
@@ -1125,6 +1125,12 @@ pub fn uppercase_visual_selection(editor: &mut Editor) -> Result<()> {
 /// Convert visual selection to lowercase
 pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
     transform_visual_selection(editor, |s| s.to_lowercase())
+}
+
+/// Replace all characters in visual selection with a given character
+pub fn replace_visual_selection(editor: &mut Editor, ch: char) -> Result<()> {
+    let replacement = ch.to_string();
+    transform_visual_selection(editor, |s| replacement.repeat(s.chars().count()))
 }
 
 /// Toggle case of visual selection (~)

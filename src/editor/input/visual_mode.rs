@@ -8,7 +8,7 @@
 //! - Visual mode commands (o to swap cursor, gv to reselect)
 //! - Visual mode search (/ and ?)
 
-use crate::editor::{Change, Editor, Motions, Range, TextObjectRange, TextObjects};
+use crate::editor::{Editor, Motions, TextObjectRange, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -83,66 +83,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             ('r', KeyCode::Char(ch)) => {
                 // r{char} in visual block - replace all characters in selection with ch
                 if editor.mode() == Mode::VisualBlock {
-                    if let Some(((start_line, start_col), (end_line, end_col))) =
-                        editor.visual_selection()
-                    {
-                        let cursor = editor.buffer().cursor();
-                        let cursor_before = (cursor.line(), cursor.col());
-                        let mut all_changes = Vec::new();
-
-                        for line_idx in start_line..=end_line {
-                            if let Some(line) = editor.buffer().line(line_idx) {
-                                let line_text = line.trim_end_matches('\n');
-                                let chars: Vec<char> = line_text.chars().collect();
-
-                                let line_start = start_col.min(chars.len());
-                                let line_end = (end_col + 1).min(chars.len());
-
-                                if line_start < line_end {
-                                    // Delete the range
-                                    let deleted = editor
-                                        .buffer_mut()
-                                        .delete_range(line_idx, line_start, line_idx, line_end);
-
-                                    // Replace with the same number of replacement characters
-                                    let replace_count = deleted.chars().count();
-                                    let replacement = ch.to_string().repeat(replace_count);
-                                    editor.buffer_mut().insert_text_at(
-                                        line_idx,
-                                        line_start,
-                                        &replacement,
-                                    );
-
-                                    // Track change
-                                    let delete_change = Change::delete(
-                                        Range::new((line_idx, line_start), (line_idx, line_end)),
-                                        deleted,
-                                        cursor_before,
-                                    );
-                                    let insert_change = Change::insert(
-                                        (line_idx, line_start),
-                                        replacement,
-                                        cursor_before,
-                                    );
-                                    let line_change = Change::composite(
-                                        vec![delete_change, insert_change],
-                                        cursor_before,
-                                        cursor_before,
-                                    );
-                                    all_changes.push(line_change);
-                                }
-                            }
-                        }
-
-                        if !all_changes.is_empty() {
-                            let composite = Change::composite(
-                                all_changes,
-                                cursor_before,
-                                cursor_before,
-                            );
-                            editor.add_change(composite);
-                        }
-                    }
+                    helpers::replace_visual_selection(editor, ch)?;
                     helpers::exit_visual_mode_to_normal(editor);
                     return Ok(());
                 }
