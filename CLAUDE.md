@@ -31,7 +31,7 @@ cargo build --release
 ./target/release/ovim buffer --session dev
 ```
 
-**New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed). See [CLI_SUBCOMMANDS.md](code-docs/CLI_SUBCOMMANDS.md) for details.
+**New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed).
 
 ## Agent Interface (Recommended for AI/LLM agents)
 
@@ -472,10 +472,6 @@ curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 ```
 
-See:
-- [CLI_SUBCOMMANDS.md](code-docs/CLI_SUBCOMMANDS.md) - Complete CLI reference
-- [AI_WORKFLOWS.md](code-docs/AI_WORKFLOWS.md) - AI workflow examples
-- [MCP_INTEGRATION.md](code-docs/MCP_INTEGRATION.md) - MCP specification
 
 ## Common Tasks
 
