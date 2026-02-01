@@ -13,21 +13,23 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod daemon;
-pub mod display;
 pub mod editor;
-pub mod git;
-pub mod language_config;
-pub mod log;
 pub mod lsp;
 pub mod lua;
 pub mod mcp_stdio_server;
-pub mod metrics;
-pub mod mode;
-pub mod modeline;
-pub mod session;
 pub mod subcommands;
 pub mod syntax;
 pub mod ui;
-pub mod unicode;
 
-pub use git::{GitStatus, LineStatus};
+// Re-export modules that moved to ovim-core
+pub use ovim_core::display;
+pub use ovim_core::git;
+pub use ovim_core::language_config;
+pub use ovim_core::log;
+pub use ovim_core::metrics;
+pub use ovim_core::mode;
+pub use ovim_core::modeline;
+pub use ovim_core::session;
+pub use ovim_core::unicode;
+
+pub use ovim_core::git::{GitStatus, LineStatus};

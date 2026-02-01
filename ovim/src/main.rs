@@ -32,15 +32,15 @@ async fn main() -> Result<()> {
         // Log initialization failed, but logging will fall back to on-demand file opening
         let _ = e;
     }
-    ovim::log_info!("main", "ovim starting up");
+    ovim_core::log_info!("main", "ovim starting up");
 
     let cli = Cli::parse_args();
 
     // Initialize language registry early (needed for both editor and subcommands)
     // This loads embedded languages.toml and merges with user config
     if let Err(e) = ovim::language_config::LanguageRegistry::init() {
-        ovim::log_warn!("main", "Failed to initialize language registry: {}", e);
-        ovim::log_warn!("main", "Continuing with limited language support...");
+        ovim_core::log_warn!("main", "Failed to initialize language registry: {}", e);
+        ovim_core::log_warn!("main", "Continuing with limited language support...");
     }
 
     // Check if we're running a subcommand (client mode)
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
-        ovim::log_warn!("main", "Failed to initialize LSP logging: {}", e);
+        ovim_core::log_warn!("main", "Failed to initialize LSP logging: {}", e);
     }
 
     // Load file from command line argument if provided
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
         let mut ed = Editor::new();
         if let Err(e) = ed.load_file(file_path) {
             // If file doesn't exist, create empty buffer with that filename
-            ovim::log_warn!(
+            ovim_core::log_warn!(
                 "main",
                 "Could not load file '{}': {}. Starting with empty buffer.",
                 file_path,
@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
 
     // Enable Lua support
     if let Err(e) = editor.enable_lua() {
-        ovim::log_error!("main", "Failed to enable Lua support: {}", e);
+        ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
     }
 
     // Create channel for Java LSP status updates (needed for both headless and TUI modes)

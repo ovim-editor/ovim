@@ -2018,7 +2018,24 @@ dependencies = [
 name = "ovim-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bitflags 2.9.4",
+ "chrono",
+ "dirs",
+ "git2",
+ "lazy_static",
+ "nix",
+ "prometheus",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "sysinfo",
+ "tempfile",
+ "toml",
+ "unicode-segmentation",
+ "unicode-width 0.1.14",
+ "which",
 ]
 
 [[package]]

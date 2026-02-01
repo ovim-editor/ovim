@@ -35,12 +35,12 @@ impl Editor {
                     // No config file found - not an error
                 }
                 Err(e) => {
-                    crate::log_error!("lua", "Error loading Lua config: {}", e);
+                    ovim_core::log_error!("lua", "Error loading Lua config: {}", e);
                 }
             }
             // Load plugins from plugin directories
             if let Err(e) = context.load_plugins() {
-                crate::log_error!("lua", "Error loading Lua plugins: {}", e);
+                ovim_core::log_error!("lua", "Error loading Lua plugins: {}", e);
             }
             // Process any commands from plugins
             let commands = bridge.drain_commands();
