@@ -476,7 +476,7 @@ pub fn render_buffer(
             let line_text = line_text.trim_end_matches('\n');
 
             // Expand tabs to spaces for proper rendering and get byte mapping
-            let (line_text, byte_mapping, control_ranges) = expand_tabs_with_mapping(line_text, tab_width);
+            let (line_text, byte_mapping, control_ranges, char_mapping) = expand_tabs_with_mapping(line_text, tab_width);
 
             // Apply horizontal viewport slicing if nowrap is set
             let (line_text, precedes, _extends) = if !wrap {
