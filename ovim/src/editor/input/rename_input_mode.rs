@@ -1,12 +1,12 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 pub fn handle_rename_input_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Char(ch) => {
-            if key_event.modifiers.contains(KeyModifiers::CONTROL) && ch == 'a' {
+            if key_event.modifiers.contains(Modifiers::CONTROL) && ch == 'a' {
                 // Select all: move cursor to end (effectively selects all text for overwrite)
                 let len = editor.rename_buffer().len();
                 editor.set_rename_cursor(len);

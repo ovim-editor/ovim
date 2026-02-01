@@ -479,7 +479,7 @@ fn test_search_history_up() {
         .type_text("hello")
         .press_enter()
         .press('/') // New search
-        .press_key(crossterm::event::KeyCode::Up); // Should recall "hello"
+        .press_key(ovim_core::KeyCode::Up); // Should recall "hello"
 
     assert_eq!(test.buffer_content(), "hello world\n");
     test.assert_cursor(0, 0);

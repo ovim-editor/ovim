@@ -1,5 +1,5 @@
 mod helpers;
-use crossterm::event::{KeyCode, KeyModifiers};
+use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
 use ovim::mode::Mode;
 
@@ -554,7 +554,7 @@ fn test_visual_block_star_search() {
     let mut test = EditorTest::new("abc\ndef\nghi\nabc");
 
     // Select block and press *
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL) // Visual block mode
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL) // Visual block mode
         .keys("l") // Select 2 chars width
         .press('*'); // Search for "ab"
 
@@ -651,7 +651,7 @@ fn test_visualblock_search_extends_selection() {
     let mut test = EditorTest::new("abc def\nghi jkl\nmno pqr");
 
     // Start visual block selection
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL) // Visual block
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL) // Visual block
         .press('/') // Enter search mode
         .type_text("jkl")
         .press_enter(); // Execute search
@@ -997,7 +997,7 @@ fn test_visual_block_lowercase_u_undo_single_step() {
     let mut test = EditorTest::new("HELLO\nWORLD\nFOOBA");
 
     // Enter visual block mode with Ctrl-V, then select first 3 chars of 3 lines
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL);
     test.keys("jjllu");
     assert_eq!(test.buffer_content(), "helLO\nworLD\nfooBA\n");
 

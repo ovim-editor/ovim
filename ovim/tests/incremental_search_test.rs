@@ -70,12 +70,12 @@ fn test_incremental_search_backspace() {
     assert_eq!(test.cursor(), (1, 0)); // 'foo' at line 1, col 0
 
     // Backspace to 'fo'
-    test.press_key(crossterm::event::KeyCode::Backspace);
+    test.press_key(ovim_core::KeyCode::Backspace);
     eprintln!("After backspace to /fo: cursor {:?}", test.cursor());
     assert_eq!(test.cursor(), (1, 0)); // Still matches 'foo'
 
     // Backspace to 'f'
-    test.press_key(crossterm::event::KeyCode::Backspace);
+    test.press_key(ovim_core::KeyCode::Backspace);
     eprintln!("After backspace to /f: cursor {:?}", test.cursor());
     assert_eq!(test.cursor(), (1, 0)); // Still matches 'foo'
 

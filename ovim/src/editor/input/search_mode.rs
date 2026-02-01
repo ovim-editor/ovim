@@ -5,7 +5,7 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Handles input in Search mode
 pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

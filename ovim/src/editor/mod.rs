@@ -479,7 +479,7 @@ impl Editor {
     }
 
     /// Records a key event in the current macro
-    pub fn record_macro_event(&mut self, event: crossterm::event::KeyEvent) {
+    pub fn record_macro_event(&mut self, event: ovim_core::KeyEvent) {
         self.macro_manager.record_event(event);
     }
 
@@ -494,7 +494,7 @@ impl Editor {
     }
 
     /// Gets a macro by register for playback
-    pub fn get_macro(&self, register: char) -> Option<&Vec<crossterm::event::KeyEvent>> {
+    pub fn get_macro(&self, register: char) -> Option<&Vec<ovim_core::KeyEvent>> {
         self.macro_manager.get_macro(register)
     }
 

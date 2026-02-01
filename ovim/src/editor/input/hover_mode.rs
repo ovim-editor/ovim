@@ -7,7 +7,7 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Handles input in HoverPreview mode (quick peek, any key dismisses except K)
 ///
@@ -55,22 +55,22 @@ pub fn handle_hover_navigate_mode(editor: &mut Editor, key_event: KeyEvent) -> R
             editor.scroll_hover_up(1);
         }
         // Ctrl-D - scroll down half page
-        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.scroll_hover_down(10);
         }
         // Ctrl-U - scroll up half page
-        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.scroll_hover_up(10);
         }
         // Ctrl-F or PageDown - scroll down full page
-        KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('f') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.scroll_hover_down(20);
         }
         KeyCode::PageDown => {
             editor.scroll_hover_down(20);
         }
         // Ctrl-B or PageUp - scroll up full page
-        KeyCode::Char('b') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('b') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.scroll_hover_up(20);
         }
         KeyCode::PageUp => {

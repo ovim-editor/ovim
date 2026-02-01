@@ -7,7 +7,7 @@ use crate::editor::input::helpers;
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 use super::super::case;
 
@@ -17,7 +17,7 @@ use super::super::case;
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     match key_event.code {
         // x - delete character under cursor (but not Ctrl+X which is decrement)
-        KeyCode::Char('x') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('x') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             delete_char_forward(editor)?;
             Ok(true)
         }
@@ -76,13 +76,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // u - undo (but not Ctrl+U which is scroll up)
-        KeyCode::Char('u') if !key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.undo();
             editor.clear_count();
             Ok(true)
         }
         // Ctrl-R - redo
-        KeyCode::Char('r') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('r') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.redo();
             editor.clear_count();
             Ok(true)

@@ -1,5 +1,5 @@
 mod helpers;
-use crossterm::event::{KeyCode, KeyModifiers};
+use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
 
 // ============================================================================
@@ -10,7 +10,7 @@ use helpers::EditorTest;
 fn test_ctrl_v_basic_selection() {
     let mut test = EditorTest::new("hello world\ntest line\nfoo bar");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL) // Enter visual block mode
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL) // Enter visual block mode
         .keys("jj") // Down 2 lines
         .keys("lll"); // Right 3 chars
 
@@ -22,7 +22,7 @@ fn test_ctrl_v_basic_selection() {
 fn test_ctrl_v_delete_block() {
     let mut test = EditorTest::new("hello world\ntest line\nfoo bar");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Select 3 lines
         .keys("llll") // Select 5 columns
         .press('d'); // Delete block
@@ -35,7 +35,7 @@ fn test_ctrl_v_delete_block() {
 fn test_ctrl_v_yank_paste_block() {
     let mut test = EditorTest::new("hello world\ntest line\nfoo bar");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("j") // Down 1 line
         .keys("ll") // Right 2 chars
         .press('y') // Yank block
@@ -54,7 +54,7 @@ fn test_ctrl_v_yank_paste_block() {
 fn test_ctrl_v_change_block() {
     let mut test = EditorTest::new("hello world\ntest line\nfoo bar");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("j")
         .keys("ll")
         .press('c') // Change block
@@ -70,7 +70,7 @@ fn test_ctrl_v_change_block() {
 fn test_ctrl_v_insert_block() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Select 3 lines
         .press('I') // Insert at beginning of block
         .type_text(">> ")
@@ -85,7 +85,7 @@ fn test_ctrl_v_append_block() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
     test.keys("$") // End of first line
-        .press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Select 3 lines
         .press('A') // Append at end of block
         .type_text("!")
@@ -100,7 +100,7 @@ fn test_ctrl_v_ragged_right_edge() {
     let mut test = EditorTest::new("short\nthis is longer\nmedium");
 
     test.keys("lll") // Move to column 3
-        .press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Down 2 lines
         .keys("$") // Extend to end of longest line
         .press('d'); // Delete
@@ -113,7 +113,7 @@ fn test_ctrl_v_ragged_right_edge() {
 fn test_ctrl_v_empty_lines() {
     let mut test = EditorTest::new("hello\n\nworld");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Include empty line
         .keys("ll")
         .press('d');
@@ -128,7 +128,7 @@ fn test_ctrl_v_single_column() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
     test.keys("ll") // Column 2
-        .press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Down 2 lines (single column)
         .press('r') // Replace
         .press('X'); // With 'X'
@@ -141,7 +141,7 @@ fn test_ctrl_v_single_column() {
 fn test_ctrl_v_o_flip_corners() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj") // Select down
         .keys("ll") // Select right
         .press('o'); // Flip to opposite corner
@@ -155,7 +155,7 @@ fn test_ctrl_v_o_flip_corners() {
 fn test_ctrl_v_O_flip_horizontal() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('O'); // Flip horizontally
@@ -168,7 +168,7 @@ fn test_ctrl_v_O_flip_horizontal() {
 fn test_ctrl_v_c_replace_block() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('c')
@@ -184,7 +184,7 @@ fn test_ctrl_v_c_replace_block() {
 fn test_ctrl_v_with_dollar() {
     let mut test = EditorTest::new("short\nvery long line\nmedium");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("$") // Extend to end (should work on longest line)
         .press('d');
@@ -197,7 +197,7 @@ fn test_ctrl_v_with_dollar() {
 fn test_ctrl_v_undo() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('c')
@@ -214,7 +214,7 @@ fn test_ctrl_v_undo() {
 fn test_ctrl_v_dot_repeat() {
     let mut test = EditorTest::new("hello\nworld\ntest\nmore\nlines");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("j")
         .keys("l")
         .press('c')
@@ -234,7 +234,7 @@ fn test_ctrl_v_dot_repeat() {
 fn test_ctrl_v_escape_cancels() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press_esc(); // Cancel selection
@@ -247,7 +247,7 @@ fn test_ctrl_v_escape_cancels() {
 fn test_ctrl_v_yank_uppercase() {
     let mut test = EditorTest::new("HELLO\nWORLD\nTEST");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("j")
         .keys("ll")
         .press('y')
@@ -266,7 +266,7 @@ fn test_ctrl_v_with_tabs() {
     let mut test = EditorTest::new("\thello\n\tworld\n\ttest");
 
     test.keys("l") // Move past tab
-        .press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('d');
@@ -279,7 +279,7 @@ fn test_ctrl_v_with_tabs() {
 fn test_ctrl_v_switch_to_v() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .press('v'); // Switch to character-wise visual
 
@@ -291,7 +291,7 @@ fn test_ctrl_v_switch_to_v() {
 fn test_ctrl_v_switch_to_V() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .press('V'); // Switch to line-wise visual
 
@@ -303,7 +303,7 @@ fn test_ctrl_v_switch_to_V() {
 fn test_ctrl_v_indent() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('>'); // Indent block
@@ -316,7 +316,7 @@ fn test_ctrl_v_indent() {
 fn test_ctrl_v_dedent() {
     let mut test = EditorTest::new("    hello\n    world\n    test");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('<'); // Dedent block
@@ -329,7 +329,7 @@ fn test_ctrl_v_dedent() {
 fn test_ctrl_v_J_join_lines() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .press('J'); // Join lines (should it work in block mode?)
 
@@ -342,7 +342,7 @@ fn test_ctrl_v_J_join_lines() {
 fn test_ctrl_v_gv_reselect() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press_esc()
@@ -356,7 +356,7 @@ fn test_ctrl_v_gv_reselect() {
 fn test_ctrl_v_multiple_char_insert() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .press('I')
         .type_text("PREFIX: ")
@@ -374,7 +374,7 @@ fn test_ctrl_v_at_eof() {
     let mut test = EditorTest::new("hello\nworld");
 
     test.keys("G") // Last line
-        .press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jjjj") // Try to go past EOF
         .keys("ll")
         .press('d');
@@ -392,7 +392,7 @@ fn test_ctrl_v_at_eof() {
 fn test_ctrl_v_tilde_case_toggle() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('~'); // Toggle case
@@ -405,7 +405,7 @@ fn test_ctrl_v_tilde_case_toggle() {
 fn test_ctrl_v_uppercase_U() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('U'); // Uppercase
@@ -418,7 +418,7 @@ fn test_ctrl_v_uppercase_U() {
 fn test_ctrl_v_lowercase_u() {
     let mut test = EditorTest::new("HELLO\nWORLD\nTEST");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('u'); // Lowercase
@@ -431,7 +431,7 @@ fn test_ctrl_v_lowercase_u() {
 fn test_ctrl_v_replace_r() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 
-    test.press_with(KeyCode::Char('v'), KeyModifiers::CONTROL)
+    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
         .keys("jj")
         .keys("ll")
         .press('r')

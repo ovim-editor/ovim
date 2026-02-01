@@ -1,9 +1,9 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::empty())
+    KeyEvent::new(code, Modifiers::NONE)
 }
 
 /// Helper function to handle a key press

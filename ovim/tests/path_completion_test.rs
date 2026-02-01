@@ -1,5 +1,5 @@
 mod helpers;
-use crossterm::event::KeyCode;
+use ovim_core::KeyCode;
 use helpers::EditorTest;
 use ovim::mode::Mode;
 use std::fs;

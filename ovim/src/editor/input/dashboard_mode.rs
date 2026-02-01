@@ -7,7 +7,7 @@ use crate::editor::{Editor, Picker};
 use crate::mode::Mode;
 use crate::ui::MENU_ITEMS;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Handles input in Dashboard mode
 /// j/k navigate menu, Enter selects, or press shortcut key directly

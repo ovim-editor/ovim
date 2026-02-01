@@ -1,5 +1,5 @@
 mod helpers;
-use crossterm::event::{KeyCode, KeyModifiers};
+use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
 
 #[test]
@@ -19,7 +19,7 @@ fn test_redo_debug() {
         test.buffer_content()
     );
 
-    test.press_with(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
     println!(
         "After Ctrl-A: {:?}, buffer: {}",
         test.cursor(),
@@ -33,7 +33,7 @@ fn test_redo_debug() {
         test.buffer_content()
     );
 
-    test.press_with(KeyCode::Char('r'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('r'), Modifiers::CONTROL);
     println!(
         "After redo: {:?}, buffer: {}",
         test.cursor(),

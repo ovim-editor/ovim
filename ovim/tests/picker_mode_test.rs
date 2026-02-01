@@ -1,5 +1,5 @@
 mod helpers;
-use crossterm::event::{KeyCode, KeyModifiers};
+use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
 use ovim::mode::Mode;
 
@@ -17,7 +17,7 @@ fn test_picker_ctrl_c_closes_picker() {
 
     // Simulate being in picker mode and pressing Ctrl-C
     // The actual implementation handles this in handle_picker_mode()
-    test.press_with(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    test.press_with(KeyCode::Char('c'), Modifiers::CONTROL);
 
     // After Ctrl-C, we should be back in normal mode
     // (assuming we were in picker mode, which we can't easily simulate in this test)

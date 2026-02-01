@@ -376,8 +376,8 @@ fn test_indent_undo_redo() {
     test.keys(">>")
         .press('u') // Undo
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         ); // Redo
 
     assert_eq!(test.buffer_content(), "    line 1\n");
@@ -597,8 +597,8 @@ fn test_ctrl_t_indent_in_insert() {
 
     test.press('i')
         .press_with(
-            crossterm::event::KeyCode::Char('t'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('t'),
+            ovim_core::Modifiers::CONTROL,
         ) // Indent in insert mode
         .press_esc();
 
@@ -614,8 +614,8 @@ fn test_ctrl_d_dedent_in_insert() {
 
     test.press('i')
         .press_with(
-            crossterm::event::KeyCode::Char('d'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('d'),
+            ovim_core::Modifiers::CONTROL,
         ) // Dedent in insert mode
         .press_esc();
 

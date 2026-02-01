@@ -6,7 +6,7 @@ use super::helpers;
 use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Handles input in Replace mode
 pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

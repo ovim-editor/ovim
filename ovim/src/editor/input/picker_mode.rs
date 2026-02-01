@@ -6,12 +6,12 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Handles input in Picker mode
 pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // Ctrl-C - cancel picker (same as Escape)
-    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::CONTROL) {
         editor.close_picker();
         editor.set_mode(Mode::Normal);
         return Ok(());
@@ -31,18 +31,18 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Alt+Right / Alt+Left (macOS) or Ctrl+Right / Ctrl+Left (other) - toggle field
         KeyCode::Right
-            if (cfg!(target_os = "macos") && key_event.modifiers.contains(KeyModifiers::ALT))
+            if (cfg!(target_os = "macos") && key_event.modifiers.contains(Modifiers::ALT))
                 || (!cfg!(target_os = "macos")
-                    && key_event.modifiers.contains(KeyModifiers::CONTROL)) =>
+                    && key_event.modifiers.contains(Modifiers::CONTROL)) =>
         {
             if let Some(picker) = editor.picker_mut() {
                 picker.toggle_field();
             }
         }
         KeyCode::Left
-            if (cfg!(target_os = "macos") && key_event.modifiers.contains(KeyModifiers::ALT))
+            if (cfg!(target_os = "macos") && key_event.modifiers.contains(Modifiers::ALT))
                 || (!cfg!(target_os = "macos")
-                    && key_event.modifiers.contains(KeyModifiers::CONTROL)) =>
+                    && key_event.modifiers.contains(Modifiers::CONTROL)) =>
         {
             if let Some(picker) = editor.picker_mut() {
                 picker.toggle_field();
@@ -98,7 +98,7 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-N - move down in results
-        KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('n') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let mut moved = false;
             if let Some(picker) = editor.picker_mut() {
                 picker.move_down();
@@ -109,7 +109,7 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-P - move up in results
-        KeyCode::Char('p') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('p') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let mut moved = false;
             if let Some(picker) = editor.picker_mut() {
                 picker.move_up();
@@ -120,7 +120,7 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-D - move down half page in results
-        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let half_page = editor.half_page_scroll();
             let mut moved = false;
             if let Some(picker) = editor.picker_mut() {
@@ -132,7 +132,7 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Ctrl-U - move up half page in results
-        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let half_page = editor.half_page_scroll();
             let mut moved = false;
             if let Some(picker) = editor.picker_mut() {
@@ -167,7 +167,7 @@ pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Alt+F / Alt+B (Ghostty sends Alt+Right/Left as ESC+'f'/'b') - toggle field
         KeyCode::Char('f') | KeyCode::Char('b')
-            if cfg!(target_os = "macos") && key_event.modifiers.contains(KeyModifiers::ALT) =>
+            if cfg!(target_os = "macos") && key_event.modifiers.contains(Modifiers::ALT) =>
         {
             if let Some(picker) = editor.picker_mut() {
                 picker.toggle_field();

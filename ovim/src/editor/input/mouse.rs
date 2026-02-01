@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ovim_core::{MouseButton, MouseEvent, MouseEventKind};
 
 use crate::display::display_col_to_char_col;
 use crate::editor::Editor;

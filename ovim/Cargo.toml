@@ -71,6 +71,7 @@ lua = ["mlua"]
 metrics = ["prometheus"]
 
 [dev-dependencies]
+ovim-core = { path = "../ovim-core" }
 criterion = "0.5"
 reqwest = { version = "0.12.23", features = ["json", "blocking"] }
 insta = "1.40"

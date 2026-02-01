@@ -1,9 +1,9 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
-    KeyEvent::new(code, KeyModifiers::empty())
+    KeyEvent::new(code, Modifiers::NONE)
 }
 
 /// Helper function to handle a key press
@@ -12,7 +12,7 @@ fn press(editor: &mut Editor, code: KeyCode) {
 }
 
 /// Helper function to handle a key press with modifiers
-fn press_with(editor: &mut Editor, code: KeyCode, modifiers: KeyModifiers) {
+fn press_with(editor: &mut Editor, code: KeyCode, modifiers: Modifiers) {
     InputHandler::handle_key_event(editor, KeyEvent::new(code, modifiers)).unwrap();
 }
 
@@ -182,7 +182,7 @@ fn test_paste_redo() {
     assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
 
     // Redo - should be back to 3 lines
-    press_with(&mut editor, KeyCode::Char('r'), KeyModifiers::CONTROL);
+    press_with(&mut editor, KeyCode::Char('r'), Modifiers::CONTROL);
     assert_eq!(editor.buffer().line_count(), 3);
     assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
     assert_eq!(editor.buffer().line(1).unwrap(), "line 1\n");

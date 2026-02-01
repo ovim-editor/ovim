@@ -15,7 +15,7 @@ mod text_objects;
 
 use crate::editor::Editor;
 use anyhow::Result;
-use crossterm::event::KeyEvent;
+use ovim_core::KeyEvent;
 
 /// Handle a key event in normal mode.
 ///
@@ -64,7 +64,7 @@ pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 /// Set up pending operators or commands for multi-key sequences.
 fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     use crate::editor::{CharMotion, InputState, Operator};
-    use crossterm::event::KeyCode;
+    use ovim_core::KeyCode;
 
     match key_event.code {
         // Operators

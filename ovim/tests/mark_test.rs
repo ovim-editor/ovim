@@ -380,8 +380,8 @@ fn test_ctrl_o_jump_back() {
         .keys("gg") // Jump 2
         .keys("G") // Jump 3
         .press_with(
-            crossterm::event::KeyCode::Char('o'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('o'),
+            ovim_core::Modifiers::CONTROL,
         ); // Jump back
 
     assert_eq!(
@@ -402,12 +402,12 @@ fn test_ctrl_i_jump_forward() {
     test.keys("G")
         .keys("gg")
         .press_with(
-            crossterm::event::KeyCode::Char('o'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('o'),
+            ovim_core::Modifiers::CONTROL,
         ) // Back
         .press_with(
-            crossterm::event::KeyCode::Char('i'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('i'),
+            ovim_core::Modifiers::CONTROL,
         ); // Forward
 
     assert_eq!(
@@ -431,12 +431,12 @@ fn test_jump_list_multiple() {
 
     // Jump back multiple times
     test.press_with(
-        crossterm::event::KeyCode::Char('o'),
-        crossterm::event::KeyModifiers::CONTROL,
+        ovim_core::KeyCode::Char('o'),
+        ovim_core::Modifiers::CONTROL,
     )
     .press_with(
-        crossterm::event::KeyCode::Char('o'),
-        crossterm::event::KeyModifiers::CONTROL,
+        ovim_core::KeyCode::Char('o'),
+        ovim_core::Modifiers::CONTROL,
     );
 
     assert_eq!(

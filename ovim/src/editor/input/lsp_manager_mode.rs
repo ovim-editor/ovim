@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 use crate::editor::Editor;
 

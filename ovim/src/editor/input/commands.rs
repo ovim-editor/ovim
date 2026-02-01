@@ -2,7 +2,7 @@ use crate::api::ApiResponse;
 use crate::editor::path_completion::extract_path_from_command;
 use crate::editor::{Change, Editor, Mode, Range};
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use ovim_core::{KeyCode, KeyEvent};
 
 /// Handles input in Command mode
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

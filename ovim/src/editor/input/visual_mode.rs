@@ -11,7 +11,7 @@
 use crate::editor::{Editor, Motions, TextObjectRange, TextObjects};
 use crate::mode::Mode;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 use super::char_motion;
 use super::helpers;
@@ -52,13 +52,13 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     if let Some(pending) = editor.pending_command() {
         editor.clear_pending_command();
         match (pending, key_event.code) {
-            ('g', KeyCode::Char('a')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            ('g', KeyCode::Char('a')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
                 // g Ctrl-A: Sequential increment in visual selection
                 numbers::sequential_modify_numbers(editor, 1)?;
                 helpers::exit_visual_mode_to_normal(editor);
                 return Ok(());
             }
-            ('g', KeyCode::Char('x')) if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            ('g', KeyCode::Char('x')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
                 // g Ctrl-X: Sequential decrement in visual selection
                 numbers::sequential_modify_numbers(editor, -1)?;
                 helpers::exit_visual_mode_to_normal(editor);
@@ -155,7 +155,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Half-page scroll down (Ctrl-D) — must come before 'd' delete handler
-        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let half_page = editor.half_page_scroll();
             let count = editor.count().unwrap_or(half_page);
             let max_line = editor.buffer().line_count().saturating_sub(1);
@@ -167,7 +167,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.clear_count();
         }
         // Half-page scroll up (Ctrl-U) — must come before 'u' lowercase handler
-        KeyCode::Char('u') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let half_page = editor.half_page_scroll();
             let count = editor.count().unwrap_or(half_page);
             let cursor = editor.buffer_mut().cursor_mut();
@@ -486,7 +486,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Switch to other visual modes
-        KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             // Switching to VisualBlock - preserve both line and column of anchor
             editor.set_mode(Mode::VisualBlock);
         }

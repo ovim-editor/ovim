@@ -228,7 +228,7 @@ fn test_R_with_arrow_keys() {
 
     test.press('R')
         .type_text("HI") // Replaces "he" with "HI"
-        .press_key(crossterm::event::KeyCode::Right) // Move right (skip 'l')
+        .press_key(ovim_core::KeyCode::Right) // Move right (skip 'l')
         .type_text("X") // Replace 'l' with 'X'
         .press_esc();
 
@@ -560,8 +560,8 @@ fn test_ctrl_w_delete_word() {
     test.press('i')
         .type_text("test ")
         .press_with(
-            crossterm::event::KeyCode::Char('w'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('w'),
+            ovim_core::Modifiers::CONTROL,
         ) // Delete word (deletes "test ")
         .press_esc();
 
@@ -577,8 +577,8 @@ fn test_ctrl_u_delete_line() {
     test.press('i')
         .type_text("inserted text")
         .press_with(
-            crossterm::event::KeyCode::Char('u'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('u'),
+            ovim_core::Modifiers::CONTROL,
         ) // Delete to start of line (deletes "inserted text")
         .press_esc();
 
@@ -593,8 +593,8 @@ fn test_ctrl_t_indent() {
 
     test.press('i')
         .press_with(
-            crossterm::event::KeyCode::Char('t'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('t'),
+            ovim_core::Modifiers::CONTROL,
         ) // Indent (adds shiftwidth spaces)
         .press_esc();
 
@@ -609,8 +609,8 @@ fn test_ctrl_d_dedent() {
 
     test.press('i')
         .press_with(
-            crossterm::event::KeyCode::Char('d'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('d'),
+            ovim_core::Modifiers::CONTROL,
         ) // Dedent (removes one shiftwidth)
         .press_esc();
 
@@ -628,8 +628,8 @@ fn test_ctrl_a_insert_last_text() {
         .press_esc()
         .press('i')
         .press_with(
-            crossterm::event::KeyCode::Char('a'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('a'),
+            ovim_core::Modifiers::CONTROL,
         ) // Insert last inserted text
         .press_esc();
 
@@ -648,8 +648,8 @@ fn test_ctrl_r_insert_register() {
     test.keys("\"ayiw") // Yank "test" to register 'a'
         .press('i')
         .press_with(
-            crossterm::event::KeyCode::Char('r'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('r'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press('a') // Insert from register 'a'
         .press_esc();
@@ -668,8 +668,8 @@ fn test_ctrl_n_completion() {
     test.press('o')
         .type_text("hel")
         .press_with(
-            crossterm::event::KeyCode::Char('n'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('n'),
+            ovim_core::Modifiers::CONTROL,
         ) // Next completion (if implemented)
         .press_esc();
 
@@ -685,8 +685,8 @@ fn test_ctrl_p_completion_previous() {
     test.press('o')
         .type_text("hel")
         .press_with(
-            crossterm::event::KeyCode::Char('p'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('p'),
+            ovim_core::Modifiers::CONTROL,
         ) // Previous completion (if implemented)
         .press_esc();
 
@@ -701,12 +701,12 @@ fn test_ctrl_x_ctrl_l_line_completion() {
 
     test.press('o')
         .press_with(
-            crossterm::event::KeyCode::Char('x'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('x'),
+            ovim_core::Modifiers::CONTROL,
         )
         .press_with(
-            crossterm::event::KeyCode::Char('l'),
-            crossterm::event::KeyModifiers::CONTROL,
+            ovim_core::KeyCode::Char('l'),
+            ovim_core::Modifiers::CONTROL,
         ) // Line completion
         .press_esc();
 
