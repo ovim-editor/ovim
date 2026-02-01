@@ -9,6 +9,7 @@ pub mod language_config;
 pub mod git;
 pub mod session;
 pub mod metrics;
+pub mod lsp;
 
 pub use key::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use rect::Rect;

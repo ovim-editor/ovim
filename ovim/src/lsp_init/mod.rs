@@ -63,7 +63,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         None => {
             // LSP server not found - try auto-install if configured
             if let Some(auto_install_config) = &lsp_config.auto_install {
-                ovim::lsp_info!(
+                ovim_core::lsp_info!(
                     "LSP",
                     "{} language server not found. Attempting auto-install...",
                     lang_config.name
@@ -85,7 +85,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                             "LSP: {} installed successfully!",
                             lsp_config.command
                         ));
-                        ovim::lsp_info!(
+                        ovim_core::lsp_info!(
                             "LSP",
                             "Auto-installed {} to {}",
                             lsp_config.command,
@@ -97,12 +97,12 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     }
                     InstallResult::Failed(error) => {
                         editor.set_lsp_status(format!("LSP: Auto-install failed: {}", error));
-                        ovim::lsp_warn!("LSP", "Auto-install failed: {}", error);
+                        ovim_core::lsp_warn!("LSP", "Auto-install failed: {}", error);
                         return;
                     }
                     InstallResult::PrerequisitesMissing(msg) => {
                         editor.set_lsp_status(format!("LSP: {}", msg));
-                        ovim::lsp_warn!("LSP", "Prerequisites missing: {}", msg);
+                        ovim_core::lsp_warn!("LSP", "Prerequisites missing: {}", msg);
                         return;
                     }
                     InstallResult::Declined => {
@@ -118,7 +118,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     .unwrap_or("LSP server not found in PATH");
 
                 editor.set_lsp_status(format!("LSP: {}", hint));
-                ovim::lsp_warn!(
+                ovim_core::lsp_warn!(
                     "LSP",
                     "Language server not found for {} (tried: {}, fallbacks: {:?})",
                     lang_config.name,
@@ -136,7 +136,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     // Determine language ID (for TypeScript vs JavaScript, use extension-based logic)
     let language_id = determine_language_id(&lang_config.id, &abs_path);
 
-    ovim::lsp_info!(
+    ovim_core::lsp_info!(
         "LSP",
         "Initializing {} LSP: command={}, root={}, language_id={}",
         lang_config.name,
@@ -173,7 +173,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                         let _ = lsp_manager.did_open(uri, &language_id, 1, content).await;
                         // Mark as sent to prevent duplicate from ensure_lsp_document_synced
                         editor.mark_document_opened(&file_path);
-                        ovim::lsp_debug!("LSP", "Pre-warmed didOpen for {}", file_path);
+                        ovim_core::lsp_debug!("LSP", "Pre-warmed didOpen for {}", file_path);
                     }
                 }
 
@@ -184,7 +184,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             }
             Err(e) => {
                 editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
-                ovim::lsp_warn!(
+                ovim_core::lsp_warn!(
                     "LSP",
                     "Failed to start {} server '{}': {}",
                     lang_config.name,
@@ -248,7 +248,7 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
         if !companion.activation_markers.is_empty()
             && !has_activation_marker(abs_path, &companion.activation_markers)
         {
-            ovim::lsp_debug!(
+            ovim_core::lsp_debug!(
                 "LSP",
                 "Skipping companion {} - no activation markers found",
                 companion.name
@@ -261,9 +261,9 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
             Some(cmd) => cmd,
             None => {
                 if let Some(hint) = &companion.install_hint {
-                    ovim::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
+                    ovim_core::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
                 } else {
-                    ovim::lsp_info!(
+                    ovim_core::lsp_info!(
                         "LSP",
                         "Companion {} not found (command: {})",
                         companion.name,
@@ -283,7 +283,7 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
 
         let server_id = companion_server_id(language_id, &companion.id);
 
-        ovim::lsp_info!(
+        ovim_core::lsp_info!(
             "LSP",
             "Starting companion {} (server_id={}, command={}, root={})",
             companion.name,
@@ -312,7 +312,7 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
                     let content = editor.buffer().rope().to_string();
                     if let Some(uri) = uri_from_file_path(&file_path) {
                         let _ = lsp_manager.did_open(uri, &server_id, 1, content).await;
-                        ovim::lsp_debug!(
+                        ovim_core::lsp_debug!(
                             "LSP",
                             "Sent didOpen to companion {} for {}",
                             companion.name,
@@ -321,11 +321,11 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
                     }
                 }
 
-                ovim::lsp_info!("LSP", "Companion {} ready", companion.name);
+                ovim_core::lsp_info!("LSP", "Companion {} ready", companion.name);
             }
             Err(e) => {
                 // Log but don't fail - companions are optional
-                ovim::lsp_warn!("LSP", "Failed to start companion {}: {}", companion.name, e);
+                ovim_core::lsp_warn!("LSP", "Failed to start companion {}: {}", companion.name, e);
             }
         }
     }

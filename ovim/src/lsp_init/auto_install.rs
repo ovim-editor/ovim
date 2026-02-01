@@ -98,7 +98,7 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
     }
     args.push(package);
 
-    ovim::lsp_info!(
+    ovim_core::lsp_info!(
         "AutoInstall",
         "Installing {} via npm: npm {}",
         package,
@@ -168,7 +168,7 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
 
     match install_path {
         Some(path) => {
-            ovim::lsp_info!(
+            ovim_core::lsp_info!(
                 "AutoInstall",
                 "Successfully installed {} at {}",
                 package,
@@ -234,7 +234,7 @@ async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult
         );
     }
 
-    ovim::lsp_info!("AutoInstall", "Installing {} via cargo install", package);
+    ovim_core::lsp_info!("AutoInstall", "Installing {} via cargo install", package);
 
     // Run cargo install
     let child = match TokioCommand::new("cargo")
@@ -299,7 +299,7 @@ async fn install_via_github(
 
 /// Install via custom shell command
 async fn install_via_shell(_language_name: &str, command: &str) -> InstallResult {
-    ovim::lsp_info!("AutoInstall", "Running custom install command: {}", command);
+    ovim_core::lsp_info!("AutoInstall", "Running custom install command: {}", command);
 
     // Parse command (simple split on spaces - doesn't handle quotes)
     let parts: Vec<&str> = command.split_whitespace().collect();

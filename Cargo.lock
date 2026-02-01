@@ -2021,9 +2021,11 @@ dependencies = [
  "anyhow",
  "bitflags 2.9.4",
  "chrono",
+ "dashmap",
  "dirs",
  "git2",
  "lazy_static",
+ "lsp-types",
  "nix",
  "prometheus",
  "reqwest",
@@ -2032,9 +2034,11 @@ dependencies = [
  "shellexpand",
  "sysinfo",
  "tempfile",
+ "tokio",
  "toml",
  "unicode-segmentation",
  "unicode-width 0.1.14",
+ "url",
  "which",
 ]
 
