@@ -622,7 +622,11 @@ impl Renderer {
 
         // Update viewport dimensions and cache layout for mouse coordinate conversion
         editor.set_viewport_height(layout.buffer_area.height as usize);
-        editor.set_last_layout(layout.buffer_area, layout.gutter_width, layout.text_width);
+        editor.set_last_layout(
+            crate::key_convert::convert_ratatui_rect(layout.buffer_area),
+            layout.gutter_width,
+            layout.text_width,
+        );
         if let Some(wm) = editor.window_manager_mut() {
             wm.update_dimensions(layout.buffer_area.width, layout.buffer_area.height);
         }

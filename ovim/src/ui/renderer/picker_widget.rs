@@ -260,9 +260,9 @@ pub fn render_picker(frame: &mut Frame, editor: &mut Editor) {
 
     // Store cached layout on editor
     editor.picker_state.last_layout = Some(crate::editor::PickerLayout {
-        query_field,
-        filter_field,
-        results_area,
+        query_field: crate::key_convert::convert_ratatui_rect(query_field),
+        filter_field: filter_field.map(crate::key_convert::convert_ratatui_rect),
+        results_area: crate::key_convert::convert_ratatui_rect(results_area),
         results_scroll_offset: scroll_offset,
     });
 

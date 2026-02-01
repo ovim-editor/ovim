@@ -511,7 +511,7 @@ async fn handle_api_request(
             const DEFAULT_WIDTH: u16 = 80;
             const DEFAULT_HEIGHT: u16 = 24;
 
-            match editor.render_to_ansi(DEFAULT_WIDTH, DEFAULT_HEIGHT) {
+            match ovim::ui::render_editor_to_ansi(editor, DEFAULT_WIDTH, DEFAULT_HEIGHT) {
                 Ok(ansi) => {
                     let render_info = RenderInfo {
                         width: DEFAULT_WIDTH,

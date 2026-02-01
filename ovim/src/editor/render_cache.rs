@@ -6,7 +6,7 @@ pub struct RenderCache {
     /// Mouse interaction state (dragging, drag origin)
     pub mouse_state: super::MouseState,
     /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
-    pub last_buffer_area: Option<ratatui::layout::Rect>,
+    pub last_buffer_area: Option<ovim_core::Rect>,
     /// Cached gutter width from last render
     pub last_gutter_width: usize,
     /// Cached text width from last render (buffer area width minus gutter, used for wrap calculations)
