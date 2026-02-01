@@ -1681,6 +1681,18 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
     }
 }
 
+/// Parse a hex color string like "#1a1a1e" into (r, g, b).
+fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
 /// Handle :set commands for options
 pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
     // Handle empty :set (show all options)
@@ -1756,6 +1768,13 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
                 if opts.file_tree_reveal { "" } else { "no" }
             ),
             "mapleader" => format!("  mapleader={}", editor.leader_key()),
+            "margincolor" => format!(
+                "  margincolor={}",
+                opts.margin_color
+                    .map(|(r, g, b)| format!("#{:02x}{:02x}{:02x}", r, g, b))
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+            "marginpadding" => format!("  marginpadding={}", opts.margin_padding),
             _ => {
                 return CommandResult::Error(ErrorResponse {
                     error: format!("Unknown option: {}", query_opt),
@@ -2066,6 +2085,40 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
                         "Invalid clipboard value: {} (use 'unnamedplus', 'unnamed', or '')",
                         value
                     ),
+                }),
+            },
+            "margincolor" => {
+                if value == "none" {
+                    editor.options.margin_color = None;
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some("  margincolor=none".to_string()),
+                        line_count: None,
+                    })
+                } else if let Some(rgb) = parse_hex_color(value) {
+                    editor.options.margin_color = Some(rgb);
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  margincolor={}", value)),
+                        line_count: None,
+                    })
+                } else {
+                    CommandResult::Error(ErrorResponse {
+                        error: format!("Invalid color: {} (use hex like #1a1a1e or 'none')", value),
+                    })
+                }
+            }
+            "marginpadding" => match value.parse::<usize>() {
+                Ok(n) => {
+                    editor.options.margin_padding = n;
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("  marginpadding={}", n)),
+                        line_count: None,
+                    })
+                }
+                Err(_) => CommandResult::Error(ErrorResponse {
+                    error: format!("Invalid number: {}", value),
                 }),
             },
             _ => CommandResult::Error(ErrorResponse {

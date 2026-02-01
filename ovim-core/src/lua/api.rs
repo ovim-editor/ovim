@@ -244,6 +244,18 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Boolean(false) => "set nofiletreereveal".to_string(),
                     _ => return Err(mlua::Error::external("filetreereveal must be boolean")),
                 },
+                "margincolor" => match value {
+                    mlua::Value::String(s) => {
+                        let s = s.to_str().map_err(mlua::Error::external)?;
+                        format!("set margincolor={}", s)
+                    }
+                    _ => return Err(mlua::Error::external("margincolor must be a string (hex color or 'none')")),
+                },
+                "marginpadding" => match value {
+                    mlua::Value::Integer(n) => format!("set marginpadding={}", n),
+                    mlua::Value::Number(n) => format!("set marginpadding={}", n as i64),
+                    _ => return Err(mlua::Error::external("marginpadding must be a number")),
+                },
                 _ => {
                     return Err(mlua::Error::external(format!("Unknown option: {}", key)));
                 }

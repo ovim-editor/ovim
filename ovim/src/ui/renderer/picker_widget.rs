@@ -34,7 +34,7 @@ mod picker_colors {
 /// A widget that fills every cell in an area with a styled space.
 /// This is the proper way to create a solid background - unlike Block which
 /// only renders borders, Fill writes to every cell, preventing bleed-through.
-struct Fill {
+pub(super) struct Fill {
     style: Style,
 }
 
@@ -43,7 +43,7 @@ impl Fill {
         Self { style }
     }
 
-    fn bg(color: Color) -> Self {
+    pub(super) fn bg(color: Color) -> Self {
         Self::new(Style::default().bg(color))
     }
 }
@@ -871,7 +871,7 @@ fn render_preview_with_syntax(
         }
 
         // Expand tabs in preview content and get byte mapping
-        let (line_text, tab_mapping) = expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
+        let (line_text, tab_mapping, _control_ranges) = expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
 
         // Truncate line to fit width (line number prefix is 7 chars: "  1 | ")
         let content_width = area.width.saturating_sub(7) as usize;

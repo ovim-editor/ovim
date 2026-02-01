@@ -19,7 +19,7 @@ use super::file_tree_widget::render_file_tree;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::overlays::{render_completion_menu, render_hover_window};
-use super::picker_widget::render_picker;
+use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
     render_command_line, render_diagnostic_badge, render_message_line, render_path_completion,
     render_progress_line, render_rename_input, render_search_line, render_status_line,
@@ -186,6 +186,37 @@ fn render_buffer_area(
             let max_width = textwidth as u16;
             if areas.buffer_chunk.width > max_width {
                 let margin = (areas.buffer_chunk.width - max_width) / 2;
+
+                // Render margin shading if configured
+                if let Some((r, g, b)) = editor.options.margin_color {
+                    let padding = editor.options.margin_padding as u16;
+                    let shaded_margin = margin.saturating_sub(padding);
+                    if shaded_margin > 0 {
+                        let color = Color::Rgb(r, g, b);
+                        let chunk = areas.buffer_chunk;
+                        // Left margin shading
+                        let left = Rect {
+                            x: chunk.x,
+                            y: chunk.y,
+                            width: shaded_margin,
+                            height: chunk.height,
+                        };
+                        frame.render_widget(Fill::bg(color), left);
+                        // Right margin shading
+                        let right_x = chunk.x + margin + max_width + padding;
+                        let right_width = (chunk.x + chunk.width).saturating_sub(right_x);
+                        if right_width > 0 {
+                            let right = Rect {
+                                x: right_x,
+                                y: chunk.y,
+                                width: right_width,
+                                height: chunk.height,
+                            };
+                            frame.render_widget(Fill::bg(color), right);
+                        }
+                    }
+                }
+
                 Rect {
                     x: areas.buffer_chunk.x + margin,
                     y: areas.buffer_chunk.y,
