@@ -227,6 +227,61 @@ fn test_dw_last_word_no_newline() {
     test.assert_cursor(0, 0);
 }
 
+#[test]
+fn test_dw_preserves_punctuation_on_last_line() {
+    // Bug: dw on "world" in "Hello world." (single line) deleted "world." instead of "world"
+    // The `w` motion correctly lands on '.', so dw should delete up to (not including) it.
+    let mut test = EditorTest::new("Hello world.");
+
+    test.keys("wdw"); // Move to "world", delete word
+
+    assert_eq!(test.buffer_content(), "Hello .\n");
+    test.assert_cursor(0, 6);
+}
+
+#[test]
+fn test_dw_preserves_punctuation_on_last_line_multiword() {
+    // Same bug but with cursor starting at beginning of line
+    let mut test = EditorTest::new("Hello world.");
+
+    test.keys("dw"); // Delete "Hello "
+
+    assert_eq!(test.buffer_content(), "world.\n");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_dw_last_word_before_punctuation_with_following_line() {
+    // This already worked, verify it stays correct
+    let mut test = EditorTest::new("Hello world.\nAnother line");
+
+    test.keys("wdw");
+
+    assert_eq!(test.buffer_content(), "Hello .\nAnother line\n");
+    test.assert_cursor(0, 6);
+}
+
+#[test]
+fn test_dw_two_char_word_before_punctuation_last_line() {
+    let mut test = EditorTest::new("a.");
+
+    test.keys("dw"); // Delete "a", should leave "."
+
+    assert_eq!(test.buffer_content(), ".\n");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_dw_word_space_word_last_line() {
+    // "a b" with cursor on 'a', dw should delete "a " leaving "b"
+    let mut test = EditorTest::new("a b");
+
+    test.keys("dw");
+
+    assert_eq!(test.buffer_content(), "b\n");
+    test.assert_cursor(0, 0);
+}
+
 // ============================================================================
 // 'd$' command - Delete to end of line
 // ============================================================================
