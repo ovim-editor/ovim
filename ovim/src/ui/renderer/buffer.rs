@@ -535,10 +535,9 @@ pub fn render_buffer(
     let buffer = editor.buffer();
     let rope = buffer.rope();
     let cursor = buffer.cursor();
-    // Use rope's raw line count so we render the trailing empty line after
-    // a final newline — the cursor can legitimately be there (e.g. after
-    // pressing Enter at EOF in insert mode).
-    let line_count = rope.len_lines();
+    // Use Vim-compatible line count: trailing newline's phantom empty line
+    // should not be rendered. The cursor is always bounded to real lines.
+    let line_count = buffer.line_count();
 
     // Calculate visible range using scroll offset (not centering)
     let visible_lines = area.height as usize;
