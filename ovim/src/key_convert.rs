@@ -105,3 +105,55 @@ pub fn convert_core_rect(r: ovim_core::Rect) -> ratatui::layout::Rect {
         height: r.height,
     }
 }
+
+pub fn convert_core_color(c: ovim_core::color::Color) -> ratatui::style::Color {
+    use ovim_core::color::Color as CC;
+    use ratatui::style::Color as RC;
+    match c {
+        CC::Black => RC::Black,
+        CC::Red => RC::Red,
+        CC::Green => RC::Green,
+        CC::Yellow => RC::Yellow,
+        CC::Blue => RC::Blue,
+        CC::Magenta => RC::Magenta,
+        CC::Cyan => RC::Cyan,
+        CC::White => RC::White,
+        CC::DarkGray => RC::DarkGray,
+        CC::LightRed => RC::LightRed,
+        CC::LightGreen => RC::LightGreen,
+        CC::LightYellow => RC::LightYellow,
+        CC::LightBlue => RC::LightBlue,
+        CC::LightMagenta => RC::LightMagenta,
+        CC::LightCyan => RC::LightCyan,
+        CC::Gray => RC::Gray,
+        CC::Rgb(r, g, b) => RC::Rgb(r, g, b),
+        CC::Indexed(i) => RC::Indexed(i),
+        CC::Reset => RC::Reset,
+    }
+}
+
+pub fn convert_ratatui_color(c: ratatui::style::Color) -> ovim_core::color::Color {
+    use ovim_core::color::Color as CC;
+    use ratatui::style::Color as RC;
+    match c {
+        RC::Black => CC::Black,
+        RC::Red => CC::Red,
+        RC::Green => CC::Green,
+        RC::Yellow => CC::Yellow,
+        RC::Blue => CC::Blue,
+        RC::Magenta => CC::Magenta,
+        RC::Cyan => CC::Cyan,
+        RC::White => CC::White,
+        RC::DarkGray => CC::DarkGray,
+        RC::LightRed => CC::LightRed,
+        RC::LightGreen => CC::LightGreen,
+        RC::LightYellow => CC::LightYellow,
+        RC::LightBlue => CC::LightBlue,
+        RC::LightMagenta => CC::LightMagenta,
+        RC::LightCyan => CC::LightCyan,
+        RC::Gray => CC::Gray,
+        RC::Rgb(r, g, b) => CC::Rgb(r, g, b),
+        RC::Indexed(i) => CC::Indexed(i),
+        RC::Reset => CC::Reset,
+    }
+}

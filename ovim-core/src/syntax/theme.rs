@@ -1,4 +1,4 @@
-use ratatui::style::Color;
+use crate::color::Color;
 use std::collections::HashMap;
 
 /// Highlight groups representing different syntax elements

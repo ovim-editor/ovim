@@ -228,7 +228,7 @@ fn render_code_line_with_highlights(
         let text: String = chars[col..end_col].iter().collect();
         let style = if let Some(g) = group {
             Style::default()
-                .fg(theme.get_color(g))
+                .fg(crate::key_convert::convert_core_color(theme.get_color(g)))
                 .bg(colors::CODE_BLOCK_BG)
         } else {
             Style::default()

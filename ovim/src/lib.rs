@@ -18,7 +18,8 @@ pub use ovim_core::lsp;
 pub mod lua;
 pub mod mcp_stdio_server;
 pub mod subcommands;
-pub mod syntax;
+pub use ovim_core::syntax;
+pub use ovim_core::color;
 pub mod ui;
 
 // Re-export modules that moved to ovim-core

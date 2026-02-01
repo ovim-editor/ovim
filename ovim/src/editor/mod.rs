@@ -6,7 +6,7 @@ mod command_history;
 mod completion;
 mod editing_state;
 mod filetree;
-mod fold;
+use ovim_core::fold;
 pub(crate) mod fuzzy;
 pub(crate) mod grep;
 mod input;

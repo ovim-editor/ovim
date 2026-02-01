@@ -942,7 +942,7 @@ pub fn render_line_with_highlights(
         } else if is_search_match {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         } else if let Some(group) = syntax_group {
-            let color = theme.get_color(group);
+            let color = crate::key_convert::convert_core_color(theme.get_color(group));
             let mut style = Style::default().fg(color);
 
             // Add modifiers for markup elements
