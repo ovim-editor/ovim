@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
 
 pub mod api;
+pub mod key_convert;
 pub mod buffer;
 pub mod cli;
 pub mod client;
