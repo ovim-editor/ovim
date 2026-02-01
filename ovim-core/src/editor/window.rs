@@ -386,24 +386,10 @@ impl Rect {
         self.y.saturating_add(self.height / 2)
     }
 
-    /// Calculates vertical overlap with another rect (used for left/right navigation)
-    fn vertical_overlap(&self, other: &Rect) -> u16 {
-        let top = self.y.max(other.y);
-        let bottom = self.bottom().min(other.bottom());
-        bottom.saturating_sub(top)
-    }
-
-    /// Calculates horizontal overlap with another rect (used for up/down navigation)
-    fn horizontal_overlap(&self, other: &Rect) -> u16 {
-        let left = self.x.max(other.x);
-        let right = self.right().min(other.right());
-        right.saturating_sub(left)
-    }
-
     /// Calculates squared distance between centers (avoids floating point)
     fn distance_squared(&self, other: &Rect) -> u32 {
-        let dx = (self.center_x() as i32 - other.center_x() as i32).abs() as u32;
-        let dy = (self.center_y() as i32 - other.center_y() as i32).abs() as u32;
+        let dx = (self.center_x() as i32 - other.center_x() as i32).unsigned_abs();
+        let dy = (self.center_y() as i32 - other.center_y() as i32).unsigned_abs();
         dx * dx + dy * dy
     }
 }
@@ -716,8 +702,7 @@ impl WindowManager {
             .min_by_key(|(_, rect)| {
                 // Primary: prefer windows with overlap (0 distance)
                 // Secondary: choose nearest by distance
-                let distance = current_rect.distance_squared(rect);
-                distance
+                current_rect.distance_squared(rect)
             });
 
         if let Some((new_index, _)) = best_candidate {
