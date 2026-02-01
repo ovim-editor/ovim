@@ -10,7 +10,7 @@ pub use encoding::FileEncoding;
 pub use highlighting::LineHighlights;
 pub use line_ending::LineEnding;
 
-use crate::editor::ChangeManager;
+use crate::change::ChangeManager;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
 use crate::GitStatus;
 use ropey::Rope;
@@ -39,7 +39,7 @@ pub struct Buffer {
     /// Whether re-highlighting is pending
     pub(super) pending_rehighlight: bool,
     /// Fold manager for code folding
-    pub(super) fold_manager: crate::editor::FoldManager,
+    pub(super) fold_manager: crate::fold::FoldManager,
     /// Git status for this buffer
     pub(super) git_status: GitStatus,
     /// Change manager for undo/redo (per-buffer)
@@ -72,7 +72,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
-            fold_manager: crate::editor::FoldManager::new(),
+            fold_manager: crate::fold::FoldManager::new(),
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
             file_mtime: None,
@@ -161,7 +161,7 @@ impl Buffer {
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
-            fold_manager: crate::editor::FoldManager::new(),
+            fold_manager: crate::fold::FoldManager::new(),
             git_status: GitStatus::new(),
             change_manager: ChangeManager::new(),
             file_mtime: None,
@@ -464,12 +464,12 @@ impl Buffer {
     }
 
     /// Gets the fold manager
-    pub fn fold_manager(&self) -> &crate::editor::FoldManager {
+    pub fn fold_manager(&self) -> &crate::fold::FoldManager {
         &self.fold_manager
     }
 
     /// Gets mutable fold manager
-    pub fn fold_manager_mut(&mut self) -> &mut crate::editor::FoldManager {
+    pub fn fold_manager_mut(&mut self) -> &mut crate::fold::FoldManager {
         &mut self.fold_manager
     }
 

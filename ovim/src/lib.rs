@@ -8,7 +8,7 @@
 
 pub mod api;
 pub mod key_convert;
-pub mod buffer;
+pub use ovim_core::buffer;
 pub mod cli;
 pub mod client;
 pub mod commands;

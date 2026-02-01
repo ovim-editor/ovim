@@ -1,5 +1,6 @@
 use super::{Buffer, Cursor};
-use crate::editor::{ChangeManager, FoldManager};
+use crate::change::ChangeManager;
+use crate::fold::FoldManager;
 use crate::GitStatus;
 use anyhow::{Context, Result};
 use ropey::Rope;

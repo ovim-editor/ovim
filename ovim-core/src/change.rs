@@ -1,6 +1,6 @@
 use crate::buffer::Buffer;
-use crate::editor::search::Search;
-use crate::editor::textobjects::TextObjects;
+use crate::search::Search;
+use crate::textobjects::TextObjects;
 use anyhow::Result;
 
 /// Position in the buffer (line, column)
@@ -1007,7 +1007,7 @@ impl Change {
     fn find_text_object(
         buffer: &Buffer,
         object_type: &TextObjectType,
-    ) -> Option<crate::editor::textobjects::TextObjectRange> {
+    ) -> Option<crate::textobjects::TextObjectRange> {
         match object_type {
             TextObjectType::Word { inner } => {
                 if *inner {
@@ -1182,12 +1182,12 @@ impl ChangeBuilder {
 /// Manages undo/redo history and change tracking
 #[derive(Debug)]
 pub struct ChangeManager {
-    pub(crate) undo_stack: Vec<Change>,
-    pub(crate) redo_stack: Vec<Change>,
-    pub(crate) current_builder: Option<ChangeBuilder>,
-    pub(crate) last_change: Option<Change>,
+    pub undo_stack: Vec<Change>,
+    pub redo_stack: Vec<Change>,
+    pub current_builder: Option<ChangeBuilder>,
+    pub last_change: Option<Change>,
     /// Tracks the undo stack size at last save (None if never saved)
-    pub(crate) save_point: Option<usize>,
+    pub save_point: Option<usize>,
 }
 
 impl Default for ChangeManager {
@@ -1239,7 +1239,7 @@ impl ChangeManager {
     }
 
     /// Pushes a change to the undo stack
-    pub(crate) fn push_change(&mut self, change: Change) {
+    pub fn push_change(&mut self, change: Change) {
         self.undo_stack.push(change.clone());
         self.redo_stack.clear(); // Clear redo stack on new change
         self.last_change = Some(change);
