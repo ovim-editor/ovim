@@ -268,7 +268,7 @@ impl Buffer {
             }
         } else {
             // Multi-line insertion
-            let last_line = text.split('\n').last().unwrap_or("");
+            let last_line = text.split('\n').next_back().unwrap_or("");
             tree_sitter::Point {
                 row: line + newline_count,
                 column: last_line.chars().count(),

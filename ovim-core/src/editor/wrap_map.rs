@@ -70,7 +70,7 @@ impl WrapMap {
         if display_width == 0 {
             1
         } else {
-            ((display_width + wrap_width - 1) / wrap_width) as u16
+            display_width.div_ceil(wrap_width) as u16
         }
     }
 

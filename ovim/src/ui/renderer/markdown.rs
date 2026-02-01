@@ -180,10 +180,12 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
 
 /// Highlights a code block using tree-sitter syntax highlighting
 /// Returns None if language is unknown or highlighting fails
+type LineHighlights = Vec<Vec<(Range<usize>, HighlightGroup)>>;
+
 fn highlight_code_block(
     language: &str,
     code: &str,
-) -> Option<Vec<Vec<(Range<usize>, HighlightGroup)>>> {
+) -> Option<LineHighlights> {
     let lang = LanguageRegistry::from_info_string(language)?;
     let mut highlighter = SyntaxHighlighter::new(lang).ok()?;
     highlighter.parse(code);

@@ -238,7 +238,7 @@ async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult
 
     // Run cargo install
     let child = match TokioCommand::new("cargo")
-        .args(&["install", package])
+        .args(["install", package])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

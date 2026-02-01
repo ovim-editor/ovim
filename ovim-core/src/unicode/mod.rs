@@ -82,14 +82,12 @@ pub fn byte_offset_for_grapheme(s: &str, grapheme_index: usize) -> Option<usize>
 /// Returns `(start_byte, end_byte)` or `None` if out of bounds.
 #[inline]
 pub fn byte_range_for_grapheme(s: &str, grapheme_index: usize) -> Option<(usize, usize)> {
-    let mut iter = s.grapheme_indices(true);
-    let mut count = 0;
+    let iter = s.grapheme_indices(true);
 
-    while let Some((start, grapheme)) = iter.next() {
+    for (count, (start, grapheme)) in iter.enumerate() {
         if count == grapheme_index {
             return Some((start, start + grapheme.len()));
         }
-        count += 1;
     }
     None
 }
