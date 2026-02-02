@@ -20,7 +20,7 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<()> 
         MouseEventKind::Down(MouseButton::Middle) => {
             handle_middle_click(editor, event.column, event.row)
         }
-        _ => Ok(()), // Right click, other events: ignored
+        _ => Ok(()), // Right click, mouse move, horizontal scroll: ignored
     }
 }
 

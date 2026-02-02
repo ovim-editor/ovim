@@ -63,9 +63,11 @@ pub fn convert_mouse_event_kind(mek: ct::MouseEventKind) -> core::MouseEventKind
         ct::MouseEventKind::Down(b) => core::MouseEventKind::Down(convert_mouse_button(b)),
         ct::MouseEventKind::Up(b) => core::MouseEventKind::Up(convert_mouse_button(b)),
         ct::MouseEventKind::Drag(b) => core::MouseEventKind::Drag(convert_mouse_button(b)),
+        ct::MouseEventKind::Moved => core::MouseEventKind::Moved,
         ct::MouseEventKind::ScrollUp => core::MouseEventKind::ScrollUp,
         ct::MouseEventKind::ScrollDown => core::MouseEventKind::ScrollDown,
-        _ => core::MouseEventKind::ScrollUp,
+        ct::MouseEventKind::ScrollLeft => core::MouseEventKind::ScrollLeft,
+        ct::MouseEventKind::ScrollRight => core::MouseEventKind::ScrollRight,
     }
 }
 
