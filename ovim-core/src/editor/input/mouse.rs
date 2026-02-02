@@ -92,6 +92,46 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     Some((buffer_line, clamped_col))
 }
 
+/// Returns the buffer line if the click lands in the blame column area.
+fn is_blame_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
+    let area = editor.render_cache.last_buffer_area?;
+    let blame_width = editor.render_cache.last_blame_width;
+
+    if blame_width == 0 {
+        return None;
+    }
+
+    if screen_col < area.x
+        || screen_row < area.y
+        || screen_col >= area.x + area.width
+        || screen_row >= area.y + area.height
+    {
+        return None;
+    }
+
+    let rel_col = (screen_col - area.x) as usize;
+    let rel_row = (screen_row - area.y) as usize;
+
+    if rel_col < blame_width {
+        let buffer_line = if editor.options.wrap {
+            if let Some(wrap_map) = editor.wrap_map() {
+                let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+                let absolute_visual_row = rel_row + viewport_visual_row;
+                let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
+                logical_line.min(editor.buffer().line_count().saturating_sub(1))
+            } else {
+                (rel_row + editor.scroll_offset())
+                    .min(editor.buffer().line_count().saturating_sub(1))
+            }
+        } else {
+            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+        };
+        Some(buffer_line)
+    } else {
+        None
+    }
+}
+
 /// Returns the buffer line if the click lands in the gutter area.
 fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
     let area = editor.render_cache.last_buffer_area?;
@@ -169,6 +209,13 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     // Exit visual mode if active
     if matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
         editor.set_mode(Mode::Normal);
+    }
+
+    // Check blame column click → show blame popup
+    if let Some(line) = is_blame_click(editor, col, row) {
+        editor.buffer_mut().cursor_mut().set_position(line, 0);
+        editor.show_blame_info();
+        return Ok(());
     }
 
     // Check gutter click → select line (Visual Line mode)

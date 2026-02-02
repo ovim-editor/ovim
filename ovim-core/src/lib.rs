@@ -30,7 +30,7 @@ pub mod commands;
 
 pub use key::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use rect::Rect;
-pub use git::{GitBlame, GitStatus, LineBlameInfo, LineStatus};
+pub use git::{CommitInfo, GitBlame, GitStatus, LineBlameInfo, LineStatus};
 pub use mode::Mode;
 pub use command_result::{CommandResult, SuccessResponse, ErrorResponse};
 pub use dashboard::{DashboardAnimation, MENU_ITEMS};

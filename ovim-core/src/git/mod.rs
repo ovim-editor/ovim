@@ -1,5 +1,6 @@
 use anyhow::Result;
-use git2::{DiffOptions, Repository};
+use chrono::{TimeZone, Utc};
+use git2::{DiffOptions, Oid, Repository};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -161,12 +162,24 @@ impl Default for GitStatus {
 /// Blame information for a single line
 #[derive(Debug, Clone)]
 pub struct LineBlameInfo {
+    /// Full 40-char hex OID
+    pub commit_oid: String,
     /// Short commit hash (5 chars)
     pub commit_hash: String,
     /// Author name
     pub author: String,
     /// Commit timestamp (Unix epoch seconds)
     pub timestamp: i64,
+}
+
+/// Metadata for a single commit
+#[derive(Debug, Clone)]
+pub struct CommitInfo {
+    pub oid_hex: String,
+    pub author: String,
+    pub date: String,
+    pub subject: String,
+    pub body: String,
 }
 
 /// Git blame data for an entire file
@@ -205,7 +218,8 @@ impl GitBlame {
         for hunk_idx in 0..blame.len() {
             if let Some(hunk) = blame.get_index(hunk_idx) {
                 let commit_id = hunk.final_commit_id();
-                let hash = format!("{}", commit_id)[..5.min(format!("{}", commit_id).len())].to_string();
+                let oid_hex = format!("{}", commit_id);
+                let hash = oid_hex[..5.min(oid_hex.len())].to_string();
                 let sig = hunk.final_signature();
                 let author = sig
                     .name()
@@ -224,6 +238,7 @@ impl GitBlame {
                 for i in 0..count {
                     let line_idx = start - 1 + i; // convert to 0-indexed
                     lines[line_idx] = Some(LineBlameInfo {
+                        commit_oid: oid_hex.clone(),
                         commit_hash: hash.clone(),
                         author: author.clone(),
                         timestamp,
@@ -261,6 +276,106 @@ impl GitBlame {
     }
 }
 
+/// Returns true if the OID is all zeros (uncommitted line).
+pub fn is_zero_oid(oid_hex: &str) -> bool {
+    oid_hex.chars().all(|c| c == '0')
+}
+
+/// Looks up commit metadata for a given OID hex string.
+pub fn commit_info<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<CommitInfo> {
+    if is_zero_oid(oid_hex) {
+        return Ok(CommitInfo {
+            oid_hex: oid_hex.to_string(),
+            author: String::new(),
+            date: String::new(),
+            subject: "Not yet committed".to_string(),
+            body: String::new(),
+        });
+    }
+
+    let file_path = file_path.as_ref();
+    let repo = Repository::discover(file_path)?;
+    let oid = Oid::from_str(oid_hex)?;
+    let commit = repo.find_commit(oid)?;
+
+    let author = commit
+        .author()
+        .name()
+        .unwrap_or("Unknown")
+        .to_string();
+    let time = commit.author().when();
+    let dt = Utc.timestamp_opt(time.seconds(), 0).single();
+    let date = dt
+        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default();
+    let message = commit.message().unwrap_or("").to_string();
+    let mut lines = message.lines();
+    let subject = lines.next().unwrap_or("").to_string();
+    let body = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+
+    Ok(CommitInfo {
+        oid_hex: oid_hex.to_string(),
+        author,
+        date,
+        subject,
+        body,
+    })
+}
+
+/// Returns a unified diff for a commit (compared to its first parent).
+pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String> {
+    if is_zero_oid(oid_hex) {
+        return Ok("Not yet committed".to_string());
+    }
+
+    let file_path = file_path.as_ref();
+    let repo = Repository::discover(file_path)?;
+    let oid = Oid::from_str(oid_hex)?;
+    let commit = repo.find_commit(oid)?;
+    let tree = commit.tree()?;
+
+    let parent_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0)?.tree()?)
+    } else {
+        None
+    };
+
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+
+    let mut patch = String::new();
+
+    // Header
+    let author_sig = commit.author();
+    let author = author_sig.name().unwrap_or("Unknown");
+    let time = author_sig.when();
+    let dt = Utc.timestamp_opt(time.seconds(), 0).single();
+    let date = dt
+        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default();
+    let message = commit.message().unwrap_or("");
+    let subject = message.lines().next().unwrap_or("");
+
+    patch.push_str(&format!("commit {}\n", oid_hex));
+    patch.push_str(&format!("Author: {}\n", author));
+    patch.push_str(&format!("Date:   {}\n", date));
+    patch.push_str(&format!("\n    {}\n\n", subject));
+
+    // Diff content
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let origin = line.origin();
+        match origin {
+            '+' | '-' | ' ' => patch.push(origin),
+            _ => {}
+        }
+        if let Ok(content) = std::str::from_utf8(line.content()) {
+            patch.push_str(content);
+        }
+        true
+    })?;
+
+    Ok(patch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +393,13 @@ mod tests {
         assert!(blame.is_empty());
         assert_eq!(blame.line_count(), 0);
         assert!(blame.get(0).is_none());
+    }
+
+    #[test]
+    fn test_is_zero_oid() {
+        assert!(is_zero_oid("0000000000000000000000000000000000000000"));
+        assert!(is_zero_oid("00000"));
+        assert!(!is_zero_oid("abc12"));
+        assert!(!is_zero_oid("a000000000000000000000000000000000000000"));
     }
 }
