@@ -147,6 +147,8 @@ pub struct EditorOptions {
     pub clipboard: String,
     /// Whether `-` key auto-reveals current file in the file tree (default: true)
     pub file_tree_reveal: bool,
+    /// Show git blame gutter (default: false)
+    pub blame: bool,
     /// Background color for textwidth margins
     pub margin_color: MarginColor,
     /// Extra columns of normal background between text edge and shaded margin area (default: 0)
@@ -175,6 +177,7 @@ impl Default for EditorOptions {
             sidescrolloff: 5,
             clipboard: "unnamedplus".to_string(),
             file_tree_reveal: true,
+            blame: false,
             margin_color: MarginColor::None,
             margin_padding: 0,
         }

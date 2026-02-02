@@ -11,6 +11,7 @@ pub use highlighting::LineHighlights;
 pub use line_ending::LineEnding;
 
 use crate::change::ChangeManager;
+use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
 use crate::GitStatus;
 use ropey::Rope;
@@ -42,6 +43,8 @@ pub struct Buffer {
     pub(super) fold_manager: crate::fold::FoldManager,
     /// Git status for this buffer
     pub(super) git_status: GitStatus,
+    /// Git blame data (loaded on demand via :set blame)
+    pub(super) git_blame: Option<GitBlame>,
     /// Change manager for undo/redo (per-buffer)
     pub(super) change_manager: ChangeManager,
     /// Last known file modification time (for external change detection)
@@ -74,6 +77,7 @@ impl Buffer {
             pending_rehighlight: false,
             fold_manager: crate::fold::FoldManager::new(),
             git_status: GitStatus::new(),
+            git_blame: None,
             change_manager: ChangeManager::new(),
             file_mtime: None,
             read_only: false,
@@ -163,6 +167,7 @@ impl Buffer {
             pending_rehighlight: false,
             fold_manager: crate::fold::FoldManager::new(),
             git_status: GitStatus::new(),
+            git_blame: None,
             change_manager: ChangeManager::new(),
             file_mtime: None,
             read_only: false,
@@ -195,6 +200,8 @@ impl Buffer {
     /// Gets a mutable rope reference
     pub fn rope_mut(&mut self) -> &mut Rope {
         self.modified = true;
+        // Blame data becomes stale after any edit
+        self.git_blame = None;
         &mut self.rope
     }
 
@@ -513,6 +520,23 @@ impl Buffer {
     /// Gets the git status for this buffer
     pub fn git_status(&self) -> &GitStatus {
         &self.git_status
+    }
+
+    /// Gets the git blame data for this buffer (if loaded)
+    pub fn git_blame(&self) -> Option<&GitBlame> {
+        self.git_blame.as_ref()
+    }
+
+    /// Loads git blame data for the current file
+    pub fn load_git_blame(&mut self) {
+        if let Some(ref path) = self.file_path {
+            self.git_blame = GitBlame::from_file(path).ok().filter(|b| !b.is_empty());
+        }
+    }
+
+    /// Clears cached git blame data (e.g. after edits make it stale)
+    pub fn clear_git_blame(&mut self) {
+        self.git_blame = None;
     }
 
     /// Gets a reference to the change manager

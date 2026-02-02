@@ -1499,6 +1499,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         if parts.len() >= 2 {
             let filename = parts[1..].join(" ");
             editor.buffer_mut().save_as(&filename)?;
+            if editor.options.blame {
+                editor.buffer_mut().load_git_blame();
+            }
             editor.mark_saved();
         }
         return Ok(());

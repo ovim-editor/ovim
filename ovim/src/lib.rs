@@ -42,4 +42,4 @@ pub use ovim_core::unicode;
 #[cfg(feature = "lua")]
 pub use ovim_core::lua;
 
-pub use ovim_core::git::{GitStatus, LineStatus};
+pub use ovim_core::git::{GitBlame, GitStatus, LineBlameInfo, LineStatus};

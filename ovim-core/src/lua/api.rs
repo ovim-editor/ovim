@@ -244,6 +244,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     mlua::Value::Boolean(false) => "set nofiletreereveal".to_string(),
                     _ => return Err(mlua::Error::external("filetreereveal must be boolean")),
                 },
+                "blame" => match value {
+                    mlua::Value::Boolean(true) => "set blame".to_string(),
+                    mlua::Value::Boolean(false) => "set noblame".to_string(),
+                    _ => return Err(mlua::Error::external("blame must be boolean")),
+                },
                 "margincolor" => match value {
                     mlua::Value::String(s) => {
                         let s = s.to_str().map_err(mlua::Error::external)?;
