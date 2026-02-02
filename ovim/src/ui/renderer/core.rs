@@ -419,10 +419,10 @@ fn set_cursor_position(
 
         let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
             if let Some(wrap_map) = editor.wrap_map() {
-                let (abs_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+                let (abs_visual_row, visual_col) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
                 let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
                 let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
-                let screen_col = display_col % text_width;
+                let screen_col = visual_col;
                 (
                     screen_row.min(buffer_area.height.saturating_sub(1) as usize),
                     screen_col.min(text_width.saturating_sub(1)),
