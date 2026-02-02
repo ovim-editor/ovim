@@ -7,48 +7,196 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// File to open (when no subcommand is given)
-    #[arg(global = true)]
+    /// File to open (supports FILE:LINE:COL syntax)
     pub file: Option<String>,
 
     /// Run in headless mode with REST API enabled (no TUI)
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub headless: bool,
 
-    /// Session name for headless mode (default: "default")
-    #[arg(long, global = true)]
+    /// Session name for headless mode (required with --headless)
+    #[arg(long)]
     pub session: Option<String>,
 
     /// Set viewport dimensions (e.g., 80x24)
-    #[arg(long, global = true, value_parser = parse_dimensions)]
+    #[arg(long, value_parser = parse_dimensions)]
     pub dimension: Option<(u16, u16)>,
 
     /// Render the editor to ANSI and exit (useful for debugging)
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub render: bool,
+}
+
+/// Parsed file argument with optional line and column
+#[derive(Debug, Clone)]
+pub struct FileArg {
+    pub path: String,
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+}
+
+impl FileArg {
+    /// Parse a file argument that may contain :LINE:COL suffix.
+    /// Splits from the right, so paths with colons are handled gracefully.
+    pub fn parse(input: &str) -> Self {
+        // Try to parse trailing :COL and :LINE segments from the right
+        // "src/main.rs:42:10" -> path="src/main.rs", line=42, col=10
+        // "src/main.rs:42"    -> path="src/main.rs", line=42, col=None
+        // "src/main.rs"       -> path="src/main.rs", line=None, col=None
+        // "C:\foo\bar"        -> path="C:\foo\bar", line=None, col=None
+
+        let parts: Vec<&str> = input.rsplitn(3, ':').collect();
+
+        match parts.as_slice() {
+            [col_str, line_str, path] => {
+                if let (Ok(line), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>())
+                {
+                    if line > 0 && col > 0 && !path.is_empty() {
+                        return FileArg {
+                            path: path.to_string(),
+                            line: Some(line),
+                            col: Some(col),
+                        };
+                    }
+                }
+                // Fall through: try LINE only
+                if let Ok(line) = col_str.parse::<usize>() {
+                    // "path:with:colon:42" -> rsplitn(3) gives ["42", "colon", "path:with"]
+                    // Reconstruct the path
+                    let reconstructed = format!("{}:{}", path, line_str);
+                    if line > 0 {
+                        return FileArg {
+                            path: reconstructed,
+                            line: Some(line),
+                            col: None,
+                        };
+                    }
+                }
+                // Not parseable, treat whole input as path
+                FileArg {
+                    path: input.to_string(),
+                    line: None,
+                    col: None,
+                }
+            }
+            [maybe_line, path] => {
+                if let Ok(line) = maybe_line.parse::<usize>() {
+                    if line > 0 && !path.is_empty() {
+                        return FileArg {
+                            path: path.to_string(),
+                            line: Some(line),
+                            col: None,
+                        };
+                    }
+                }
+                FileArg {
+                    path: input.to_string(),
+                    line: None,
+                    col: None,
+                }
+            }
+            _ => FileArg {
+                path: input.to_string(),
+                line: None,
+                col: None,
+            },
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// List all running ovim sessions
-    Sessions,
+    // ── File Operations ──────────────────────────────────────────────
+    /// Replace text in a file
+    #[command(next_help_heading = "File Operations")]
+    Edit {
+        /// File to edit
+        file: String,
+        /// Line number (1-indexed) to restrict the search to
+        #[arg(long)]
+        line: Option<usize>,
+        /// Text to find (literal match, use \n for newlines)
+        #[arg(long)]
+        old: String,
+        /// Replacement text (use \n for newlines)
+        #[arg(long)]
+        new: String,
+    },
 
+    /// Insert text into a file
+    Insert {
+        /// File to edit
+        file: String,
+        /// Insert after this line number (1-indexed, 0 = before first line)
+        #[arg(long, conflicts_with = "before")]
+        after: Option<usize>,
+        /// Insert before this line number (1-indexed)
+        #[arg(long, conflicts_with = "after")]
+        before: Option<usize>,
+        /// Text to insert (use \n for newlines)
+        #[arg(long)]
+        text: String,
+    },
+
+    /// Delete lines from a file
+    DeleteLines {
+        /// File to edit
+        file: String,
+        /// First line to delete (1-indexed)
+        #[arg(long)]
+        from: usize,
+        /// Last line to delete (1-indexed, inclusive)
+        #[arg(long)]
+        to: usize,
+    },
+
+    /// Read lines from a file
+    ReadLines {
+        /// File to read
+        file: String,
+        /// First line to read (1-indexed)
+        #[arg(long)]
+        from: usize,
+        /// Last line to read (1-indexed, inclusive)
+        #[arg(long)]
+        to: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    // ── Session Control ──────────────────────────────────────────────
     /// Send key sequence to a session
+    #[command(next_help_heading = "Session Control")]
     Send {
         /// Key sequence (Vim keybindings)
         keys: String,
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
     /// Execute an ex command in a session
     Exec {
         /// Ex command (without leading colon)
         command: String,
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
+    },
+
+    /// Get 21-line context window around cursor
+    Context {
+        /// Session name (required)
+        #[arg(short, long)]
+        session: String,
+    },
+
+    /// Get buffer content from a session
+    Buffer {
+        /// Session name (required)
+        #[arg(short, long)]
+        session: String,
     },
 
     /// Get snapshot of a session's state
@@ -56,58 +204,57 @@ pub enum Command {
         /// Output format (json or pretty)
         #[arg(long, default_value = "json")]
         format: String,
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
-    /// Get buffer content from a session
-    Buffer {
-        /// Session name (auto-discovered if not provided)
+    /// Search for pattern and jump to first match
+    Search {
+        /// Search pattern
+        pattern: String,
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
-    /// Send MCP JSON-RPC request to a session
-    Mcp {
-        /// MCP method (e.g., initialize, tools/list, tools/call)
-        method: String,
-        /// JSON parameters (optional, defaults to {})
-        #[arg(default_value = "{}")]
-        params: String,
-        /// Session name (auto-discovered if not provided)
+    /// Jump to next match and return position
+    NextMatch {
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
-        /// Request ID (defaults to 1)
-        #[arg(long, default_value = "1")]
-        id: i64,
+        session: String,
     },
 
-    /// Kill a running session
-    Kill {
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
-        session: Option<String>,
+    // ── LSP Commands ─────────────────────────────────────────────────
+    /// Language Server Protocol commands
+    #[command(next_help_heading = "LSP")]
+    Lsp {
+        #[command(subcommand)]
+        command: LspCommand,
     },
 
-    /// Check health of a session
-    Health {
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
-        session: Option<String>,
+    // ── Session Management ───────────────────────────────────────────
+    /// Manage ovim sessions
+    #[command(next_help_heading = "Session Management")]
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
 
-    /// Get LSP status from a session
-    LspStatus {
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
-        session: Option<String>,
-    },
+    // ── Integration ──────────────────────────────────────────────────
+    /// Start ovim as a long-running MCP server
+    #[command(next_help_heading = "Integration")]
+    McpServer {
+        /// Workspace directory for ovim sessions
+        #[arg(long)]
+        workspace: Option<String>,
 
-    /// Get 21-line context window around cursor
-    Context {
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
+        /// Port to listen on (default: auto)
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Session name for this server instance
+        #[arg(long)]
         session: Option<String>,
     },
 
@@ -125,182 +272,121 @@ pub enum Command {
         #[arg(long)]
         workspace: Option<String>,
     },
+}
 
-    /// Start ovim as a long-running MCP server
-    McpServer {
-        /// Workspace directory for ovim sessions
-        #[arg(long)]
-        workspace: Option<String>,
-
-        /// Port to listen on (default: auto)
-        #[arg(long)]
-        port: Option<u16>,
-
-        /// Session name for this server instance
-        #[arg(long)]
-        session: Option<String>,
-    },
-
-    /// Trigger goto-definition and return new location as JSON
-    GotoDefinition {
-        /// Session name (auto-discovered if not provided)
+/// LSP subcommands
+#[derive(Subcommand, Debug)]
+pub enum LspCommand {
+    /// Get LSP status from a session
+    Status {
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
-    /// Trigger find-references and return list from picker
-    FindReferences {
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
-        session: Option<String>,
-    },
-
-    /// Trigger hover and return hover_info
+    /// Trigger hover and return hover info
     Hover {
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
-    /// Search for pattern and jump to first match
-    Search {
-        /// Search pattern
-        pattern: String,
-        /// Session name (auto-discovered if not provided)
+    /// Trigger goto-definition and return new location
+    Definition {
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
-    /// Jump to next match and return position
-    NextMatch {
-        /// Session name (auto-discovered if not provided)
+    /// Trigger find-references and return list
+    References {
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
     /// Return LSP diagnostic info
     Diagnostics {
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
+    },
+
+    /// List document symbols
+    Symbols {
+        /// Session name (required)
+        #[arg(short, long)]
+        session: String,
     },
 
     /// Get structural outline of the current document
     Outline {
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
     /// Search workspace symbols by name
     Symbol {
         /// Symbol name or partial name to search
         query: String,
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
     /// Get call hierarchy (incoming/outgoing) for symbol at cursor
     Trace {
-        /// Session name (auto-discovered if not provided)
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
-    },
-
-    /// List document symbols
-    Symbols {
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
-        session: Option<String>,
-    },
-
-    /// List all configured languages and their LSP status
-    ListLanguages {
-        /// Show detailed information (LSP command, root markers, etc.)
-        #[arg(short, long)]
-        verbose: bool,
-    },
-
-    /// Check language configuration and LSP status for a file
-    CheckLsp {
-        /// File path to check
-        file: String,
-
-        /// Show full language configuration
-        #[arg(short, long)]
-        verbose: bool,
+        session: String,
     },
 
     /// Wait for LSP to be ready (blocks until ready)
-    WaitLsp {
-        /// Session name (auto-discovered if not provided)
+    Wait {
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
+        session: String,
         /// Timeout in milliseconds (default: 30000)
         #[arg(long, default_value = "30000")]
         timeout: u64,
     },
 
-    /// Replace text on a specific line or in the whole buffer
-    Edit {
-        /// Line number (1-indexed) to restrict the search to
-        #[arg(long)]
-        line: Option<usize>,
-        /// Text to find (literal match, use \n for newlines)
-        #[arg(long)]
-        old: String,
-        /// Replacement text (use \n for newlines)
-        #[arg(long)]
-        new: String,
-        /// Session name (auto-discovered if not provided)
+    /// Check language configuration and LSP status for a file (no session needed)
+    Check {
+        /// File path to check
+        file: String,
+        /// Show full language configuration
         #[arg(short, long)]
-        session: Option<String>,
+        verbose: bool,
     },
 
-    /// Insert text after or before a line
-    Insert {
-        /// Insert after this line number (1-indexed, 0 = before first line)
-        #[arg(long, conflicts_with = "before")]
-        after: Option<usize>,
-        /// Insert before this line number (1-indexed)
-        #[arg(long, conflicts_with = "after")]
-        before: Option<usize>,
-        /// Text to insert (use \n for newlines)
-        #[arg(long)]
-        text: String,
-        /// Session name (auto-discovered if not provided)
+    /// List all configured languages (no session needed)
+    Languages {
+        /// Show detailed information (LSP command, root markers, etc.)
         #[arg(short, long)]
-        session: Option<String>,
+        verbose: bool,
+    },
+}
+
+/// Session management subcommands
+#[derive(Subcommand, Debug)]
+pub enum SessionCommand {
+    /// List all running ovim sessions
+    List,
+
+    /// Kill a running session
+    Kill {
+        /// Session name (required)
+        #[arg(short, long)]
+        session: String,
     },
 
-    /// Delete a range of lines
-    DeleteLines {
-        /// First line to delete (1-indexed)
-        #[arg(long)]
-        from: usize,
-        /// Last line to delete (1-indexed, inclusive)
-        #[arg(long)]
-        to: usize,
-        /// Session name (auto-discovered if not provided)
+    /// Check health of a session
+    Health {
+        /// Session name (required)
         #[arg(short, long)]
-        session: Option<String>,
-    },
-
-    /// Read a range of lines with line numbers
-    ReadLines {
-        /// First line to read (1-indexed)
-        #[arg(long)]
-        from: usize,
-        /// Last line to read (1-indexed, inclusive)
-        #[arg(long)]
-        to: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-        /// Session name (auto-discovered if not provided)
-        #[arg(short, long)]
-        session: Option<String>,
+        session: String,
     },
 
     /// Clean up stale, expired, and corrupted session files
@@ -349,24 +435,53 @@ impl Cli {
         self.command.is_none()
     }
 
-    /// Get editor args (for backward compatibility)
-    pub fn editor_args(&self) -> EditorArgs {
-        EditorArgs {
-            file: self.file.clone(),
-            headless: self.headless,
-            session: self.session.clone(),
-            dimension: self.dimension,
-            render: self.render,
-        }
+    /// Parse the file argument with LINE:COL support
+    pub fn file_arg(&self) -> Option<FileArg> {
+        self.file.as_ref().map(|f| FileArg::parse(f))
     }
 }
 
-/// Legacy args structure for editor mode (backward compatibility)
-#[derive(Debug, Clone)]
-pub struct EditorArgs {
-    pub file: Option<String>,
-    pub headless: bool,
-    pub session: Option<String>,
-    pub dimension: Option<(u16, u16)>,
-    pub render: bool,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_arg_parse_path_only() {
+        let arg = FileArg::parse("src/main.rs");
+        assert_eq!(arg.path, "src/main.rs");
+        assert_eq!(arg.line, None);
+        assert_eq!(arg.col, None);
+    }
+
+    #[test]
+    fn test_file_arg_parse_path_and_line() {
+        let arg = FileArg::parse("src/main.rs:42");
+        assert_eq!(arg.path, "src/main.rs");
+        assert_eq!(arg.line, Some(42));
+        assert_eq!(arg.col, None);
+    }
+
+    #[test]
+    fn test_file_arg_parse_path_line_col() {
+        let arg = FileArg::parse("src/main.rs:42:10");
+        assert_eq!(arg.path, "src/main.rs");
+        assert_eq!(arg.line, Some(42));
+        assert_eq!(arg.col, Some(10));
+    }
+
+    #[test]
+    fn test_file_arg_parse_no_numbers() {
+        let arg = FileArg::parse("path:with:colons");
+        assert_eq!(arg.path, "path:with:colons");
+        assert_eq!(arg.line, None);
+        assert_eq!(arg.col, None);
+    }
+
+    #[test]
+    fn test_file_arg_parse_zero_line() {
+        // Line 0 is invalid (1-indexed), treat as path
+        let arg = FileArg::parse("file:0");
+        assert_eq!(arg.path, "file:0");
+        assert_eq!(arg.line, None);
+    }
 }

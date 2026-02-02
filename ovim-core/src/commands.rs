@@ -1375,6 +1375,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Handle :mapclear and variants
             } else if is_mapclear_command(command) {
                 handle_mapclear_command(editor, command)
+            // Handle :session start/stop/list commands
+            } else if command == "session" || command.starts_with("session ") {
+                handle_session_command(editor, command)
             // Handle :! shell command execution
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 if shell_cmd.trim().is_empty() {
@@ -1677,6 +1680,144 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
         }
         Err(e) => CommandResult::Error(ErrorResponse {
             error: format!("Failed to execute command: {}", e),
+        }),
+    }
+}
+
+/// Handle :session start/stop/list commands
+///
+/// `:session start NAME` — writes a session file so external tools can discover this instance
+/// `:session stop` — deletes the session file (API server keeps running for internal use)
+/// `:session` or `:session list` — shows active sessions
+fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
+    use crate::session::SessionInfo;
+
+    let subcmd = command
+        .strip_prefix("session")
+        .unwrap_or("")
+        .trim();
+
+    match subcmd {
+        "" | "list" => {
+            // Show active sessions
+            match SessionInfo::list_all() {
+                Ok(sessions) if sessions.is_empty() => {
+                    let msg = if editor.active_session.is_some() {
+                        format!("Active session: {}", editor.active_session.as_ref().unwrap())
+                    } else {
+                        "No registered sessions. Use :session start NAME to register.".to_string()
+                    };
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some(msg),
+                        line_count: None,
+                    })
+                }
+                Ok(sessions) => {
+                    let mut msg = format!("{} active session(s):", sessions.len());
+                    for s in &sessions {
+                        let marker = if editor.active_session.as_deref() == Some(&s.session_name) {
+                            " (this)"
+                        } else {
+                            ""
+                        };
+                        msg.push_str(&format!(
+                            "\n  {} (PID {}, port {}){}",
+                            s.session_name, s.pid, s.port, marker
+                        ));
+                    }
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some(msg),
+                        line_count: None,
+                    })
+                }
+                Err(e) => CommandResult::Error(ErrorResponse {
+                    error: format!("Failed to list sessions: {}", e),
+                }),
+            }
+        }
+        s if s.starts_with("start ") => {
+            let name = s["start ".len()..].trim();
+            if name.is_empty() {
+                return CommandResult::Error(ErrorResponse {
+                    error: "Usage: :session start NAME".to_string(),
+                });
+            }
+
+            // Validate session name (alphanumeric, underscore, hyphen only)
+            if !name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return CommandResult::Error(ErrorResponse {
+                    error: "Session name must contain only alphanumeric characters, underscores, and hyphens".to_string(),
+                });
+            }
+
+            // Check if already registered
+            if let Some(ref existing) = editor.active_session {
+                return CommandResult::Error(ErrorResponse {
+                    error: format!(
+                        "Already registered as session '{}'. Use :session stop first.",
+                        existing
+                    ),
+                });
+            }
+
+            // Need API port to register
+            let port = match editor.api_port {
+                Some(p) => p,
+                None => {
+                    return CommandResult::Error(ErrorResponse {
+                        error: "API server not running".to_string(),
+                    });
+                }
+            };
+
+            let file = editor
+                .buffer()
+                .file_path()
+                .map(|s| s.to_string());
+
+            let session_info = SessionInfo::new(port, file, name.to_string());
+            match session_info.write() {
+                Ok(()) => {
+                    editor.active_session = Some(name.to_string());
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Session '{}' registered", name)),
+                        line_count: None,
+                    })
+                }
+                Err(e) => CommandResult::Error(ErrorResponse {
+                    error: format!("Failed to register session: {}", e),
+                }),
+            }
+        }
+        "stop" => {
+            match editor.active_session.take() {
+                Some(name) => {
+                    // Delete the session file
+                    let port = editor.api_port.unwrap_or(0);
+                    let session_info = SessionInfo::new(port, None, name.clone());
+                    let _ = session_info.delete();
+                    CommandResult::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Session '{}' unregistered", name)),
+                        line_count: None,
+                    })
+                }
+                None => CommandResult::Error(ErrorResponse {
+                    error: "No active session to stop".to_string(),
+                }),
+            }
+        }
+        _ => CommandResult::Error(ErrorResponse {
+            error: format!(
+                "Unknown session subcommand: '{}'. Usage: :session [start NAME|stop|list]",
+                subcmd
+            ),
         }),
     }
 }
