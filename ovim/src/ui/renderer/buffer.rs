@@ -532,6 +532,81 @@ fn build_gutter_line(
     Line::from(spans)
 }
 
+/// Appends diagnostic virtual text to a rendered row, if there's enough room.
+/// The diagnostic is appended inline after the code text, truncated to fit within `text_width`.
+/// Requires at least 6 columns of remaining space (for "  ⚠ X…").
+fn append_diagnostic_virtual_text(
+    row: &mut Line<'static>,
+    diagnostics: &[&lsp_types::Diagnostic],
+    text_width: usize,
+) {
+    if diagnostics.is_empty() {
+        return;
+    }
+    // Measure the row's current display width
+    let row_width: usize = row
+        .spans
+        .iter()
+        .map(|s| {
+            s.content
+                .chars()
+                .map(char_display_width)
+                .sum::<usize>()
+        })
+        .sum();
+    // Need at least 6 cols: "  " + icon + " " + 1 char message
+    let remaining = text_width.saturating_sub(row_width);
+    if remaining < 6 {
+        return;
+    }
+    let diag = diagnostics[0];
+    let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
+    // "  " prefix + icon + " " = 4 chars overhead (icon is 1 display col for nerdfont)
+    let max_msg_len = remaining.saturating_sub(4);
+    let msg = diag.message.lines().next().unwrap_or("");
+    let msg = if msg.chars().count() > max_msg_len {
+        format!(
+            "{}...",
+            msg.chars()
+                .take(max_msg_len.saturating_sub(3))
+                .collect::<String>()
+        )
+    } else {
+        msg.to_string()
+    };
+    let vtext_style = Style::default()
+        .fg(fg_color)
+        .bg(bg_color)
+        .add_modifier(Modifier::ITALIC);
+    // Remove trailing padding spans (spaces) so we can re-pad after appending
+    // The split_line_into_rows pads rows to full width; we need to replace that padding
+    // with our diagnostic text
+    while let Some(last) = row.spans.last() {
+        if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
+            row.spans.pop();
+        } else {
+            break;
+        }
+    }
+    row.spans.push(Span::raw("  "));
+    row.spans
+        .push(Span::styled(format!("{} {}", icon, msg), vtext_style));
+    // Re-pad to text_width
+    let new_width: usize = row
+        .spans
+        .iter()
+        .map(|s| {
+            s.content
+                .chars()
+                .map(char_display_width)
+                .sum::<usize>()
+        })
+        .sum();
+    if new_width < text_width {
+        row.spans.push(Span::raw(" ".repeat(text_width - new_width)));
+    }
+}
+
 /// Splits a rendered Line into multiple visual rows for soft wrapping.
 /// Each row fits within `width` display columns. Rows are padded to full width.
 /// Wide characters (CJK, emoji) that don't fit at a row boundary are pushed to
@@ -928,35 +1003,6 @@ pub fn render_buffer(
                     &control_ranges,
                 );
 
-                // Add diagnostic virtual text if present (only on first visual row in wrap mode)
-                if has_diagnostics {
-                    // Get the first (most severe) diagnostic
-                    let diag = line_diagnostics[0];
-                    let (icon, fg_color, bg_color) =
-                        get_diagnostic_virtual_text_style(diag.severity);
-                    // Truncate message to fit on screen
-                    let max_msg_len = text_width.saturating_sub(line_text.chars().count() + 4);
-                    let msg = diag.message.lines().next().unwrap_or("");
-                    let msg = if msg.chars().count() > max_msg_len {
-                        format!(
-                            "{}...",
-                            msg.chars()
-                                .take(max_msg_len.saturating_sub(3))
-                                .collect::<String>()
-                        )
-                    } else {
-                        msg.to_string()
-                    };
-                    let vtext_style = Style::default()
-                        .fg(fg_color)
-                        .bg(bg_color)
-                        .add_modifier(Modifier::ITALIC);
-                    // Plain gap between code and diagnostic (no background)
-                    line.spans.push(Span::raw("  "));
-                    line.spans
-                        .push(Span::styled(format!("{} {}", icon, msg), vtext_style));
-                }
-
                 // Apply cursorline background if this is the cursor line
                 if is_cursor_line && yank_flash.is_none() {
                     let cursorline_bg = Color::Rgb(40, 40, 50); // Subtle dark blue background
@@ -995,7 +1041,13 @@ pub fn render_buffer(
 
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
-                    let visual_rows = split_line_into_rows(line, text_width);
+                    let mut visual_rows = split_line_into_rows(line, text_width);
+                    // Append diagnostic virtual text to the first visual row (after splitting)
+                    if has_diagnostics {
+                        if let Some(first_row) = visual_rows.first_mut() {
+                            append_diagnostic_virtual_text(first_row, &line_diagnostics, text_width);
+                        }
+                    }
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
                         if visual_rows_used >= visible_lines {
                             break;
@@ -1017,7 +1069,10 @@ pub fn render_buffer(
                         visual_rows_used += 1;
                     }
                 } else {
-                    // No wrap: pad and push single line
+                    // No wrap: append diagnostic virtual text before padding
+                    if has_diagnostics {
+                        append_diagnostic_virtual_text(&mut line, &line_diagnostics, text_width);
+                    }
                     let line_len: usize =
                         line.spans.iter().map(|s| s.content.chars().count()).sum();
                     if line_len < text_width {
