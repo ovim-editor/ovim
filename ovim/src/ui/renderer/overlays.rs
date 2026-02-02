@@ -8,6 +8,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use super::helpers::char_col_to_display_col;
 use super::layout::OverlayContext;
 
 /// Renders hover information as a floating window positioned near the cursor
@@ -78,7 +79,6 @@ pub fn render_hover_window(
     let gutter_width = layout.gutter_width;
 
     // Convert cursor to screen coordinates
-    let screen_line = cursor_line.saturating_sub(viewport_start);
     let rope = editor.buffer().rope();
     let line_text = if cursor_line < editor.buffer().line_count() {
         rope.line(cursor_line).to_string()
@@ -87,7 +87,20 @@ pub fn render_hover_window(
     };
     let line_text = line_text.trim_end_matches('\n');
     let tab_width = editor.options.tab_width;
-    let display_col = super::helpers::char_col_to_display_col(line_text, cursor_col, tab_width);
+    let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
+    let text_width = layout.text_width;
+
+    let screen_line = if editor.options.wrap && text_width > 0 {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let (abs_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+            let viewport_row = wrap_map.logical_to_visual(viewport_start);
+            abs_row.saturating_sub(viewport_row)
+        } else {
+            cursor_line.saturating_sub(viewport_start)
+        }
+    } else {
+        cursor_line.saturating_sub(viewport_start)
+    };
 
     let cursor_screen_x = buffer_area.x + gutter_width as u16 + display_col as u16;
     let cursor_screen_y = buffer_area.y + screen_line as u16;
@@ -220,7 +233,6 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     let cursor = editor.buffer().cursor();
     let cursor_line = cursor.line();
     let cursor_col = cursor.col();
-    let screen_line = cursor_line.saturating_sub(viewport_start);
 
     // Get the line text and convert character column to display column
     let rope = editor.buffer().rope();
@@ -234,7 +246,20 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
 
     // Convert character column to display column (accounting for tabs and emojis)
     let tab_width = editor.options.tab_width;
-    let display_col = super::helpers::char_col_to_display_col(line_text, cursor_col, tab_width);
+    let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
+    let text_width = layout.text_width;
+
+    let screen_line = if editor.options.wrap && text_width > 0 {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let (abs_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+            let viewport_row = wrap_map.logical_to_visual(viewport_start);
+            abs_row.saturating_sub(viewport_row)
+        } else {
+            cursor_line.saturating_sub(viewport_start)
+        }
+    } else {
+        cursor_line.saturating_sub(viewport_start)
+    };
 
     let gutter_width = layout.gutter_width;
 
