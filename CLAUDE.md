@@ -8,58 +8,66 @@ A Neovim clone in Rust with LSP support and seamless headless mode.
 # Build
 cargo build --release
 
-# Run editor
+# Run editor (supports FILE:LINE:COL)
 ./target/release/ovim file.txt
+./target/release/ovim src/main.rs:42:10
 ./target/release/ovim file.rs --headless --session dev
 
-# Control sessions (auto-discovers by default!)
-./target/release/ovim sessions                # List all sessions
-./target/release/ovim send "ggK"              # Auto-discover session, send commands (with \e, \c, \n escapes)
-./target/release/ovim context                 # Auto-discover & get 21-line context around cursor (AI-optimized!)
-./target/release/ovim buffer                  # Auto-discover & get full buffer content
-./target/release/ovim mcp tools/list          # Auto-discover & send MCP requests
-./target/release/ovim health                  # Auto-discover & check health
-./target/release/ovim lsp-status              # Auto-discover & get LSP server status
-./target/release/ovim kill                    # Auto-discover & kill session
-./target/release/ovim cleanup                 # Clean up stale/expired/corrupted session files
-./target/release/ovim cleanup --dry-run       # Show what would be cleaned up (no changes)
-./target/release/ovim cleanup --max-age 7     # Remove sessions older than 7 days
+# File operations (stateless — no session needed)
+ovim edit src/main.rs --old "foo" --new "bar"
+ovim insert src/main.rs --after 42 --text "new line"
+ovim delete-lines src/main.rs --from 42 --to 45
+ovim read-lines src/main.rs --from 40 --to 60
 
-# Explicit session override (when multiple sessions running)
-./target/release/ovim send "ggK" --session dev
-./target/release/ovim context --session dev
-./target/release/ovim buffer --session dev
+# Session control (always requires -s SESSION)
+ovim send "ggK" -s dev
+ovim exec "set number" -s dev
+ovim context -s dev
+ovim buffer -s dev
+
+# LSP commands (grouped under `lsp`)
+ovim lsp status -s dev
+ovim lsp hover -s dev
+ovim lsp check file.rs              # No session needed
+ovim lsp languages --verbose        # No session needed
+
+# Session management
+ovim session list
+ovim session kill -s dev
+ovim session health -s dev
+ovim session cleanup --dry-run
+ovim session cleanup --max-age 7
 ```
 
-**New in v0.1**: Built-in session control (editor + client in one binary). **Session auto-discovery** (single session = no session flag needed).
+**Sessions are opt-in.** TUI mode doesn't register a session. Headless mode requires `--session NAME`. TUI users can opt in with `:session start NAME`.
 
 ## Agent Interface (Recommended for AI/LLM agents)
 
-Stateless, surgical buffer manipulation without fighting vim's modal grammar:
+Stateless, surgical file manipulation — no session needed:
 
 ```bash
 # Edit: find and replace text (literal match, \n for newlines)
-ovim edit --line 42 --old "foo" --new "bar"           # Replace on specific line
-ovim edit --old "unique string" --new "replacement"    # Replace in whole buffer (must be unique match)
+ovim edit FILE --line 42 --old "foo" --new "bar"        # Replace on specific line
+ovim edit FILE --old "unique string" --new "replacement" # Replace in whole file (must be unique)
 
 # Insert lines
-ovim insert --after 42 --text "    new line"           # Insert after line 42
-ovim insert --before 1 --text "use std::io;"           # Insert before line 1
-ovim insert --after 0 --text "first line"              # Insert at start of file
+ovim insert FILE --after 42 --text "    new line"       # Insert after line 42
+ovim insert FILE --before 1 --text "use std::io;"       # Insert before line 1
+ovim insert FILE --after 0 --text "first line"          # Insert at start of file
 
 # Delete lines (inclusive)
-ovim delete-lines --from 42 --to 45                    # Delete lines 42-45
+ovim delete-lines FILE --from 42 --to 45                # Delete lines 42-45
 
 # Read lines with line numbers
-ovim read-lines --from 40 --to 60                      # Plain text output
-ovim read-lines --from 40 --to 60 --json               # JSON output
+ovim read-lines FILE --from 40 --to 60                  # Plain text output
+ovim read-lines FILE --from 40 --to 60 --json           # JSON output
 
-# Context & buffer (read-only)
-ovim context                                           # 21-line window around cursor
-ovim buffer                                            # Full buffer content
+# Context & buffer (session-addressed, read-only)
+ovim context -s SESSION                                 # 21-line window around cursor
+ovim buffer -s SESSION                                  # Full buffer content
 ```
 
-All commands support `--session` for multi-session. Line numbers are 1-indexed. All mutations record undo history (`:u` works). Use `\n` in `--old`/`--new`/`--text` for multi-line strings.
+File operations use direct file I/O (no session required). Line numbers are 1-indexed. Use `\n` in `--old`/`--new`/`--text` for multi-line strings.
 
 ## Architecture
 
@@ -85,50 +93,36 @@ src/
 
 ### Headless Mode (Recommended)
 
-1. **Start session**: `ovim --headless --session myproject src/main.rs`
-2. **Control it**: `./ovim send "ggK"` (auto-discovers session!)
-3. **Check LSP**: `./ovim lsp-status` (auto-discovers)
-4. **Kill it**: `./ovim kill` (auto-discovers and cleans up)
+1. **Start session**: `ovim src/main.rs --headless --session myproject`
+2. **Control it**: `ovim send "ggK" -s myproject`
+3. **Check LSP**: `ovim lsp status -s myproject`
+4. **Kill it**: `ovim session kill -s myproject`
 
 Sessions stored in:
 - macOS: `~/Library/Caches/ovim/sessions/`
 - Linux: `~/.cache/ovim/sessions/`
 
-### Session Auto-Discovery
+### Session Model
 
-All CLI commands support automatic session discovery:
+**Sessions are opt-in.** TUI mode doesn't register a session by default. Headless mode requires `--session NAME`.
 
-**Single session** (most common case):
-```bash
-ovim send "ggK"                    # Just works!
-ovim context                       # Gets context window
-ovim buffer                        # Gets buffer content
-ovim exec "set number"             # Executes ex command
-ovim snapshot --format json        # Gets editor state
+TUI users can enable session access at runtime:
+```
+:session start myproject    " Registers session, enables API access
+:session stop               " Unregisters session
+:session list               " Shows active sessions
 ```
 
-**Multiple sessions** (use --session flag to specify):
-```bash
-ovim send "ggK" --session projectA
-ovim context --session projectB
-ovim kill --session projectA
-```
-
-**Discovery priority** (when multiple sessions exist):
-1. Named sessions first (e.g., `--session myproject`)
-2. Most recent auto-generated session (by timestamp)
-3. Falls back to `default` if no named sessions
-
-This makes the common single-session workflow frictionless while still supporting complex multi-session setups.
+All session-addressed CLI commands require an explicit `-s SESSION` flag — there is no auto-discovery.
 
 ### Language Support
 
 **Introspection Commands**:
 ```bash
-ovim list-languages              # Show all configured languages
-ovim list-languages --verbose    # Show detailed LSP configuration
-ovim check-lsp file.rs           # Check language detection & LSP status for file
-ovim check-lsp file.ts --verbose # Show full config + installation hints
+ovim lsp languages              # Show all configured languages
+ovim lsp languages --verbose    # Show detailed LSP configuration
+ovim lsp check file.rs          # Check language detection & LSP status for file
+ovim lsp check file.ts --verbose # Show full config + installation hints
 ```
 
 **Supported Languages** (out-of-the-box):
@@ -260,19 +254,12 @@ Example:
 This tool is optimized for AI workflows - use it to get contextual information without fetching the entire buffer.
 
 **Session Parameter**:
-All tools (except `list_sessions`) support an optional `session` parameter to explicitly specify which session to use. This is useful when multiple ovim sessions are running:
+All MCP tools (except `list_sessions`) support an optional `session` parameter to specify which session to target. This is useful when multiple ovim sessions are running:
 
 ```
-send_keys(keys="ggdd", session="tui_12345_1234567890")
+send_keys(keys="ggdd", session="my_session")
 set_mode(mode="INSERT", session="my_session")
 ```
-
-If `session` is omitted:
-- Single session running: Auto-discovers and uses it ✓
-- Multiple sessions running: Returns error with list of available sessions
-- Current session (from previous calls): Uses it if available
-
-This ensures predictable behavior when working with multiple sessions simultaneously.
 
 **Resources**:
 - `resources/list` - List available resources (buffer, snapshot, lsp/status, current file)
@@ -324,10 +311,7 @@ Every time you message Claude Code, automatically include the current editor con
 ```bash
 # In .claude/hooks/before_response.sh (create if needed)
 #!/bin/bash
-SESSION=$(./target/release/ovim sessions | grep -o 'tui[^ ]*' | head -1)
-if [ -n "$SESSION" ]; then
-  ./target/release/ovim context "$SESSION" | head -30
-fi
+ovim context -s my-session | head -30
 ```
 
 Then Claude Code will whisper the context into every response automatically.
@@ -336,7 +320,7 @@ Then Claude Code will whisper the context into every response automatically.
 Just ask for context when you need it:
 
 ```bash
-./target/release/ovim context my-session
+ovim context -s my-session
 ```
 
 **Why this matters:**
@@ -376,9 +360,10 @@ vim.opt.shiftwidth = 4
 ## Key Implementation Details
 
 ### Session Management
+- **Sessions are opt-in**: TUI mode doesn't register. Headless requires `--session NAME`.
+- TUI users can opt in at runtime with `:session start NAME` / `:session stop`
 - `SessionInfo` struct in `session.rs` with PID, port, file, LSP status
-- Written on startup, auto-deleted on exit (signal handlers)
-- Auto-cleanup of stale sessions (dead processes) during discovery
+- Written on startup (headless) or on `:session start` (TUI), auto-deleted on exit
 - PID verification with process start time to prevent PID reuse issues
 - Session health checks verify API endpoint accessibility
 - Session expiry support (optional max-age) for long-running cleanup
@@ -434,16 +419,16 @@ ovim is designed as an **AI-first IDE** with native MCP support and integrated C
 **Multi-Session Workflows:**
 ```bash
 # Spawn sessions for multiple files
-ovim --headless --session main src/main.rs &
-ovim --headless --session lib src/lib.rs &
+ovim src/main.rs --headless --session main &
+ovim src/lib.rs --headless --session lib &
 
 # Query and edit via CLI
-ovim mcp main tools/call '{"name":"get_buffer"}'
-ovim send lib "ggdd"
+ovim buffer -s main
+ovim send "ggdd" -s lib
 
 # Coordinate changes
-ovim sessions  # See all active sessions
-ovim kill main lib  # Cleanup
+ovim session list             # See all active sessions
+ovim session kill -s main     # Kill specific session
 ```
 
 ### MCP for Any LLM Client
@@ -452,7 +437,6 @@ The **HTTP `/mcp` endpoint** is the primary MCP interface. Any tool can use ovim
 
 1. **Discovering sessions**: Read `~/.cache/ovim/sessions/*.json` for port info
 2. **Sending MCP requests**: POST JSON-RPC 2.0 to `http://127.0.0.1:PORT/mcp`
-3. **Using the CLI**: `ovim mcp SESSION_NAME METHOD PARAMS`
 
 **Supported MCP clients:**
 - Claude Desktop (via `ovim install claude`)
@@ -476,9 +460,10 @@ curl -X POST http://127.0.0.1:PORT/v1/mcp \
 ## Common Tasks
 
 **Add new CLI subcommand:**
-1. Add variant to `Command` enum in `cli.rs`
+1. Add variant to `Command` enum (or `LspCommand`/`SessionCommand` for grouped commands) in `cli.rs`
 2. Implement handler in `subcommands.rs`
-3. Use `OvimClient` for HTTP/MCP requests
+3. For session-addressed commands: use `OvimClient` for HTTP requests
+4. For file-addressed commands: use direct file I/O (no session needed)
 
 **Add new REST API endpoint:**
 1. Add variant to `ApiRequest` in `api/state.rs`
