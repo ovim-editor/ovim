@@ -61,8 +61,11 @@ pub enum MouseEventKind {
     Down(MouseButton),
     Up(MouseButton),
     Drag(MouseButton),
+    Moved,
     ScrollUp,
     ScrollDown,
+    ScrollLeft,
+    ScrollRight,
 }
 
 /// A mouse event with kind and screen position.
