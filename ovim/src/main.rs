@@ -29,7 +29,6 @@ fn sanitize_session_name(name: &str) -> String {
 async fn main() -> Result<()> {
     // Initialize logging FIRST - before anything else
     if let Err(e) = ovim::log::init() {
-        // Log initialization failed, but logging will fall back to on-demand file opening
         let _ = e;
     }
     ovim_core::log_info!("main", "ovim starting up");
@@ -37,7 +36,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse_args();
 
     // Initialize language registry early (needed for both editor and subcommands)
-    // This loads embedded languages.toml and merges with user config
     if let Err(e) = ovim::language_config::LanguageRegistry::init() {
         ovim_core::log_warn!("main", "Failed to initialize language registry: {}", e);
         ovim_core::log_warn!("main", "Continuing with limited language support...");
@@ -50,7 +48,11 @@ async fn main() -> Result<()> {
     }
 
     // Otherwise, run editor mode
-    let args = cli.editor_args();
+    let file_arg = cli.file_arg();
+    let headless = cli.headless;
+    let session_name = cli.session.clone();
+    let dimension = cli.dimension;
+    let render = cli.render;
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
@@ -58,18 +60,24 @@ async fn main() -> Result<()> {
     }
 
     // Load file from command line argument if provided
-    let mut editor = if let Some(file_path) = &args.file {
+    let mut editor = if let Some(ref file) = file_arg {
         let mut ed = Editor::new();
-        if let Err(e) = ed.load_file(file_path) {
-            // If file doesn't exist, create empty buffer with that filename
+        if let Err(e) = ed.load_file(&file.path) {
             ovim_core::log_warn!(
                 "main",
                 "Could not load file '{}': {}. Starting with empty buffer.",
-                file_path,
+                file.path,
                 e
             );
             ed = Editor::new();
-            ed.buffer_mut().set_file_path(file_path.clone());
+            ed.buffer_mut().set_file_path(file.path.clone());
+        }
+        // Jump to line:col if specified
+        if let Some(line) = file.line {
+            let line_0 = line.saturating_sub(1);
+            let col_0 = file.col.unwrap_or(1).saturating_sub(1);
+            ed.buffer_mut().cursor_mut().set_position(line_0, col_0);
+            ed.buffer_mut().validate_cursor_position();
         }
         // Switch from Dashboard to Normal mode when a file is loaded
         ed.set_mode(Mode::Normal);
@@ -82,9 +90,8 @@ async fn main() -> Result<()> {
     editor.ui_panels.cat_animation = Some(Box::new(ovim::ui::CatAnimation::new()));
 
     // Handle --render flag (render to ANSI and exit)
-    // This path outputs to stdout and never starts the TUI, so print! is safe
-    if args.render {
-        let (width, height) = args.dimension.unwrap_or((80, 24));
+    if render {
+        let (width, height) = dimension.unwrap_or((80, 24));
         match ovim::ui::render_editor_to_ansi(&mut editor, width, height) {
             Ok(ansi) => {
                 #[allow(clippy::print_stdout)]
@@ -122,7 +129,6 @@ async fn main() -> Result<()> {
     let (port_tx, port_rx) = tokio::sync::oneshot::channel();
 
     // Spawn API server in a separate task
-    // Port 0 means "pick any available port"
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         if let Err(e) = ovim::api::start_server("127.0.0.1:0", tx_clone, port_tx).await {
@@ -139,20 +145,25 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Store API port in editor for :session start/stop commands
+    editor.api_port = Some(port);
+
     // Handle headless mode
     // Headless mode uses stderr for user feedback (no TUI), so eprintln! is safe
     #[allow(clippy::print_stderr)]
-    if args.headless {
-        // Write session info
-        let session_name = args
-            .session
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
+    if headless {
+        // Require --session NAME for headless mode
+        let session_name = match session_name {
+            Some(name) => sanitize_session_name(&name),
+            None => {
+                eprintln!("Error: --headless requires --session NAME");
+                eprintln!("Usage: ovim <file> --headless --session <name>");
+                std::process::exit(1);
+            }
+        };
 
-        // Sanitize session name to prevent path traversal attacks
-        let session_name = sanitize_session_name(&session_name);
-
-        let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
+        let file_path = file_arg.map(|f| f.path);
+        let session_info = SessionInfo::new(port, file_path, session_name.clone());
 
         if let Err(e) = session_info.write() {
             eprintln!("Warning: Failed to write session info: {}", e);
@@ -164,14 +175,9 @@ async fn main() -> Result<()> {
         }
 
         // Create a guard to ensure cleanup on panic
-        // This guard will automatically delete the session file when dropped,
-        // even if the process panics before the signal handlers run
         let _session_guard = SessionGuard::new(session_info.clone());
 
         // Set up cleanup on exit - handle both SIGINT and SIGTERM
-        // This fixes stale session file accumulation when killed with `kill` or `ovim-ctl kill`
-
-        // Handle SIGINT (Ctrl+C)
         let session_info_for_sigint = session_info.clone();
         let sigint_handle = tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
@@ -182,7 +188,6 @@ async fn main() -> Result<()> {
             std::process::exit(0);
         });
 
-        // Handle SIGTERM (kill command, ovim-ctl kill)
         let session_info_for_sigterm = session_info.clone();
         let sigterm_handle = tokio::spawn(async move {
             let mut sigterm = match signal(SignalKind::terminate()) {
@@ -222,40 +227,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // TUI mode - eprintln! allowed only for session setup messages (before TUI starts)
-    let session_info = {
-        #[allow(clippy::print_stderr)]
-        {
-            let session_name = {
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                let timestamp = now.as_secs();
-                let nanos = now.subsec_nanos();
-                let pid = std::process::id();
-                // Combine nanos and pid for uniqueness
-                let random_part = ((nanos as u64) ^ (pid as u64)).wrapping_mul(31);
-                format!("tui_{}_{}", random_part, timestamp)
-            };
-
-            let session_info = SessionInfo::new(port, args.file.clone(), session_name.clone());
-
-            if let Err(e) = session_info.write() {
-                eprintln!("Warning: Failed to write session info: {}", e);
-            }
-            // Don't log session creation in TUI mode — stderr shares the
-            // terminal and the message corrupts the ratatui display.
-
-            session_info
-        }
-    };
-
-    // Create a guard to ensure cleanup on panic
-    let _session_guard = SessionGuard::new(session_info.clone());
+    // TUI mode - no session registration by default
+    // The API server still runs for internal communication,
+    // but no session file is written. Users can opt in with :session start NAME.
 
     // Create UI for TUI mode
-    let mut ui = if let Some(dimensions) = args.dimension {
+    let mut ui = if let Some(dimensions) = dimension {
         UI::with_dimensions(Some(dimensions))?
     } else {
         UI::new()?

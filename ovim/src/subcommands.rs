@@ -4,18 +4,13 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::cli::Command;
+use crate::cli::{Command, LspCommand, SessionCommand};
 use crate::client::OvimClient;
 use crate::session::SessionInfo;
 
-/// Helper to resolve session - auto-discover if not provided
-fn resolve_session(session_name: Option<String>) -> Result<SessionInfo> {
-    match session_name {
-        Some(name) => {
-            SessionInfo::read(&name).context(format!("Failed to find session '{}'", name))
-        }
-        None => SessionInfo::auto_discover().context("Failed to auto-discover session"),
-    }
+/// Resolve a session by name (no auto-discovery)
+fn resolve_session(session_name: &str) -> Result<SessionInfo> {
+    SessionInfo::read(session_name).context(format!("Failed to find session '{}'", session_name))
 }
 
 /// Expand \n escape sequences in a string (consistent with send_keys)
@@ -45,21 +40,43 @@ fn expand_escapes(s: &str) -> String {
 /// Execute a subcommand
 pub fn execute_subcommand(command: Command) -> Result<()> {
     match command {
-        Command::Sessions => cmd_sessions(),
-        Command::Send { session, keys } => cmd_send(session, &keys),
-        Command::Exec { session, command } => cmd_exec(session, &command),
-        Command::Snapshot { session, format } => cmd_snapshot(session, &format),
-        Command::Buffer { session } => cmd_buffer(session),
-        Command::Mcp {
-            session,
-            method,
-            params,
-            id,
-        } => cmd_mcp(session, &method, &params, id),
-        Command::Kill { session } => cmd_kill(session),
-        Command::Health { session } => cmd_health(session),
-        Command::LspStatus { session } => cmd_lsp_status(session),
-        Command::Context { session } => cmd_context(session),
+        // File operations (direct file I/O, no session needed)
+        Command::Edit {
+            file,
+            line,
+            old,
+            new,
+        } => cmd_edit_file(&file, line, &old, &new),
+        Command::Insert {
+            file,
+            after,
+            before,
+            text,
+        } => cmd_insert_file(&file, after, before, &text),
+        Command::DeleteLines { file, from, to } => cmd_delete_lines_file(&file, from, to),
+        Command::ReadLines {
+            file,
+            from,
+            to,
+            json,
+        } => cmd_read_lines_file(&file, from, to, json),
+
+        // Session control
+        Command::Send { session, keys } => cmd_send(&session, &keys),
+        Command::Exec { session, command } => cmd_exec(&session, &command),
+        Command::Snapshot { session, format } => cmd_snapshot(&session, &format),
+        Command::Buffer { session } => cmd_buffer(&session),
+        Command::Context { session } => cmd_context(&session),
+        Command::Search { pattern, session } => cmd_search(&pattern, &session),
+        Command::NextMatch { session } => cmd_next_match(&session),
+
+        // LSP commands (nested)
+        Command::Lsp { command } => execute_lsp_command(command),
+
+        // Session management (nested)
+        Command::Session { command } => execute_session_command(command),
+
+        // Integration
         Command::Install {
             editor,
             show_config,
@@ -70,41 +87,302 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
             port,
             session,
         } => cmd_mcp_server(workspace, port, session),
-        Command::GotoDefinition { session } => cmd_goto_definition(session),
-        Command::FindReferences { session } => cmd_find_references(session),
-        Command::Hover { session } => cmd_hover(session),
-        Command::Search { pattern, session } => cmd_search(&pattern, session),
-        Command::NextMatch { session } => cmd_next_match(session),
-        Command::Outline { session } => cmd_outline(session),
-        Command::Symbol { query, session } => cmd_symbol(&query, session),
-        Command::Trace { session } => cmd_trace(session),
-        Command::Diagnostics { session } => cmd_diagnostics(session),
-        Command::Symbols { session } => cmd_symbols(session),
-        Command::ListLanguages { verbose } => cmd_list_languages(verbose),
-        Command::CheckLsp { file, verbose } => cmd_check_lsp(&file, verbose),
-        Command::WaitLsp { session, timeout } => cmd_wait_lsp(session, timeout),
-        Command::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
-        Command::Edit {
-            line,
-            old,
-            new,
-            session,
-        } => cmd_edit(session, line, &old, &new),
-        Command::Insert {
-            after,
-            before,
-            text,
-            session,
-        } => cmd_insert(session, after, before, &text),
-        Command::DeleteLines { from, to, session } => cmd_delete_lines(session, from, to),
-        Command::ReadLines {
-            from,
-            to,
-            json,
-            session,
-        } => cmd_read_lines(session, from, to, json),
     }
 }
+
+/// Execute LSP subcommands
+fn execute_lsp_command(command: LspCommand) -> Result<()> {
+    match command {
+        LspCommand::Status { session } => cmd_lsp_status(&session),
+        LspCommand::Hover { session } => cmd_hover(&session),
+        LspCommand::Definition { session } => cmd_goto_definition(&session),
+        LspCommand::References { session } => cmd_find_references(&session),
+        LspCommand::Diagnostics { session } => cmd_diagnostics(&session),
+        LspCommand::Symbols { session } => cmd_symbols(&session),
+        LspCommand::Outline { session } => cmd_outline(&session),
+        LspCommand::Symbol { query, session } => cmd_symbol(&query, &session),
+        LspCommand::Trace { session } => cmd_trace(&session),
+        LspCommand::Wait { session, timeout } => cmd_wait_lsp(&session, timeout),
+        LspCommand::Check { file, verbose } => cmd_check_lsp(&file, verbose),
+        LspCommand::Languages { verbose } => cmd_list_languages(verbose),
+    }
+}
+
+/// Execute session management subcommands
+fn execute_session_command(command: SessionCommand) -> Result<()> {
+    match command {
+        SessionCommand::List => cmd_sessions(),
+        SessionCommand::Kill { session } => cmd_kill(&session),
+        SessionCommand::Health { session } => cmd_health(&session),
+        SessionCommand::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
+    }
+}
+
+// ─── File Operations (direct file I/O) ──────────────────────────────────────
+
+/// Replace text in a file (direct file I/O, no session needed)
+fn cmd_edit_file(
+    file_path: &str,
+    line: Option<usize>,
+    old: &str,
+    new: &str,
+) -> Result<()> {
+    let old_expanded = expand_escapes(old);
+    let new_expanded = expand_escapes(new);
+
+    let content = std::fs::read_to_string(file_path)
+        .context(format!("Failed to read file: {}", file_path))?;
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    if let Some(line_num) = line {
+        // Replace on a specific line
+        if line_num == 0 || line_num > lines.len() {
+            anyhow::bail!(
+                "Line {} out of range (file has {} lines)",
+                line_num,
+                lines.len()
+            );
+        }
+
+        let line_content = lines[line_num - 1];
+        if !line_content.contains(old_expanded.as_str()) {
+            anyhow::bail!(
+                "Text not found on line {}: {:?}\nLine content: {:?}",
+                line_num,
+                old_expanded,
+                line_content
+            );
+        }
+
+        let match_count = line_content.matches(old_expanded.as_str()).count();
+        if match_count > 1 {
+            anyhow::bail!(
+                "Text {:?} found {} times on line {}. Be more specific.",
+                old_expanded,
+                match_count,
+                line_num
+            );
+        }
+
+        let new_line = line_content.replacen(&old_expanded, &new_expanded, 1);
+        let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        new_lines[line_num - 1] = new_line;
+
+        let mut new_content = new_lines.join("\n");
+        if content.ends_with('\n') {
+            new_content.push('\n');
+        }
+
+        atomic_write(file_path, &new_content)?;
+        println!("Replaced on line {}", line_num);
+    } else {
+        // Replace in whole buffer — must be unique
+        let match_count = content.matches(old_expanded.as_str()).count();
+        if match_count == 0 {
+            anyhow::bail!("Text not found in file: {:?}", old_expanded);
+        }
+        if match_count > 1 {
+            // Show where the matches are
+            let mut match_lines = Vec::new();
+            for (i, line_text) in lines.iter().enumerate() {
+                if line_text.contains(old_expanded.as_str()) {
+                    match_lines.push(format!("  line {}: {}", i + 1, line_text.trim()));
+                }
+            }
+            anyhow::bail!(
+                "Text {:?} found {} times. Use --line to specify which occurrence:\n{}",
+                old_expanded,
+                match_count,
+                match_lines.join("\n")
+            );
+        }
+
+        let new_content = content.replacen(&old_expanded, &new_expanded, 1);
+        atomic_write(file_path, &new_content)?;
+        println!("Replaced 1 occurrence");
+    }
+
+    Ok(())
+}
+
+/// Insert text into a file (direct file I/O)
+fn cmd_insert_file(
+    file_path: &str,
+    after: Option<usize>,
+    before: Option<usize>,
+    text: &str,
+) -> Result<()> {
+    let text_expanded = expand_escapes(text);
+
+    let content = std::fs::read_to_string(file_path)
+        .context(format!("Failed to read file: {}", file_path))?;
+
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    // Handle the case where the file is empty
+    if lines.is_empty() && !content.is_empty() {
+        lines.push(String::new());
+    }
+
+    let insert_lines: Vec<String> = text_expanded.lines().map(|l| l.to_string()).collect();
+    let insert_count = insert_lines.len();
+
+    if let Some(after_line) = after {
+        if after_line > lines.len() {
+            anyhow::bail!(
+                "Line {} out of range (file has {} lines). Use --after 0 to insert at start.",
+                after_line,
+                lines.len()
+            );
+        }
+        // Insert after the given line (0 means before first line)
+        for (i, new_line) in insert_lines.into_iter().enumerate() {
+            lines.insert(after_line + i, new_line);
+        }
+        println!(
+            "Inserted {} line(s) after line {}",
+            insert_count, after_line
+        );
+    } else if let Some(before_line) = before {
+        if before_line == 0 || before_line > lines.len() + 1 {
+            anyhow::bail!(
+                "Line {} out of range (file has {} lines)",
+                before_line,
+                lines.len()
+            );
+        }
+        let idx = before_line - 1;
+        for (i, new_line) in insert_lines.into_iter().enumerate() {
+            lines.insert(idx + i, new_line);
+        }
+        println!(
+            "Inserted {} line(s) before line {}",
+            insert_count, before_line
+        );
+    } else {
+        anyhow::bail!("Either --after or --before must be specified");
+    }
+
+    let mut new_content = lines.join("\n");
+    if content.ends_with('\n') {
+        new_content.push('\n');
+    }
+
+    atomic_write(file_path, &new_content)?;
+    Ok(())
+}
+
+/// Delete lines from a file (direct file I/O)
+fn cmd_delete_lines_file(file_path: &str, from: usize, to: usize) -> Result<()> {
+    let content = std::fs::read_to_string(file_path)
+        .context(format!("Failed to read file: {}", file_path))?;
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    if from == 0 || to == 0 {
+        anyhow::bail!("Line numbers are 1-indexed (got from={}, to={})", from, to);
+    }
+    if from > lines.len() || to > lines.len() {
+        anyhow::bail!(
+            "Line range {}-{} out of range (file has {} lines)",
+            from,
+            to,
+            lines.len()
+        );
+    }
+    if from > to {
+        anyhow::bail!("--from ({}) must be <= --to ({})", from, to);
+    }
+
+    let mut new_lines: Vec<&str> = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let line_num = i + 1;
+        if line_num < from || line_num > to {
+            new_lines.push(line);
+        }
+    }
+
+    let deleted_count = to - from + 1;
+    let mut new_content = new_lines.join("\n");
+    if content.ends_with('\n') {
+        new_content.push('\n');
+    }
+
+    atomic_write(file_path, &new_content)?;
+    println!("Deleted {} line(s) ({}-{})", deleted_count, from, to);
+    Ok(())
+}
+
+/// Read lines from a file (direct file I/O)
+fn cmd_read_lines_file(
+    file_path: &str,
+    from: usize,
+    to: usize,
+    json_output: bool,
+) -> Result<()> {
+    let content = std::fs::read_to_string(file_path)
+        .context(format!("Failed to read file: {}", file_path))?;
+
+    let lines: Vec<&str> = content.lines().collect();
+
+    if from == 0 || to == 0 {
+        anyhow::bail!("Line numbers are 1-indexed (got from={}, to={})", from, to);
+    }
+    if from > lines.len() {
+        anyhow::bail!(
+            "Line {} out of range (file has {} lines)",
+            from,
+            lines.len()
+        );
+    }
+
+    let effective_to = to.min(lines.len());
+
+    if json_output {
+        let json_lines: Vec<serde_json::Value> = (from..=effective_to)
+            .map(|i| {
+                serde_json::json!({
+                    "number": i,
+                    "text": lines[i - 1]
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "lines": json_lines }))?
+        );
+    } else {
+        for i in from..=effective_to {
+            println!("{:>4} | {}", i, lines[i - 1]);
+        }
+    }
+
+    Ok(())
+}
+
+/// Atomic write: write to .tmp file then rename
+fn atomic_write(file_path: &str, content: &str) -> Result<()> {
+    use std::io::Write;
+
+    let path = std::path::Path::new(file_path);
+    let tmp_path = path.with_extension("tmp");
+
+    let mut f = std::fs::File::create(&tmp_path)
+        .context(format!("Failed to create temp file: {}", tmp_path.display()))?;
+    f.write_all(content.as_bytes())?;
+    f.flush()?;
+    f.sync_all()?;
+
+    std::fs::rename(&tmp_path, path).context(format!(
+        "Failed to rename {} -> {}",
+        tmp_path.display(),
+        path.display()
+    ))?;
+
+    Ok(())
+}
+
+// ─── Session Control ─────────────────────────────────────────────────────────
 
 /// List all running sessions
 fn cmd_sessions() -> Result<()> {
@@ -133,7 +411,6 @@ fn cmd_sessions() -> Result<()> {
             .file
             .as_ref()
             .map(|f| {
-                // Show just filename if path is long
                 if f.len() > 40 {
                     format!("...{}", &f[f.len() - 37..])
                 } else {
@@ -152,7 +429,7 @@ fn cmd_sessions() -> Result<()> {
 }
 
 /// Send keys to a session
-fn cmd_send(session_name: Option<String>, keys: &str) -> Result<()> {
+fn cmd_send(session_name: &str, keys: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
@@ -165,7 +442,7 @@ fn cmd_send(session_name: Option<String>, keys: &str) -> Result<()> {
 }
 
 /// Execute ex command in a session
-fn cmd_exec(session_name: Option<String>, command: &str) -> Result<()> {
+fn cmd_exec(session_name: &str, command: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
@@ -178,7 +455,7 @@ fn cmd_exec(session_name: Option<String>, command: &str) -> Result<()> {
 }
 
 /// Get snapshot from a session
-fn cmd_snapshot(session_name: Option<String>, format: &str) -> Result<()> {
+fn cmd_snapshot(session_name: &str, format: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
@@ -215,7 +492,7 @@ fn cmd_snapshot(session_name: Option<String>, format: &str) -> Result<()> {
 }
 
 /// Get buffer content from a session
-fn cmd_buffer(session_name: Option<String>) -> Result<()> {
+fn cmd_buffer(session_name: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
@@ -225,71 +502,120 @@ fn cmd_buffer(session_name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Send MCP request to a session
-fn cmd_mcp(session_name: Option<String>, method: &str, params_str: &str, id: i64) -> Result<()> {
+/// Get context window from a session
+fn cmd_context(session_name: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
-    // Parse params as JSON
-    let params: Value = serde_json::from_str(params_str)
-        .context(format!("Failed to parse params as JSON: {}", params_str))?;
-
     let client = OvimClient::new(&session);
+
     let response = client
-        .send_mcp_request(method, params, id)
-        .context("Failed to send MCP request")?;
+        .send_mcp_request(
+            "tools/call",
+            serde_json::json!({
+                "name": "get_context_window",
+                "arguments": {}
+            }),
+            1,
+        )
+        .context("Failed to get context window")?;
 
-    println!("{}", serde_json::to_string_pretty(&response)?);
-    Ok(())
-}
-
-/// Kill a session
-fn cmd_kill(session_name: Option<String>) -> Result<()> {
-    let session = resolve_session(session_name)?;
-
-    let client = OvimClient::new(&session);
-    client
-        .kill_session(&session)
-        .context("Failed to kill session")?;
-
-    println!(
-        "\x1b[32mSession '{}' (PID: {}) killed\x1b[0m",
-        session.session_name, session.pid
-    );
-    Ok(())
-}
-
-/// Check health of a session
-fn cmd_health(session_name: Option<String>) -> Result<()> {
-    let session = resolve_session(session_name)?;
-
-    let client = OvimClient::new(&session);
-    let health = client.get_health().context("Failed to get health")?;
-
-    println!("Session: {}", session.session_name);
-    println!("Status: {}", health.status);
-    println!("Uptime: {} seconds", health.uptime_seconds);
-    if let Some(file) = &health.file {
-        println!("File: {}", file);
-    }
-    println!("Ready: {}", health.ready);
-
-    if !health.lsp_servers.is_empty() {
-        println!("\nLSP Servers:");
-        for (lang, status) in &health.lsp_servers {
-            let status_colored = match status.as_str() {
-                "ready" => format!("\x1b[32m{}\x1b[0m", status),
-                "initializing" => format!("\x1b[33m{}\x1b[0m", status),
-                _ => status.clone(),
-            };
-            println!("  {}: {}", lang, status_colored);
+    if let Some(text_field) = response
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("text"))
+    {
+        if let Some(text_str) = text_field.as_str() {
+            if let Ok(context_info) = serde_json::from_str::<serde_json::Value>(text_str) {
+                if let Some(context_text) = context_info.get("context").and_then(|c| c.as_str()) {
+                    println!("{}", context_text);
+                    return Ok(());
+                }
+            }
         }
     }
 
+    anyhow::bail!("Failed to extract context from MCP response")
+}
+
+/// Search for pattern and jump to first match
+fn cmd_search(pattern: &str, session_name: &str) -> Result<()> {
+    use serde_json::json;
+    use std::thread;
+    use std::time::Duration;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let before = client
+        .get_snapshot()
+        .context("Failed to get snapshot before search")?;
+
+    let search_cmd = format!("/{}<CR>", pattern);
+    client
+        .send_keys(&search_cmd)
+        .context("Failed to send search keys")?;
+    thread::sleep(Duration::from_millis(200));
+    let after = client
+        .get_snapshot()
+        .context("Failed to get snapshot after search")?;
+
+    let found =
+        (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": found,
+            "file": after.buffer.file_path,
+            "line": after.cursor.line + 1,
+            "column": after.cursor.column + 1
+        }))?
+    );
+
     Ok(())
 }
 
+/// Jump to next match and return position
+fn cmd_next_match(session_name: &str) -> Result<()> {
+    use serde_json::json;
+    use std::thread;
+    use std::time::Duration;
+
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let before = client
+        .get_snapshot()
+        .context("Failed to get snapshot before next match")?;
+    client
+        .send_keys("n")
+        .context("Failed to send next match keys")?;
+    thread::sleep(Duration::from_millis(100));
+    let after = client
+        .get_snapshot()
+        .context("Failed to get snapshot after next match")?;
+
+    let moved =
+        (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": moved,
+            "file": after.buffer.file_path,
+            "line": after.cursor.line + 1,
+            "column": after.cursor.column + 1
+        }))?
+    );
+
+    Ok(())
+}
+
+// ─── LSP Commands ────────────────────────────────────────────────────────────
+
 /// Get LSP status from a session
-fn cmd_lsp_status(session_name: Option<String>) -> Result<()> {
+fn cmd_lsp_status(session_name: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
@@ -328,380 +654,8 @@ fn cmd_lsp_status(session_name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Get context window from a session
-fn cmd_context(session_name: Option<String>) -> Result<()> {
-    let session = resolve_session(session_name)?;
-
-    let client = OvimClient::new(&session);
-
-    // Use send_mcp_request directly to get the raw response
-    let response = client
-        .send_mcp_request(
-            "tools/call",
-            serde_json::json!({
-                "name": "get_context_window",
-                "arguments": {}
-            }),
-            1,
-        )
-        .context("Failed to get context window")?;
-
-    // Extract the context string from the MCP response
-    // The response structure is: result.content[0].text contains JSON-serialized ContextWindowInfo
-    if let Some(text_field) = response
-        .get("result")
-        .and_then(|r| r.get("content"))
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("text"))
-    {
-        if let Some(text_str) = text_field.as_str() {
-            // Parse the JSON string to extract ContextWindowInfo
-            if let Ok(context_info) = serde_json::from_str::<serde_json::Value>(text_str) {
-                if let Some(context_text) = context_info.get("context").and_then(|c| c.as_str()) {
-                    // Print the context, which has \n escape sequences that will be rendered as newlines
-                    println!("{}", context_text);
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    anyhow::bail!("Failed to extract context from MCP response")
-}
-
-/// Install ovim as MCP server for supported editors
-fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Result<()> {
-    use std::fs;
-    use std::path::PathBuf;
-
-    // Determine ovim binary path (canonicalized to avoid symlink/double-slash issues)
-    let ovim_path = std::env::current_exe().context("Failed to get current executable path")?;
-    let ovim_bin = ovim_path
-        .canonicalize()
-        .unwrap_or(ovim_path)
-        .to_string_lossy()
-        .to_string();
-
-    // Determine workspace directory
-    let workspace_dir = if let Some(w) = workspace {
-        PathBuf::from(w)
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".ovim-workspace")
-    };
-
-    // Create workspace if it doesn't exist
-    if !show_config {
-        fs::create_dir_all(&workspace_dir).context("Failed to create workspace directory")?;
-    }
-
-    // Generate MCP configuration (stdio-based server)
-    let mcp_config = serde_json::json!({
-        "type": "stdio",
-        "command": ovim_bin,
-        "args": ["mcp-server", "--workspace", workspace_dir.to_string_lossy().to_string()]
-    });
-
-    match editor.to_lowercase().as_str() {
-        "claude-code" | "code" => install_claude_code(&mcp_config, show_config)?,
-        "claude-desktop" | "desktop" => install_claude_desktop(&mcp_config, show_config)?,
-        "claude" => {
-            // Default: install for both Claude Code and Claude Desktop
-            install_claude_code(&mcp_config, show_config)?;
-            install_claude_desktop(&mcp_config, show_config)?;
-        }
-        "cursor" => install_cursor(&mcp_config, show_config)?,
-        "all" => {
-            install_claude_code(&mcp_config, show_config)?;
-            install_claude_desktop(&mcp_config, show_config)?;
-            install_cursor(&mcp_config, show_config)?;
-        }
-        _ => anyhow::bail!(
-            "Unknown editor: {}. Supported: claude (both), claude-code, claude-desktop, cursor, all",
-            editor
-        ),
-    }
-
-    if !show_config {
-        println!("\n\x1b[32m✓ Installation complete!\x1b[0m");
-        println!("\nNext steps:");
-        println!("1. Restart the editor to load the new MCP server");
-        println!("2. The ovim MCP server will auto-spawn sessions as needed");
-        println!("3. Any queries involving your code will automatically use ovim's LSP features");
-    }
-
-    Ok(())
-}
-
-/// Install for Claude Code (.mcp.json and .claude/settings.json with hooks)
-fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
-    use std::fs;
-    use std::path::PathBuf;
-
-    let config_path = PathBuf::from(".mcp.json");
-    let claude_dir = PathBuf::from(".claude");
-    let claude_settings_path = claude_dir.join("settings.json");
-    let hook_script_path = claude_dir.join("hooks/inject_context.sh");
-
-    // Get absolute path for display
-    let abs_path = std::fs::canonicalize(".")
-        .map(|p| p.join(".mcp.json"))
-        .unwrap_or_else(|_| config_path.clone());
-
-    // Read existing config or create new one
-    let mut config: serde_json::Value = if config_path.exists() {
-        let content =
-            fs::read_to_string(&config_path).context("Failed to read existing .mcp.json")?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Ensure mcpServers object exists
-    if config.get("mcpServers").is_none() {
-        config["mcpServers"] = serde_json::json!({});
-    }
-
-    // Add or update ovim entry (don't override other servers)
-    config["mcpServers"]["ovim"] = mcp_config.clone();
-
-    if show_config {
-        println!("\n📋 Claude Code config to be added/merged to .mcp.json:");
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
-        );
-        println!("\nWill be saved to: {}", abs_path.display());
-        println!("\n📋 Claude Code hook config (UserPromptSubmit event):");
-        let parent = abs_path.parent().unwrap_or(&abs_path);
-        println!(
-            "Hooks directory: {}",
-            parent.join(".claude/hooks").display()
-        );
-        println!(
-            "Settings file: {}",
-            parent.join(".claude/settings.json").display()
-        );
-        println!(
-            "Hook script: {}",
-            parent.join(".claude/hooks/inject_context.sh").display()
-        );
-    } else {
-        // Create .claude directory and hooks subdirectory
-        fs::create_dir_all(claude_dir.join("hooks"))
-            .context("Failed to create .claude/hooks directory")?;
-
-        // Create hook script that auto-injects context
-        // This hook receives JSON via stdin (UserPromptSubmit event)
-        // and outputs context that Claude Code will inject into the message
-        let hook_script = "#!/bin/bash\n\
-# Auto-inject ovim context into Claude Code messages\n\
-# Runs on UserPromptSubmit event - outputs context to be injected\n\
-\n\
-# Try to find ovim binary (prefer installed, fallback to local build)\n\
-if command -v ovim &>/dev/null; then\n\
-  context_output=$(ovim context 2>/dev/null)\n\
-elif [ -x ./target/release/ovim ]; then\n\
-  context_output=$(./target/release/ovim context 2>/dev/null)\n\
-elif [ -x ./target/debug/ovim ]; then\n\
-  context_output=$(./target/debug/ovim context 2>/dev/null)\n\
-fi\n\
-\n\
-# Exit code 0 and stdout will be injected as context\n\
-if [ -n \"$context_output\" ]; then\n\
-  echo \"$context_output\"\n\
-fi\n\
-";
-        fs::write(&hook_script_path, hook_script).context("Failed to write hook script")?;
-
-        // Make hook executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&hook_script_path, fs::Permissions::from_mode(0o755))
-                .context("Failed to make hook executable")?;
-        }
-
-        // Create or update .claude/settings.json with hook configuration
-        let mut claude_settings: serde_json::Value = if claude_settings_path.exists() {
-            let content = fs::read_to_string(&claude_settings_path)
-                .context("Failed to read existing .claude/settings.json")?;
-            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-        // Ensure hooks object exists
-        if claude_settings.get("hooks").is_none() {
-            claude_settings["hooks"] = serde_json::json!({});
-        }
-
-        // Add UserPromptSubmit hook to auto-inject context (append, don't replace)
-        // This hook runs when the user submits a prompt, and its output is injected as context
-        let mut hooks = claude_settings["hooks"]["UserPromptSubmit"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-
-        // Only add if not already present
-        let new_hook = serde_json::json!({
-            "type": "command",
-            "command": ".claude/hooks/inject_context.sh"
-        });
-
-        let hook_exists = hooks.iter().any(|h| {
-            h.get("command").and_then(|c| c.as_str()) == Some(".claude/hooks/inject_context.sh")
-        });
-
-        if !hook_exists {
-            hooks.push(new_hook);
-            claude_settings["hooks"]["UserPromptSubmit"] = serde_json::Value::Array(hooks);
-            println!("✓ Added ovim context hook to .claude/settings.json");
-        } else {
-            println!("✓ Hook already exists in .claude/settings.json (skipped)");
-        }
-
-        fs::write(
-            &claude_settings_path,
-            serde_json::to_string_pretty(&claude_settings)?,
-        )
-        .context("Failed to write .claude/settings.json")?;
-
-        // Write MCP config
-        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
-            .context("Failed to write .mcp.json")?;
-
-        println!("✓ Updated .mcp.json for Claude Code");
-        println!("  Location: {}", abs_path.display());
-        println!("  Hook script: {}", hook_script_path.display());
-        println!("  Context will auto-inject on every message you send!");
-        println!("\n⚠️  Important: Files are created in the current directory.");
-        println!("  Make sure you run this command from your project root.");
-        println!("  If Claude Code isn't finding ovim after restart:");
-        println!("  1. Run: cd /path/to/your/project");
-        println!("  2. Run: ovim install claude-code");
-        println!("  3. Restart Claude Code");
-    }
-
-    Ok(())
-}
-
-/// Install for Claude Desktop
-fn install_claude_desktop(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
-    use std::fs;
-    use std::path::PathBuf;
-
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let config_path = PathBuf::from(&home).join(".config/Claude/claude_desktop_config.json");
-
-    // Ensure directory exists
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create .config/Claude directory")?;
-    }
-
-    // Read existing config or create new one
-    let mut config: serde_json::Value = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .context("Failed to read existing Claude Desktop config")?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Ensure mcpServers object exists
-    if config.get("mcpServers").is_none() {
-        config["mcpServers"] = serde_json::json!({});
-    }
-
-    // Add or update ovim entry (don't override other servers)
-    config["mcpServers"]["ovim"] = mcp_config.clone();
-
-    if show_config {
-        println!("\n📋 Claude Desktop config to be added/merged:");
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
-        );
-        println!("\nWill be saved to: {}", config_path.to_string_lossy());
-    } else {
-        // Write updated config
-        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
-            .context("Failed to write Claude Desktop config")?;
-        println!("✓ Updated Claude Desktop config");
-    }
-
-    Ok(())
-}
-
-/// Install for Cursor IDE
-fn install_cursor(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
-    use std::fs;
-    use std::path::PathBuf;
-
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let config_path = PathBuf::from(&home).join(".cursor/rules/mcp_config.json");
-
-    // Ensure directory exists
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create .cursor/rules directory")?;
-    }
-
-    // Read existing config or create new one
-    let mut config: serde_json::Value = if config_path.exists() {
-        let content = fs::read_to_string(&config_path)
-            .context("Failed to read existing Cursor MCP config")?;
-        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Ensure mcpServers object exists
-    if config.get("mcpServers").is_none() {
-        config["mcpServers"] = serde_json::json!({});
-    }
-
-    // Add or update ovim entry
-    config["mcpServers"]["ovim"] = mcp_config.clone();
-
-    if show_config {
-        println!("\n📋 Cursor IDE config to be added/merged:");
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
-        );
-        println!("\nWill be saved to: {}", config_path.to_string_lossy());
-    } else {
-        // Write updated config
-        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
-            .context("Failed to write Cursor MCP config")?;
-        println!("✓ Updated Cursor IDE config");
-    }
-
-    Ok(())
-}
-
-/// Start ovim as a long-running MCP server
-fn cmd_mcp_server(
-    workspace: Option<String>,
-    _port: Option<u16>,
-    _session: Option<String>,
-) -> Result<()> {
-    use std::path::PathBuf;
-
-    // Determine workspace directory
-    let workspace_dir = if let Some(w) = workspace {
-        PathBuf::from(w)
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".ovim-workspace")
-    };
-
-    // Start the MCP stdio server
-    crate::mcp_stdio_server::run_mcp_server(workspace_dir)
-}
-
 /// Trigger goto-definition and return new location as JSON
-fn cmd_goto_definition(session_name: Option<String>) -> Result<()> {
+fn cmd_goto_definition(session_name: &str) -> Result<()> {
     use serde_json::json;
     use std::thread;
     use std::time::Duration;
@@ -738,7 +692,7 @@ fn cmd_goto_definition(session_name: Option<String>) -> Result<()> {
 }
 
 /// Trigger find-references and return list from picker
-fn cmd_find_references(session_name: Option<String>) -> Result<()> {
+fn cmd_find_references(session_name: &str) -> Result<()> {
     use serde_json::json;
     use std::thread;
     use std::time::Duration;
@@ -783,7 +737,7 @@ fn cmd_find_references(session_name: Option<String>) -> Result<()> {
 }
 
 /// Trigger hover and return hover_info
-fn cmd_hover(session_name: Option<String>) -> Result<()> {
+fn cmd_hover(session_name: &str) -> Result<()> {
     use serde_json::json;
     use std::thread;
     use std::time::Duration;
@@ -791,7 +745,6 @@ fn cmd_hover(session_name: Option<String>) -> Result<()> {
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    // Ensure NORMAL mode before triggering hover (clears any previous hover state)
     client
         .set_mode("NORMAL")
         .context("Failed to set NORMAL mode")?;
@@ -799,8 +752,6 @@ fn cmd_hover(session_name: Option<String>) -> Result<()> {
 
     client.send_keys("K").context("Failed to send hover keys")?;
 
-    // Poll for hover result: wait for mode to become HOVER/HOVER_NAVIGATE
-    // which indicates the LSP response has arrived and hover is displayed
     let mut hover_info = None;
     for _ in 0..10 {
         thread::sleep(Duration::from_millis(100));
@@ -811,7 +762,6 @@ fn cmd_hover(session_name: Option<String>) -> Result<()> {
         }
     }
 
-    // Dismiss hover popup
     let _ = client.set_mode("NORMAL");
 
     println!(
@@ -825,124 +775,13 @@ fn cmd_hover(session_name: Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Search for pattern and jump to first match
-fn cmd_search(pattern: &str, session_name: Option<String>) -> Result<()> {
-    use serde_json::json;
-    use std::thread;
-    use std::time::Duration;
-
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let before = client
-        .get_snapshot()
-        .context("Failed to get snapshot before search")?;
-
-    // Enter search mode with / and the pattern, then press Enter
-    let search_cmd = format!("/{}<CR>", pattern);
-    client
-        .send_keys(&search_cmd)
-        .context("Failed to send search keys")?;
-    thread::sleep(Duration::from_millis(200));
-    let after = client
-        .get_snapshot()
-        .context("Failed to get snapshot after search")?;
-
-    let found =
-        (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "success": found,
-            "file": after.buffer.file_path,
-            "line": after.cursor.line + 1,
-            "column": after.cursor.column + 1
-        }))?
-    );
-
-    Ok(())
-}
-
-/// Jump to next match and return position
-fn cmd_next_match(session_name: Option<String>) -> Result<()> {
-    use serde_json::json;
-    use std::thread;
-    use std::time::Duration;
-
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let before = client
-        .get_snapshot()
-        .context("Failed to get snapshot before next match")?;
-    client
-        .send_keys("n")
-        .context("Failed to send next match keys")?;
-    thread::sleep(Duration::from_millis(100));
-    let after = client
-        .get_snapshot()
-        .context("Failed to get snapshot after next match")?;
-
-    let moved =
-        (before.cursor.line, before.cursor.column) != (after.cursor.line, after.cursor.column);
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&json!({
-            "success": moved,
-            "file": after.buffer.file_path,
-            "line": after.cursor.line + 1,
-            "column": after.cursor.column + 1
-        }))?
-    );
-
-    Ok(())
-}
-
-/// Get structural outline of the current document
-fn cmd_outline(session_name: Option<String>) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let outline = client.get_outline().context("Failed to get outline")?;
-
-    println!("{}", serde_json::to_string_pretty(&outline)?);
-    Ok(())
-}
-
-/// Search workspace symbols by name
-fn cmd_symbol(query: &str, session_name: Option<String>) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let results = client
-        .search_symbols(query)
-        .context("Failed to search symbols")?;
-
-    println!("{}", serde_json::to_string_pretty(&results)?);
-    Ok(())
-}
-
-/// Get call hierarchy trace for symbol at cursor
-fn cmd_trace(session_name: Option<String>) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let trace = client.get_trace().context("Failed to get trace")?;
-
-    println!("{}", serde_json::to_string_pretty(&trace)?);
-    Ok(())
-}
-
 /// Return LSP diagnostic info
-fn cmd_diagnostics(session_name: Option<String>) -> Result<()> {
+fn cmd_diagnostics(session_name: &str) -> Result<()> {
     use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    // Use MCP to call get_diagnostics tool
     let response = client
         .send_mcp_request(
             "tools/call",
@@ -954,7 +793,6 @@ fn cmd_diagnostics(session_name: Option<String>) -> Result<()> {
         )
         .context("Failed to get diagnostics via MCP")?;
 
-    // Extract diagnostics from MCP response
     if let Some(text_field) = response
         .get("result")
         .and_then(|r| r.get("content"))
@@ -981,13 +819,12 @@ fn cmd_diagnostics(session_name: Option<String>) -> Result<()> {
 }
 
 /// List document symbols
-fn cmd_symbols(session_name: Option<String>) -> Result<()> {
+fn cmd_symbols(session_name: &str) -> Result<()> {
     use serde_json::json;
 
     let session = resolve_session(session_name)?;
     let client = OvimClient::new(&session);
 
-    // Use MCP to call get_outline tool (provides document symbols)
     let response = client
         .send_mcp_request(
             "tools/call",
@@ -999,7 +836,6 @@ fn cmd_symbols(session_name: Option<String>) -> Result<()> {
         )
         .context("Failed to get symbols via MCP")?;
 
-    // Extract symbols from MCP response
     if let Some(text_field) = response
         .get("result")
         .and_then(|r| r.get("content"))
@@ -1025,8 +861,43 @@ fn cmd_symbols(session_name: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Get structural outline of the current document
+fn cmd_outline(session_name: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let outline = client.get_outline().context("Failed to get outline")?;
+
+    println!("{}", serde_json::to_string_pretty(&outline)?);
+    Ok(())
+}
+
+/// Search workspace symbols by name
+fn cmd_symbol(query: &str, session_name: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let results = client
+        .search_symbols(query)
+        .context("Failed to search symbols")?;
+
+    println!("{}", serde_json::to_string_pretty(&results)?);
+    Ok(())
+}
+
+/// Get call hierarchy trace for symbol at cursor
+fn cmd_trace(session_name: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+
+    let trace = client.get_trace().context("Failed to get trace")?;
+
+    println!("{}", serde_json::to_string_pretty(&trace)?);
+    Ok(())
+}
+
 /// Wait for LSP to be ready (blocks until ready or timeout)
-fn cmd_wait_lsp(session_name: Option<String>, timeout_ms: u64) -> Result<()> {
+fn cmd_wait_lsp(session_name: &str, timeout_ms: u64) -> Result<()> {
     use serde_json::json;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -1070,12 +941,230 @@ fn cmd_wait_lsp(session_name: Option<String>, timeout_ms: u64) -> Result<()> {
     }
 }
 
+/// List all configured languages and their LSP status
+fn cmd_list_languages(verbose: bool) -> Result<()> {
+    use crate::language_config::LanguageRegistry;
+
+    let registry = LanguageRegistry::get();
+    let languages = registry.all();
+
+    if languages.is_empty() {
+        println!("No languages configured.");
+        return Ok(());
+    }
+
+    if verbose {
+        println!("Configured Languages:\n");
+        for lang in languages {
+            println!("Language: {} ({})", lang.name, lang.id);
+            println!("  Extensions: {}", lang.extensions.join(", "));
+
+            if !lang.filenames.is_empty() {
+                println!("  Filenames: {}", lang.filenames.join(", "));
+            }
+
+            if let Some(ref syntax) = lang.syntax {
+                println!("  Syntax: {}", syntax.grammar);
+            } else {
+                println!("  Syntax: None");
+            }
+
+            if let Some(ref lsp) = lang.lsp {
+                println!("  LSP Command: {}", lsp.command);
+                if !lsp.args.is_empty() {
+                    println!("  LSP Args: {}", lsp.args.join(" "));
+                }
+                if !lsp.fallback_commands.is_empty() {
+                    println!("  Fallbacks: {}", lsp.fallback_commands.join(", "));
+                }
+                if !lsp.root_markers.is_empty() {
+                    println!("  Root Markers: {}", lsp.root_markers.join(", "));
+                }
+                if let Some(ref hint) = lsp.install_hint {
+                    println!("  Install Hint: {}", hint);
+                }
+                if lsp.auto_install.is_some() {
+                    println!("  Auto-Install: Enabled");
+                }
+            } else {
+                println!("  LSP: None");
+            }
+
+            println!();
+        }
+    } else {
+        println!("{:<15} {:<20} {:<10}", "ID", "Name", "LSP");
+        println!("{}", "-".repeat(50));
+
+        for lang in languages {
+            let lsp_status = if lang.lsp.is_some() {
+                "Configured"
+            } else {
+                "-"
+            };
+
+            println!("{:<15} {:<20} {:<10}", lang.id, lang.name, lsp_status);
+        }
+
+        println!("\nUse --verbose for detailed configuration");
+    }
+
+    Ok(())
+}
+
+/// Check language configuration and LSP status for a file
+fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
+    use crate::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
+    use std::path::Path;
+
+    let path = Path::new(file_path);
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    println!("File: {}", abs_path.display());
+    println!();
+
+    let registry = LanguageRegistry::get();
+    let lang_config = match registry.detect(&abs_path) {
+        Some(config) => config,
+        None => {
+            println!("No language configuration found for this file");
+            println!("\nSupported extensions: ");
+            for lang in registry.all() {
+                if !lang.extensions.is_empty() {
+                    println!("  {} -> {}", lang.extensions.join(", "), lang.name);
+                }
+            }
+            return Ok(());
+        }
+    };
+
+    println!(
+        "Language Detected: {} ({})",
+        lang_config.name, lang_config.id
+    );
+    println!("  Extensions: {}", lang_config.extensions.join(", "));
+
+    if let Some(ref syntax) = lang_config.syntax {
+        println!("\nSyntax Highlighting: {} grammar", syntax.grammar);
+    } else {
+        println!("\nSyntax Highlighting: Not configured");
+    }
+
+    if let Some(ref lsp) = lang_config.lsp {
+        println!("\nLSP Configuration:");
+        println!("  Primary Command: {}", lsp.command);
+
+        if !lsp.args.is_empty() {
+            println!("  Args: {}", lsp.args.join(" "));
+        }
+
+        if !lsp.fallback_commands.is_empty() {
+            println!("  Fallback Commands: {}", lsp.fallback_commands.join(", "));
+        }
+
+        match find_lsp_command(lsp) {
+            Some(ref found_command) => {
+                println!("\nLSP Server Found: {}", found_command);
+
+                let root_markers = &lsp.root_markers;
+                if !root_markers.is_empty() {
+                    let project_root = find_project_root(&abs_path, root_markers);
+                    println!("Project Root: {}", project_root.display());
+                    println!("  (detected using markers: {})", root_markers.join(", "));
+                }
+            }
+            None => {
+                println!("\nLSP Server Not Found");
+                println!("  Searched for: {}", lsp.command);
+                if !lsp.fallback_commands.is_empty() {
+                    println!("  Also searched: {}", lsp.fallback_commands.join(", "));
+                }
+
+                if let Some(ref hint) = lsp.install_hint {
+                    println!("\n  Installation:");
+                    println!("  {}", hint);
+                }
+
+                if lsp.auto_install.is_some() {
+                    println!("\n  Auto-install is configured for this language.");
+                    println!(
+                        "  LSP will be installed automatically when you open a {} file in ovim.",
+                        lang_config.id
+                    );
+                }
+            }
+        }
+
+        if verbose {
+            println!("\n--- Full LSP Configuration ---");
+            println!("{:#?}", lsp);
+        }
+    } else {
+        println!("\nLSP: Not configured for {}", lang_config.name);
+        println!("\nYou can add LSP support by creating ~/.config/ovim/languages.toml");
+        println!("See: user-docs/LANGUAGE_SUPPORT.md");
+    }
+
+    Ok(())
+}
+
+// ─── Session Management ──────────────────────────────────────────────────────
+
+/// Kill a session
+fn cmd_kill(session_name: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
+
+    let client = OvimClient::new(&session);
+    client
+        .kill_session(&session)
+        .context("Failed to kill session")?;
+
+    println!(
+        "\x1b[32mSession '{}' (PID: {}) killed\x1b[0m",
+        session.session_name, session.pid
+    );
+    Ok(())
+}
+
+/// Check health of a session
+fn cmd_health(session_name: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
+
+    let client = OvimClient::new(&session);
+    let health = client.get_health().context("Failed to get health")?;
+
+    println!("Session: {}", session.session_name);
+    println!("Status: {}", health.status);
+    println!("Uptime: {} seconds", health.uptime_seconds);
+    if let Some(file) = &health.file {
+        println!("File: {}", file);
+    }
+    println!("Ready: {}", health.ready);
+
+    if !health.lsp_servers.is_empty() {
+        println!("\nLSP Servers:");
+        for (lang, status) in &health.lsp_servers {
+            let status_colored = match status.as_str() {
+                "ready" => format!("\x1b[32m{}\x1b[0m", status),
+                "initializing" => format!("\x1b[33m{}\x1b[0m", status),
+                _ => status.clone(),
+            };
+            println!("  {}: {}", lang, status_colored);
+        }
+    }
+
+    Ok(())
+}
+
 /// Clean up stale, expired, and corrupted session files
 fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
     use crate::session::cleanup_stale_sessions;
     use std::time::Duration;
 
-    // Convert days to Duration
     let max_age = max_age_days.map(|days| Duration::from_secs(days * 24 * 60 * 60));
 
     println!("Cleaning up session files...\n");
@@ -1090,7 +1179,6 @@ fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
 
     let result = cleanup_stale_sessions(max_age, dry_run).context("Failed to clean up sessions")?;
 
-    // Report results
     if result.total_removed() == 0 {
         println!("No stale sessions found. Everything is clean!");
         return Ok(());
@@ -1149,292 +1237,299 @@ fn cmd_cleanup(max_age_days: Option<u64>, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// List all configured languages and their LSP status
-///
-/// Educational Note: CLI Introspection Patterns
-/// This command makes the system inspectable by exposing its configuration.
-/// Good CLI tools should answer: "What languages do you support?" without
-/// requiring users to dig through source code or documentation.
-///
-/// Design principles:
-/// - Default output is concise (language name + LSP status)
-/// - Verbose mode shows configuration details
-/// - Exit code reflects success (always 0 unless registry fails)
-fn cmd_list_languages(verbose: bool) -> Result<()> {
-    use crate::language_config::LanguageRegistry;
+// ─── Integration ─────────────────────────────────────────────────────────────
 
-    let registry = LanguageRegistry::get();
-    let languages = registry.all();
+/// Install ovim as MCP server for supported editors
+fn cmd_install(editor: &str, show_config: bool, workspace: Option<String>) -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
 
-    if languages.is_empty() {
-        println!("No languages configured.");
-        return Ok(());
-    }
+    let ovim_path = std::env::current_exe().context("Failed to get current executable path")?;
+    let ovim_bin = ovim_path
+        .canonicalize()
+        .unwrap_or(ovim_path)
+        .to_string_lossy()
+        .to_string();
 
-    if verbose {
-        println!("Configured Languages:\n");
-        for lang in languages {
-            println!("Language: {} ({})", lang.name, lang.id);
-            println!("  Extensions: {}", lang.extensions.join(", "));
-
-            if !lang.filenames.is_empty() {
-                println!("  Filenames: {}", lang.filenames.join(", "));
-            }
-
-            if let Some(ref syntax) = lang.syntax {
-                println!("  Syntax: {}", syntax.grammar);
-            } else {
-                println!("  Syntax: None");
-            }
-
-            if let Some(ref lsp) = lang.lsp {
-                println!("  LSP Command: {}", lsp.command);
-                if !lsp.args.is_empty() {
-                    println!("  LSP Args: {}", lsp.args.join(" "));
-                }
-                if !lsp.fallback_commands.is_empty() {
-                    println!("  Fallbacks: {}", lsp.fallback_commands.join(", "));
-                }
-                if !lsp.root_markers.is_empty() {
-                    println!("  Root Markers: {}", lsp.root_markers.join(", "));
-                }
-                if let Some(ref hint) = lsp.install_hint {
-                    println!("  Install Hint: {}", hint);
-                }
-                if lsp.auto_install.is_some() {
-                    println!("  Auto-Install: Enabled");
-                }
-            } else {
-                println!("  LSP: None");
-            }
-
-            println!();
-        }
+    let workspace_dir = if let Some(w) = workspace {
+        PathBuf::from(w)
     } else {
-        // Concise output: ID, name, LSP status
-        println!("{:<15} {:<20} {:<10}", "ID", "Name", "LSP");
-        println!("{}", "-".repeat(50));
-
-        for lang in languages {
-            let lsp_status = if lang.lsp.is_some() {
-                "Configured"
-            } else {
-                "-"
-            };
-
-            println!("{:<15} {:<20} {:<10}", lang.id, lang.name, lsp_status);
-        }
-
-        println!("\nUse --verbose for detailed configuration");
-    }
-
-    Ok(())
-}
-
-/// Check language configuration and LSP status for a file
-///
-/// Educational Note: Debugging Language Detection
-/// This command helps users understand:
-/// 1. Which language was detected for a file
-/// 2. Which LSP server would be used
-/// 3. Whether the LSP server is actually installed
-/// 4. What the project root would be
-///
-/// This is invaluable for debugging "why doesn't LSP work for this file?"
-fn cmd_check_lsp(file_path: &str, verbose: bool) -> Result<()> {
-    use crate::language_config::{find_lsp_command, find_project_root, LanguageRegistry};
-    use std::path::Path;
-
-    let path = Path::new(file_path);
-    let abs_path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".ovim-workspace")
     };
 
-    println!("File: {}", abs_path.display());
-    println!();
+    if !show_config {
+        fs::create_dir_all(&workspace_dir).context("Failed to create workspace directory")?;
+    }
 
-    // Detect language
-    let registry = LanguageRegistry::get();
-    let lang_config = match registry.detect(&abs_path) {
-        Some(config) => config,
-        None => {
-            println!("❌ No language configuration found for this file");
-            println!("\nSupported extensions: ");
-            for lang in registry.all() {
-                if !lang.extensions.is_empty() {
-                    println!("  {} → {}", lang.extensions.join(", "), lang.name);
-                }
-            }
-            return Ok(());
+    let mcp_config = serde_json::json!({
+        "type": "stdio",
+        "command": ovim_bin,
+        "args": ["mcp-server", "--workspace", workspace_dir.to_string_lossy().to_string()]
+    });
+
+    match editor.to_lowercase().as_str() {
+        "claude-code" | "code" => install_claude_code(&mcp_config, show_config)?,
+        "claude-desktop" | "desktop" => install_claude_desktop(&mcp_config, show_config)?,
+        "claude" => {
+            install_claude_code(&mcp_config, show_config)?;
+            install_claude_desktop(&mcp_config, show_config)?;
         }
+        "cursor" => install_cursor(&mcp_config, show_config)?,
+        "all" => {
+            install_claude_code(&mcp_config, show_config)?;
+            install_claude_desktop(&mcp_config, show_config)?;
+            install_cursor(&mcp_config, show_config)?;
+        }
+        _ => anyhow::bail!(
+            "Unknown editor: {}. Supported: claude (both), claude-code, claude-desktop, cursor, all",
+            editor
+        ),
+    }
+
+    if !show_config {
+        println!("\n\x1b[32mInstallation complete!\x1b[0m");
+        println!("\nNext steps:");
+        println!("1. Restart the editor to load the new MCP server");
+        println!("2. The ovim MCP server will auto-spawn sessions as needed");
+        println!("3. Any queries involving your code will automatically use ovim's LSP features");
+    }
+
+    Ok(())
+}
+
+/// Install for Claude Code
+fn install_claude_code(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let config_path = PathBuf::from(".mcp.json");
+    let claude_dir = PathBuf::from(".claude");
+    let claude_settings_path = claude_dir.join("settings.json");
+    let hook_script_path = claude_dir.join("hooks/inject_context.sh");
+
+    let abs_path = std::fs::canonicalize(".")
+        .map(|p| p.join(".mcp.json"))
+        .unwrap_or_else(|_| config_path.clone());
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content =
+            fs::read_to_string(&config_path).context("Failed to read existing .mcp.json")?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
     };
 
-    println!(
-        "✓ Language Detected: {} ({})",
-        lang_config.name, lang_config.id
-    );
-    println!("  Extensions: {}", lang_config.extensions.join(", "));
+    if config.get("mcpServers").is_none() {
+        config["mcpServers"] = serde_json::json!({});
+    }
 
-    // Check syntax highlighting
-    if let Some(ref syntax) = lang_config.syntax {
-        println!("\n✓ Syntax Highlighting: {} grammar", syntax.grammar);
+    config["mcpServers"]["ovim"] = mcp_config.clone();
+
+    if show_config {
+        println!("\nClaude Code config to be added/merged to .mcp.json:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
+        );
+        println!("\nWill be saved to: {}", abs_path.display());
+        println!("\nClaude Code hook config (UserPromptSubmit event):");
+        let parent = abs_path.parent().unwrap_or(&abs_path);
+        println!(
+            "Hooks directory: {}",
+            parent.join(".claude/hooks").display()
+        );
+        println!(
+            "Settings file: {}",
+            parent.join(".claude/settings.json").display()
+        );
+        println!(
+            "Hook script: {}",
+            parent.join(".claude/hooks/inject_context.sh").display()
+        );
     } else {
-        println!("\n❌ Syntax Highlighting: Not configured");
+        fs::create_dir_all(claude_dir.join("hooks"))
+            .context("Failed to create .claude/hooks directory")?;
+
+        let hook_script = "#!/bin/bash\n\
+# Auto-inject ovim context into Claude Code messages\n\
+# Runs on UserPromptSubmit event - outputs context to be injected\n\
+\n\
+# Try to find ovim binary (prefer installed, fallback to local build)\n\
+if command -v ovim &>/dev/null; then\n\
+  context_output=$(ovim context 2>/dev/null)\n\
+elif [ -x ./target/release/ovim ]; then\n\
+  context_output=$(./target/release/ovim context 2>/dev/null)\n\
+elif [ -x ./target/debug/ovim ]; then\n\
+  context_output=$(./target/debug/ovim context 2>/dev/null)\n\
+fi\n\
+\n\
+# Exit code 0 and stdout will be injected as context\n\
+if [ -n \"$context_output\" ]; then\n\
+  echo \"$context_output\"\n\
+fi\n\
+";
+        fs::write(&hook_script_path, hook_script).context("Failed to write hook script")?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook_script_path, fs::Permissions::from_mode(0o755))
+                .context("Failed to make hook executable")?;
+        }
+
+        let mut claude_settings: serde_json::Value = if claude_settings_path.exists() {
+            let content = fs::read_to_string(&claude_settings_path)
+                .context("Failed to read existing .claude/settings.json")?;
+            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        if claude_settings.get("hooks").is_none() {
+            claude_settings["hooks"] = serde_json::json!({});
+        }
+
+        let mut hooks = claude_settings["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        let new_hook = serde_json::json!({
+            "type": "command",
+            "command": ".claude/hooks/inject_context.sh"
+        });
+
+        let hook_exists = hooks.iter().any(|h| {
+            h.get("command").and_then(|c| c.as_str()) == Some(".claude/hooks/inject_context.sh")
+        });
+
+        if !hook_exists {
+            hooks.push(new_hook);
+            claude_settings["hooks"]["UserPromptSubmit"] = serde_json::Value::Array(hooks);
+            println!("Added ovim context hook to .claude/settings.json");
+        } else {
+            println!("Hook already exists in .claude/settings.json (skipped)");
+        }
+
+        fs::write(
+            &claude_settings_path,
+            serde_json::to_string_pretty(&claude_settings)?,
+        )
+        .context("Failed to write .claude/settings.json")?;
+
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
+            .context("Failed to write .mcp.json")?;
+
+        println!("Updated .mcp.json for Claude Code");
+        println!("  Location: {}", abs_path.display());
+        println!("  Hook script: {}", hook_script_path.display());
+        println!("  Context will auto-inject on every message you send!");
+        println!("\nImportant: Files are created in the current directory.");
+        println!("  Make sure you run this command from your project root.");
     }
 
-    // Check LSP configuration
-    if let Some(ref lsp) = lang_config.lsp {
-        println!("\n✓ LSP Configuration:");
-        println!("  Primary Command: {}", lsp.command);
+    Ok(())
+}
 
-        if !lsp.args.is_empty() {
-            println!("  Args: {}", lsp.args.join(" "));
-        }
+/// Install for Claude Desktop
+fn install_claude_desktop(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
 
-        if !lsp.fallback_commands.is_empty() {
-            println!("  Fallback Commands: {}", lsp.fallback_commands.join(", "));
-        }
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
+    let config_path = PathBuf::from(&home).join(".config/Claude/claude_desktop_config.json");
 
-        // Check if LSP server is actually available
-        match find_lsp_command(lsp) {
-            Some(ref found_command) => {
-                println!("\n✓ LSP Server Found: {}", found_command);
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create .config/Claude directory")?;
+    }
 
-                // Try to find project root
-                let root_markers = &lsp.root_markers;
-                if !root_markers.is_empty() {
-                    let project_root = find_project_root(&abs_path, root_markers);
-                    println!("✓ Project Root: {}", project_root.display());
-                    println!("  (detected using markers: {})", root_markers.join(", "));
-                }
-            }
-            None => {
-                println!("\n❌ LSP Server Not Found");
-                println!("  Searched for: {}", lsp.command);
-                if !lsp.fallback_commands.is_empty() {
-                    println!("  Also searched: {}", lsp.fallback_commands.join(", "));
-                }
-
-                if let Some(ref hint) = lsp.install_hint {
-                    println!("\n  Installation:");
-                    println!("  {}", hint);
-                }
-
-                if lsp.auto_install.is_some() {
-                    println!("\n  Auto-install is configured for this language.");
-                    println!(
-                        "  LSP will be installed automatically when you open a {} file in ovim.",
-                        lang_config.id
-                    );
-                }
-            }
-        }
-
-        // Show full config in verbose mode
-        if verbose {
-            println!("\n--- Full LSP Configuration ---");
-            println!("{:#?}", lsp);
-        }
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .context("Failed to read existing Claude Desktop config")?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
     } else {
-        println!("\n❌ LSP: Not configured for {}", lang_config.name);
-        println!("\nYou can add LSP support by creating ~/.config/ovim/languages.toml");
-        println!("See: user-docs/LANGUAGE_SUPPORT.md");
+        serde_json::json!({})
+    };
+
+    if config.get("mcpServers").is_none() {
+        config["mcpServers"] = serde_json::json!({});
     }
 
-    Ok(())
-}
+    config["mcpServers"]["ovim"] = mcp_config.clone();
 
-/// Replace text on a line or in the buffer
-fn cmd_edit(
-    session_name: Option<String>,
-    line: Option<usize>,
-    old: &str,
-    new: &str,
-) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let old_expanded = expand_escapes(old);
-    let new_expanded = expand_escapes(new);
-
-    let result = client
-        .edit_line(line, &old_expanded, &new_expanded)
-        .context("Failed to edit")?;
-
-    if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
-        println!("{}", msg);
-    }
-
-    Ok(())
-}
-
-/// Insert text after or before a line
-fn cmd_insert(
-    session_name: Option<String>,
-    after: Option<usize>,
-    before: Option<usize>,
-    text: &str,
-) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let text_expanded = expand_escapes(text);
-
-    let result = client
-        .insert_lines(after, before, &text_expanded)
-        .context("Failed to insert")?;
-
-    if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
-        println!("{}", msg);
-    }
-
-    Ok(())
-}
-
-/// Delete a range of lines
-fn cmd_delete_lines(session_name: Option<String>, from: usize, to: usize) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let result = client
-        .delete_lines(from, to)
-        .context("Failed to delete lines")?;
-
-    if let Some(msg) = result.get("message").and_then(|v| v.as_str()) {
-        println!("{}", msg);
-    }
-
-    Ok(())
-}
-
-/// Read a range of lines
-fn cmd_read_lines(
-    session_name: Option<String>,
-    from: usize,
-    to: usize,
-    json_output: bool,
-) -> Result<()> {
-    let session = resolve_session(session_name)?;
-    let client = OvimClient::new(&session);
-
-    let result = client
-        .read_lines(from, to)
-        .context("Failed to read lines")?;
-
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+    if show_config {
+        println!("\nClaude Desktop config to be added/merged:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
+        );
+        println!("\nWill be saved to: {}", config_path.to_string_lossy());
     } else {
-        // Plain text output with line numbers
-        if let Some(lines) = result.get("lines").and_then(|v| v.as_array()) {
-            for line in lines {
-                let number = line.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-                let text = line.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                println!("{:>4} | {}", number, text);
-            }
-        }
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
+            .context("Failed to write Claude Desktop config")?;
+        println!("Updated Claude Desktop config");
     }
 
     Ok(())
+}
+
+/// Install for Cursor IDE
+fn install_cursor(mcp_config: &serde_json::Value, show_config: bool) -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
+    let config_path = PathBuf::from(&home).join(".cursor/rules/mcp_config.json");
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create .cursor/rules directory")?;
+    }
+
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = fs::read_to_string(&config_path)
+            .context("Failed to read existing Cursor MCP config")?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if config.get("mcpServers").is_none() {
+        config["mcpServers"] = serde_json::json!({});
+    }
+
+    config["mcpServers"]["ovim"] = mcp_config.clone();
+
+    if show_config {
+        println!("\nCursor IDE config to be added/merged:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&config["mcpServers"]["ovim"])?
+        );
+        println!("\nWill be saved to: {}", config_path.to_string_lossy());
+    } else {
+        fs::write(&config_path, serde_json::to_string_pretty(&config)?)
+            .context("Failed to write Cursor MCP config")?;
+        println!("Updated Cursor IDE config");
+    }
+
+    Ok(())
+}
+
+/// Start ovim as a long-running MCP server
+fn cmd_mcp_server(
+    workspace: Option<String>,
+    _port: Option<u16>,
+    _session: Option<String>,
+) -> Result<()> {
+    use std::path::PathBuf;
+
+    let workspace_dir = if let Some(w) = workspace {
+        PathBuf::from(w)
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".ovim-workspace")
+    };
+
+    crate::mcp_stdio_server::run_mcp_server(workspace_dir)
 }

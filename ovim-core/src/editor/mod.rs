@@ -282,6 +282,10 @@ pub struct Editor {
     pub ui_panels: UiPanels,
     /// LSP UI panel state (manager panel and install progress)
     pub lsp_ui: LspUi,
+    /// API server port (set during startup, used by :session start/stop)
+    pub api_port: Option<u16>,
+    /// Active session name (set by :session start, cleared by :session stop)
+    pub active_session: Option<String>,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -402,6 +406,8 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
+            api_port: None,
+            active_session: None,
         }
     }
 
@@ -443,6 +449,8 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
+            api_port: None,
+            active_session: None,
         }
     }
 
