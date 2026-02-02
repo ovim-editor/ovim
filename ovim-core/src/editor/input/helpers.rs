@@ -493,8 +493,22 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
         }
         RegisterType::Line => {
             // Line paste - insert after current line
-            let line_len = editor.buffer().rope().line(line_idx).len_chars();
-            let position = (line_idx, line_len);
+            let rope_line = editor.buffer().rope().line(line_idx);
+            let line_char_len = rope_line.len_chars();
+            let has_trailing_newline = line_char_len > 0
+                && rope_line.char(line_char_len - 1) == '\n';
+            let (position, text) = if has_trailing_newline {
+                // Line has trailing newline - insert at the newline position
+                // (which is end of line including newline, so text goes on next line)
+                ((line_idx, line_char_len), text)
+            } else if line_char_len == 0 {
+                // Empty buffer (no content at all) - insert directly
+                ((line_idx, 0), text)
+            } else {
+                // Last line without trailing newline - prepend \n to create new line
+                let text = format!("\n{}", text.trim_end_matches('\n'));
+                ((line_idx, line_char_len), text)
+            };
             let change = Change::insert(position, text, cursor_before);
             change.apply(editor.buffer_mut());
             editor.add_change(change);
@@ -517,7 +531,15 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
         }
         RegisterType::Character => {
             // Character paste - insert after cursor
-            let position = (line_idx, col + 1);
+            // Clamp col+1 to not exceed line content length (excluding newline)
+            // to avoid inserting past the newline into the next line
+            let line_content_len = editor
+                .buffer()
+                .line(line_idx)
+                .map(|l| l.trim_end_matches('\n').chars().count())
+                .unwrap_or(0);
+            let paste_col = (col + 1).min(line_content_len);
+            let position = (line_idx, paste_col);
             let change = Change::insert(position, text, cursor_before);
             change.apply(editor.buffer_mut());
             editor.add_change(change);
