@@ -1,7 +1,7 @@
 //! Git blame interaction commands: `gb` (hover popup) and `gB` (full diff tab).
 
 use super::Editor;
-use crate::git::{commit_diff, commit_info, is_zero_oid, GitBlame};
+use crate::git::{commit_diff, commit_info, is_zero_oid};
 
 impl Editor {
     /// Shows a hover popup with commit metadata for the current line (`gb`).
@@ -104,20 +104,18 @@ impl Editor {
     /// Resolves the blame OID for a given line.
     ///
     /// First checks if the buffer already has blame data loaded (from `:set blame`),
-    /// otherwise loads blame on demand.
-    fn resolve_blame_oid(&mut self, file_path: &str, line: usize) -> Option<String> {
+    /// otherwise loads blame on demand and caches it on the buffer for future lookups.
+    fn resolve_blame_oid(&mut self, _file_path: &str, line: usize) -> Option<String> {
         // Try cached blame first
         if let Some(blame) = self.buffer().git_blame() {
             return blame.get(line).map(|info| info.commit_oid.clone());
         }
 
-        // Load blame on demand
-        match GitBlame::from_file(file_path) {
-            Ok(blame) => {
-                let oid = blame.get(line).map(|info| info.commit_oid.clone());
-                oid
-            }
-            Err(_) => None,
-        }
+        // Load blame on demand and cache it on the buffer
+        self.buffer_mut().load_git_blame();
+        self.buffer()
+            .git_blame()
+            .and_then(|blame| blame.get(line))
+            .map(|info| info.commit_oid.clone())
     }
 }
