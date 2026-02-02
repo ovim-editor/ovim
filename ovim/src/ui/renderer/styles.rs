@@ -84,6 +84,28 @@ pub fn get_diagnostic_sign_style(
     }
 }
 
+/// Muted color palette for blame gutter (12 distinct colors)
+const BLAME_COLORS: [Color; 12] = [
+    Color::Rgb(130, 170, 200), // steel blue
+    Color::Rgb(180, 140, 180), // muted purple
+    Color::Rgb(140, 180, 140), // sage green
+    Color::Rgb(200, 160, 120), // sandy brown
+    Color::Rgb(160, 160, 200), // lavender
+    Color::Rgb(180, 180, 130), // olive
+    Color::Rgb(170, 140, 140), // dusty rose
+    Color::Rgb(130, 180, 170), // teal
+    Color::Rgb(190, 150, 150), // mauve
+    Color::Rgb(150, 170, 130), // fern
+    Color::Rgb(170, 160, 180), // wisteria
+    Color::Rgb(180, 170, 140), // khaki
+];
+
+/// Returns a deterministic color for a blame commit hash
+pub fn blame_color_for_hash(hash: &str) -> Color {
+    let idx: usize = hash.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
+    BLAME_COLORS[idx % BLAME_COLORS.len()]
+}
+
 /// Returns the (icon, foreground color, background color) for diagnostic virtual text
 pub fn get_diagnostic_virtual_text_style(
     severity: Option<lsp_types::DiagnosticSeverity>,

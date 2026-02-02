@@ -13,8 +13,8 @@ use crate::display::char_display_width;
 use super::helpers::{expand_tabs_with_mapping, remap_char_col};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
-    get_diagnostic_sign_style, get_diagnostic_virtual_text_style, get_git_sign_style,
-    get_line_number_style, remap_highlights,
+    blame_color_for_hash, get_diagnostic_sign_style, get_diagnostic_virtual_text_style,
+    get_git_sign_style, get_line_number_style, remap_highlights,
 };
 use crate::syntax::HighlightGroup;
 use std::ops::Range;
@@ -388,6 +388,64 @@ fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usi
     }
 }
 
+/// Bracket character for blame grouping
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BlameBracket {
+    /// Single-line commit (no bracket)
+    None,
+    /// First line of a multi-line group
+    Top,
+    /// Middle line of a multi-line group
+    Mid,
+    /// Last line of a multi-line group
+    Bottom,
+}
+
+/// Pre-computes blame bracket characters for visible lines.
+/// Returns a vec of (bracket, hash, author, color) for each line in the range.
+fn compute_blame_brackets(
+    blame: &crate::GitBlame,
+    start_line: usize,
+    end_line: usize,
+    author_width: usize,
+) -> Vec<(BlameBracket, String, String, Color)> {
+    let mut result = Vec::with_capacity(end_line.saturating_sub(start_line));
+
+    for line_idx in start_line..end_line {
+        if let Some(info) = blame.get(line_idx) {
+            let hash = &info.commit_hash;
+            let color = blame_color_for_hash(hash);
+
+            // Check if prev/next lines have the same commit
+            let same_as_prev = line_idx > 0
+                && blame
+                    .get(line_idx - 1)
+                    .map(|p| p.commit_hash == *hash)
+                    .unwrap_or(false);
+            let same_as_next = blame
+                .get(line_idx + 1)
+                .map(|n| n.commit_hash == *hash)
+                .unwrap_or(false);
+
+            let bracket = match (same_as_prev, same_as_next) {
+                (false, false) => BlameBracket::None,
+                (false, true) => BlameBracket::Top,
+                (true, true) => BlameBracket::Mid,
+                (true, false) => BlameBracket::Bottom,
+            };
+
+            // Truncate author to fit
+            let author: String = info.author.chars().take(author_width).collect();
+
+            result.push((bracket, hash.clone(), author, color));
+        } else {
+            result.push((BlameBracket::None, String::new(), String::new(), Color::DarkGray));
+        }
+    }
+
+    result
+}
+
 /// Builds a gutter line for a logical line (line number + git sign / diagnostic sign).
 /// If `is_continuation` is true, produces a blank gutter row.
 /// Diagnostic signs take priority over git signs when both are present.
@@ -399,11 +457,44 @@ fn build_gutter_line(
     cursor_line: usize,
     is_continuation: bool,
     line_diagnostics: &[&lsp_types::Diagnostic],
+    blame_info: Option<&(BlameBracket, String, String, Color)>,
+    blame_width: usize,
 ) -> Line<'static> {
     if is_continuation {
         // Blank gutter for wrap continuation rows
-        let width = SIGN_WIDTH + line_num_width + GUTTER_SPACING;
+        let width = blame_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
         return Line::from(" ".repeat(width));
+    }
+
+    let mut spans = Vec::new();
+
+    // Blame column (if active)
+    if blame_width > 0 {
+        if let Some((bracket, hash, author, color)) = blame_info {
+            let bracket_ch = match bracket {
+                BlameBracket::None => ' ',
+                BlameBracket::Top => '╭',
+                BlameBracket::Mid => '│',
+                BlameBracket::Bottom => '╰',
+            };
+
+            // Show hash+author only on first line of group or single lines
+            let show_info = *bracket == BlameBracket::None || *bracket == BlameBracket::Top;
+            let content_width = blame_width - 2; // minus bracket + leading space
+
+            let text = if show_info && !hash.is_empty() {
+                let info_str = format!("{} {}", hash, author);
+                format!("{} {:content_width$}", bracket_ch, info_str, content_width = content_width)
+            } else {
+                format!("{} {:content_width$}", bracket_ch, "", content_width = content_width)
+            };
+
+            // Truncate to blame_width
+            let text: String = text.chars().take(blame_width).collect();
+            spans.push(Span::styled(text, Style::default().fg(*color)));
+        } else {
+            spans.push(Span::raw(" ".repeat(blame_width)));
+        }
     }
 
     let line_num_text = if editor.options.relative_number {
@@ -435,7 +526,10 @@ fn build_gutter_line(
     );
     let line_num_span = Span::styled(line_num_text, line_num_style);
 
-    Line::from(vec![sign_span, line_num_span])
+    spans.push(sign_span);
+    spans.push(line_num_span);
+
+    Line::from(spans)
 }
 
 /// Splits a rendered Line into multiple visual rows for soft wrapping.
@@ -597,6 +691,19 @@ pub fn render_buffer(
     // Reset per-frame cache stats
     line_cache.reset_stats();
 
+    // Pre-compute blame brackets for visible lines
+    let blame_width = layout.blame_width;
+    let blame_brackets = if blame_width > 0 {
+        if let Some(blame) = buffer.git_blame() {
+            let author_width = blame_width.saturating_sub(1 + 1 + 5 + 1 + 1); // bracket+sp+hash+sp+trailing_sp
+            Some(compute_blame_brackets(blame, start_line, line_count.min(start_line + visible_lines + 50), author_width))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < visible_lines {
         if line_idx < rope.len_lines() {
@@ -627,6 +734,8 @@ pub fn render_buffer(
                                 gutter_lines.push(build_gutter_line(
                                     editor, buffer, line_idx, line_num_width,
                                     cursor_line_idx, row_idx > 0, &line_diagnostics_early,
+                                    blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                    blame_width,
                                 ));
                             }
                             lines.push(row);
@@ -642,6 +751,8 @@ pub fn render_buffer(
                             gutter_lines.push(build_gutter_line(
                                 editor, buffer, line_idx, line_num_width,
                                 cursor_line_idx, false, &line_diagnostics_early,
+                                blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                blame_width,
                             ));
                         }
                         lines.push(padded);
@@ -898,6 +1009,8 @@ pub fn render_buffer(
                                 cursor_line_idx,
                                 row_idx > 0,
                                 &line_diagnostics,
+                                blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                blame_width,
                             ));
                         }
                         lines.push(row);
@@ -920,6 +1033,8 @@ pub fn render_buffer(
                             cursor_line_idx,
                             false,
                             &line_diagnostics,
+                            blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                            blame_width,
                         ));
                     }
                     lines.push(line);
@@ -942,6 +1057,8 @@ pub fn render_buffer(
                                 cursor_line_idx,
                                 false,
                                 &[],
+                                blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                blame_width,
                             ));
                         }
                         lines.push(Line::from(" ".repeat(text_width)));
@@ -960,6 +1077,8 @@ pub fn render_buffer(
                                     cursor_line_idx,
                                     chunk_idx > 0,
                                     &[],
+                                    blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                    blame_width,
                                 ));
                             }
                             let text: String = chunk.iter().collect();
@@ -984,6 +1103,8 @@ pub fn render_buffer(
                             cursor_line_idx,
                             false,
                             &[],
+                            blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                            blame_width,
                         ));
                     }
                     let line_len = line_text.chars().count();

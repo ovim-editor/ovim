@@ -111,6 +111,7 @@ impl Buffer {
             pending_rehighlight: false,
             fold_manager: FoldManager::new(),
             git_status: GitStatus::new(),
+            git_blame: None,
             change_manager: ChangeManager::new(),
             file_mtime,
             read_only,

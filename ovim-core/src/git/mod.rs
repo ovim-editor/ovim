@@ -154,6 +154,113 @@ impl Default for GitStatus {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Git Blame
+// ---------------------------------------------------------------------------
+
+/// Blame information for a single line
+#[derive(Debug, Clone)]
+pub struct LineBlameInfo {
+    /// Short commit hash (5 chars)
+    pub commit_hash: String,
+    /// Author name
+    pub author: String,
+    /// Commit timestamp (Unix epoch seconds)
+    pub timestamp: i64,
+}
+
+/// Git blame data for an entire file
+#[derive(Debug, Clone)]
+pub struct GitBlame {
+    /// Blame info indexed by 0-based line number
+    lines: Vec<Option<LineBlameInfo>>,
+}
+
+impl GitBlame {
+    /// Computes blame for a file using git2
+    pub fn from_file<P: AsRef<Path>>(file_path: P) -> Result<Self> {
+        let file_path = file_path.as_ref();
+
+        let repo = match Repository::discover(file_path) {
+            Ok(repo) => repo,
+            Err(_) => return Ok(Self { lines: Vec::new() }),
+        };
+
+        let workdir = match repo.workdir() {
+            Some(dir) => dir,
+            None => return Ok(Self { lines: Vec::new() }),
+        };
+
+        let relative_path = match file_path.strip_prefix(workdir) {
+            Ok(p) => p,
+            Err(_) => return Ok(Self { lines: Vec::new() }),
+        };
+
+        let blame = match repo.blame_file(relative_path, None) {
+            Ok(b) => b,
+            Err(_) => return Ok(Self { lines: Vec::new() }),
+        };
+
+        let mut lines = Vec::new();
+        for hunk_idx in 0..blame.len() {
+            if let Some(hunk) = blame.get_index(hunk_idx) {
+                let commit_id = hunk.final_commit_id();
+                let hash = format!("{}", commit_id)[..5.min(format!("{}", commit_id).len())].to_string();
+                let sig = hunk.final_signature();
+                let author = sig
+                    .name()
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let timestamp = sig.when().seconds();
+                let start = hunk.final_start_line(); // 1-indexed
+                let count = hunk.lines_in_hunk();
+
+                // Ensure vec is large enough
+                let end = start + count;
+                if end > lines.len() {
+                    lines.resize(end, None);
+                }
+
+                for i in 0..count {
+                    let line_idx = start - 1 + i; // convert to 0-indexed
+                    lines[line_idx] = Some(LineBlameInfo {
+                        commit_hash: hash.clone(),
+                        author: author.clone(),
+                        timestamp,
+                    });
+                }
+            }
+        }
+
+        Ok(Self { lines })
+    }
+
+    /// Gets blame info for a 0-indexed line
+    pub fn get(&self, line: usize) -> Option<&LineBlameInfo> {
+        self.lines.get(line).and_then(|o| o.as_ref())
+    }
+
+    /// Number of lines with blame data
+    pub fn line_count(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Returns true if there is no blame data
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// Returns the maximum author name length across all lines
+    pub fn max_author_len(&self) -> usize {
+        self.lines
+            .iter()
+            .filter_map(|o| o.as_ref())
+            .map(|info| info.author.len())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +270,13 @@ mod tests {
         let status = GitStatus::new();
         assert_eq!(status.get_line_status(0), None);
         assert_eq!(status.get_line_status(10), None);
+    }
+
+    #[test]
+    fn test_empty_blame() {
+        let blame = GitBlame { lines: Vec::new() };
+        assert!(blame.is_empty());
+        assert_eq!(blame.line_count(), 0);
+        assert!(blame.get(0).is_none());
     }
 }

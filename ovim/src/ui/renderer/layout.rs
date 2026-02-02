@@ -21,6 +21,8 @@ pub struct BufferLayout {
     pub text_width: usize,
     /// Width of the line-number column alone (0 when numbers are off).
     pub line_num_width: usize,
+    /// Width of the blame column (0 when blame is off).
+    pub blame_width: usize,
 }
 
 impl BufferLayout {
@@ -33,8 +35,22 @@ impl BufferLayout {
         } else {
             0
         };
+
+        // Blame column width: bracket(1) + space(1) + hash(5) + space(1) + author(truncated) + space(1)
+        let blame_width = if editor.options.blame {
+            if let Some(blame) = editor.buffer().git_blame() {
+                // 1 bracket + 1 space + 5 hash + 1 space + author + 1 trailing space
+                let author_len = blame.max_author_len().min(15);
+                1 + 1 + 5 + 1 + author_len.max(3) + 1
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         // Sign column is always present (git signs, diagnostics).
-        let gutter_width = SIGN_WIDTH + line_num_width + GUTTER_SPACING;
+        let gutter_width = blame_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
         let text_width = (area.width as usize).saturating_sub(gutter_width);
 
         Self {
@@ -42,6 +58,7 @@ impl BufferLayout {
             gutter_width,
             text_width,
             line_num_width,
+            blame_width,
         }
     }
 }
