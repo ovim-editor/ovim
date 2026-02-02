@@ -280,6 +280,11 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                 }
             }
             Event::Mouse(mouse_event) => {
+                // Skip mouse-move events — they don't change editor state and
+                // would otherwise trigger unnecessary redraws on every movement.
+                if matches!(mouse_event.kind, crossterm::event::MouseEventKind::Moved) {
+                    continue;
+                }
                 let mouse = convert_mouse_event(mouse_event);
                 handle_mouse_event(editor, mouse)?;
                 had_edit = true;
