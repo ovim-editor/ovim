@@ -11,6 +11,8 @@ pub struct RenderCache {
     pub last_gutter_width: usize,
     /// Cached text width from last render (buffer area width minus gutter, used for wrap calculations)
     pub last_text_width: usize,
+    /// Cached blame column width from last render (0 when blame is off)
+    pub last_blame_width: usize,
 }
 
 impl Default for RenderCache {
@@ -20,6 +22,7 @@ impl Default for RenderCache {
             last_buffer_area: None,
             last_gutter_width: 0,
             last_text_width: 0,
+            last_blame_width: 0,
         }
     }
 }

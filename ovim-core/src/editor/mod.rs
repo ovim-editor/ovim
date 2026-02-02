@@ -1,3 +1,4 @@
+mod blame_commands;
 mod buffer_manager;
 mod change_tracking;
 mod command_context;
@@ -631,10 +632,12 @@ impl Editor {
         buffer_area: crate::Rect,
         gutter_width: usize,
         text_width: usize,
+        blame_width: usize,
     ) {
         self.render_cache.last_buffer_area = Some(buffer_area);
         self.render_cache.last_gutter_width = gutter_width;
         self.render_cache.last_text_width = text_width;
+        self.render_cache.last_blame_width = blame_width;
     }
 
     /// Gets the viewport height

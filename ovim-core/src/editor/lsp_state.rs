@@ -8,6 +8,7 @@ pub enum HoverContentType {
     #[default]
     LspHover,
     Diagnostic,
+    BlameInfo,
 }
 
 /// Per-document synchronisation state, keyed by canonical file path

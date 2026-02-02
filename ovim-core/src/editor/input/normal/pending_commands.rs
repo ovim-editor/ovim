@@ -227,6 +227,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             }
             editor.clear_count();
         }
+        ('g', KeyCode::Char('b')) => {
+            editor.show_blame_info();
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('B')) => {
+            editor.show_blame_diff();
+            editor.clear_count();
+        }
         ('g', KeyCode::Char('k')) => {
             // gk - move up one visual (display) line
             let count = editor.count().unwrap_or(1);
