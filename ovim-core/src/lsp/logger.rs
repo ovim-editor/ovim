@@ -37,16 +37,19 @@ pub fn init_lsp_logging() -> std::io::Result<()> {
 
 /// Get the path to the LSP log file
 pub fn get_log_path() -> PathBuf {
-    if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
-        PathBuf::from(cache_dir).join("ovim").join("lsp.log")
+    let mut path = if let Ok(cache_dir) = std::env::var("XDG_CACHE_HOME") {
+        PathBuf::from(cache_dir)
+    } else if let Some(cache_dir) = dirs::cache_dir() {
+        cache_dir
     } else if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home)
-            .join(".cache")
-            .join("ovim")
-            .join("lsp.log")
+        PathBuf::from(home).join(".cache")
     } else {
-        PathBuf::from("/tmp").join("ovim-lsp.log")
-    }
+        PathBuf::from("/tmp")
+    };
+
+    path.push("ovim");
+    path.push("lsp.log");
+    path
 }
 
 /// Log levels

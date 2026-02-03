@@ -509,8 +509,9 @@ impl LanguageServer {
 
                 // Validate Content-Length before allocation
                 if content_length > MAX_MESSAGE_SIZE {
-                    eprintln!(
-                        "[LSP] Message too large: {} bytes (max {}MB), skipping",
+                    crate::lsp_warn!(
+                        &inner_clone.log_prefix(),
+                        "Message too large: {} bytes (max {}MB), skipping",
                         content_length,
                         MAX_MESSAGE_SIZE / (1024 * 1024)
                     );
@@ -1790,7 +1791,7 @@ impl LanguageServer {
     /// Consider rapid cursor movement over symbols A → B → C:
     ///
     /// **Without cancellation:**
-    /// ```
+    /// ```text
     /// t=0ms:  Request hover for A (ID 1)
     /// t=50ms: Request hover for B (ID 2)
     /// t=100ms: Request hover for C (ID 3)
@@ -1801,7 +1802,7 @@ impl LanguageServer {
     /// User sees flickering UI with wrong information!
     ///
     /// **With cancellation:**
-    /// ```
+    /// ```text
     /// t=0ms:  Request hover for A (ID 1)
     /// t=50ms: Cancel ID 1, Request hover for B (ID 2)
     /// t=100ms: Cancel ID 2, Request hover for C (ID 3)

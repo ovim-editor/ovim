@@ -288,7 +288,11 @@ impl OvimClient {
 
         // If still running, send SIGKILL
         if kill(Pid::from_raw(session.pid as i32), Signal::SIGKILL).is_ok() {
-            eprintln!("Process did not exit gracefully, sent SIGKILL");
+            ovim_core::log_warn!(
+                "client",
+                "Process {} did not exit gracefully, sent SIGKILL",
+                session.pid
+            );
         }
 
         // Clean up session file

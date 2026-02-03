@@ -69,6 +69,12 @@ impl SessionInfo {
 
     /// Get the session directory path
     pub fn session_dir() -> Result<PathBuf> {
+        if let Ok(dir) = std::env::var("OVIM_SESSION_DIR") {
+            let session_dir = PathBuf::from(dir);
+            fs::create_dir_all(&session_dir)?;
+            return Ok(session_dir);
+        }
+
         let cache_dir = dirs::cache_dir().context("Failed to get cache directory")?;
 
         let session_dir = cache_dir.join("ovim").join("sessions");
@@ -325,49 +331,22 @@ fn get_process_start_time(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "macos")]
 fn get_process_start_time(pid: u32) -> Option<u64> {
-    use std::process::Command;
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let bytes_written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast::<libc::c_void>(),
+            std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
+        )
+    };
 
-    // Use ps to get the process start time in seconds since epoch
-    // The 'lstart' format gives us the full start time, but we'll use 'etime' or parse differently
-    // Actually, we'll use sysctl kern.proc.pid which gives us more reliable data
-
-    // Alternative: use `ps -o lstart= -p PID` and parse it
-    // But better: use the start time in seconds
-    let output = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
+    if bytes_written as usize != std::mem::size_of::<libc::proc_bsdinfo>() {
         return None;
     }
 
-    let _start_str = String::from_utf8(output.stdout).ok()?.trim();
-
-    // Parse the date string (format: "Tue Oct 20 10:30:45 2025")
-    // We'll convert this to epoch seconds
-    // For simplicity and robustness, we'll use a different approach:
-    // Get the elapsed time and subtract from current time
-
-    let output = Command::new("ps")
-        .args(["-o", "etimes=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let elapsed_str = String::from_utf8(output.stdout).ok()?;
-    let elapsed_secs: u64 = elapsed_str.trim().parse().ok()?;
-
-    // Calculate start time = current time - elapsed time
-    let current_time = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-
-    Some(current_time.saturating_sub(elapsed_secs))
+    Some(info.pbi_start_tvsec)
 }
 
 #[cfg(target_os = "windows")]
@@ -634,6 +613,8 @@ pub fn cleanup_stale_sessions(max_age: Option<Duration>, dry_run: bool) -> Resul
 /// # Example
 ///
 /// ```no_run
+/// use ovim_core::session::{SessionGuard, SessionInfo};
+///
 /// let session_info = SessionInfo::new(8080, Some("file.txt".to_string()), "dev".to_string());
 /// let _guard = SessionGuard::new(session_info.clone());
 /// // Session file will be cleaned up automatically when _guard is dropped
@@ -665,8 +646,18 @@ mod tests {
     use super::*;
     use std::panic;
 
+    fn init_test_session_dir() {
+        static SESSION_DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        SESSION_DIR.get_or_init(|| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::env::set_var("OVIM_SESSION_DIR", dir.path());
+            dir
+        });
+    }
+
     #[test]
     fn test_session_guard_cleans_up_on_drop() {
+        init_test_session_dir();
         let session_info =
             SessionInfo::new(9999, Some("test.txt".to_string()), "guard_test".to_string());
         session_info.write().unwrap();
@@ -693,6 +684,7 @@ mod tests {
 
     #[test]
     fn test_session_guard_cleans_up_on_panic() {
+        init_test_session_dir();
         let session_info = SessionInfo::new(
             9998,
             Some("panic_test.txt".to_string()),

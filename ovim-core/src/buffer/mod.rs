@@ -96,7 +96,7 @@ impl Buffer {
     ///
     /// # Examples
     /// ```
-    /// use ovim::buffer::Buffer;
+    /// use ovim_core::buffer::Buffer;
     ///
     /// // Empty buffer has 0 chars, 1 empty line
     /// let buf = Buffer::new_from_str("");

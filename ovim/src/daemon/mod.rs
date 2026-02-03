@@ -20,14 +20,15 @@
 //!
 //! ## Usage
 //!
-//! ```rust
-//! // Start or connect to daemon for a project
-//! let daemon = DaemonClient::connect_or_start(project_root).await?;
+//! ```text
+//! # Pseudocode (API subject to change)
+//! # Start or connect to daemon for a project
+//! let daemon = connect_or_start_daemon(project_root);
 //!
-//! // Send LSP requests
-//! let response = daemon.send_request(DaemonRequest::Hover { uri, position }).await?;
+//! # Send LSP requests
+//! let response = daemon.send_request(Hover { uri, position });
 //!
-//! // Daemon stays alive after client disconnects
+//! # Daemon stays alive after client disconnects
 //! ```
 
 pub mod lock;

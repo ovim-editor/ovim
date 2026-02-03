@@ -750,18 +750,9 @@ impl Editor {
         }
 
         let cursor_line = self.buffer().cursor().line();
-        let visible_lines = self.viewport.viewport_height;
+        let visible_lines = self.viewport.viewport_height.max(1);
         let current_offset = self.scroll_offset();
-        // Clamp scrolloff so top and bottom margins don't overlap.
-        // When scrolloff >= ceil(visible_lines/2), both margins would claim
-        // the same lines, causing the viewport to oscillate on every movement.
-        let scrolloff = self
-            .options
-            .scrolloff
-            .min(visible_lines.saturating_sub(1) / 2);
-
-        // Calculate new scroll offset
-        let new_offset;
+        let max_line = self.buffer().line_count().saturating_sub(1);
 
         // Only use wrap-aware scrolling if the wrap map covers the current buffer.
         // After edits (e.g. `o` inserting a line) the map is stale until the next
@@ -773,6 +764,54 @@ impl Editor {
                 .wrap_map
                 .as_ref()
                 .is_some_and(|m| m.line_count() >= self.buffer().rope().len_lines());
+
+        // In wrap mode, each logical line can consume multiple visual rows. Clamping using
+        // logical line counts can prevent scrolling far enough to reveal the final logical
+        // lines when a wrapped line appears near EOF. Instead, derive the maximum scroll
+        // offset from total visual rows.
+        let max_scroll = if wrap_map_usable {
+            self.viewport
+                .wrap_map
+                .as_ref()
+                .map(|m| Self::compute_wrap_max_scroll_offset(m, visible_lines, max_line))
+                .unwrap_or_else(|| max_line.saturating_sub(visible_lines.saturating_sub(1)))
+        } else {
+            max_line.saturating_sub(visible_lines.saturating_sub(1))
+        };
+
+        // After a viewport command (zt/zz/zb), mimic Vim's behavior: keep the cursor visible
+        // without enforcing scrolloff until it would leave the viewport.
+        if self.viewport.viewport_command_active {
+            let viewport_end = current_offset + visible_lines.saturating_sub(1);
+            let mut new_offset = current_offset;
+
+            if cursor_line < current_offset {
+                new_offset = cursor_line;
+            } else if cursor_line > viewport_end {
+                new_offset = cursor_line + 1 - visible_lines;
+            }
+
+            let new_offset = new_offset.min(max_scroll);
+            self.viewport.scroll_offset = new_offset;
+
+            if let Some(wm) = &mut self.window_manager {
+                if let Some(window) = wm.focused_window_mut() {
+                    window.set_scroll_offset(new_offset);
+                }
+            }
+            return;
+        }
+
+        // Clamp scrolloff so top and bottom margins don't overlap.
+        // When scrolloff >= ceil(visible_lines/2), both margins would claim
+        // the same lines, causing the viewport to oscillate on every movement.
+        let scrolloff = self
+            .options
+            .scrolloff
+            .min(visible_lines.saturating_sub(1) / 2);
+
+        // Calculate new scroll offset
+        let new_offset;
 
         if wrap_map_usable {
             if let Some(ref wrap_map) = self.viewport.wrap_map {
@@ -802,8 +841,15 @@ impl Editor {
                 } else if cursor_visual_row + scrolloff >= viewport_visual_start + visible_lines {
                     // Cursor below viewport bottom margin — scroll down
                     let target_visual = cursor_visual_row + scrolloff + 1 - visible_lines;
-                    let (new_line, _) = wrap_map.visual_to_logical(target_visual);
-                    new_offset = new_line;
+                    let (new_line, sub_line) = wrap_map.visual_to_logical(target_visual);
+                    // We can't start rendering in the middle of a wrapped line. If the ideal
+                    // visual start lands on a sub-line, advance to the next logical line so the
+                    // viewport can still reach the final logical lines near EOF.
+                    new_offset = if sub_line > 0 {
+                        new_line.saturating_add(1)
+                    } else {
+                        new_line
+                    };
                 } else {
                     new_offset = current_offset;
                 }
@@ -825,11 +871,10 @@ impl Editor {
             );
         };
 
-        // Clamp scroll offset to buffer bounds.
-        // Use rope's raw line count (includes trailing empty line after final \n)
-        // because the cursor can be on that line even though line_count() excludes it.
-        let raw_last_line = self.buffer().rope().len_lines().saturating_sub(1);
-        let new_offset = new_offset.min(raw_last_line);
+        // Clamp scroll offset so we don't scroll past EOF leaving large blank regions.
+        // This matches typical Vim behavior and keeps the viewport "filled" with buffer lines
+        // when possible.
+        let new_offset = new_offset.min(max_scroll);
 
         // Update both editor-level and window-level scroll offsets
         self.viewport.scroll_offset = new_offset;
@@ -881,6 +926,27 @@ impl Editor {
         } else {
             current_offset
         }
+    }
+
+    /// Compute the maximum logical scroll offset in wrap mode based on total visual rows.
+    ///
+    /// The renderer can only start rendering at a logical line boundary (not a wrapped
+    /// sub-line), so if the ideal max visual start lands mid-line, we advance to the
+    /// next logical line to ensure the final logical lines can still be reached.
+    fn compute_wrap_max_scroll_offset(
+        wrap_map: &WrapMap,
+        visible_rows: usize,
+        max_line: usize,
+    ) -> usize {
+        let visible_rows = visible_rows.max(1);
+        let total_visual = wrap_map.total_visual_lines();
+        if total_visual <= visible_rows {
+            return 0;
+        }
+        let max_visual_start = total_visual - visible_rows;
+        let (line, sub_line) = wrap_map.visual_to_logical(max_visual_start);
+        let candidate = if sub_line > 0 { line.saturating_add(1) } else { line };
+        candidate.min(max_line)
     }
 
     /// Calculates half-page scroll amount

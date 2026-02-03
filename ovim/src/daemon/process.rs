@@ -36,18 +36,18 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
     use nix::sys::signal::{kill, Signal};
     use nix::unistd::Pid;
 
-    eprintln!("[daemon] Attempting to kill process {}", pid);
+    ovim_core::log_info!("daemon", "Attempting to kill process {}", pid);
 
     // Check if process exists
     if !super::pid::process_exists(pid) {
-        eprintln!("[daemon] Process {} already dead", pid);
+        ovim_core::log_debug!("daemon", "Process {} already dead", pid);
         return Ok(ProcessKillStatus::Terminated);
     }
 
     // Try SIGTERM first (graceful shutdown)
-    eprintln!("[daemon] Sending SIGTERM to {}", pid);
+    ovim_core::log_debug!("daemon", "Sending SIGTERM to {}", pid);
     if let Err(e) = kill(Pid::from_raw(pid), Signal::SIGTERM) {
-        eprintln!("[daemon] Warning: SIGTERM failed: {}", e);
+        ovim_core::log_warn!("daemon", "SIGTERM failed for {}: {}", pid, e);
     }
 
     // Wait up to 5 seconds for graceful termination
@@ -55,22 +55,23 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         if !super::pid::process_exists(pid) {
-            eprintln!("[daemon] Process {} terminated gracefully", pid);
+            ovim_core::log_info!("daemon", "Process {} terminated gracefully", pid);
             return Ok(ProcessKillStatus::Terminated);
         }
 
         if i == 5 {
-            eprintln!("[daemon] Process {} still alive after 2.5s", pid);
+            ovim_core::log_debug!("daemon", "Process {} still alive after 2.5s", pid);
         }
     }
 
     // Still alive - escalate to SIGKILL
-    eprintln!(
-        "[daemon] Warning: Process {} did not respond to SIGTERM, sending SIGKILL",
+    ovim_core::log_warn!(
+        "daemon",
+        "Process {} did not respond to SIGTERM, sending SIGKILL",
         pid
     );
     if let Err(e) = kill(Pid::from_raw(pid), Signal::SIGKILL) {
-        eprintln!("[daemon] Error: SIGKILL failed: {}", e);
+        ovim_core::log_error!("daemon", "SIGKILL failed for {}: {}", pid, e);
     }
 
     // Wait up to 2 seconds for kill
@@ -78,41 +79,45 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         if !super::pid::process_exists(pid) {
-            eprintln!("[daemon] Process {} killed", pid);
+            ovim_core::log_warn!("daemon", "Process {} killed", pid);
             return Ok(ProcessKillStatus::Killed);
         }
 
         if i == 2 {
-            eprintln!(
-                "[daemon] Warning: Process {} still alive after SIGKILL",
-                pid
-            );
+            ovim_core::log_warn!("daemon", "Process {} still alive after SIGKILL", pid);
         }
     }
 
     // Still alive after SIGKILL - check state
-    eprintln!(
-        "[daemon] Error: Process {} survived SIGKILL - checking state",
+    ovim_core::log_error!(
+        "daemon",
+        "Process {} survived SIGKILL - checking state",
         pid
     );
 
     match get_process_state(pid)? {
         'Z' => {
-            eprintln!("[daemon] Warning: Process {} is zombie", pid);
+            ovim_core::log_warn!("daemon", "Process {} is zombie", pid);
             Ok(ProcessKillStatus::Zombie)
         }
         'D' => {
-            eprintln!(
-                "[daemon] Error: Process {} is in uninterruptible sleep (state D)",
+            ovim_core::log_error!(
+                "daemon",
+                "Process {} is in uninterruptible sleep (state D)",
                 pid
             );
-            eprintln!("[daemon] Error: This process cannot be killed! Likely waiting on disk I/O");
+            ovim_core::log_error!(
+                "daemon",
+                "This process cannot be killed! Likely waiting on disk I/O"
+            );
             Ok(ProcessKillStatus::Stuck)
         }
         state => {
-            eprintln!(
-                "[daemon] Error: Process {} in unexpected state: {}",
-                pid, state
+            ovim_core::log_error!(
+                "daemon",
+                "Process {} in unexpected state: {}",
+                pid,
+                state
             );
             anyhow::bail!("Process {} survived SIGKILL and is in state {}", pid, state)
         }
@@ -150,42 +155,52 @@ pub fn get_process_state(pid: i32) -> Result<char> {
 
 #[cfg(target_os = "macos")]
 pub fn get_process_state(pid: i32) -> Result<char> {
-    use std::process::Command;
+    match super::pid::get_proc_bsdinfo(pid) {
+        Ok(info) => {
+            // Map macOS proc_bsdinfo status to Linux-like state chars.
+            // Values are from xnu's p_stat: SIDL=1, SRUN=2, SSLEEP=3, SSTOP=4, SZOMB=5.
+            // (There isn't a clean equivalent to Linux 'D' here; treat as 'S'.)
+            let normalized = match info.pbi_status {
+                2 => 'R',
+                4 => 'T',
+                5 => 'Z',
+                _ => 'S',
+            };
 
-    // Use ps to get process state
-    let output = Command::new("ps")
-        .arg("-p")
-        .arg(pid.to_string())
-        .arg("-o")
-        .arg("state=")
-        .output()
-        .context("Failed to run ps")?;
+            Ok(normalized)
+        }
+        Err(primary_err) => {
+            // Fallback to `ps` if libproc access is restricted.
+            use std::process::Command;
 
-    if !output.status.success() {
-        anyhow::bail!("ps command failed");
+            let output = Command::new("ps")
+                .arg("-p")
+                .arg(pid.to_string())
+                .arg("-o")
+                .arg("state=")
+                .output()
+                .context("Failed to run ps")?;
+
+            if !output.status.success() {
+                return Err(primary_err).context("ps command failed");
+            }
+
+            let state_str = String::from_utf8_lossy(&output.stdout);
+            let state = state_str
+                .trim()
+                .chars()
+                .next()
+                .context("No state character")?;
+
+            let normalized = match state {
+                'I' | 'S' => 'S',
+                'U' => 'D',
+                other => other,
+            };
+
+            Ok(normalized)
+        }
     }
-
-    let state_str = String::from_utf8_lossy(&output.stdout);
-    let state = state_str
-        .trim()
-        .chars()
-        .next()
-        .context("No state character")?;
-
-    // macOS uses different codes, normalize to Linux-style
-    // I/S -> S (sleeping)
-    // R -> R (running)
-    // U -> D (uninterruptible wait)
-    // Z -> Z (zombie)
-    // T -> T (stopped)
-
-    let normalized = match state {
-        'I' | 'S' => 'S',
-        'U' => 'D',
-        other => other,
-    };
-
-    Ok(normalized)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -214,10 +229,7 @@ impl RogueProcessTracker {
 
     /// Mark a process as rogue
     pub async fn mark_rogue(&self, pid: i32, reason: String) {
-        eprintln!(
-            "[daemon] Error: Marking process {} as rogue: {}",
-            pid, reason
-        );
+        ovim_core::log_error!("daemon", "Marking process {} as rogue: {}", pid, reason);
 
         let mut rogues = self.rogue_pids.lock().await;
         rogues.push(RogueProcess {

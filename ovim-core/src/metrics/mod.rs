@@ -12,7 +12,10 @@
 //! # Usage
 //!
 //! ```rust
-//! use ovim::metrics;
+//! # #[cfg(feature = "metrics")]
+//! # {
+//! use ovim_core::metrics;
+//! let buffer_size: usize = 0;
 //!
 //! // Increment counters
 //! metrics::HTTP_REQUESTS_TOTAL.inc();
@@ -24,6 +27,7 @@
 //!
 //! // Update gauges
 //! metrics::BUFFER_SIZE_BYTES.set(buffer_size as i64);
+//! # }
 //! ```
 //!
 //! # Feature Flag

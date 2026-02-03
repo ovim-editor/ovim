@@ -333,13 +333,8 @@ fn test_blackhole_register_delete() {
         .keys("\"_dw") // Delete "world" to black hole (doesn't affect unnamed)
         .press('p'); // Paste "hello" from unnamed
 
-    // After yiw: unnamed = "hello"
-    // After w: cursor at "world"
-    // After "_dw: buffer = "hello ", cursor at end (clamped)
-    // p pastes from unnamed - but "_dw updated unnamed to "world" (black hole doesn't prevent unnamed update)
-    // TODO: Black hole register not fully implemented - delete still updates unnamed
-    // Actual behavior: "hello world\n" (no paste happens because unnamed is now empty or "world")
-    assert_eq!(test.buffer_content(), "hello world\n");
+    // "_dw should not update the unnamed register, so `p` still pastes "hello".
+    assert_eq!(test.buffer_content(), "hello hello\n");
     test.assert_cursor(0, 10);
 }
 
@@ -355,10 +350,8 @@ fn test_blackhole_register_change() {
         .keys("$") // End of line (cursor on 'e')
         .press('p'); // Paste from unnamed
 
-    // TODO: Black hole register not fully implemented - change still updates unnamed
-    // "_ciw should NOT update unnamed, but actual behavior updates it to "two"
-    // p pastes "two" after 'e', giving "one X threetwo"
-    assert_eq!(test.buffer_content(), "one X threetwo\n");
+    // "_ciw should not update the unnamed register, so `p` pastes the earlier yank ("one").
+    assert_eq!(test.buffer_content(), "one X threeone\n");
     test.assert_cursor(0, 13);
 }
 
@@ -573,7 +566,8 @@ fn test_register_with_count_delete() {
 
     // 2dd deletes 2 lines (linewise), "ap pastes them below current line
     assert_eq!(test.buffer_content(), "line 3\nline 4\nline 1\nline 2\n");
-    test.assert_cursor(3, 0);
+    // Linewise paste moves the cursor to the first pasted line.
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -712,6 +706,6 @@ fn test_swap_words_with_registers() {
         .keys("\"ap"); // Paste "hello"
 
     // Complex swap operation - verify actual behavior
-    assert_eq!(test.buffer_content(), " worldworld\nhello\n");
-    test.assert_cursor(1, 5);
+    assert_eq!(test.buffer_content(), " hello\n");
+    test.assert_cursor(0, 5);
 }

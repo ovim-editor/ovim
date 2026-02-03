@@ -374,10 +374,18 @@ impl LspManager {
     /// Gets diagnostics for a file (merged from all servers)
     pub async fn get_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
         let diagnostics = self.diagnostics.lock().await;
-        diagnostics
+        let result = diagnostics
             .get(uri)
             .map(Self::merge_diagnostics)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        crate::lsp_debug!(
+            "DIAGNOSTICS",
+            "get_diagnostics: uri={} found={} stored_uris={:?}",
+            uri.as_str(),
+            result.len(),
+            diagnostics.keys().map(|u| u.as_str()).collect::<Vec<_>>()
+        );
+        result
     }
 
     /// Gets diagnostics for a specific line in a file (merged from all servers)
@@ -425,6 +433,13 @@ impl LspManager {
     /// Sets diagnostics for a file from a specific server
     /// (called when receiving publishDiagnostics)
     pub async fn set_diagnostics(&self, uri: Uri, server_id: &str, diagnostics: Vec<Diagnostic>) {
+        crate::lsp_debug!(
+            "DIAGNOSTICS",
+            "set_diagnostics: uri={} server={} count={}",
+            uri.as_str(),
+            server_id,
+            diagnostics.len()
+        );
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
         let mut diags = self.diagnostics.lock().await;
         diags

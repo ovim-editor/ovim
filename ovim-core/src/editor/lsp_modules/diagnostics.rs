@@ -46,11 +46,24 @@ impl Editor {
         let count = if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Some(uri) = crate::lsp::uri_from_file_path(file_path) {
-                    lsp.count_diagnostics(&uri).await
+                    let c = lsp.count_diagnostics(&uri).await;
+                    crate::log_debug!(
+                        "diagnostics",
+                        "update_diagnostic_cache: uri={} count={:?}",
+                        uri.as_str(),
+                        c
+                    );
+                    c
                 } else {
+                    crate::log_debug!(
+                        "diagnostics",
+                        "update_diagnostic_cache: uri_from_file_path failed for {}",
+                        file_path
+                    );
                     (0, 0, 0, 0)
                 }
             } else {
+                crate::log_debug!("diagnostics", "update_diagnostic_cache: no file_path");
                 (0, 0, 0, 0)
             }
         } else {
@@ -63,9 +76,36 @@ impl Editor {
         self.on_diagnostic_counts_changed(count.0, count.1);
 
         // Also update the full diagnostics list for inline display
+        // Re-create URI to verify it matches what we used for counting
+        let query_uri = self.buffer().file_path().and_then(crate::lsp::uri_from_file_path);
+        crate::log_debug!(
+            "diagnostics",
+            "update_diagnostic_cache: query_uri for get={:?}",
+            query_uri.as_ref().map(|u| u.as_str())
+        );
+
         if let Some(diagnostics) = self.get_current_file_diagnostics().await {
+            crate::log_debug!(
+                "diagnostics",
+                "update_diagnostic_cache: got {} diagnostics for current file (count was {:?})",
+                diagnostics.len(),
+                count
+            );
+            if !diagnostics.is_empty() {
+                crate::log_debug!(
+                    "diagnostics",
+                    "first diag: line={} msg={:.50}",
+                    diagnostics[0].range.start.line,
+                    diagnostics[0].message
+                );
+            }
             self.lsp_state.current_file_diagnostics = diagnostics;
         } else {
+            crate::log_debug!(
+                "diagnostics",
+                "update_diagnostic_cache: get_current_file_diagnostics returned None (count was {:?})",
+                count
+            );
             self.lsp_state.current_file_diagnostics.clear();
         }
 
@@ -75,11 +115,22 @@ impl Editor {
 
     /// Get diagnostics for a specific line from cached diagnostics
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
-        self.lsp_state
+        let result: Vec<_> = self.lsp_state
             .current_file_diagnostics
             .iter()
             .filter(|d| d.range.start.line as usize == line)
-            .collect()
+            .collect();
+        // Only log if there are cached diagnostics (to avoid spam)
+        if !self.lsp_state.current_file_diagnostics.is_empty() && result.is_empty() && line < 10 {
+            crate::log_debug!(
+                "diagnostics",
+                "diagnostics_for_line({}): 0 matches in {} cached diagnostics, first diag line={}",
+                line,
+                self.lsp_state.current_file_diagnostics.len(),
+                self.lsp_state.current_file_diagnostics.first().map(|d| d.range.start.line).unwrap_or(0)
+            );
+        }
+        result
     }
 
     /// Get the current diagnostic at the cursor position

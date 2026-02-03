@@ -184,17 +184,18 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
-        // Extract buffer cursor position and scrolloff before borrowing window_manager
-        let (line, col, scrolloff) = {
+        // Extract buffer cursor position before borrowing window_manager
+        let (line, col) = {
             let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col(), self.options.scrolloff)
+            (cursor.line(), cursor.col())
         };
 
         // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_top(scrolloff);
+                // Vim's zt/zz/zb positioning ignores scrolloff; it explicitly places the cursor line.
+                window.move_cursor_to_top(0);
             }
         }
 
@@ -210,17 +211,18 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
-        // Extract buffer cursor position and scrolloff before borrowing window_manager
-        let (line, col, scrolloff) = {
+        // Extract buffer cursor position before borrowing window_manager
+        let (line, col) = {
             let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col(), self.options.scrolloff)
+            (cursor.line(), cursor.col())
         };
 
         // Now safe to mutably borrow window_manager
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_bottom(scrolloff);
+                // Vim's zt/zz/zb positioning ignores scrolloff; it explicitly places the cursor line.
+                window.move_cursor_to_bottom(0);
             }
         }
 
