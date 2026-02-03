@@ -77,7 +77,6 @@ impl LspManager {
 
     /// Internal method to send textDocument/didChange notification immediately
     /// Supports both full and incremental sync
-    #[allow(clippy::print_stderr)]
     async fn send_did_change_immediate(
         &self,
         uri: Uri,
@@ -107,8 +106,9 @@ impl LspManager {
                         1.0
                     };
                     if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        eprintln!(
-                            "[LSP-SYNC] Incremental: {} bytes (was {} bytes, {:.1}x reduction) | Range: {}:{}-{}:{} | File: {}",
+                        crate::lsp_debug!(
+                            "LSP-SYNC",
+                            "Incremental: {} bytes (was {} bytes, {:.1}x reduction) | Range: {}:{}-{}:{} | File: {}",
                             incremental_size,
                             full_doc_size,
                             reduction_ratio,
@@ -129,8 +129,9 @@ impl LspManager {
                 } else {
                     // No changes detected or identical content
                     if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        eprintln!(
-                            "[LSP-SYNC] No changes detected (identical content) | File: {}",
+                        crate::lsp_debug!(
+                            "LSP-SYNC",
+                            "No changes detected (identical content) | File: {}",
                             uri.path()
                         );
                     }
@@ -139,8 +140,9 @@ impl LspManager {
             } else {
                 // Fallback to full sync
                 if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                    eprintln!(
-                        "[LSP-SYNC] Full sync (no old_text): {} bytes | File: {}",
+                    crate::lsp_debug!(
+                        "LSP-SYNC",
+                        "Full sync (no old_text): {} bytes | File: {}",
                         full_doc_size,
                         uri.path()
                     );
@@ -159,8 +161,9 @@ impl LspManager {
                 "no old_text provided"
             };
             if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                eprintln!(
-                    "[LSP-SYNC] Full sync ({}): {} bytes | File: {}",
+                crate::lsp_debug!(
+                    "LSP-SYNC",
+                    "Full sync ({}): {} bytes | File: {}",
                     reason,
                     full_doc_size,
                     uri.path()

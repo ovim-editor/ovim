@@ -3,8 +3,7 @@
 //! Implements a JSON-RPC 2.0 server that communicates via stdin/stdout.
 //! Claude Code spawns this process and sends MCP requests/responses.
 //!
-//! This module runs as a separate process and uses stderr for debugging output.
-#![allow(clippy::print_stderr)]
+//! This module runs as a separate process. Do not print to stdout/stderr: log to file instead.
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -17,8 +16,13 @@ use crate::session::SessionInfo;
 
 /// Main MCP server loop
 pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
-    eprintln!(
-        "[MCP] Starting ovim MCP server in workspace: {}",
+    if let Err(e) = crate::log::init() {
+        let _ = e;
+    }
+
+    ovim_core::log_info!(
+        "mcp",
+        "Starting ovim MCP server in workspace: {}",
         workspace_dir.display()
     );
 
@@ -37,7 +41,7 @@ pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
         match reader.read_line(&mut buffer) {
             Ok(0) => {
                 // EOF - graceful shutdown
-                eprintln!("[MCP] EOF received, shutting down");
+                ovim_core::log_info!("mcp", "EOF received, shutting down");
                 break;
             }
             Ok(_) => {
@@ -49,7 +53,12 @@ pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
                 // Parse JSON-RPC request
                 match serde_json::from_str::<JsonRpcRequest>(line) {
                     Ok(request) => {
-                        eprintln!("[MCP] Request: {} (id: {:?})", request.method, request.id);
+                        ovim_core::log_debug!(
+                            "mcp",
+                            "Request: {} (id: {:?})",
+                            request.method,
+                            request.id
+                        );
 
                         // Handle request and get response
                         let response =
@@ -60,19 +69,23 @@ pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
                             match serde_json::to_string(&response) {
                                 Ok(json) => {
                                     if writeln!(stdout, "{}", json).is_err() {
-                                        eprintln!("[MCP] Failed to write response");
+                                        ovim_core::log_error!("mcp", "Failed to write response");
                                         break;
                                     }
                                     let _ = stdout.flush();
                                 }
                                 Err(e) => {
-                                    eprintln!("[MCP] Failed to serialize response: {}", e);
+                                    ovim_core::log_error!(
+                                        "mcp",
+                                        "Failed to serialize response: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("[MCP] Parse error: {}", e);
+                        ovim_core::log_warn!("mcp", "Parse error: {}", e);
 
                         // Send parse error response
                         let error_response = JsonRpcResponse {
@@ -90,13 +103,13 @@ pub fn run_mcp_server(workspace_dir: PathBuf) -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("[MCP] Read error: {}", e);
+                ovim_core::log_error!("mcp", "Read error: {}", e);
                 break;
             }
         }
     }
 
-    eprintln!("[MCP] Server shutdown complete");
+    ovim_core::log_info!("mcp", "Server shutdown complete");
     Ok(())
 }
 

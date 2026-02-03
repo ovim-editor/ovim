@@ -107,6 +107,30 @@ When wrap is off:
 
 ```vim
 :set scroll=10       " Lines to scroll with Ctrl-D/Ctrl-U
+:set scrolloff=10    " Keep at least N lines above/below cursor (0 = disable)
+:set sidescroll=0    " Horizontal scroll step size when wrap is off
+:set sidescrolloff=5 " Keep at least N columns left/right of cursor
+```
+
+### scrolloff
+
+`scrolloff` controls the minimum vertical margin around the cursor while moving.
+
+```vim
+:set scrolloff=0
+:set scrolloff=10
+:set scrolloff?
+```
+
+### sidescroll / sidescrolloff
+
+These options apply when `:set nowrap` and lines extend past the viewport.
+
+```vim
+:set sidescroll=0
+:set sidescrolloff=5
+:set sidescroll?
+:set sidescrolloff?
 ```
 
 ## Querying Options
@@ -117,4 +141,5 @@ Add `?` to any option name to see its current value:
 :set textwidth?      " Shows: textwidth=80
 :set tabstop?        " Shows: tabstop=4
 :set number?         " Shows: number or nonumber
+:set scrolloff?      " Shows: scrolloff=10
 ```

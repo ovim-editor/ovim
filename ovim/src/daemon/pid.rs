@@ -17,6 +17,36 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::SystemTime;
 
+#[cfg(target_os = "macos")]
+pub(crate) fn get_proc_bsdinfo(pid: i32) -> Result<libc::proc_bsdinfo> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+
+    let bytes_written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::addr_of_mut!(info).cast::<libc::c_void>(),
+            std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int,
+        )
+    };
+
+    if bytes_written < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("proc_pidinfo(PROC_PIDTBSDINFO) failed")
+            .map_err(Into::into);
+    }
+
+    if bytes_written as usize != std::mem::size_of::<libc::proc_bsdinfo>() {
+        anyhow::bail!(
+            "proc_pidinfo(PROC_PIDTBSDINFO) returned unexpected size: {}",
+            bytes_written
+        );
+    }
+
+    Ok(info)
+}
+
 /// PID information with verification data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonPidInfo {
@@ -60,8 +90,9 @@ impl DaemonPidInfo {
         // Check 2: Start time matches?
         let current_start_time = get_process_start_time(self.pid)?;
         if current_start_time != self.start_time {
-            eprintln!(
-                "[daemon] Warning: PID {} start time mismatch (PID reused by different process)",
+            ovim_core::log_warn!(
+                "daemon/pid",
+                "PID {} start time mismatch (PID reused by different process)",
                 self.pid
             );
             return Ok(false);
@@ -71,8 +102,9 @@ impl DaemonPidInfo {
         let current_cmdline = get_process_cmdline(self.pid)?;
         let current_hash = hash_string(&current_cmdline);
         if current_hash != self.cmd_hash {
-            eprintln!(
-                "[daemon] Warning: PID {} cmdline mismatch (process changed or PID reused)",
+            ovim_core::log_warn!(
+                "daemon/pid",
+                "PID {} cmdline mismatch (process changed or PID reused)",
                 self.pid
             );
             return Ok(false);
@@ -171,52 +203,39 @@ pub fn get_process_start_time(pid: i32) -> Result<SystemTime> {
 
 #[cfg(target_os = "macos")]
 pub fn get_process_start_time(pid: i32) -> Result<SystemTime> {
-    use std::process::Command;
+    match get_proc_bsdinfo(pid) {
+        Ok(info) => {
+            let start = std::time::UNIX_EPOCH
+                + std::time::Duration::from_secs(info.pbi_start_tvsec)
+                + std::time::Duration::from_micros(info.pbi_start_tvusec);
+            Ok(start)
+        }
+        Err(primary_err) => {
+            // Fallback to shelling out for environments where libproc access is restricted.
+            // This preserves behavior for older macOS versions or sandbox quirks.
+            use std::process::Command;
 
-    // Use ps to get process start time in epoch seconds
-    // The 'etime' format shows elapsed time, but we need absolute start time
-    // Use 'lstart' which gives us the full start time
-    let output = Command::new("ps")
-        .arg("-p")
-        .arg(pid.to_string())
-        .arg("-o")
-        .arg("lstart=")
-        .output()
-        .context("Failed to run ps")?;
+            let output = Command::new("ps")
+                .arg("-p")
+                .arg(pid.to_string())
+                .arg("-o")
+                .arg("etime=")
+                .output()
+                .context("Failed to run ps for etime")?;
 
-    if !output.status.success() {
-        anyhow::bail!("ps command failed for PID {}", pid);
+            if !output.status.success() {
+                return Err(primary_err).context("ps etime command failed");
+            }
+
+            let etime_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let elapsed_secs = parse_elapsed_time(&etime_str)
+                .with_context(|| format!("Failed to parse etime: {}", etime_str))?;
+
+            let now = SystemTime::now();
+            now.checked_sub(std::time::Duration::from_secs(elapsed_secs))
+                .context("Failed to calculate start time")
+        }
     }
-
-    let _lstart_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    // lstart format: "Tue Jan  7 14:23:45 2025"
-    // We'll use a simpler approach: get elapsed time and subtract from now
-    let output = Command::new("ps")
-        .arg("-p")
-        .arg(pid.to_string())
-        .arg("-o")
-        .arg("etime=")
-        .output()
-        .context("Failed to run ps for etime")?;
-
-    if !output.status.success() {
-        anyhow::bail!("ps etime command failed for PID {}", pid);
-    }
-
-    let etime_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    // Parse elapsed time (formats: "MM:SS", "HH:MM:SS", "DD-HH:MM:SS")
-    let elapsed_secs = parse_elapsed_time(&etime_str)
-        .with_context(|| format!("Failed to parse etime: {}", etime_str))?;
-
-    // Start time = now - elapsed
-    let now = SystemTime::now();
-    let start_time = now
-        .checked_sub(std::time::Duration::from_secs(elapsed_secs))
-        .context("Failed to calculate start time")?;
-
-    Ok(start_time)
 }
 
 /// Parse ps etime format into seconds
@@ -306,26 +325,116 @@ pub fn get_process_cmdline(pid: i32) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 pub fn get_process_cmdline(pid: i32) -> Result<String> {
-    use std::process::Command;
+    // Prefer sysctl(KERN_PROCARGS2) over shelling out to `ps` so this works in
+    // restricted environments where spawning system binaries is not permitted.
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size: libc::size_t = 0;
 
-    let output = Command::new("ps")
-        .arg("-p")
-        .arg(pid.to_string())
-        .arg("-o")
-        .arg("command=")
-        .output()
-        .context("Failed to run ps")?;
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            std::ptr::null_mut(),
+            std::ptr::addr_of_mut!(size),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
 
-    if !output.status.success() {
-        anyhow::bail!("ps command failed");
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("sysctl(KERN_PROCARGS2) sizing failed");
     }
 
-    let cmdline = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut buf = vec![0u8; size as usize];
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buf.as_mut_ptr().cast::<libc::c_void>(),
+            std::ptr::addr_of_mut!(size),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
 
+    if rc != 0 {
+        // Fall back to `ps` if sysctl is blocked for some reason.
+        use std::process::Command;
+
+        let output = Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .arg("-o")
+            .arg("command=")
+            .output()
+            .context("Failed to run ps")?;
+
+        if !output.status.success() {
+            return Err(std::io::Error::last_os_error())
+                .context("sysctl(KERN_PROCARGS2) failed")
+                .context("ps command failed")
+                .map_err(Into::into);
+        }
+
+        let cmdline = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if cmdline.is_empty() {
+            anyhow::bail!("Empty cmdline");
+        }
+        return Ok(cmdline);
+    }
+
+    buf.truncate(size as usize);
+    if buf.len() < std::mem::size_of::<libc::c_int>() {
+        anyhow::bail!("sysctl(KERN_PROCARGS2) returned too little data");
+    }
+
+    // Layout:
+    // - int argc
+    // - exec_path (NUL-terminated C string)
+    // - NUL padding
+    // - argv[0..argc-1] (NUL-terminated C strings)
+    let argc = {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(&buf[0..4]);
+        i32::from_ne_bytes(raw)
+    };
+
+    if argc <= 0 {
+        anyhow::bail!("sysctl(KERN_PROCARGS2) returned invalid argc: {}", argc);
+    }
+
+    let mut idx = 4usize;
+    while idx < buf.len() && buf[idx] != 0 {
+        idx += 1;
+    }
+    while idx < buf.len() && buf[idx] == 0 {
+        idx += 1;
+    }
+
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        if idx >= buf.len() {
+            break;
+        }
+
+        let start = idx;
+        while idx < buf.len() && buf[idx] != 0 {
+            idx += 1;
+        }
+        let arg = String::from_utf8_lossy(&buf[start..idx]).to_string();
+        if !arg.is_empty() {
+            args.push(arg);
+        }
+
+        while idx < buf.len() && buf[idx] == 0 {
+            idx += 1;
+        }
+    }
+
+    let cmdline = args.join(" ").trim().to_string();
     if cmdline.is_empty() {
         anyhow::bail!("Empty cmdline");
     }
-
     Ok(cmdline)
 }
 

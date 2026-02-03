@@ -69,8 +69,8 @@ fn test_viw_visual_inner_word() {
     test.keys("w").keys("viw"); // Visual select word "world" (positions 6-10)
 
     assert_eq!(test.buffer_content(), "hello world test\n");
-    // Cursor at end of selection (position 11, one past last char of "world")
-    test.assert_cursor(0, 11);
+    // Cursor at end of selection (last char of "world")
+    test.assert_cursor(0, 10);
 }
 
 // ============================================================================
@@ -491,7 +491,8 @@ fn test_yip_yank_paragraph() {
         test.buffer_content(),
         "para 1\nline 2\n\npara 2\npara 1\nline 2\n"
     );
-    test.assert_cursor(5, 0); // Last line of pasted paragraph
+    // Linewise paste moves the cursor to the first pasted line.
+    test.assert_cursor(4, 0);
 }
 
 #[test]
@@ -613,8 +614,8 @@ fn test_visual_iw() {
     test.keys("w").press('v').keys("iw"); // Visual select word "world"
 
     assert_eq!(test.buffer_content(), "hello world test\n");
-    // Cursor at end of selection (position 11, 'd' of "world")
-    test.assert_cursor(0, 11);
+    // Cursor at end of selection (last char of "world")
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -624,7 +625,7 @@ fn test_visual_aw() {
     test.press('v').keys("aw");
 
     assert_eq!(test.buffer_content(), "hello world test\n");
-    test.assert_cursor(0, 6);
+    test.assert_cursor(0, 5);
 }
 
 #[test]
@@ -635,7 +636,7 @@ fn test_visual_i_quote() {
 
     assert_eq!(test.buffer_content(), "text \"quoted\" more\n");
     // After selecting inner quote, cursor is at end of text object range (closing quote position)
-    test.assert_cursor(0, 12);
+    test.assert_cursor(0, 11);
 }
 
 // ============================================================================

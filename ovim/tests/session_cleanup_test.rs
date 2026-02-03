@@ -9,6 +9,12 @@ use std::time::Duration;
 // (they all operate on the same session directory)
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
+fn with_temp_session_dir() -> Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    std::env::set_var("OVIM_SESSION_DIR", dir.path());
+    Ok(dir)
+}
+
 /// Helper to create a fake session file for testing
 fn create_fake_session(name: &str, pid: u32, port: u16, age_secs: u64) -> Result<PathBuf> {
     use std::time::SystemTime;
@@ -51,6 +57,7 @@ fn test_cleanup_stale_sessions() -> Result<()> {
 
     // Lock to prevent parallel test execution
     let _lock = TEST_MUTEX.lock().unwrap();
+    let _temp_dir = with_temp_session_dir()?;
 
     // Create fake stale sessions directly (bypass list_all auto-cleanup)
     let fake_pid = 999999; // Very unlikely to exist
@@ -131,10 +138,10 @@ fn test_cleanup_expired_sessions() -> Result<()> {
 
     // Lock to prevent parallel test execution
     let _lock = TEST_MUTEX.lock().unwrap();
+    let _temp_dir = with_temp_session_dir()?;
 
     // Use current process PID and start time so it passes the "alive" check
     let our_pid = process::id();
-    let our_start_time = SystemInfo::get_process_start_time(our_pid);
 
     // Create a session that's 10 days old with our PID
     let started_at = SystemTime::now()
@@ -149,7 +156,7 @@ fn test_cleanup_expired_sessions() -> Result<()> {
         started_at,
         session_name: "expired_test".to_string(),
         lsp_ready: false,
-        start_time: our_start_time,
+        start_time: None,
     };
     old_session.write()?;
 
@@ -167,45 +174,11 @@ fn test_cleanup_expired_sessions() -> Result<()> {
     Ok(())
 }
 
-// Helper to get process start time (needed for tests)
-struct SystemInfo;
-
-impl SystemInfo {
-    #[cfg(target_os = "macos")]
-    fn get_process_start_time(pid: u32) -> Option<u64> {
-        use std::process::Command;
-        use std::time::SystemTime;
-
-        let output = Command::new("ps")
-            .args(["-o", "etimes=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
-            return None;
-        }
-
-        let elapsed_str = String::from_utf8(output.stdout).ok()?;
-        let elapsed_secs: u64 = elapsed_str.trim().parse().ok()?;
-
-        let current_time = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .ok()?
-            .as_secs();
-
-        Some(current_time.saturating_sub(elapsed_secs))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn get_process_start_time(_pid: u32) -> Option<u64> {
-        None // For other platforms, just use None
-    }
-}
-
 #[test]
 fn test_cleanup_corrupted_sessions() -> Result<()> {
     // Lock to prevent parallel test execution
     let _lock = TEST_MUTEX.lock().unwrap();
+    let _temp_dir = with_temp_session_dir()?;
 
     // Create corrupted session file
     let path = create_corrupted_session("corrupted_test")?;
@@ -235,6 +208,7 @@ fn test_cleanup_corrupted_sessions() -> Result<()> {
 fn test_cleanup_dry_run() -> Result<()> {
     // Lock to prevent parallel test execution
     let _lock = TEST_MUTEX.lock().unwrap();
+    let _temp_dir = with_temp_session_dir()?;
 
     // Create a fake stale session with unique name
     let fake_pid = 999997;
@@ -286,6 +260,7 @@ fn test_cleanup_dry_run() -> Result<()> {
 fn test_cleanup_no_stale_sessions() -> Result<()> {
     // Lock to prevent parallel test execution
     let _lock = TEST_MUTEX.lock().unwrap();
+    let _temp_dir = with_temp_session_dir()?;
 
     // First, clean up any existing stale sessions
     cleanup_stale_sessions(None, false)?;

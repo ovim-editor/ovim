@@ -3,8 +3,10 @@
 
 set -euo pipefail
 
-# Use platform-appropriate cache directory
-if [[ "$(uname)" == "Darwin" ]]; then
+# Use configurable session directory if provided, otherwise platform defaults
+if [[ -n "${OVIM_SESSION_DIR:-}" ]]; then
+    SESSIONS_DIR="$OVIM_SESSION_DIR"
+elif [[ "$(uname)" == "Darwin" ]]; then
     SESSIONS_DIR="$HOME/Library/Caches/ovim/sessions"
 else
     SESSIONS_DIR="$HOME/.cache/ovim/sessions"

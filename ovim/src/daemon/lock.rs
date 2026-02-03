@@ -27,12 +27,12 @@ impl DaemonLock {
     pub async fn acquire(daemon_dir: &Path, timeout: Duration) -> Result<Self> {
         let lock_path = daemon_dir.join(".daemon.lock");
 
-        eprintln!("[daemon] Acquiring daemon lock: {}", lock_path.display());
+        ovim_core::log_debug!("daemon", "Acquiring daemon lock: {}", lock_path.display());
 
         // Try to acquire lock with timeout
         let file = acquire_lock_with_timeout(&lock_path, timeout).await?;
 
-        eprintln!("[daemon] Lock acquired");
+        ovim_core::log_debug!("daemon", "Daemon lock acquired");
 
         Ok(Self {
             _file: file,
@@ -44,7 +44,12 @@ impl DaemonLock {
     pub async fn release(self) -> Result<()> {
         // Remove lock file
         if let Err(e) = tokio::fs::remove_file(&self.lock_path).await {
-            eprintln!("[daemon] Warning: Failed to remove lock file: {}", e);
+            ovim_core::log_warn!(
+                "daemon",
+                "Failed to remove lock file {}: {}",
+                self.lock_path.display(),
+                e
+            );
         }
 
         // File handle will be dropped automatically, releasing the lock
@@ -76,8 +81,9 @@ async fn acquire_lock_with_timeout(lock_path: &Path, timeout: Duration) -> Resul
 
                 if start.elapsed() > timeout {
                     // Timeout - assume stale lock
-                    eprintln!(
-                        "[daemon] Warning: Lock timeout after {:?} - assuming stale lock, force breaking",
+                    ovim_core::log_warn!(
+                        "daemon",
+                        "Lock timeout after {:?} - assuming stale lock, force breaking",
                         timeout
                     );
 
@@ -130,8 +136,9 @@ async fn try_acquire_lock(lock_path: &Path) -> std::io::Result<File> {
 
 /// Force break a stale lock
 async fn force_break_lock(lock_path: &Path) -> Result<()> {
-    eprintln!(
-        "[daemon] Warning: Force breaking lock: {}",
+    ovim_core::log_warn!(
+        "daemon",
+        "Force breaking lock: {}",
         lock_path.display()
     );
 
@@ -183,7 +190,7 @@ pub mod flock_based {
 
                 // Check for timeout
                 if start.elapsed() > timeout {
-                    eprintln!("[daemon] Warning: flock timeout - assuming stale lock");
+                    ovim_core::log_warn!("daemon", "flock timeout - assuming stale lock");
 
                     // Try blocking lock with short timeout
                     // (If lock is truly stale, this will succeed quickly)

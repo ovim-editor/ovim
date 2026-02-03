@@ -151,12 +151,15 @@ fn query_option(name: &str, editor: &Editor) -> Option<CommandResult> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "auto".to_string()),
         ),
+        "scrolloff" => format!("  scrolloff={}", opts.scrolloff),
         "textwidth" | "tw" => format!(
             "  textwidth={}",
             opts.textwidth
                 .map(|w| w.to_string())
                 .unwrap_or_else(|| "0".to_string()),
         ),
+        "sidescroll" => format!("  sidescroll={}", opts.sidescroll),
+        "sidescrolloff" => format!("  sidescrolloff={}", opts.sidescrolloff),
         "clipboard" | "cb" => {
             if opts.clipboard.is_empty() {
                 "  clipboard=".to_string()
@@ -255,6 +258,13 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
             Ok(_) => err("scroll must be greater than 0"),
             Err(_) => err(format!("Invalid number: {}", value)),
         },
+        "scrolloff" => match value.parse::<usize>() {
+            Ok(n) => {
+                editor.options.scrolloff = n;
+                ok(Some(format!("  scrolloff={}", n)))
+            }
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
         "textwidth" | "tw" => match value.parse::<usize>() {
             Ok(0) => {
                 editor.options.textwidth = None;
@@ -311,6 +321,20 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
             }
             Err(_) => err(format!("Invalid number: {}", value)),
         },
+        "sidescroll" => match value.parse::<usize>() {
+            Ok(n) => {
+                editor.options.sidescroll = n;
+                ok(Some(format!("  sidescroll={}", n)))
+            }
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
+        "sidescrolloff" => match value.parse::<usize>() {
+            Ok(n) => {
+                editor.options.sidescrolloff = n;
+                ok(Some(format!("  sidescrolloff={}", n)))
+            }
+            Err(_) => err(format!("Invalid number: {}", value)),
+        },
         _ => return None,
     };
     Some(result)
@@ -328,7 +352,7 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
     if args.is_empty() {
         let opts = &editor.options;
         let msg = format!(
-            "  {}number\n  {}relativenumber\n  {}expandtab\n  tabstop={}\n  shiftwidth={}\n  scroll={}",
+            "  {}number\n  {}relativenumber\n  {}expandtab\n  tabstop={}\n  shiftwidth={}\n  scroll={}\n  scrolloff={}\n  sidescroll={}\n  sidescrolloff={}",
             if opts.number { "" } else { "no" },
             if opts.relative_number { "" } else { "no" },
             if opts.expand_tab { "" } else { "no" },
@@ -336,7 +360,10 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
             opts.shift_width,
             opts.scroll
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "auto".to_string())
+                .unwrap_or_else(|| "auto".to_string()),
+            opts.scrolloff,
+            opts.sidescroll,
+            opts.sidescrolloff
         );
         return ok(Some(msg));
     }

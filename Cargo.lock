@@ -2001,6 +2001,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "lazy_static",
+ "libc",
  "lsp-types",
  "mlua",
  "nix",

@@ -71,7 +71,7 @@ Java has automatic download of the Hyperion LSP server. No manual installation r
 ### List All Languages
 
 ```bash
-ovim list-languages
+ovim lsp languages
 ```
 
 Output:
@@ -89,7 +89,7 @@ Add `--verbose` for detailed configuration.
 ### Check Specific File
 
 ```bash
-ovim check-lsp src/main.rs
+ovim lsp check src/main.rs
 ```
 
 Output:

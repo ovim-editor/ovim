@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```
-//! use ovim::unicode::grapheme_count;
+//! use ovim_core::unicode::grapheme_count;
 //!
 //! // Family emoji (7 code points, 1 grapheme)
 //! assert_eq!(grapheme_count("👨‍👩‍👧‍👦"), 1);
