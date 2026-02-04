@@ -74,16 +74,16 @@ impl Editor {
             }
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
             self.set_lsp_status("Save file first to use completion".to_string());
             return Ok(false);
         };
 
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
+        let abs_path = if std::path::Path::new(&file_path).is_absolute() {
+            file_path.clone()
         } else {
             match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
                     self.set_lsp_status("Failed to resolve file path".to_string());
                     return Ok(false);
@@ -97,7 +97,7 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -105,45 +105,68 @@ impl Editor {
             }
         };
 
-        self.set_lsp_status("Requesting completions...".to_string());
-
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+        // Cancel any pending completion request we already spawned.
+        if let Some(pending) = self.lsp_state.pending_completion.take() {
+            pending.request.task.abort();
         }
 
-        // Query all servers for this language (primary + companions)
-        let server_ids = lsp.servers_for_language(language_id);
-        let result = if server_ids.len() > 1 {
-            lsp.completion_multi(&uri, line, character, &server_ids)
-                .await
-        } else {
-            lsp.completion(&uri, line, character, language_id).await
+        // Snapshot sync state so we can flush document changes in the background without blocking UI.
+        let state_key = file_path.clone();
+        let content = self.buffer().rope().to_string();
+        let (needs_did_open, needs_flush, old_content) = match self.lsp_state.document_sync.get(&state_key) {
+            None => (true, false, None),
+            Some(state) => (state.did_open_sent == false, state.is_modified(), state.last_synced_content.clone()),
         };
 
-        match result {
-            Ok(items) if !items.is_empty() => {
-                let (trigger_col, trigger_prefix) = self.completion_trigger_context();
-                self.lsp_state.available_completions = items.clone();
-                self.completion_menu_mut()
-                    .show(items, trigger_col, trigger_prefix);
-                self.set_lsp_status(format!(
-                    "Found {} completions (Tab to accept, Ctrl-N/P to navigate)",
-                    self.completion_menu().items().len()
-                ));
-                Ok(true)
-            }
-            Ok(_) => {
-                self.hide_completion_menu();
-                self.set_lsp_status("No completions available".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.hide_completion_menu();
-                self.set_lsp_status(format!("Completion request failed: {}", e));
-                Err(e)
-            }
+        if needs_did_open {
+            let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
+            state.did_open_sent = true;
+            state.mark_change_sent(content.clone());
+        } else if needs_flush {
+            let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
+            state.mark_change_sent(content.clone());
         }
+
+        // Resolve all server_ids for this language (primary + companions)
+        let server_ids = lsp.servers_for_language(language_id);
+
+        self.lsp_state.completion_request_seq = self.lsp_state.completion_request_seq.wrapping_add(1);
+        let seq = self.lsp_state.completion_request_seq;
+
+        // Spawn completion request in background (non-blocking)
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let language_id = language_id.to_string();
+        let task = tokio::spawn(async move {
+            if needs_did_open {
+                let _ = lsp
+                    .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
+                    .await;
+            } else if needs_flush {
+                let _ = lsp
+                    .did_change_broadcast(uri.clone(), &language_id, content.clone(), old_content)
+                    .await;
+            }
+
+            let result = if server_ids.len() > 1 {
+                lsp.completion_multi(&uri, line, character, &server_ids).await
+            } else {
+                lsp.completion(&uri, line, character, &language_id).await
+            };
+            let _ = tx.send(result);
+            Ok(Vec::new())
+        });
+
+        self.lsp_state.pending_completion = Some(crate::editor::lsp_state::PendingCompletionRequest {
+            seq,
+            request: crate::editor::lsp_state::PendingLspRequest {
+                task,
+                receiver: rx,
+                started: std::time::Instant::now(),
+            },
+        });
+
+        self.set_lsp_status("Requesting completions...".to_string());
+        Ok(true)
     }
 }
 

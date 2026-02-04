@@ -121,6 +121,13 @@ pub enum PendingLspResponse {
     TypeDefinition(PendingLspRequest<Option<lsp_types::Location>>),
 }
 
+/// Pending completion request (kept separate from PendingLspResponse to avoid
+/// blocking other LSP actions while completions are in-flight).
+pub struct PendingCompletionRequest {
+    pub seq: u64,
+    pub request: PendingLspRequest<Vec<lsp_types::CompletionItem>>,
+}
+
 /// LSP-related state for the editor
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LspResultType {
@@ -202,6 +209,10 @@ pub struct LspState {
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP response that we're waiting for (non-blocking infrastructure)
     pub pending_lsp_response: Option<PendingLspResponse>,
+    /// Pending completion request (non-blocking, high-frequency)
+    pub pending_completion: Option<PendingCompletionRequest>,
+    /// Monotonic completion request sequence to ignore stale responses
+    pub completion_request_seq: u64,
     /// Content type for hover window (LSP hover vs diagnostic)
     pub hover_content_type: HoverContentType,
 }
@@ -234,6 +245,8 @@ impl LspState {
             current_file_diagnostics: Vec::new(),
             hover_cache: None,
             pending_lsp_response: None,
+            pending_completion: None,
+            completion_request_seq: 0,
             hover_content_type: HoverContentType::default(),
         }
     }

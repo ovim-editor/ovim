@@ -126,6 +126,10 @@ impl Editor {
         self.lsp_state.pending_lsp_response.is_some()
     }
 
+    pub fn has_pending_completion_response(&self) -> bool {
+        self.lsp_state.pending_completion.is_some()
+    }
+
     /// Polls pending LSP responses (non-blocking)
     /// Returns true if a response was processed and UI should redraw
     pub fn poll_pending_lsp_responses(&mut self) -> bool {
@@ -220,6 +224,71 @@ impl Editor {
 
             crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending) => {
                 self.poll_location_response(pending, "Type", "LSP-TYPE", false)
+            }
+        }
+    }
+
+    /// Poll completion responses (non-blocking)
+    /// Returns true if a response was processed and UI should redraw
+    pub fn poll_pending_completion_response(&mut self) -> bool {
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let Some(mut pending) = self.lsp_state.pending_completion.take() else {
+            return false;
+        };
+
+        match pending.request.receiver.try_recv() {
+            Ok(Ok(items)) => {
+                if pending.seq != self.lsp_state.completion_request_seq {
+                    return false; // Stale response
+                }
+
+                if self.mode() != crate::mode::Mode::Insert {
+                    self.hide_completion_menu();
+                    return false;
+                }
+
+                let (trigger_col, trigger_prefix) = self.completion_trigger_context();
+                self.completion_menu_mut()
+                    .show(items.clone(), trigger_col, trigger_prefix);
+                self.lsp_state.available_completions = items;
+                self.mark_dirty();
+                true
+            }
+            Ok(Err(e)) => {
+                if pending.seq == self.lsp_state.completion_request_seq {
+                    self.hide_completion_menu();
+                    self.set_lsp_status(format!("Completion failed: {}", e));
+                    self.mark_dirty();
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                if pending.request.started.elapsed() > std::time::Duration::from_secs(3) {
+                    pending.request.task.abort();
+                    if pending.seq == self.lsp_state.completion_request_seq {
+                        self.hide_completion_menu();
+                        self.set_lsp_status("Completion request timed out".to_string());
+                        self.mark_dirty();
+                        return true;
+                    }
+                    return false;
+                }
+
+                self.lsp_state.pending_completion = Some(pending);
+                false
+            }
+            Err(TryRecvError::Closed) => {
+                if pending.seq == self.lsp_state.completion_request_seq {
+                    self.hide_completion_menu();
+                    self.set_lsp_status("Completion request cancelled".to_string());
+                    self.mark_dirty();
+                    true
+                } else {
+                    false
+                }
             }
         }
     }
