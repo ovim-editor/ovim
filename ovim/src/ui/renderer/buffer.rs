@@ -543,7 +543,19 @@ fn append_diagnostic_virtual_text(
     if diagnostics.is_empty() {
         return;
     }
-    // Measure the row's current display width
+
+    // Remove trailing padding spans (spaces) so we can correctly measure and append.
+    // Note: `split_line_into_rows` pads each wrapped row to `text_width`, so if we measure
+    // before stripping, the row always appears "full" and virtual text never renders.
+    while let Some(last) = row.spans.last() {
+        if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
+            row.spans.pop();
+        } else {
+            break;
+        }
+    }
+
+    // Measure the row's current display width (after padding removal)
     let row_width: usize = row
         .spans
         .iter()
@@ -554,11 +566,17 @@ fn append_diagnostic_virtual_text(
                 .sum::<usize>()
         })
         .sum();
+
     // Need at least 6 cols: "  " + icon + " " + 1 char message
     let remaining = text_width.saturating_sub(row_width);
     if remaining < 6 {
+        // Re-pad to avoid shrinking the row if we removed padding spans above.
+        if row_width < text_width {
+            row.spans.push(Span::raw(" ".repeat(text_width - row_width)));
+        }
         return;
     }
+
     let diag = diagnostics[0];
     let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
     // "  " prefix + icon + " " = 4 chars overhead (icon is 1 display col for nerdfont)
@@ -578,16 +596,7 @@ fn append_diagnostic_virtual_text(
         .fg(fg_color)
         .bg(bg_color)
         .add_modifier(Modifier::ITALIC);
-    // Remove trailing padding spans (spaces) so we can re-pad after appending
-    // The split_line_into_rows pads rows to full width; we need to replace that padding
-    // with our diagnostic text
-    while let Some(last) = row.spans.last() {
-        if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
-            row.spans.pop();
-        } else {
-            break;
-        }
-    }
+
     row.spans.push(Span::raw("  "));
     row.spans
         .push(Span::styled(format!("{} {}", icon, msg), vtext_style));
@@ -1537,5 +1546,40 @@ mod tests {
         // Supplementary (emoji): 2 UTF-16 units
         assert_eq!(utf16_offset_to_char_idx("a😀b", 1), 1); // start of emoji
         assert_eq!(utf16_offset_to_char_idx("a😀b", 3), 2); // after emoji (2 UTF-16 units)
+    }
+
+    #[test]
+    fn test_append_diagnostic_virtual_text_on_padded_wrapped_row() {
+        let base = Line::from("let x = 1;".to_string());
+        let mut rows = split_line_into_rows(base, 30);
+        let mut first = rows.remove(0);
+
+        let diag = lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 1,
+                },
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: "uh oh".to_string(),
+            ..Default::default()
+        };
+        let diags = vec![&diag];
+
+        append_diagnostic_virtual_text(&mut first, &diags, 30);
+
+        let mut rendered = String::new();
+        for span in &first.spans {
+            rendered.push_str(span.content.as_ref());
+        }
+        assert!(rendered.contains("uh oh"));
+
+        let display_width: usize = rendered.chars().map(char_display_width).sum();
+        assert_eq!(display_width, 30);
     }
 }
