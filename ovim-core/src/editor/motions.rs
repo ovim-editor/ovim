@@ -282,7 +282,17 @@ impl Motions {
     /// e - moves to end of word
     pub fn word_end_forward(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {
-            Self::word_end_forward_once(buffer, false);
+            Self::word_end_forward_once(buffer, false, false);
+        }
+    }
+
+    /// Variant of `word_end_forward` that prefers the current word on the
+    /// first step, even if the cursor is already at that word's end.
+    ///
+    /// This matches Vim's `cw`/`ce` behavior on single-character words.
+    pub fn word_end_forward_prefer_current(buffer: &mut Buffer, count: usize) {
+        for i in 0..count {
+            Self::word_end_forward_once(buffer, false, i == 0);
         }
     }
 
@@ -290,34 +300,35 @@ impl Motions {
     /// E - moves to end of WORD
     pub fn word_end_forward_big(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {
-            Self::word_end_forward_once(buffer, true);
+            Self::word_end_forward_once(buffer, true, false);
         }
     }
 
-    fn word_end_forward_once(buffer: &mut Buffer, big_word: bool) {
-        let line_idx;
-        let col;
-        let total_lines;
-        let line_string;
-        {
+    pub fn word_end_forward_big_prefer_current(buffer: &mut Buffer, count: usize) {
+        for i in 0..count {
+            Self::word_end_forward_once(buffer, true, i == 0);
+        }
+    }
+
+    fn word_end_forward_once(buffer: &mut Buffer, big_word: bool, prefer_current: bool) {
+        let (line_idx, col, total_lines, line_string) = {
             let rope = buffer.rope();
             let cursor = buffer.cursor();
-            line_idx = cursor.line();
-            col = cursor.col();
+
             // Use Vim-compatible line count: exclude phantom empty line after trailing '\n'.
             let raw = rope.len_lines();
-            total_lines =
+            let total_lines =
                 if raw > 1 && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) == '\n' {
                     raw - 1
                 } else {
                     raw
                 };
 
-            if line_idx >= total_lines {
-                return;
-            }
+            (cursor.line(), cursor.col(), total_lines, rope.line(cursor.line()).to_string())
+        };
 
-            line_string = rope.line(line_idx).to_string();
+        if line_idx >= total_lines {
+            return;
         }
 
         let line = line_string.trim_end_matches('\n');
@@ -330,82 +341,110 @@ impl Motions {
                 let next = buffer.rope().line(next_line).to_string();
                 let next_trimmed = next.trim_end_matches('\n');
                 if !next_trimmed.is_empty() {
-                    // Find end of first word on this line using char_class
                     let next_chars: Vec<char> = next_trimmed.chars().collect();
-                    let first_class = char_class(next_chars[0]);
-                    let mut end_col = 0;
-                    if first_class != CharClass::Whitespace {
-                        while end_col + 1 < next_chars.len()
-                            && char_class(next_chars[end_col + 1]) == first_class
-                        {
-                            end_col += 1;
-                        }
-                    }
-                    buffer.cursor_mut().set_position(next_line, end_col);
+                    // Start at first non-ws, then move to end of that word
+                    let Some(start_col) = next_chars.iter().position(|c| !c.is_whitespace())
+                    else {
+                        next_line += 1;
+                        continue;
+                    };
+                    buffer.cursor_mut().set_position(next_line, start_col);
+                    Self::word_end_forward_once(buffer, big_word, prefer_current);
                     return;
                 }
                 next_line += 1;
             }
-            // All remaining lines are blank, go to last line
             buffer
                 .cursor_mut()
                 .set_position(total_lines.saturating_sub(1), 0);
             return;
         }
 
-        let mut new_col = col;
-
-        // Move forward at least one character
-        if new_col < chars.len() {
-            new_col += 1;
-        }
-
-        // Skip whitespace
-        while new_col < chars.len() && Self::is_whitespace(chars[new_col]) {
-            new_col += 1;
-        }
-
-        if new_col >= chars.len() {
+        if col >= chars.len() {
             if line_idx + 1 < total_lines {
                 buffer.cursor_mut().set_position(line_idx + 1, 0);
-                Self::word_end_forward_once(buffer, big_word);
+                Self::word_end_forward_once(buffer, big_word, prefer_current);
             }
             return;
         }
 
-        if big_word {
-            // Move to end of WORD
-            while new_col < chars.len() && !Self::is_whitespace(chars[new_col]) {
-                new_col += 1;
+        let mut idx = col;
+
+        let is_ws = chars.get(idx).is_some_and(|c| c.is_whitespace());
+        if is_ws {
+            while idx < chars.len() && chars[idx].is_whitespace() {
+                idx += 1;
+            }
+            if idx >= chars.len() {
+                if line_idx + 1 < total_lines {
+                    buffer.cursor_mut().set_position(line_idx + 1, 0);
+                    Self::word_end_forward_once(buffer, big_word, prefer_current);
+                }
+                return;
             }
         } else {
-            let start_char = chars[new_col];
-            let class = char_class(start_char);
-            match class {
-                CharClass::Cjk => {
-                    // Each CJK char is its own word — advance exactly one
-                    new_col += 1;
+            let end_of_current = if big_word {
+                let mut end = idx;
+                while end + 1 < chars.len() && !chars[end + 1].is_whitespace() {
+                    end += 1;
                 }
-                CharClass::Word => {
-                    while new_col < chars.len() && char_class(chars[new_col]) == CharClass::Word {
-                        new_col += 1;
+                end
+            } else {
+                let class = char_class(chars[idx]);
+                match class {
+                    CharClass::Cjk => idx,
+                    CharClass::Word | CharClass::Punctuation => {
+                        let mut end = idx;
+                        while end + 1 < chars.len() && char_class(chars[end + 1]) == class {
+                            end += 1;
+                        }
+                        end
                     }
+                    CharClass::Whitespace => idx,
                 }
-                CharClass::Punctuation => {
-                    while new_col < chars.len()
-                        && char_class(chars[new_col]) == CharClass::Punctuation
-                    {
-                        new_col += 1;
-                    }
+            };
+
+            if prefer_current || idx < end_of_current {
+                buffer.cursor_mut().set_col(end_of_current);
+                return;
+            }
+
+            // Subsequent repeats: already at end of current word — advance into next word.
+            idx = idx.saturating_add(1);
+            while idx < chars.len() && chars[idx].is_whitespace() {
+                idx += 1;
+            }
+            if idx >= chars.len() {
+                if line_idx + 1 < total_lines {
+                    buffer.cursor_mut().set_position(line_idx + 1, 0);
+                    Self::word_end_forward_once(buffer, big_word, prefer_current);
                 }
-                CharClass::Whitespace => {}
+                return;
             }
         }
 
-        // Fix Bug 1: Use saturating_sub to prevent underflow when new_col is 0
-        buffer
-            .cursor_mut()
-            .set_col(new_col.saturating_sub(1).min(chars.len().saturating_sub(1)));
+        let end_of_next = if big_word {
+            let mut end = idx;
+            while end + 1 < chars.len() && !chars[end + 1].is_whitespace() {
+                end += 1;
+            }
+            end
+        } else {
+            let class = char_class(chars[idx]);
+            match class {
+                CharClass::Cjk => idx,
+                CharClass::Word | CharClass::Punctuation => {
+                    let mut end = idx;
+                    while end + 1 < chars.len() && char_class(chars[end + 1]) == class {
+                        end += 1;
+                    }
+                    end
+                }
+                CharClass::Whitespace => idx,
+            }
+        };
+
+        buffer.cursor_mut().set_col(end_of_next);
     }
 
     /// Moves cursor backward to the end of the previous word

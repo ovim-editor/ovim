@@ -1230,7 +1230,7 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
     let start_col = start_cursor.col();
 
     // cw behaves like ce
-    Motions::word_end_forward(editor.buffer_mut(), count);
+    Motions::word_end_forward_prefer_current(editor.buffer_mut(), count);
 
     let end_cursor = editor.buffer().cursor();
     let end_line = end_cursor.line();
