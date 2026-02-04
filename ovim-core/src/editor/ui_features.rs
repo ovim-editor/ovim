@@ -4,6 +4,7 @@ use super::{
     Change, CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState,
     QuickfixEntry, QuickfixList, Range,
 };
+use crate::unicode::byte_offset_for_grapheme;
 
 impl Editor {
     /// Gets a reference to the completion menu
@@ -58,15 +59,44 @@ impl Editor {
             // Calculate the range to replace
             let trigger_col = self.completion_menu.trigger_col();
 
-            // Delete the partial word from trigger position to cursor
+            let cursor_before = (cursor_line, cursor_col);
+            let mut changes = Vec::new();
+
+            // Delete the partial word from trigger position to cursor (tracked for undo)
             if cursor_col > trigger_col {
-                self.buffer_mut()
-                    .delete_range(cursor_line, trigger_col, cursor_line, cursor_col);
+                let deleted_text = self
+                    .buffer()
+                    .line(cursor_line)
+                    .map(|s| {
+                        let line_text = s.trim_end_matches('\n');
+                        let start =
+                            byte_offset_for_grapheme(line_text, trigger_col).unwrap_or(0);
+                        let end = byte_offset_for_grapheme(line_text, cursor_col)
+                            .unwrap_or(line_text.len());
+                        line_text
+                            .get(start.min(line_text.len())..end.min(line_text.len()))
+                            .unwrap_or_default()
+                            .to_string()
+                    })
+                    .unwrap_or_default();
+
+                let range = Range::new(
+                    (cursor_line, trigger_col),
+                    (cursor_line, cursor_col),
+                );
+                let change = Change::delete(range, deleted_text, cursor_before);
+                change.apply(self.buffer_mut());
+                changes.push(change);
             }
 
-            // Insert the completion text
-            self.buffer_mut()
-                .insert_text_at(cursor_line, trigger_col, &text_to_insert);
+            // Insert the completion text (tracked for undo)
+            let insert_change = Change::insert(
+                (cursor_line, trigger_col),
+                text_to_insert.clone(),
+                cursor_before,
+            );
+            insert_change.apply(self.buffer_mut());
+            changes.push(insert_change);
 
             // Move cursor to end of inserted text
             let new_col = trigger_col + text_to_insert.chars().count();
@@ -74,8 +104,8 @@ impl Editor {
                 .cursor_mut()
                 .set_position(cursor_line, new_col);
 
-            // Mark buffer as modified
-            self.mark_buffer_modified();
+            let cursor_after = (cursor_line, new_col);
+            self.add_change(Change::composite(changes, cursor_before, cursor_after));
         }
 
         // Hide the completion menu
