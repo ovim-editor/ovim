@@ -366,17 +366,17 @@ fn test_v_with_zero() {
 fn test_V_with_gg() {
     editor_test! {
         given Normal {
-            "line 1", "^     ",
-            "line 2", "      ",
-            "line 3", "      ",
-            "line 4", "      ",
+            "line 1", "^",
+            "line 2", "",
+            "line 3", "",
+            "line 4", "",
         }
         keys "GVgg"
         expect VisualLine {
-            "line 1", "^-----",
-            "line 2", "------",
-            "line 3", "------",
-            "line 4", "------",
+            "line 1", "^-",
+            "line 2", "-",
+            "line 3", "-",
+            "line 4", "-",
         }
     }
 }
@@ -385,17 +385,17 @@ fn test_V_with_gg() {
 fn test_v_with_gg_moves_cursor_and_extends_selection() {
     editor_test! {
         given Normal {
-            "line 1", "^     ",
-            "line 2", "      ",
-            "line 3", "      ",
-            "line 4", "      ",
+            "line 1", "^",
+            "line 2", "",
+            "line 3", "",
+            "line 4", "",
         }
         keys "Gvgg"
         expect Visual {
-            "line 1", "^     ",
-            "line 2", "-     ",
-            "line 3", "-     ",
-            "line 4", "-     ",
+            "line 1", "^",
+            "line 2", "-",
+            "line 3", "-",
+            "line 4", "-",
         }
     }
 }
@@ -404,17 +404,17 @@ fn test_v_with_gg_moves_cursor_and_extends_selection() {
 fn test_v_with_G_moves_cursor_and_extends_selection() {
     editor_test! {
         given Normal {
-            "line 1", "^     ",
-            "line 2", "      ",
-            "line 3", "      ",
-            "line 4", "      ",
+            "line 1", "^",
+            "line 2", "",
+            "line 3", "",
+            "line 4", "",
         }
         keys "ggvG"
         expect Visual {
-            "line 1", "-     ",
-            "line 2", "-     ",
-            "line 3", "-     ",
-            "line 4", "^     ",
+            "line 1", "-",
+            "line 2", "-",
+            "line 3", "-",
+            "line 4", "^",
         }
     }
 }
@@ -446,24 +446,24 @@ fn test_visual_block_gg_and_G_preserve_column() {
 fn test_editor_test_dsl_allows_multi_step_debugging() {
     editor_test! {
         given Normal {
-            "line 1", "^     ",
-            "line 2", "      ",
-            "line 3", "      ",
-            "line 4", "      ",
+            "line 1", "^",
+            "line 2", "",
+            "line 3", "",
+            "line 4", "",
         }
         keys "Gv"
         expect Visual {
-            "line 1", "      ",
-            "line 2", "      ",
-            "line 3", "      ",
-            "line 4", "^     ",
+            "line 1", "",
+            "line 2", "",
+            "line 3", "",
+            "line 4", "^",
         }
         keys "gg"
         expect Visual {
-            "line 1", "^     ",
-            "line 2", "-     ",
-            "line 3", "-     ",
-            "line 4", "-     ",
+            "line 1", "^",
+            "line 2", "-",
+            "line 3", "-",
+            "line 4", "-",
         }
     }
 }

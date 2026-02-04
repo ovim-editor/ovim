@@ -63,10 +63,60 @@ fn normalize_expected_buffer(content: &str) -> String {
     s
 }
 
+/// Expand annotation string to match content length.
+///
+/// Rules:
+/// - If annotation is shorter than content, pad with spaces
+/// - If annotation ends with '-' AND has length > 1, extend selection to end of line
+/// - Empty annotation "" becomes all spaces
+/// - Single character annotations are padded with spaces (no extension)
+///
+/// Examples:
+///   expand_annotation("^", 6)      -> "^     "   (cursor at 0, pad spaces)
+///   expand_annotation("-", 6)      -> "-     "   (selected at 0 only, pad spaces)
+///   expand_annotation("^-", 6)     -> "^-----"   (cursor at 0, selected 1-5)
+///   expand_annotation("  ^", 6)    -> "  ^   "   (cursor at 2, pad spaces)
+///   expand_annotation("", 6)       -> "      "   (all spaces)
+///   expand_annotation(" -", 6)     -> " -----"   (selected 1-5)
+///   expand_annotation("--", 6)     -> "------"   (selected 0-5)
+fn expand_annotation(ann: &str, content_len: usize) -> String {
+    if content_len == 0 {
+        return String::new();
+    }
+
+    let ann_chars: Vec<char> = ann.chars().collect();
+    let ann_len = ann_chars.len();
+
+    if ann_len == 0 {
+        // Empty annotation -> all spaces
+        return " ".repeat(content_len);
+    }
+
+    if ann_len >= content_len {
+        // Already long enough, return as-is
+        return ann.to_string();
+    }
+
+    // Only extend with '-' if:
+    // 1. Annotation ends with '-'
+    // 2. Annotation has more than one character (single '-' just means col 0 selected)
+    let last_char = ann_chars[ann_len - 1];
+    let should_extend = last_char == '-' && ann_len > 1;
+    let fill_char = if should_extend { '-' } else { ' ' };
+
+    let mut result = ann.to_string();
+    let padding_needed = content_len - ann_len;
+    for _ in 0..padding_needed {
+        result.push(fill_char);
+    }
+    result
+}
+
 fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
     assert!(
         pairs.len() % 2 == 0,
-        "Fixture must have even number of strings (text + annotation per line)"
+        "Fixture must have even number of strings (text + annotation per line). \
+         Each content line needs a corresponding annotation line (can be empty string \"\")."
     );
 
     let mut content_lines: Vec<String> = Vec::new();
@@ -79,24 +129,51 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
     for line_idx in (0..pairs.len()).step_by(2).enumerate() {
         let (logical_line_idx, pair_idx) = line_idx;
         let text = pairs[pair_idx];
-        let ann = pairs[pair_idx + 1];
+        let ann_raw = pairs[pair_idx + 1];
         content_lines.push(text.to_string());
+
+        // Pad annotation with spaces if shorter than content.
+        // If annotation ends with '-', extend selection to end of line.
+        let text_len = text.chars().count();
+        let ann = expand_annotation(ann_raw, text_len);
+
+        // Validate annotation doesn't exceed content length
+        let ann_len = ann.chars().count();
+        if ann_len > text_len && text_len > 0 {
+            panic!(
+                "Annotation is longer than content on line {}:\n  content ({}): {:?}\n  annotation ({}): {:?}\n\
+                 Hint: annotation markers should not exceed content length.",
+                logical_line_idx, text_len, text, ann_len, ann
+            );
+        }
 
         let mut caret_cols: Vec<usize> = Vec::new();
         for (col, ch) in ann.chars().enumerate() {
             match ch {
                 '^' => caret_cols.push(col),
                 '-' => selected_cells.push((logical_line_idx, col)),
-                _ => {}
+                ' ' => {}
+                other => panic!(
+                    "Invalid annotation character '{}' on line {}. \
+                     Valid markers: '^' (cursor), '-' (selected), ' ' (nothing).",
+                    other, logical_line_idx
+                ),
             }
         }
 
         if caret_cols.len() > 1 {
-            panic!("Annotation line must contain at most one '^' caret");
+            panic!(
+                "Multiple '^' carets on line {}. Each line can have at most one caret.",
+                logical_line_idx
+            );
         }
         if let Some(caret_col) = caret_cols.into_iter().next() {
             if cursor.is_some() {
-                panic!("Fixture must contain exactly one '^' caret total");
+                panic!(
+                    "Multiple '^' carets in fixture (second one on line {}). \
+                     Fixture must contain exactly one '^' caret total.",
+                    logical_line_idx
+                );
             }
             cursor = Some((logical_line_idx, caret_col));
             if matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
@@ -113,7 +190,12 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
     }
 
     let content = content_lines.join("\n");
-    let cursor = cursor.expect("Fixture must contain exactly one '^' caret total");
+    let cursor = cursor.unwrap_or_else(|| {
+        panic!(
+            "Fixture must contain exactly one '^' caret. None found.\n\
+             Hint: add '^' to an annotation line to mark cursor position."
+        )
+    });
 
     match mode {
         Mode::Normal
@@ -223,4 +305,64 @@ fn derive_visual_linewise(
     let expected_end = (end_line, end_col);
 
     ((visual_start_line, 0), (expected_start, expected_end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_annotation_empty() {
+        assert_eq!(expand_annotation("", 6), "      ");
+        assert_eq!(expand_annotation("", 0), "");
+    }
+
+    #[test]
+    fn test_expand_annotation_single_caret() {
+        // Single ^ pads with spaces (cursor at col 0)
+        assert_eq!(expand_annotation("^", 6), "^     ");
+    }
+
+    #[test]
+    fn test_expand_annotation_single_dash() {
+        // Single - does NOT extend (selected at col 0 only)
+        assert_eq!(expand_annotation("-", 6), "-     ");
+    }
+
+    #[test]
+    fn test_expand_annotation_caret_dash_extends() {
+        // ^- extends selection to end of line
+        assert_eq!(expand_annotation("^-", 6), "^-----");
+    }
+
+    #[test]
+    fn test_expand_annotation_space_dash_extends() {
+        // " -" extends selection from col 1 to end
+        assert_eq!(expand_annotation(" -", 6), " -----");
+    }
+
+    #[test]
+    fn test_expand_annotation_double_dash_extends() {
+        // "--" extends to end
+        assert_eq!(expand_annotation("--", 6), "------");
+    }
+
+    #[test]
+    fn test_expand_annotation_caret_in_middle() {
+        // Caret in middle, pad with spaces
+        assert_eq!(expand_annotation("  ^", 6), "  ^   ");
+    }
+
+    #[test]
+    fn test_expand_annotation_already_full_length() {
+        // Already full length, no change
+        assert_eq!(expand_annotation("^-----", 6), "^-----");
+        assert_eq!(expand_annotation("------", 6), "------");
+    }
+
+    #[test]
+    fn test_expand_annotation_longer_than_content() {
+        // Longer annotations are returned as-is (validation happens elsewhere)
+        assert_eq!(expand_annotation("^-------", 6), "^-------");
+    }
 }
