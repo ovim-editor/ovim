@@ -324,7 +324,11 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
 }
 
 /// Handles :global and :vglobal commands (:g/pattern/command, :v/pattern/command)
-fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
+fn handle_global_command(
+    editor: &mut Editor,
+    command: &str,
+    range: Option<(usize, usize)>,
+) -> Result<()> {
     // Parse the command: g/pattern/command or v/pattern/command or g!/pattern/command
     // :g/pattern/command - execute command on lines matching pattern
     // :v/pattern/command or :g!/pattern/command - execute command on lines NOT matching pattern
@@ -340,11 +344,25 @@ fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Find the closing / for the pattern
-    // TODO: Handle escaped delimiters (\/) - currently just finds first unescaped /
-    let pattern_end = if let Some(idx) = rest[1..].find('/') {
-        idx + 1
-    } else {
+    // Find the closing / for the pattern, honoring escaped delimiters (\/)
+    let mut pattern_end: Option<usize> = None;
+    let mut escaped = false;
+    for (i, ch) in rest[1..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '/' {
+            pattern_end = Some(i + 1);
+            break;
+        }
+    }
+
+    let Some(pattern_end) = pattern_end else {
         editor.set_lsp_status("Invalid global command: missing closing /".to_string());
         return Ok(());
     };
@@ -373,11 +391,20 @@ fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
         }
     };
 
-    // Find all matching lines
+    // Find all matching lines (optionally restricted by Ex range)
     let line_count = editor.buffer().line_count();
+    if line_count == 0 {
+        editor.set_lsp_status("No matching lines found".to_string());
+        return Ok(());
+    }
+
+    let (scan_start, scan_end) = range.unwrap_or((0, line_count.saturating_sub(1)));
+    let scan_start = scan_start.min(line_count.saturating_sub(1));
+    let scan_end = scan_end.min(line_count.saturating_sub(1));
+
     let mut matching_lines = Vec::new();
 
-    for line_idx in 0..line_count {
+    for line_idx in scan_start..=scan_end {
         if let Some(line) = editor.buffer().line(line_idx) {
             let line_text = line.trim_end_matches('\n');
             let matches = regex.is_match(line_text);
@@ -397,36 +424,32 @@ fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
     // Execute the command on matching lines
     match sub_command {
         "d" | "delete" => {
-            // Delete all matching lines (in reverse order to avoid index shifts)
             let cursor_before = (
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
             );
             let mut all_deleted = Vec::new();
+            let mut changes = Vec::new();
 
             for &line_idx in matching_lines.iter().rev() {
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    all_deleted.push(line.to_string());
-
-                    let _line_len = line.trim_end_matches('\n').chars().count();
-
-                    // Calculate character range
-                    let start_char = editor.buffer().rope().line_to_char(line_idx);
-                    let end_char = if line_idx + 1 < editor.buffer().line_count() {
-                        editor.buffer().rope().line_to_char(line_idx + 1)
-                    } else {
-                        editor.buffer().rope().len_chars()
-                    };
-
-                    // Delete the line
-                    editor.buffer_mut().rope_mut().remove(start_char..end_char);
+                let deleted = editor
+                    .buffer_mut()
+                    .delete_range(line_idx, 0, line_idx + 1, 0);
+                if deleted.is_empty() {
+                    continue;
                 }
+                all_deleted.push(deleted.clone());
+                changes.push(Change::delete(
+                    Range::new((line_idx, 0), (line_idx + 1, 0)),
+                    deleted,
+                    cursor_before,
+                ));
             }
 
             // Store in register
             all_deleted.reverse(); // Restore original order
             let deleted_text = all_deleted.join("");
-            editor.delete_to_register(deleted_text.clone());
+            editor.delete_to_register(deleted_text);
 
             // Position cursor at first deleted line
             let new_cursor_line =
@@ -436,13 +459,9 @@ fn handle_global_command(editor: &mut Editor, command: &str) -> Result<()> {
                 .cursor_mut()
                 .set_position(new_cursor_line, 0);
 
-            // Record change
-            let range = Range::new(
-                (matching_lines[0], 0),
-                (matching_lines[matching_lines.len() - 1] + 1, 0),
-            );
-            let change = Change::delete(range, deleted_text, cursor_before);
-            editor.add_change(change);
+            // Record change for undo as a composite of per-line deletions.
+            let cursor_after = (new_cursor_line, 0);
+            editor.add_change(Change::composite(changes, cursor_before, cursor_after));
 
             editor.set_lsp_status(format!("Deleted {} line(s)", matching_lines.len()));
         }
@@ -1036,8 +1055,11 @@ fn is_command_with_pattern(command: &str) -> bool {
     if command.contains("s/") {
         return true;
     }
-    // Match: :g/, :g!/, :v/
-    if command.starts_with("g/") || command.starts_with("g!/") || command.starts_with("v/") {
+    // Match: :g/, :g!/, :v/ (including when prefixed by a range like % or .,$)
+    //
+    // This is intentionally permissive: returning true here simply prevents command-chaining
+    // splitting on |, which can legally appear in regex patterns.
+    if command.contains("g/") || command.contains("g!/") || command.contains("v/") {
         return true;
     }
     false
@@ -1125,15 +1147,31 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // First, try to parse range from command
     // Format: :[range]command
-    // BUG FIX: Handle ! specially - it marks the start of a shell command, not the end of range
-    let (range_str, cmd_part) = if let Some(exclaim_idx) = command.find('!') {
-        // ! found - this is a shell command like :1,5!sort or :!ls
+    //
+    // BUG FIX: '!' is ambiguous:
+    // - Shell: :[range]!cmd  (the '!' starts the command)
+    // - Global invert: :g!/pat/cmd (the '!' is part of the command name)
+    //
+    // Treat '!' as the command separator only when it appears *before* the
+    // first alphabetic command character (i.e. it's the command itself).
+    let first_alpha = command.chars().position(|c| c.is_alphabetic());
+    let bang_split = command.find('!').and_then(|exclaim_idx| {
+        let is_shell_separator = match first_alpha {
+            None => true,
+            Some(alpha_idx) => exclaim_idx < alpha_idx,
+        };
+        if is_shell_separator {
+            Some(exclaim_idx)
+        } else {
+            None
+        }
+    });
+
+    let (range_str, cmd_part) = if let Some(exclaim_idx) = bang_split {
         (&command[..exclaim_idx], &command[exclaim_idx..])
-    } else if let Some(first_alpha) = command.chars().position(|c| c.is_alphabetic()) {
-        // Normal command - split at first alphabetic character
+    } else if let Some(first_alpha) = first_alpha {
         (&command[..first_alpha], &command[first_alpha..])
     } else {
-        // No command part, might be just a line number (goto)
         (command, "")
     };
 
@@ -1507,16 +1545,30 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         return Ok(());
     }
 
+    // Handle :global and :vglobal commands (:g/pattern/command, :v/pattern/command),
+    // including when prefixed by a range (:rangeg/...).
+    if cmd_part.starts_with("g/") || cmd_part.starts_with("g!/") || cmd_part.starts_with("v/") {
+        let range = if range_str.trim().is_empty() {
+            // Vim's :global defaults to the entire buffer, not the current line.
+            None
+        } else {
+            match parse_range(editor, range_str) {
+                Some(r) => Some(r),
+                None => {
+                    editor.set_lsp_status("E14: Invalid address".to_string());
+                    return Ok(());
+                }
+            }
+        };
+
+        handle_global_command(editor, cmd_part, range)?;
+        return Ok(());
+    }
+
     // Handle substitute command (:s, :%s, :'<,'>s)
     // Check if it's a substitute command (contains 's/' pattern)
     if command.ends_with("s/") || command.contains("s/") {
         handle_substitute_command(editor, command)?;
-        return Ok(());
-    }
-
-    // Handle :global and :vglobal commands (:g/pattern/command, :v/pattern/command)
-    if command.starts_with("g/") || command.starts_with("g!/") || command.starts_with("v/") {
-        handle_global_command(editor, command)?;
         return Ok(());
     }
 
