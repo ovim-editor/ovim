@@ -12,11 +12,15 @@ impl Editor {
     /// Undoes the last change
     pub fn undo(&mut self) {
         self.buffer_mut().undo();
+        self.invalidate_hover_cache();
+        self.mark_buffer_modified();
     }
 
     /// Redoes the next change
     pub fn redo(&mut self) {
         self.buffer_mut().redo();
+        self.invalidate_hover_cache();
+        self.mark_buffer_modified();
     }
 
     /// Repeats the last change with proper cursor position tracking.
