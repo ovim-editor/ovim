@@ -294,70 +294,106 @@ pub enum LspCommand {
 
     /// Trigger hover and return hover info
     Hover {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Trigger goto-definition and return new location
     Definition {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Trigger find-references and return list
     References {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Return LSP diagnostic info
     Diagnostics {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// List document symbols
     Symbols {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Get structural outline of the current document
     Outline {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Search workspace symbols by name
     Symbol {
         /// Symbol name or partial name to search
         query: String,
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use as workspace/root hint (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Get call hierarchy (incoming/outgoing) for symbol at cursor
     Trace {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Wait for LSP to be ready (blocks until ready)
     Wait {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
         /// Timeout in milliseconds (default: 30000)
         #[arg(long, default_value = "30000")]
         timeout: u64,
+
+        /// File to use (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Check language configuration and LSP status for a file (no session needed)
