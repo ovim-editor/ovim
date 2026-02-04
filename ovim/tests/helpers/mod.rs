@@ -1,5 +1,6 @@
 pub mod test_session;
 mod viewport_assertions;
+pub mod dsl;
 
 pub use test_session::TestSession;
 #[allow(unused_imports)]
@@ -8,6 +9,24 @@ pub use viewport_assertions::ViewportAssertion;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
+
+#[macro_export]
+macro_rules! editor_test {
+    (
+        given $given_mode:ident { $( $given_line:literal ),* $(,)? }
+        when $keys:literal
+        expect $expect_mode:ident { $( $expect_line:literal ),* $(,)? }
+        $(,)?
+    ) => {{
+        let given_pairs: &[&str] = &[ $( $given_line ),* ];
+        let expect_pairs: &[&str] = &[ $( $expect_line ),* ];
+        let given_fixture =
+            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::$given_mode, given_pairs);
+        let expect_fixture =
+            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::$expect_mode, expect_pairs);
+        $crate::helpers::dsl::run_editor_test_case(given_fixture, $keys, expect_fixture);
+    }};
+}
 
 /// Test helper that provides a fluent API for driving editor operations
 /// and capturing snapshots of editor state
