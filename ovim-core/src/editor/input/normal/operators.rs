@@ -58,6 +58,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             operator,
             Operator::Indent
                 | Operator::Dedent
+                | Operator::AutoIndent
                 | Operator::Fold
                 | Operator::Change
                 | Operator::Delete
@@ -374,6 +375,38 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
 
         // =====================================================================
+        // Auto-indent operations
+        // =====================================================================
+        (Operator::AutoIndent, KeyCode::Char('=')) => {
+            let cursor = editor.buffer().cursor();
+            let start_line = cursor.line();
+            let end_line = start_line + count;
+            let tab_width = editor.options.tab_width;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width)?;
+            editor.clear_count();
+            true
+        }
+        (Operator::AutoIndent, KeyCode::Char('j')) | (Operator::AutoIndent, KeyCode::Down) => {
+            let cursor = editor.buffer().cursor();
+            let start_line = cursor.line();
+            let end_line = start_line + count + 1;
+            let tab_width = editor.options.tab_width;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width)?;
+            editor.clear_count();
+            true
+        }
+        (Operator::AutoIndent, KeyCode::Char('k')) | (Operator::AutoIndent, KeyCode::Up) => {
+            let cursor = editor.buffer().cursor();
+            let current_line = cursor.line();
+            let start_line = current_line.saturating_sub(count);
+            let end_line = current_line + 1;
+            let tab_width = editor.options.tab_width;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width)?;
+            editor.clear_count();
+            true
+        }
+
+        // =====================================================================
         // Dedent operations
         // =====================================================================
         (Operator::Dedent, KeyCode::Char('<')) => {
@@ -545,6 +578,10 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
                 cursor_before,
             )?;
         }
+        Operator::AutoIndent => {
+            let tab_width = editor.options.tab_width;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width)?;
+        }
         Operator::Delete => {
             let start_pos = (start_line, 0);
             let end_pos = (end_line + 1, 0);
@@ -671,6 +708,10 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                 tab_width,
                 cursor_before,
             )?;
+        }
+        Operator::AutoIndent => {
+            let tab_width = editor.options.tab_width;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width)?;
         }
         Operator::Fold => {
             editor
