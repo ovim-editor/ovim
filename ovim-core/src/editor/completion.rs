@@ -143,3 +143,36 @@ impl Default for CompletionMenu {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CompletionMenu;
+    use lsp_types::CompletionItem;
+
+    fn item(label: &str) -> CompletionItem {
+        CompletionItem {
+            label: label.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn completion_menu_filters_by_prefix_case_insensitive() {
+        let mut menu = CompletionMenu::new();
+        menu.show(
+            vec![item("Arc"), item("AsMut"), item("AsRef"), item("Box")],
+            0,
+            "as".to_string(),
+        );
+        let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, vec!["AsMut".to_string(), "AsRef".to_string()]);
+    }
+
+    #[test]
+    fn completion_menu_dedupes_obvious_duplicates() {
+        let mut menu = CompletionMenu::new();
+        menu.show(vec![item("Result"), item("Result"), item("Res")], 0, "re".to_string());
+        let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, vec!["Res".to_string(), "Result".to_string()]);
+    }
+}
