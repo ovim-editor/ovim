@@ -22,6 +22,7 @@ mod protocol;
 mod requests;
 mod server;
 mod supervisor;
+mod trigger_chars;
 mod types;
 mod utils;
 
@@ -31,6 +32,7 @@ pub use protocol::{JsonRpcMessage, RequestId};
 pub use server::{LanguageServer, LanguageServerHealth};
 pub use supervisor::{RestartPolicy, TaskSupervisor};
 pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
+pub use trigger_chars::fallback_completion_trigger_characters;
 pub use utils::compute_simple_diff;
 
 use anyhow::Result;
@@ -337,6 +339,19 @@ impl LspManager {
                 }
             })
             .collect()
+    }
+
+    pub async fn completion_trigger_characters_for_servers(&self, server_ids: &[String]) -> Vec<char> {
+        use std::collections::HashSet;
+        let mut set: HashSet<char> = HashSet::new();
+        for sid in server_ids {
+            if let Some(server) = self.servers.get(sid.as_str()).map(|e| e.value().clone()) {
+                for ch in server.completion_trigger_characters().await {
+                    set.insert(ch);
+                }
+            }
+        }
+        set.into_iter().collect()
     }
 
     /// Stops a language server

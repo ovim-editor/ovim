@@ -1628,6 +1628,25 @@ impl LanguageServer {
         self.inner.cap_completion.load(Ordering::Relaxed)
     }
 
+    /// Best-effort: return completion trigger characters advertised by the server.
+    ///
+    /// LSP uses `String` for trigger characters; we currently treat these as single
+    /// graphemes and take the first `char` of each entry.
+    pub async fn completion_trigger_characters(&self) -> Vec<char> {
+        let Some(caps) = self.capabilities().await else {
+            return Vec::new();
+        };
+        let Some(provider) = caps.completion_provider else {
+            return Vec::new();
+        };
+        provider
+            .trigger_characters
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|s| s.chars().next())
+            .collect()
+    }
+
     /// Checks if the server supports formatting (lock-free)
     pub async fn supports_formatting(&self) -> bool {
         self.inner.cap_formatting.load(Ordering::Relaxed)
