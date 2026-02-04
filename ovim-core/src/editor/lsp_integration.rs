@@ -238,7 +238,7 @@ impl Editor {
         };
 
         match pending.request.receiver.try_recv() {
-            Ok(Ok(items)) => {
+            Ok(Ok(result)) => {
                 if pending.seq != self.lsp_state.completion_request_seq {
                     return false; // Stale response
                 }
@@ -248,10 +248,20 @@ impl Editor {
                     return false;
                 }
 
+                if let Some(synced) = result.synced_content {
+                    let state = self
+                        .lsp_state
+                        .document_sync
+                        .entry(result.file_path.clone())
+                        .or_default();
+                    state.did_open_sent = true;
+                    state.mark_change_sent(synced);
+                }
+
                 let (trigger_col, trigger_prefix) = self.completion_trigger_context();
                 self.completion_menu_mut()
-                    .show(items.clone(), trigger_col, trigger_prefix);
-                self.lsp_state.available_completions = items;
+                    .show(result.items.clone(), trigger_col, trigger_prefix);
+                self.lsp_state.available_completions = result.items;
                 self.mark_dirty();
                 true
             }

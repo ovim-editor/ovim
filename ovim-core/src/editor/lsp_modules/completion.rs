@@ -130,18 +130,18 @@ impl Editor {
         let state_key = file_path.clone();
         let content = self.buffer().rope().to_string();
         let (needs_did_open, needs_flush, old_content) = match self.lsp_state.document_sync.get(&state_key) {
-            None => (true, false, None),
-            Some(state) => (state.did_open_sent == false, state.is_modified(), state.last_synced_content.clone()),
+            None => (true, true, None),
+            Some(state) => {
+                let did_open_missing = !state.did_open_sent;
+                let old = state.last_synced_content.clone();
+                // In insert mode we may not mark `buffer_modified` until leaving insert mode.
+                // For completions, always treat the document as needing a flush if the content
+                // differs from what we last synced.
+                let content_changed = old.as_deref().is_none_or(|old| old != content);
+                let needs_flush = state.is_modified() || content_changed;
+                (did_open_missing, needs_flush, old)
+            }
         };
-
-        if needs_did_open {
-            let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
-            state.did_open_sent = true;
-            state.mark_change_sent(content.clone());
-        } else if needs_flush {
-            let state = self.lsp_state.document_sync.entry(state_key.clone()).or_default();
-            state.mark_change_sent(content.clone());
-        }
 
         // Resolve all server_ids for this language (primary + companions)
         let server_ids = lsp.servers_for_language(language_id);
@@ -153,14 +153,21 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let language_id = language_id.to_string();
         let task = tokio::spawn(async move {
+            let mut synced_content: Option<String> = None;
             if needs_did_open {
-                let _ = lsp
+                let ok = lsp
                     .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
                     .await;
+                if ok.is_ok() {
+                    synced_content = Some(content.clone());
+                }
             } else if needs_flush {
-                let _ = lsp
+                let ok = lsp
                     .did_change_broadcast(uri.clone(), &language_id, content.clone(), old_content)
                     .await;
+                if ok.is_ok() {
+                    synced_content = Some(content.clone());
+                }
             }
 
             let result = if server_ids.len() > 1 {
@@ -170,8 +177,19 @@ impl Editor {
                 lsp.completion(&uri, line, character, &language_id, trigger_char)
                     .await
             };
-            let _ = tx.send(result);
-            Ok(Vec::new())
+            let task_result = result.map(|items| crate::editor::lsp_state::CompletionTaskResult {
+                items,
+                file_path: state_key,
+                synced_content,
+            });
+
+            let _ = tx.send(task_result);
+
+            Ok(crate::editor::lsp_state::CompletionTaskResult {
+                items: Vec::new(),
+                file_path: String::new(),
+                synced_content: None,
+            })
         });
 
         self.lsp_state.pending_completion = Some(crate::editor::lsp_state::PendingCompletionRequest {

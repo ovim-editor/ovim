@@ -125,7 +125,15 @@ pub enum PendingLspResponse {
 /// blocking other LSP actions while completions are in-flight).
 pub struct PendingCompletionRequest {
     pub seq: u64,
-    pub request: PendingLspRequest<Vec<lsp_types::CompletionItem>>,
+    pub request: PendingLspRequest<CompletionTaskResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionTaskResult {
+    pub items: Vec<lsp_types::CompletionItem>,
+    pub file_path: String,
+    /// If we successfully flushed content to LSP, record the new synced content.
+    pub synced_content: Option<String>,
 }
 
 /// LSP-related state for the editor
