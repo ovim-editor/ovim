@@ -4,7 +4,7 @@
 //! Completions are typically triggered by Ctrl+N or automatically in insert mode.
 
 use super::super::Editor;
-use crate::unicode::{byte_offset_for_grapheme, grapheme_count, grapheme_indices};
+use crate::unicode::{byte_offset_for_grapheme, grapheme_at_index, grapheme_count, grapheme_indices};
 use crate::lsp::uri_from_file_path;
 use anyhow::{anyhow, Result};
 
@@ -96,6 +96,22 @@ impl Editor {
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let trigger_char = {
+            let line_text = self
+                .buffer()
+                .line(cursor.line())
+                .unwrap_or_default()
+                .trim_end_matches('\n')
+                .to_string();
+            if cursor.col() > 0 {
+                match grapheme_at_index(&line_text, cursor.col().saturating_sub(1)) {
+                    Some(".") => Some('.'),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
 
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
@@ -148,9 +164,11 @@ impl Editor {
             }
 
             let result = if server_ids.len() > 1 {
-                lsp.completion_multi(&uri, line, character, &server_ids).await
+                lsp.completion_multi(&uri, line, character, &server_ids, trigger_char)
+                    .await
             } else {
-                lsp.completion(&uri, line, character, &language_id).await
+                lsp.completion(&uri, line, character, &language_id, trigger_char)
+                    .await
             };
             let _ = tx.send(result);
             Ok(Vec::new())
