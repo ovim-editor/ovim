@@ -769,12 +769,19 @@ impl Editor {
         // logical line counts can prevent scrolling far enough to reveal the final logical
         // lines when a wrapped line appears near EOF. Instead, derive the maximum scroll
         // offset from total visual rows.
+        let wrap_width_known = self.viewport.wrap_map.is_some() || self.render_cache.last_text_width > 0;
+
         let max_scroll = if wrap_map_usable {
             self.viewport
                 .wrap_map
                 .as_ref()
                 .map(|m| Self::compute_wrap_max_scroll_offset(m, visible_lines, max_line))
                 .unwrap_or_else(|| max_line.saturating_sub(visible_lines.saturating_sub(1)))
+        } else if self.options.wrap && wrap_width_known {
+            // Wrap enabled but map stale: allow scrolling all the way to the last logical line.
+            // This prevents the viewport from getting "stuck" above EOF between the edit and
+            // the next render pass (which rebuilds the wrap map).
+            max_line
         } else {
             max_line.saturating_sub(visible_lines.saturating_sub(1))
         };
@@ -862,6 +869,17 @@ impl Editor {
                     scrolloff,
                 );
             }
+        } else if self.options.wrap {
+            // Wrap enabled but wrap map stale (e.g. immediately after inserting/removing
+            // newlines). Do a cheap on-the-fly wrap-aware scroll calculation limited to
+            // the current viewport region so cursor visibility stays correct until the
+            // next render pass rebuilds the wrap map.
+            new_offset = self.compute_fallback_wrap_scroll_offset(
+                cursor_line,
+                current_offset,
+                visible_lines,
+                scrolloff,
+            );
         } else {
             new_offset = Self::compute_logical_scroll_offset(
                 cursor_line,
@@ -947,6 +965,204 @@ impl Editor {
         let (line, sub_line) = wrap_map.visual_to_logical(max_visual_start);
         let candidate = if sub_line > 0 { line.saturating_add(1) } else { line };
         candidate.min(max_line)
+    }
+
+    fn compute_fallback_wrap_scroll_offset(
+        &self,
+        cursor_line: usize,
+        current_offset: usize,
+        visible_rows: usize,
+        scrolloff: usize,
+    ) -> usize {
+        let visible_rows = visible_rows.max(1);
+        let scrolloff = scrolloff.min(visible_rows.saturating_sub(1) / 2);
+
+        let wrap_width = if let Some(map) = self.viewport.wrap_map.as_ref() {
+            map.wrap_width()
+        } else if self.render_cache.last_text_width > 0 {
+            self.render_cache.last_text_width
+        } else {
+            // No reliable wrap width in headless/test mode — fall back to logical scrolling.
+            return Self::compute_logical_scroll_offset(
+                cursor_line,
+                current_offset,
+                visible_rows,
+                scrolloff,
+            );
+        }
+        .max(1);
+        let tab_width = self.options.tab_width;
+
+        let line_count = self.buffer().line_count();
+        let max_line = line_count.saturating_sub(1);
+
+        // If cursor is logically above the viewport, scroll to it.
+        if cursor_line < current_offset {
+            return cursor_line;
+        }
+
+        // Compute cursor sub-line within its logical line.
+        let cursor_col = self.buffer().cursor().col();
+        let line_text = self
+            .buffer()
+            .line(cursor_line)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string();
+        let cursor_display_col =
+            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width);
+        let cursor_subline =
+            Self::cursor_subline_in_wrapped_line(&line_text, cursor_display_col, wrap_width, tab_width);
+
+        // Fast path: if cursor is logically far below the viewport, just position it near bottom.
+        let logical_view_end = current_offset + visible_rows.saturating_sub(1);
+        if cursor_line > logical_view_end {
+            let rows_above_cursor = visible_rows.saturating_sub(scrolloff + 1);
+            return Self::top_offset_for_wrapped_cursor(
+                self,
+                cursor_line,
+                cursor_subline,
+                rows_above_cursor,
+                wrap_width,
+                tab_width,
+                true,
+            )
+            .min(max_line);
+        }
+
+        // Cursor is logically within the viewport — check if it is visually within.
+        let mut rows_from_top = 0usize;
+        for line in current_offset..cursor_line {
+            let text = self
+                .buffer()
+                .line(line)
+                .unwrap_or_default()
+                .trim_end_matches('\n')
+                .to_string();
+            rows_from_top += crate::wrap::visual_line_count(&text, wrap_width, tab_width);
+            if rows_from_top > visible_rows + scrolloff + 5 {
+                break;
+            }
+        }
+        rows_from_top += cursor_subline;
+
+        if rows_from_top < scrolloff {
+            // Scroll up so cursor lands at scrolloff from top.
+            Self::top_offset_for_wrapped_cursor(
+                self,
+                cursor_line,
+                cursor_subline,
+                scrolloff,
+                wrap_width,
+                tab_width,
+                false,
+            )
+            .min(max_line)
+        } else if rows_from_top + scrolloff >= visible_rows {
+            // Scroll down so cursor lands at (visible_rows - scrolloff - 1).
+            let rows_above_cursor = visible_rows.saturating_sub(scrolloff + 1);
+            Self::top_offset_for_wrapped_cursor(
+                self,
+                cursor_line,
+                cursor_subline,
+                rows_above_cursor,
+                wrap_width,
+                tab_width,
+                true,
+            )
+            .min(max_line)
+        } else {
+            current_offset
+        }
+    }
+
+    fn cursor_subline_in_wrapped_line(
+        line_text: &str,
+        cursor_display_col: usize,
+        wrap_width: usize,
+        tab_width: usize,
+    ) -> usize {
+        let wrap_points = crate::wrap::compute_wrap_points(line_text, wrap_width, tab_width);
+        if wrap_points.is_empty() {
+            return 0;
+        }
+
+        let mut current_display = 0usize;
+        let mut segment_start_display = 0usize;
+        let mut sub_line = 0usize;
+        let mut wp_idx = 0usize;
+
+        for (char_idx, ch) in line_text.chars().enumerate() {
+            if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
+                segment_start_display = current_display;
+                sub_line += 1;
+                wp_idx += 1;
+            }
+            if cursor_display_col < current_display {
+                break;
+            }
+            let ch_width = if ch == '\t' {
+                tab_width - (current_display % tab_width)
+            } else {
+                crate::display::char_display_width(ch)
+            };
+            current_display += ch_width;
+        }
+
+        if cursor_display_col >= segment_start_display {
+            sub_line
+        } else {
+            0
+        }
+    }
+
+    fn top_offset_for_wrapped_cursor(
+        &self,
+        cursor_line: usize,
+        cursor_subline: usize,
+        rows_above_cursor: usize,
+        wrap_width: usize,
+        tab_width: usize,
+        advance_if_mid_line: bool,
+    ) -> usize {
+        // If the target visual start would land within the cursor's own wrapped line,
+        // we can't start mid-line, so start at the cursor's logical line.
+        if rows_above_cursor <= cursor_subline {
+            return cursor_line;
+        }
+
+        let mut remaining = rows_above_cursor.saturating_sub(cursor_subline);
+        let mut line = cursor_line;
+
+        while line > 0 {
+            line -= 1;
+            let text = self
+                .buffer()
+                .line(line)
+                .unwrap_or_default()
+                .trim_end_matches('\n')
+                .to_string();
+            let count = crate::wrap::visual_line_count(&text, wrap_width, tab_width);
+
+            if remaining == 0 {
+                return line;
+            }
+
+            if remaining < count {
+                return if advance_if_mid_line && remaining > 0 {
+                    line.saturating_add(1)
+                } else {
+                    line
+                };
+            }
+
+            remaining = remaining.saturating_sub(count);
+            if remaining == 0 {
+                return line;
+            }
+        }
+
+        0
     }
 
     /// Calculates half-page scroll amount

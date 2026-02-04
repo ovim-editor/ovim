@@ -2,6 +2,7 @@
 #![allow(clippy::print_stdout)]
 
 use anyhow::{Context, Result};
+use crate::cli::FileArg;
 use serde_json::Value;
 
 use crate::cli::{Command, LspCommand, SessionCommand};
@@ -66,7 +67,7 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
         Command::Exec { session, command } => cmd_exec(&session, &command),
         Command::Snapshot { session, format } => cmd_snapshot(&session, &format),
         Command::Buffer { session } => cmd_buffer(&session),
-        Command::Context { session } => cmd_context(&session),
+        Command::Context { session, file } => cmd_context(session.as_deref(), file.as_deref()),
         Command::Search { pattern, session } => cmd_search(&pattern, &session),
         Command::NextMatch { session } => cmd_next_match(&session),
 
@@ -93,7 +94,7 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
 /// Execute LSP subcommands
 fn execute_lsp_command(command: LspCommand) -> Result<()> {
     match command {
-        LspCommand::Status { session } => cmd_lsp_status(&session),
+        LspCommand::Status { session, file } => cmd_lsp_status(session.as_deref(), file.as_deref()),
         LspCommand::Hover { session } => cmd_hover(&session),
         LspCommand::Definition { session } => cmd_goto_definition(&session),
         LspCommand::References { session } => cmd_find_references(&session),
@@ -502,8 +503,45 @@ fn cmd_buffer(session_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_context(session_name: Option<&str>, file: Option<&str>) -> Result<()> {
+    if let Some(target) = file {
+        return cmd_context_for_file(target);
+    }
+
+    let session_name = session_name
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("OVIM_SESSION").ok())
+        .unwrap_or_else(|| "default".to_string());
+
+    cmd_context_for_session(&session_name)
+}
+
+fn cmd_context_for_file(target: &str) -> Result<()> {
+    let file_arg = FileArg::parse(target);
+    let contents =
+        std::fs::read_to_string(&file_arg.path).context("Failed to read file for context")?;
+
+    let total_lines = contents.lines().count().max(1);
+    let line_0 = file_arg
+        .line
+        .unwrap_or(1)
+        .saturating_sub(1)
+        .min(total_lines - 1);
+    let col_0 = file_arg.col.unwrap_or(1).saturating_sub(1);
+
+    let ctx = crate::api::format_context_window(
+        &contents,
+        line_0,
+        col_0,
+        Some(&file_arg.path),
+        "NORMAL",
+    );
+    print!("{}", ctx);
+    Ok(())
+}
+
 /// Get context window from a session
-fn cmd_context(session_name: &str) -> Result<()> {
+fn cmd_context_for_session(session_name: &str) -> Result<()> {
     let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
@@ -614,9 +652,20 @@ fn cmd_next_match(session_name: &str) -> Result<()> {
 
 // ─── LSP Commands ────────────────────────────────────────────────────────────
 
-/// Get LSP status from a session
-fn cmd_lsp_status(session_name: &str) -> Result<()> {
-    let session = resolve_session(session_name)?;
+/// Get LSP status from a session. If FILE is provided without --session, falls back
+/// to `ovim lsp check FILE` (no session needed).
+fn cmd_lsp_status(session_name: Option<&str>, file: Option<&str>) -> Result<()> {
+    if let Some(target) = file {
+        let file_arg = FileArg::parse(target);
+        return cmd_check_lsp(&file_arg.path, false);
+    }
+
+    let session_name = session_name
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("OVIM_SESSION").ok())
+        .unwrap_or_else(|| "default".to_string());
+
+    let session = resolve_session(&session_name)?;
 
     let client = OvimClient::new(&session);
     let lsp_status = client

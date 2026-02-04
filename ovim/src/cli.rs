@@ -187,9 +187,13 @@ pub enum Command {
 
     /// Get 21-line context window around cursor
     Context {
-        /// Session name (required)
+        /// Session name (optional). If omitted, tries $OVIM_SESSION then "default".
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to get context for (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Get buffer content from a session
@@ -279,9 +283,13 @@ pub enum Command {
 pub enum LspCommand {
     /// Get LSP status from a session
     Status {
-        /// Session name (required)
+        /// Session name (optional). If omitted and FILE is provided, falls back to `ovim lsp check FILE`.
         #[arg(short, long)]
-        session: String,
+        session: Option<String>,
+
+        /// File to check (supports FILE:LINE:COL syntax)
+        #[arg(value_name = "FILE")]
+        file: Option<String>,
     },
 
     /// Trigger hover and return hover info
