@@ -321,6 +321,12 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.completion_previous();
             }
         }
+        // Ctrl-Y - Accept completion (Vim behavior)
+        KeyCode::Char('y') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            if editor.completion_menu().is_visible() {
+                editor.accept_completion();
+            }
+        }
         // Tab - Accept completion if menu is visible, otherwise insert tab
         KeyCode::Tab if editor.completion_menu().is_visible() => {
             editor.accept_completion();

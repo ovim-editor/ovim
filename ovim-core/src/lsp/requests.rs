@@ -325,10 +325,11 @@ impl LspManager {
         line: u32,
         character: u32,
         language_id: &str,
+        trigger_char: Option<char>,
     ) -> Result<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{
-            CompletionParams, CompletionResponse, Position, TextDocumentIdentifier,
-            TextDocumentPositionParams,
+            CompletionContext, CompletionParams, CompletionResponse, CompletionTriggerKind,
+            Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
         let server = self
@@ -362,7 +363,14 @@ impl LspManager {
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
-            context: None,
+            context: Some(CompletionContext {
+                trigger_kind: if trigger_char.is_some() {
+                    CompletionTriggerKind::TRIGGER_CHARACTER
+                } else {
+                    CompletionTriggerKind::INVOKED
+                },
+                trigger_character: trigger_char.map(|c| c.to_string()),
+            }),
         };
 
         let result = server
@@ -1536,6 +1544,7 @@ impl LspManager {
         line: u32,
         character: u32,
         server_ids: &[String],
+        trigger_char: Option<char>,
     ) -> Result<Vec<lsp_types::CompletionItem>> {
         use std::time::Duration;
 
@@ -1545,10 +1554,11 @@ impl LspManager {
             if let Some(server) = server {
                 let uri = uri.clone();
                 let sid = sid.clone();
+                let trigger_char = trigger_char;
                 futures.push(tokio::spawn(async move {
                     let result = tokio::time::timeout(
                         Duration::from_secs(3),
-                        Self::completion_on_server(&server, &uri, line, character),
+                        Self::completion_on_server(&server, &uri, line, character, trigger_char),
                     )
                     .await;
                     match result {
@@ -1582,10 +1592,11 @@ impl LspManager {
         uri: &Uri,
         line: u32,
         character: u32,
+        trigger_char: Option<char>,
     ) -> Result<Vec<lsp_types::CompletionItem>> {
         use lsp_types::{
-            CompletionParams, CompletionResponse, Position, TextDocumentIdentifier,
-            TextDocumentPositionParams,
+            CompletionContext, CompletionParams, CompletionResponse, CompletionTriggerKind,
+            Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
         if !server.supports_completion().await {
@@ -1599,7 +1610,14 @@ impl LspManager {
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
-            context: None,
+            context: Some(CompletionContext {
+                trigger_kind: if trigger_char.is_some() {
+                    CompletionTriggerKind::TRIGGER_CHARACTER
+                } else {
+                    CompletionTriggerKind::INVOKED
+                },
+                trigger_character: trigger_char.map(|c| c.to_string()),
+            }),
         };
 
         let result = server
