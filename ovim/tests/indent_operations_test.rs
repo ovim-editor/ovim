@@ -550,6 +550,29 @@ fn test_equal_equal_dedents_closing_brace() {
 }
 
 #[test]
+fn test_equal_equal_indents_line_between_braces_editor_test_dsl() {
+    editor_test! {
+        given {
+            "{"
+            ""
+            "foo"
+            "^"
+            "}"
+            ""
+        }
+        keys "=="
+        expect Normal {
+            "{"
+            ""
+            "    foo"
+            "    ^"
+            "}"
+            ""
+        }
+    }
+}
+
+#[test]
 fn test_equal_G_indents_square_brackets() {
     let mut test = EditorTest::new("let xs = [\n1,\n2,\n];\n");
 
