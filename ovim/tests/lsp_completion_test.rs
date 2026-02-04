@@ -81,3 +81,27 @@ async fn test_dot_completion_shows_string_methods() -> Result<()> {
     Ok(())
 }
 
+/// Regression test for the intermittent case:
+/// accept a completion in insert mode, then immediately trigger dot completion.
+///
+/// Expected: `s.` still yields String methods (e.g. `push_str`).
+#[tokio::test]
+#[ignore = "Requires release binary and rust-analyzer"]
+async fn test_dot_completion_after_accepting_completion() -> Result<()> {
+    let session = ovim_session!("ovim/src/main.rs");
+
+    send!(session, "G");
+    send!(session, "olet mut s = String::new();<CR>s.pu");
+
+    // Wait for the popup to include push_str, then accept it.
+    let _ = wait_for_render_contains(&session, "push_str", Duration::from_secs(10)).await?;
+    send!(session, "<C-y>");
+
+    // Immediately create a new call site and dot-complete again.
+    send!(session, "();<CR>s.");
+
+    let _ = wait_for_render_contains(&session, "push_str", Duration::from_secs(10)).await?;
+
+    session.cleanup().await?;
+    Ok(())
+}
