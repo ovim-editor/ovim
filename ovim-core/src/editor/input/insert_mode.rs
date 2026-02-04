@@ -335,6 +335,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::insert_char(editor, c)?;
             // Basic autocomplete:
             // - Trigger on '.' (member access) immediately
+            // - Trigger on '::' after typing the second ':' (Rust/C++ style paths)
             // - Trigger when typing an identifier prefix of length >= 2
             // - If menu is already visible, keep it updated while typing
             if editor.completion_menu().is_visible() {
@@ -347,6 +348,25 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
             } else if is_completion_trigger_char(c) {
                 editor.request_completion();
+            } else if c == ':' {
+                let cursor = editor.buffer().cursor();
+                if cursor.col() >= 2 {
+                    let line_text = editor
+                        .buffer()
+                        .line(cursor.line())
+                        .unwrap_or_default()
+                        .trim_end_matches('\n')
+                        .to_string();
+                    if crate::unicode::grapheme_at_index(&line_text, cursor.col().saturating_sub(1))
+                        == Some(":")
+                        && crate::unicode::grapheme_at_index(
+                            &line_text,
+                            cursor.col().saturating_sub(2),
+                        ) == Some(":")
+                    {
+                        editor.request_completion();
+                    }
+                }
             } else if is_completion_ident_char(c) {
                 let (_, prefix) = editor.completion_trigger_context();
                 if prefix.chars().count() >= 2 {

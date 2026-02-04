@@ -7,6 +7,7 @@ use super::super::Editor;
 use crate::unicode::{byte_offset_for_grapheme, grapheme_at_index, grapheme_count, grapheme_indices};
 use crate::lsp::uri_from_file_path;
 use anyhow::{anyhow, Result};
+use std::collections::HashSet;
 
 impl Editor {
     /// Request completion at current cursor position
@@ -96,7 +97,7 @@ impl Editor {
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
-        let trigger_char = {
+        let raw_trigger_char = {
             let line_text = self
                 .buffer()
                 .line(cursor.line())
@@ -104,9 +105,24 @@ impl Editor {
                 .trim_end_matches('\n')
                 .to_string();
             if cursor.col() > 0 {
+                if cursor.col() >= 2 {
+                    let g1 = grapheme_at_index(&line_text, cursor.col().saturating_sub(1));
+                    let g2 = grapheme_at_index(&line_text, cursor.col().saturating_sub(2));
+                    if g2 == Some(":") && g1 == Some(":") {
+                        Some(':')
+                    } else if g2 == Some("-") && g1 == Some(">") {
+                        Some('>')
+                    } else {
+                        match g1 {
+                            Some(".") => Some('.'),
+                            _ => None,
+                        }
+                    }
+                } else {
                 match grapheme_at_index(&line_text, cursor.col().saturating_sub(1)) {
                     Some(".") => Some('.'),
                     _ => None,
+                }
                 }
             } else {
                 None
@@ -145,6 +161,17 @@ impl Editor {
 
         // Resolve all server_ids for this language (primary + companions)
         let server_ids = lsp.servers_for_language(language_id);
+
+        let mut supported_triggers: HashSet<char> = lsp
+            .completion_trigger_characters_for_servers(&server_ids)
+            .await
+            .into_iter()
+            .collect();
+        for ch in crate::lsp::fallback_completion_trigger_characters(&language_id) {
+            supported_triggers.insert(*ch);
+        }
+
+        let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
 
         self.lsp_state.completion_request_seq = self.lsp_state.completion_request_seq.wrapping_add(1);
         let seq = self.lsp_state.completion_request_seq;
@@ -206,6 +233,15 @@ impl Editor {
     }
 }
 
+fn filter_supported_trigger(trigger: Option<char>, supported: &HashSet<char>) -> Option<char> {
+    let Some(ch) = trigger else { return None };
+    if supported.contains(&ch) {
+        Some(ch)
+    } else {
+        None
+    }
+}
+
 fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (usize, String) {
     let cursor_byte = byte_offset_for_grapheme(line_text, cursor_col).unwrap_or(line_text.len());
     let before_cursor = &line_text[..cursor_byte.min(line_text.len())];
@@ -252,6 +288,13 @@ mod tests {
     fn completion_trigger_context_member_prefix() {
         let (col, prefix) = completion_trigger_context_from_line("foo.bar", 7);
         assert_eq!(col, 4);
+        assert_eq!(prefix, "bar");
+    }
+
+    #[test]
+    fn completion_trigger_context_double_colon() {
+        let (col, prefix) = completion_trigger_context_from_line("foo::bar", 8);
+        assert_eq!(col, 5);
         assert_eq!(prefix, "bar");
     }
 
