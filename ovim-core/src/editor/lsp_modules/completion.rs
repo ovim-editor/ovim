@@ -214,6 +214,7 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
 #[cfg(test)]
 mod tests {
     use super::completion_trigger_context_from_line;
+    use crate::unicode::grapheme_at_index;
 
     #[test]
     fn completion_trigger_context_basic_word() {
@@ -241,5 +242,11 @@ mod tests {
         let (col, prefix) = completion_trigger_context_from_line("__x1", 4);
         assert_eq!(col, 0);
         assert_eq!(prefix, "__x1");
+    }
+
+    #[test]
+    fn trigger_char_detection_dot() {
+        let line = "s.";
+        assert_eq!(grapheme_at_index(line, 1), Some("."));
     }
 }

@@ -48,6 +48,14 @@ pub struct LspStatus {
     pub servers: Vec<LspServer>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct RenderInfo {
+    pub width: u16,
+    pub height: u16,
+    pub ansi: String,
+}
+
 /// Test session for ovim headless instance
 pub struct OvimTestSession {
     pub port: u16,
@@ -172,6 +180,23 @@ impl OvimTestSession {
             .context("Failed to parse snapshot")?;
 
         Ok(snapshot)
+    }
+
+    /// Get rendered ANSI output of the editor
+    pub async fn get_render(&self) -> Result<RenderInfo> {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/render", self.port);
+
+        let render = client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to get render")?
+            .json::<RenderInfo>()
+            .await
+            .context("Failed to parse render")?;
+
+        Ok(render)
     }
 
     /// Get LSP status
