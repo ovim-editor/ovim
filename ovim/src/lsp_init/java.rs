@@ -52,10 +52,6 @@ pub fn find_jvm_project_root(file_path: &Path) -> &Path {
 fn find_hyperion_binary() -> Option<PathBuf> {
     // Check common locations in order of preference
     let candidates: Vec<Option<PathBuf>> = vec![
-        // Development build (release) - prefer this for performance
-        dirs::home_dir().map(|h| h.join("Personal/hyperion-ls/target/release/hyperion-lsp")),
-        // Development build (debug)
-        dirs::home_dir().map(|h| h.join("Personal/hyperion-ls/target/debug/hyperion-lsp")),
         // Check PATH using `which` command
         std::process::Command::new("which")
             .arg("hyperion-lsp")
