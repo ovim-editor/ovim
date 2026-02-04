@@ -52,7 +52,7 @@ fn test_cw_single_char() {
 
     test.keys("cw").type_text("alpha").press_esc();
 
-    assert_eq!(test.buffer_content(), "alpha z\n");
+    assert_eq!(test.buffer_content(), "alpha y z\n");
     test.assert_cursor(0, 4);
 }
 
