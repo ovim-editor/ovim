@@ -300,15 +300,7 @@ impl EditorTest {
     ///
     /// The range is normalized so start is always before end (sorted by line then col).
     pub fn get_visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
-        self.editor.visual_start().map(|start| {
-            let cursor = self.cursor();
-            // Normalize the range so start <= end
-            if start.0 < cursor.0 || (start.0 == cursor.0 && start.1 <= cursor.1) {
-                (start, cursor)
-            } else {
-                (cursor, start)
-            }
-        })
+        self.editor.visual_selection()
     }
 
     /// Get content from a specific register
