@@ -1507,11 +1507,125 @@ pub fn auto_indent_lines(
                 lines_indented += 1;
             }
 
-            // Increase indent if line ends with opening bracket
-            if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+            // Increase indent if line ends with opening bracket (ignore trailing whitespace)
+            let trimmed_end = trimmed.trim_end();
+            if trimmed_end.ends_with('{') || trimmed_end.ends_with('(') || trimmed_end.ends_with('[')
+            {
                 current_indent += tab_width;
             }
         }
+    }
+
+    Ok(lines_indented)
+}
+
+/// Auto-indents lines with undo tracking.
+///
+/// This mirrors `auto_indent_lines` but records a single composite change so `u`
+/// restores the entire reindent in one step.
+pub fn auto_indent_lines_with_tracking(
+    editor: &mut Editor,
+    start_line: usize,
+    end_line: usize,
+    tab_width: usize,
+) -> anyhow::Result<usize> {
+    let end_line = end_line.min(editor.buffer().line_count());
+    if start_line >= end_line {
+        return Ok(0);
+    }
+
+    let cursor = editor.buffer().cursor();
+    let cursor_before = (cursor.line(), cursor.col());
+
+    // Determine base indent from the line before start_line (or 0 if first line)
+    let mut current_indent = if start_line > 0 {
+        if let Some(prev_line) = editor.buffer().line(start_line - 1) {
+            let prev_text = prev_line.trim_end_matches('\n');
+            count_leading_spaces(prev_text, tab_width)
+                + if prev_text.trim_end().ends_with('{')
+                    || prev_text.trim_end().ends_with('(')
+                    || prev_text.trim_end().ends_with('[')
+                {
+                    tab_width
+                } else {
+                    0
+                }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let mut changes = Vec::new();
+    let mut lines_indented = 0usize;
+    let mut last_cursor_after = cursor_before;
+
+    for line_idx in start_line..end_line {
+        let Some(line) = editor.buffer().line(line_idx) else {
+            continue;
+        };
+        let line_text = line.trim_end_matches('\n');
+        let trimmed = line_text.trim_start();
+
+        // Decrease indent if line starts with closing bracket
+        if trimmed.starts_with('}') || trimmed.starts_with(')') || trimmed.starts_with(']') {
+            current_indent = current_indent.saturating_sub(tab_width);
+        }
+
+        // Desired indentation for *this* line (before any opening-bracket bump)
+        let line_indent = if trimmed.is_empty() { 0 } else { current_indent };
+
+        // Calculate current leading spaces
+        let current_spaces = count_leading_spaces(line_text, tab_width);
+
+        // Apply new indentation if different
+        if current_spaces != line_indent && !trimmed.is_empty() {
+            // Remove existing indent (tabs/spaces)
+            let leading_chars = line_text
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .count();
+            if leading_chars > 0 {
+                let deleted =
+                    editor
+                        .buffer_mut()
+                        .delete_range(line_idx, 0, line_idx, leading_chars);
+                changes.push(Change::delete(
+                    Range::new((line_idx, 0), (line_idx, leading_chars)),
+                    deleted,
+                    cursor_before,
+                ));
+            }
+
+            // Add new indent (spaces)
+            if line_indent > 0 {
+                let indent_str = " ".repeat(line_indent);
+                let change = Change::insert((line_idx, 0), indent_str, cursor_before);
+                change.apply(editor.buffer_mut());
+                changes.push(change);
+            }
+
+            lines_indented += 1;
+        }
+
+        last_cursor_after = (line_idx, line_indent);
+
+        // Increase indent if line ends with opening bracket (ignore trailing whitespace)
+        let trimmed_end = trimmed.trim_end();
+        if trimmed_end.ends_with('{') || trimmed_end.ends_with('(') || trimmed_end.ends_with('[') {
+            current_indent += tab_width;
+        }
+    }
+
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(last_cursor_after.0, last_cursor_after.1);
+
+    if !changes.is_empty() {
+        editor.add_change(Change::composite(changes, cursor_before, last_cursor_after));
+        editor.mark_buffer_modified();
     }
 
     Ok(lines_indented)

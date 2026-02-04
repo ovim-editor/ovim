@@ -88,6 +88,10 @@ fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool>
             editor.set_pending_operator(Operator::Dedent);
             Ok(true)
         }
+        KeyCode::Char('=') => {
+            editor.set_pending_operator(Operator::AutoIndent);
+            Ok(true)
+        }
         // Pending commands
         KeyCode::Char('g') => {
             editor.set_pending_command('g');

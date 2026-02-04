@@ -498,8 +498,8 @@ fn test_equal_equal_auto_indent() {
     test.keys("j") // Move to "code"
         .keys("=="); // Auto-indent line
 
-    assert_eq!(test.buffer_content(), "if true {\ncode\n}\n");
-    test.assert_cursor(1, 0);
+    assert_eq!(test.buffer_content(), "if true {\n    code\n}\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]
@@ -508,8 +508,8 @@ fn test_equal_motion() {
 
     test.keys("j").keys("=j"); // Auto-indent current and next
 
-    assert_eq!(test.buffer_content(), "{\nline1\nline2\n}\n");
-    test.assert_cursor(2, 0);
+    assert_eq!(test.buffer_content(), "{\n    line1\n    line2\n}\n");
+    test.assert_cursor(2, 4);
 }
 
 #[test]
@@ -518,8 +518,83 @@ fn test_equal_G() {
 
     test.keys("j").keys("=G"); // Auto-indent to end
 
-    assert_eq!(test.buffer_content(), "{\nline1\nline2\nline3\n}\n");
-    test.assert_cursor(4, 0);
+    assert_eq!(
+        test.buffer_content(),
+        "{\n    line1\n    line2\n    line3\n}\n"
+    );
+    test.assert_cursor(4, 0); // Cursor ends at the target line for G (the closing brace).
+}
+
+// ============================================================================
+// Auto-indent across delimiter contexts
+// ============================================================================
+
+#[test]
+fn test_equal_equal_indents_inside_braces() {
+    let mut test = EditorTest::new("fn main() {\nlet x = 1;\n}\n");
+
+    test.keys("j==");
+
+    assert_eq!(test.buffer_content(), "fn main() {\n    let x = 1;\n}\n");
+    test.assert_cursor(1, 4);
+}
+
+#[test]
+fn test_equal_equal_dedents_closing_brace() {
+    let mut test = EditorTest::new("fn main() {\n    let x = 1;\n    }\n");
+
+    test.keys("jj==");
+
+    assert_eq!(test.buffer_content(), "fn main() {\n    let x = 1;\n}\n");
+    test.assert_cursor(2, 0);
+}
+
+#[test]
+fn test_equal_G_indents_square_brackets() {
+    let mut test = EditorTest::new("let xs = [\n1,\n2,\n];\n");
+
+    test.keys("=G");
+
+    assert_eq!(test.buffer_content(), "let xs = [\n    1,\n    2,\n];\n");
+}
+
+#[test]
+fn test_equal_G_indents_parentheses() {
+    let mut test = EditorTest::new("call(\na,\nb,\n)\n");
+
+    test.keys("=G");
+
+    assert_eq!(test.buffer_content(), "call(\n    a,\n    b,\n)\n");
+}
+
+#[test]
+fn test_equal_G_indents_nested_delimiters() {
+    let mut test = EditorTest::new("{\n[\n(\nx\n)\n]\n}\n");
+
+    test.keys("=G");
+
+    assert_eq!(
+        test.buffer_content(),
+        "{\n    [\n        (\n            x\n        )\n    ]\n}\n"
+    );
+}
+
+#[test]
+fn test_equal_G_handles_trailing_whitespace_after_opening_delimiter() {
+    let mut test = EditorTest::new("{   \nline\n}\n");
+
+    test.keys("=G");
+
+    assert_eq!(test.buffer_content(), "{   \n    line\n}\n");
+}
+
+#[test]
+fn test_equal_equal_undo_restores_indentation() {
+    let mut test = EditorTest::new("if true {\ncode\n}\n");
+
+    test.keys("j==u");
+
+    assert_eq!(test.buffer_content(), "if true {\ncode\n}\n");
 }
 
 // ============================================================================
