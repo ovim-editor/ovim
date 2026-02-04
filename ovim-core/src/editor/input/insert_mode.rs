@@ -16,6 +16,14 @@ use crate::{KeyCode, KeyEvent, Modifiers};
 
 use super::helpers;
 
+fn is_completion_trigger_char(c: char) -> bool {
+    matches!(c, '.')
+}
+
+fn is_completion_ident_char(c: char) -> bool {
+    c == '_' || c.is_alphanumeric()
+}
+
 /// Cleans up whitespace-only lines before exiting insert mode.
 ///
 /// Vim behavior: if the current line contains only whitespace when exiting insert mode,
@@ -322,6 +330,26 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Char(c) => {
             helpers::insert_char(editor, c)?;
+            // Basic autocomplete:
+            // - Trigger on '.' (member access) immediately
+            // - Trigger when typing an identifier prefix of length >= 2
+            // - If menu is already visible, keep it updated while typing
+            if editor.completion_menu().is_visible() {
+                if is_completion_trigger_char(c) || is_completion_ident_char(c) {
+                    let (_, prefix) = editor.completion_trigger_context();
+                    editor.completion_menu_mut().filter(&prefix);
+                    editor.request_completion();
+                } else {
+                    editor.hide_completion_menu();
+                }
+            } else if is_completion_trigger_char(c) {
+                editor.request_completion();
+            } else if is_completion_ident_char(c) {
+                let (_, prefix) = editor.completion_trigger_context();
+                if prefix.chars().count() >= 2 {
+                    editor.request_completion();
+                }
+            }
         }
         KeyCode::Enter => {
             // If completion menu is visible, accept the selected completion
@@ -333,6 +361,16 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Backspace => {
             helpers::delete_char_before_cursor(editor)?;
+            if editor.completion_menu().is_visible() {
+                let (_, prefix) = editor.completion_trigger_context();
+                if prefix.is_empty() {
+                    // If we deleted back to the trigger column, keep showing member completions only
+                    editor.request_completion();
+                } else {
+                    editor.completion_menu_mut().filter(&prefix);
+                    editor.request_completion();
+                }
+            }
         }
         KeyCode::Left => {
             let cursor = editor.buffer_mut().cursor_mut();
