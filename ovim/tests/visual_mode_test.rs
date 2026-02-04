@@ -421,25 +421,28 @@ fn test_v_with_G_moves_cursor_and_extends_selection() {
 
 #[test]
 fn test_visual_block_gg_and_G_preserve_column() {
-    let mut test = EditorTest::new("aaaaaa\nbbbbbb\ncccccc\ndddddd\n");
-
-    test.keys("G").keys("3l").keys("<C-v>").keys("gg");
-    test.assert_cursor(0, 3);
-    assert_eq!(
-        test.get_visual_selection(),
-        Some(((0, 3), (3, 3))),
-        "VisualBlock gg should preserve column"
-    );
-
-    test.keys("<Esc>");
-
-    test.keys("gg").keys("3l").keys("<C-v>").keys("G");
-    test.assert_cursor(3, 3);
-    assert_eq!(
-        test.get_visual_selection(),
-        Some(((0, 3), (3, 3))),
-        "VisualBlock G should preserve column"
-    );
+    editor_test! {
+        given Normal {
+            "aaaaaa", "^",
+            "bbbbbb", "",
+            "cccccc", "",
+            "dddddd", "",
+        }
+        keys "G3l<C-v>gg"
+        expect VisualBlock {
+            "aaaaaa", "   ^  ",
+            "bbbbbb", "   -  ",
+            "cccccc", "   -  ",
+            "dddddd", "   -  ",
+        }
+        keys "<Esc>gg3l<C-v>G"
+        expect VisualBlock {
+            "aaaaaa", "   -  ",
+            "bbbbbb", "   -  ",
+            "cccccc", "   -  ",
+            "dddddd", "   ^  ",
+        }
+    }
 }
 
 #[test]

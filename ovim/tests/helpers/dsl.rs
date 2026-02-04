@@ -121,6 +121,7 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
 
     let mut content_lines: Vec<String> = Vec::new();
     let mut cursor: Option<(usize, usize)> = None;
+    let mut anchor: Option<(usize, usize)> = None;
 
     // Track selection markers for Visual (charwise) and VisualLine (linewise).
     let mut selected_cells: Vec<(usize, usize)> = Vec::new();
@@ -148,14 +149,16 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
         }
 
         let mut caret_cols: Vec<usize> = Vec::new();
+        let mut anchor_cols: Vec<usize> = Vec::new();
         for (col, ch) in ann.chars().enumerate() {
             match ch {
                 '^' => caret_cols.push(col),
+                '@' => anchor_cols.push(col),
                 '-' => selected_cells.push((logical_line_idx, col)),
                 ' ' => {}
                 other => panic!(
                     "Invalid annotation character '{}' on line {}. \
-                     Valid markers: '^' (cursor), '-' (selected), ' ' (nothing).",
+                     Valid markers: '^' (cursor), '@' (anchor), '-' (selected), ' ' (nothing).",
                     other, logical_line_idx
                 ),
             }
@@ -176,10 +179,35 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
                 );
             }
             cursor = Some((logical_line_idx, caret_col));
-            if matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
+            if mode.is_visual() {
                 selected_cells.push((logical_line_idx, caret_col));
                 selected_lines.push(logical_line_idx);
             }
+        }
+
+        if anchor_cols.len() > 1 {
+            panic!(
+                "Multiple '@' anchors on line {}. Each line can have at most one anchor.",
+                logical_line_idx
+            );
+        }
+        if let Some(anchor_col) = anchor_cols.into_iter().next() {
+            if anchor.is_some() {
+                panic!(
+                    "Multiple '@' anchors in fixture (second one on line {}). \
+                     Fixture must contain at most one '@' anchor total.",
+                    logical_line_idx
+                );
+            }
+            anchor = Some((logical_line_idx, anchor_col));
+            if mode.is_visual() {
+                selected_cells.push((logical_line_idx, anchor_col));
+                selected_lines.push(logical_line_idx);
+            }
+        }
+
+        if !mode.is_visual() && ann.chars().any(|c| c == '-' || c == '@') {
+            panic!("Non-visual fixture cannot contain selection markers ('-' or '@').");
         }
 
         if matches!(mode, Mode::VisualLine) {
@@ -219,7 +247,7 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
         },
         Mode::Visual => {
             let (visual_start, expected_visual_selection) =
-                derive_visual_charwise(&content_lines, cursor, &selected_cells);
+                derive_visual_charwise(cursor, anchor, &selected_cells);
             Fixture {
                 mode,
                 content,
@@ -230,7 +258,7 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
         }
         Mode::VisualLine => {
             let (visual_start, expected_visual_selection) =
-                derive_visual_linewise(&content_lines, cursor, &selected_lines);
+                derive_visual_linewise(&content_lines, cursor, anchor, &selected_lines);
             Fixture {
                 mode,
                 content,
@@ -239,38 +267,47 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
                 expected_visual_selection: Some(expected_visual_selection),
             }
         }
-        Mode::VisualBlock => Fixture {
-            mode,
-            content,
-            cursor,
-            visual_start: Some(cursor),
-            expected_visual_selection: Some((cursor, cursor)),
-        },
+        Mode::VisualBlock => {
+            let (visual_start, expected_visual_selection) =
+                derive_visual_block(cursor, anchor, &selected_cells);
+            Fixture {
+                mode,
+                content,
+                cursor,
+                visual_start: Some(visual_start),
+                expected_visual_selection: Some(expected_visual_selection),
+            }
+        }
     }
 }
 
 fn derive_visual_charwise(
-    _content_lines: &[String],
     cursor: (usize, usize),
+    anchor: Option<(usize, usize)>,
     selected_cells: &[(usize, usize)],
 ) -> ((usize, usize), ((usize, usize), (usize, usize))) {
-    if selected_cells.is_empty() {
-        return (cursor, (cursor, cursor));
-    }
+    let (start, end) = if !selected_cells.is_empty() {
+        let mut sorted = selected_cells.to_vec();
+        sorted.sort_unstable();
+        (*sorted.first().unwrap(), *sorted.last().unwrap())
+    } else if let Some(anchor) = anchor {
+        if anchor.0 < cursor.0 || (anchor.0 == cursor.0 && anchor.1 <= cursor.1) {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        }
+    } else {
+        (cursor, cursor)
+    };
 
-    let mut sorted = selected_cells.to_vec();
-    sorted.sort_unstable();
-    let start = *sorted.first().unwrap();
-    let end = *sorted.last().unwrap();
-
-    let visual_start = if cursor == start {
+    let visual_start = if let Some(anchor) = anchor {
+        anchor
+    } else if cursor == start {
         end
     } else if cursor == end {
         start
-    } else if start == end && cursor == start {
-        cursor
     } else {
-        panic!("For now, caret must be at one end of the selection span");
+        panic!("cursor must be at one end of the selection span");
     };
 
     (visual_start, (start, end))
@@ -279,6 +316,7 @@ fn derive_visual_charwise(
 fn derive_visual_linewise(
     content_lines: &[String],
     cursor: (usize, usize),
+    anchor: Option<(usize, usize)>,
     selected_lines: &[usize],
 ) -> ((usize, usize), ((usize, usize), (usize, usize))) {
     let mut lines = selected_lines.to_vec();
@@ -288,12 +326,16 @@ fn derive_visual_linewise(
     let start_line = *lines.first().unwrap_or(&cursor.0);
     let end_line = *lines.last().unwrap_or(&cursor.0);
 
-    let visual_start_line = if cursor.0 == start_line {
+    let visual_start_line = if let Some(anchor) = anchor {
+        anchor.0
+    } else if cursor.0 == start_line {
         end_line
     } else if cursor.0 == end_line {
         start_line
-    } else {
+    } else if start_line == end_line {
         cursor.0
+    } else {
+        panic!("cursor must be at one end of the linewise selection span");
     };
 
     let end_col = content_lines
@@ -307,9 +349,124 @@ fn derive_visual_linewise(
     ((visual_start_line, 0), (expected_start, expected_end))
 }
 
+fn derive_visual_block(
+    cursor: (usize, usize),
+    anchor: Option<(usize, usize)>,
+    selected_cells: &[(usize, usize)],
+) -> ((usize, usize), ((usize, usize), (usize, usize))) {
+    let (min_line, max_line, min_col, max_col) = if !selected_cells.is_empty() {
+        let mut min_line = usize::MAX;
+        let mut max_line = 0;
+        let mut min_col = usize::MAX;
+        let mut max_col = 0;
+        for (line, col) in selected_cells {
+            min_line = min_line.min(*line);
+            max_line = max_line.max(*line);
+            min_col = min_col.min(*col);
+            max_col = max_col.max(*col);
+        }
+        (min_line, max_line, min_col, max_col)
+    } else if let Some(anchor) = anchor {
+        (
+            cursor.0.min(anchor.0),
+            cursor.0.max(anchor.0),
+            cursor.1.min(anchor.1),
+            cursor.1.max(anchor.1),
+        )
+    } else {
+        panic!("VisualBlock fixture must provide '@' anchor or '-' selection markers");
+    };
+
+    let expected_selection = ((min_line, min_col), (max_line, max_col));
+
+    let visual_start = if let Some(anchor) = anchor {
+        anchor
+    } else {
+        let tl = (min_line, min_col);
+        let tr = (min_line, max_col);
+        let bl = (max_line, min_col);
+        let br = (max_line, max_col);
+
+        if cursor == tl {
+            br
+        } else if cursor == br {
+            tl
+        } else if cursor == tr {
+            bl
+        } else if cursor == bl {
+            tr
+        } else {
+            panic!("cursor must be at a rectangle corner for VisualBlock fixtures");
+        }
+    };
+
+    (visual_start, expected_selection)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_visual_charwise_single_line_with_selection_markers() {
+        let fixture = fixture_from_pairs(Mode::Visual, &["hello", "^--- "]);
+        assert_eq!(fixture.cursor, (0, 0));
+        assert_eq!(fixture.visual_start, Some((0, 3)));
+        assert_eq!(fixture.expected_visual_selection, Some(((0, 0), (0, 3))));
+    }
+
+    #[test]
+    fn parse_visual_charwise_with_explicit_anchor() {
+        let fixture = fixture_from_pairs(Mode::Visual, &["hello", "@-^  "]);
+        assert_eq!(fixture.cursor, (0, 2));
+        assert_eq!(fixture.visual_start, Some((0, 0)));
+        assert_eq!(fixture.expected_visual_selection, Some(((0, 0), (0, 2))));
+    }
+
+    #[test]
+    fn parse_visual_linewise_selection() {
+        let fixture = fixture_from_pairs(
+            Mode::VisualLine,
+            &["line1", "^", "line2", "-", "line3", "-", "line4", ""],
+        );
+        assert_eq!(fixture.cursor, (0, 0));
+        assert_eq!(fixture.visual_start, Some((2, 0)));
+        assert_eq!(fixture.expected_visual_selection, Some(((0, 0), (2, 4))));
+    }
+
+    #[test]
+    #[should_panic(expected = "cursor must be at one end")]
+    fn parse_visual_linewise_requires_cursor_at_edge_of_selection() {
+        let _fixture = fixture_from_pairs(
+            Mode::VisualLine,
+            &["line1", "-", "line2", "^", "line3", "-"],
+        );
+    }
+
+    #[test]
+    fn parse_visual_block_from_marked_rectangle() {
+        let fixture = fixture_from_pairs(Mode::VisualBlock, &["abcd", " ^- ", "efgh", " -- "]);
+        assert_eq!(fixture.cursor, (0, 1));
+        assert_eq!(fixture.expected_visual_selection, Some(((0, 1), (1, 2))));
+        assert_eq!(fixture.visual_start, Some((1, 2)));
+    }
+
+    #[test]
+    fn parse_visual_block_from_explicit_anchor() {
+        let fixture = fixture_from_pairs(
+            Mode::VisualBlock,
+            &["abcd", " ^  ", "efgh", "    ", "ijkl", "   @"],
+        );
+        assert_eq!(fixture.cursor, (0, 1));
+        assert_eq!(fixture.visual_start, Some((2, 3)));
+        assert_eq!(fixture.expected_visual_selection, Some(((0, 1), (2, 3))));
+    }
+
+    #[test]
+    #[should_panic(expected = "Non-visual fixture cannot contain selection markers")]
+    fn parse_normal_disallows_selection_markers() {
+        let _fixture = fixture_from_pairs(Mode::Normal, &["hello", "^-"]);
+    }
 
     #[test]
     fn test_expand_annotation_empty() {
