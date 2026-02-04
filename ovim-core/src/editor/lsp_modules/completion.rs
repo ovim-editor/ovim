@@ -4,6 +4,7 @@
 //! Completions are typically triggered by Ctrl+N or automatically in insert mode.
 
 use super::super::Editor;
+use crate::unicode::{byte_offset_for_grapheme, grapheme_count, grapheme_indices};
 use crate::lsp::uri_from_file_path;
 use anyhow::{anyhow, Result};
 
@@ -11,6 +12,21 @@ impl Editor {
     /// Request completion at current cursor position
     pub fn request_completion(&mut self) {
         self.queue_lsp_action(crate::editor::lsp_state::LspAction::Completion);
+    }
+
+    pub(crate) fn completion_trigger_context(&self) -> (usize, String) {
+        let cursor = self.buffer().cursor();
+        let line_idx = cursor.line();
+        let cursor_col = cursor.col();
+
+        let line_text = self
+            .buffer()
+            .line(line_idx)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string();
+
+        completion_trigger_context_from_line(&line_text, cursor_col)
     }
 
     /// Apply a completion by index from available completions
@@ -107,19 +123,82 @@ impl Editor {
 
         match result {
             Ok(items) if !items.is_empty() => {
+                let (trigger_col, trigger_prefix) = self.completion_trigger_context();
                 self.lsp_state.available_completions = items.clone();
-                // TODO: Open completion popup menu
-                self.set_lsp_status(format!("Found {} completions", items.len()));
+                self.completion_menu_mut()
+                    .show(items, trigger_col, trigger_prefix);
+                self.set_lsp_status(format!(
+                    "Found {} completions (Tab to accept, Ctrl-N/P to navigate)",
+                    self.completion_menu().items().len()
+                ));
                 Ok(true)
             }
             Ok(_) => {
+                self.hide_completion_menu();
                 self.set_lsp_status("No completions available".to_string());
                 Ok(false)
             }
             Err(e) => {
+                self.hide_completion_menu();
                 self.set_lsp_status(format!("Completion request failed: {}", e));
                 Err(e)
             }
         }
+    }
+}
+
+fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (usize, String) {
+    let cursor_byte = byte_offset_for_grapheme(line_text, cursor_col).unwrap_or(line_text.len());
+    let before_cursor = &line_text[..cursor_byte.min(line_text.len())];
+
+    let mut start_byte = before_cursor.len();
+    let graphemes: Vec<(usize, &str)> = grapheme_indices(before_cursor).collect();
+    for (byte_offset, grapheme) in graphemes.into_iter().rev() {
+        let is_ident = grapheme
+            .chars()
+            .all(|c| c == '_' || c.is_alphanumeric());
+        if !is_ident {
+            break;
+        }
+        start_byte = byte_offset;
+    }
+
+    let trigger_col = grapheme_count(&line_text[..start_byte.min(line_text.len())]);
+    let trigger_prefix = line_text[start_byte.min(cursor_byte)..cursor_byte]
+        .to_string();
+
+    (trigger_col, trigger_prefix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::completion_trigger_context_from_line;
+
+    #[test]
+    fn completion_trigger_context_basic_word() {
+        let (col, prefix) = completion_trigger_context_from_line("foobar", 6);
+        assert_eq!(col, 0);
+        assert_eq!(prefix, "foobar");
+    }
+
+    #[test]
+    fn completion_trigger_context_after_dot() {
+        let (col, prefix) = completion_trigger_context_from_line("foo.", 4);
+        assert_eq!(col, 4);
+        assert_eq!(prefix, "");
+    }
+
+    #[test]
+    fn completion_trigger_context_member_prefix() {
+        let (col, prefix) = completion_trigger_context_from_line("foo.bar", 7);
+        assert_eq!(col, 4);
+        assert_eq!(prefix, "bar");
+    }
+
+    #[test]
+    fn completion_trigger_context_underscore_digits() {
+        let (col, prefix) = completion_trigger_context_from_line("__x1", 4);
+        assert_eq!(col, 0);
+        assert_eq!(prefix, "__x1");
     }
 }
