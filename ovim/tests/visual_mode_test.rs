@@ -371,7 +371,7 @@ fn test_V_with_gg() {
             "line 3", "      ",
             "line 4", "      ",
         }
-        when "GVgg"
+        keys "GVgg"
         expect VisualLine {
             "line 1", "^-----",
             "line 2", "------",
@@ -390,7 +390,7 @@ fn test_v_with_gg_moves_cursor_and_extends_selection() {
             "line 3", "      ",
             "line 4", "      ",
         }
-        when "Gvgg"
+        keys "Gvgg"
         expect Visual {
             "line 1", "^     ",
             "line 2", "-     ",
@@ -409,7 +409,7 @@ fn test_v_with_G_moves_cursor_and_extends_selection() {
             "line 3", "      ",
             "line 4", "      ",
         }
-        when "ggvG"
+        keys "ggvG"
         expect Visual {
             "line 1", "-     ",
             "line 2", "-     ",
@@ -440,6 +440,32 @@ fn test_visual_block_gg_and_G_preserve_column() {
         Some(((0, 3), (3, 3))),
         "VisualBlock G should preserve column"
     );
+}
+
+#[test]
+fn test_editor_test_dsl_allows_multi_step_debugging() {
+    editor_test! {
+        given Normal {
+            "line 1", "^     ",
+            "line 2", "      ",
+            "line 3", "      ",
+            "line 4", "      ",
+        }
+        keys "Gv"
+        expect Visual {
+            "line 1", "      ",
+            "line 2", "      ",
+            "line 3", "      ",
+            "line 4", "^     ",
+        }
+        keys "gg"
+        expect Visual {
+            "line 1", "^     ",
+            "line 2", "-     ",
+            "line 3", "-     ",
+            "line 4", "-     ",
+        }
+    }
 }
 
 // ============================================================================

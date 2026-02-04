@@ -16,6 +16,14 @@ pub fn run_editor_test_case(given: Fixture, keys: &str, expect: Fixture) {
     assert_editor_matches_fixture(&test, &expect);
 }
 
+pub fn run_editor_test_steps(given: Fixture, steps: Vec<(&'static str, Fixture)>) {
+    let mut test = build_editor_from_fixture(&given);
+    for (keys, expect) in steps {
+        test.keys(keys);
+        assert_editor_matches_fixture(&test, &expect);
+    }
+}
+
 pub fn fixture_from_pairs(mode: Mode, pairs: &[&str]) -> Fixture {
     parse_pairs_fixture(mode, pairs)
 }
