@@ -261,25 +261,22 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Esc => {
             if editor.completion_menu().is_visible() {
                 editor.hide_completion_menu();
-            } else {
-                exit_insert_mode(editor);
             }
+            exit_insert_mode(editor);
         }
         // Ctrl-[ is equivalent to Esc
         KeyCode::Char('[') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.hide_completion_menu();
-            } else {
-                exit_insert_mode(editor);
             }
+            exit_insert_mode(editor);
         }
         // Ctrl-C exits insert mode (like Esc but without triggering InsertLeave)
         KeyCode::Char('c') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if editor.completion_menu().is_visible() {
                 editor.hide_completion_menu();
-            } else {
-                exit_insert_mode(editor);
             }
+            exit_insert_mode(editor);
         }
         // Ctrl-W - Delete word backward
         KeyCode::Char('w') if key_event.modifiers.contains(Modifiers::CONTROL) => {
