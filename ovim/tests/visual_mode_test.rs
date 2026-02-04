@@ -364,47 +364,59 @@ fn test_v_with_zero() {
 
 #[test]
 fn test_V_with_gg() {
-    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
-
-    test.keys("G") // Go to last line
-        .press('V')
-        .keys("gg"); // Select to first line
-
-    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
-    test.assert_cursor(0, 0);
-    assert_eq!(
-        test.get_visual_selection(),
-        Some(((0, 0), (3, 5))),
-        "VisualLine selection should extend from first to last line"
-    );
+    editor_test! {
+        given Normal {
+            "line 1", "^     ",
+            "line 2", "      ",
+            "line 3", "      ",
+            "line 4", "      ",
+        }
+        when "GVgg"
+        expect VisualLine {
+            "line 1", "^-----",
+            "line 2", "------",
+            "line 3", "------",
+            "line 4", "------",
+        }
+    }
 }
 
 #[test]
 fn test_v_with_gg_moves_cursor_and_extends_selection() {
-    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4\n");
-
-    test.keys("G").press('v').keys("gg");
-
-    test.assert_cursor(0, 0);
-    assert_eq!(
-        test.get_visual_selection(),
-        Some(((0, 0), (3, 0))),
-        "Visual selection should extend from first to last line at col 0"
-    );
+    editor_test! {
+        given Normal {
+            "line 1", "^     ",
+            "line 2", "      ",
+            "line 3", "      ",
+            "line 4", "      ",
+        }
+        when "Gvgg"
+        expect Visual {
+            "line 1", "^     ",
+            "line 2", "-     ",
+            "line 3", "-     ",
+            "line 4", "-     ",
+        }
+    }
 }
 
 #[test]
 fn test_v_with_G_moves_cursor_and_extends_selection() {
-    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4\n");
-
-    test.keys("gg").press('v').keys("G");
-
-    test.assert_cursor(3, 0);
-    assert_eq!(
-        test.get_visual_selection(),
-        Some(((0, 0), (3, 0))),
-        "Visual selection should extend from first to last line at col 0"
-    );
+    editor_test! {
+        given Normal {
+            "line 1", "^     ",
+            "line 2", "      ",
+            "line 3", "      ",
+            "line 4", "      ",
+        }
+        when "ggvG"
+        expect Visual {
+            "line 1", "-     ",
+            "line 2", "-     ",
+            "line 3", "-     ",
+            "line 4", "^     ",
+        }
+    }
 }
 
 #[test]
