@@ -69,7 +69,7 @@ async fn process_editor_tick(
     }
 
     if let Some(lsp_manager) = editor.lsp_manager() {
-        if lsp_manager.diagnostics_changed() {
+        if editor.take_diagnostics_refresh_request() || lsp_manager.diagnostics_changed() {
             editor.update_diagnostic_cache().await;
             editor.mark_dirty(); // Redraw when diagnostics change
         }

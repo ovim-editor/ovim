@@ -560,6 +560,20 @@ impl Editor {
         }
     }
 
+    pub fn mark_buffer_modified_force_send(&mut self) {
+        if let Some(state) = self.document_sync_state_mut() {
+            state.mark_modified_force_send();
+        }
+    }
+
+    pub fn request_diagnostics_refresh(&mut self) {
+        self.lsp_state.diagnostics_refresh_requested = true;
+    }
+
+    pub fn take_diagnostics_refresh_request(&mut self) -> bool {
+        std::mem::take(&mut self.lsp_state.diagnostics_refresh_requested)
+    }
+
     pub fn lsp_document_sync_exists(&self) -> bool {
         let Some(file_path) = self.buffer().file_path() else {
             return false;

@@ -28,6 +28,11 @@ impl DocumentSyncState {
         self.buffer_modified = true;
     }
 
+    pub fn mark_modified_force_send(&mut self) {
+        self.buffer_modified = true;
+        self.last_change_sent = None;
+    }
+
     pub fn mark_saved(&mut self) {
         self.buffer_saved = true;
     }
@@ -221,6 +226,9 @@ pub struct LspState {
     pub pending_completion: Option<PendingCompletionRequest>,
     /// Monotonic completion request sequence to ignore stale responses
     pub completion_request_seq: u64,
+    /// Request a diagnostic cache refresh on next tick (safety net for cases where
+    /// the `diagnostics_changed` flag is missed).
+    pub diagnostics_refresh_requested: bool,
     /// Content type for hover window (LSP hover vs diagnostic)
     pub hover_content_type: HoverContentType,
 }
@@ -255,6 +263,7 @@ impl LspState {
             pending_lsp_response: None,
             pending_completion: None,
             completion_request_seq: 0,
+            diagnostics_refresh_requested: false,
             hover_content_type: HoverContentType::default(),
         }
     }

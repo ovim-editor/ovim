@@ -44,6 +44,12 @@ impl Editor {
             self.buffer_mut()
                 .insert_text_at(start_line, start_col, &edit.new_text);
         }
+
+        // LSP-applied edits are still edits: ensure we sync back to the server so
+        // diagnostics and other LSP features refresh.
+        self.invalidate_hover_cache();
+        self.mark_buffer_modified_force_send();
+        self.request_diagnostics_refresh();
     }
 
     /// Apply a workspace edit (used for rename, organize imports, etc.)
