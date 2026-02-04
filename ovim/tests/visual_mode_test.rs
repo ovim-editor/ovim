@@ -371,7 +371,63 @@ fn test_V_with_gg() {
         .keys("gg"); // Select to first line
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+    test.assert_cursor(0, 0);
+    assert_eq!(
+        test.get_visual_selection(),
+        Some(((0, 0), (3, 5))),
+        "VisualLine selection should extend from first to last line"
+    );
+}
+
+#[test]
+fn test_v_with_gg_moves_cursor_and_extends_selection() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4\n");
+
+    test.keys("G").press('v').keys("gg");
+
+    test.assert_cursor(0, 0);
+    assert_eq!(
+        test.get_visual_selection(),
+        Some(((0, 0), (3, 0))),
+        "Visual selection should extend from first to last line at col 0"
+    );
+}
+
+#[test]
+fn test_v_with_G_moves_cursor_and_extends_selection() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4\n");
+
+    test.keys("gg").press('v').keys("G");
+
     test.assert_cursor(3, 0);
+    assert_eq!(
+        test.get_visual_selection(),
+        Some(((0, 0), (3, 0))),
+        "Visual selection should extend from first to last line at col 0"
+    );
+}
+
+#[test]
+fn test_visual_block_gg_and_G_preserve_column() {
+    let mut test = EditorTest::new("aaaaaa\nbbbbbb\ncccccc\ndddddd\n");
+
+    test.keys("G").keys("3l").keys("<C-v>").keys("gg");
+    test.assert_cursor(0, 3);
+    assert_eq!(
+        test.get_visual_selection(),
+        Some(((0, 3), (3, 3))),
+        "VisualBlock gg should preserve column"
+    );
+
+    test.keys("<Esc>");
+
+    test.keys("gg").keys("3l").keys("<C-v>").keys("G");
+    test.assert_cursor(3, 3);
+    assert_eq!(
+        test.get_visual_selection(),
+        Some(((0, 3), (3, 3))),
+        "VisualBlock G should preserve column"
+    );
 }
 
 // ============================================================================

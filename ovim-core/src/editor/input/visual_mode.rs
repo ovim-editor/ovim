@@ -52,6 +52,31 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     if let Some(pending) = editor.pending_command() {
         editor.clear_pending_command();
         match (pending, key_event.code) {
+            ('g', KeyCode::Char('g')) => {
+                // gg - go to first line (or line specified by count)
+                let target_line = if let Some(count) = editor.count() {
+                    count.saturating_sub(1)
+                } else {
+                    0
+                };
+
+                let is_visual_block = editor.mode() == Mode::VisualBlock;
+                let current_col = editor.buffer().cursor().col();
+                let cursor = editor.buffer_mut().cursor_mut();
+                cursor.set_line(target_line);
+
+                if !is_visual_block {
+                    cursor.set_col(0);
+                    cursor.update_desired_col(0);
+                } else {
+                    cursor.set_col(current_col);
+                    cursor.update_desired_col(current_col);
+                }
+
+                helpers::clamp_cursor_to_line(editor);
+                editor.clear_count();
+                return Ok(());
+            }
             ('g', KeyCode::Char('a')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
                 // g Ctrl-A: Sequential increment in visual selection
                 numbers::sequential_modify_numbers(editor, 1)?;
@@ -257,20 +282,25 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 editor.buffer().line_count().saturating_sub(1)
             };
-            editor.buffer_mut().cursor_mut().set_line(target_line);
-            editor.buffer_mut().cursor_mut().set_col(0);
+            let is_visual_block = editor.mode() == Mode::VisualBlock;
+            let current_col = editor.buffer().cursor().col();
+            let cursor = editor.buffer_mut().cursor_mut();
+            cursor.set_line(target_line);
+
+            if !is_visual_block {
+                cursor.set_col(0);
+                cursor.update_desired_col(0);
+            } else {
+                cursor.set_col(current_col);
+                cursor.update_desired_col(current_col);
+            }
+
+            helpers::clamp_cursor_to_line(editor);
             editor.clear_count();
         }
         KeyCode::Char('g') => {
-            // Handle gg motion in visual mode
-            if editor.pending_command() == Some('g') {
-                // gg - go to first line
-                editor.buffer_mut().cursor_mut().set_line(0);
-                editor.buffer_mut().cursor_mut().set_col(0);
-                editor.clear_pending_command();
-            } else {
-                editor.set_pending_command('g');
-            }
+            // g - first key of gg (go to first line with optional count)
+            editor.set_pending_command('g');
         }
         // Find character forward (f)
         KeyCode::Char('f') => {
