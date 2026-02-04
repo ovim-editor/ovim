@@ -3,6 +3,8 @@ use lsp_types::CompletionItem;
 /// Represents a completion menu popup
 #[derive(Debug, Clone)]
 pub struct CompletionMenu {
+    /// Original, unfiltered completion items
+    all_items: Vec<CompletionItem>,
     /// All available completion items
     items: Vec<CompletionItem>,
     /// Currently selected index
@@ -19,6 +21,7 @@ impl CompletionMenu {
     /// Creates a new empty completion menu
     pub fn new() -> Self {
         Self {
+            all_items: Vec::new(),
             items: Vec::new(),
             selected_index: 0,
             visible: false,
@@ -29,16 +32,18 @@ impl CompletionMenu {
 
     /// Shows the completion menu with the given items
     pub fn show(&mut self, items: Vec<CompletionItem>, trigger_col: usize, trigger_prefix: String) {
-        self.items = items;
+        self.all_items = items;
         self.selected_index = 0;
         self.visible = true;
         self.trigger_col = trigger_col;
         self.trigger_prefix = trigger_prefix;
+        self.apply_filter();
     }
 
     /// Hides the completion menu
     pub fn hide(&mut self) {
         self.visible = false;
+        self.all_items.clear();
         self.items.clear();
         self.selected_index = 0;
         self.trigger_prefix.clear();
@@ -98,9 +103,38 @@ impl CompletionMenu {
 
     /// Filters items based on current input
     pub fn filter(&mut self, current_prefix: &str) {
-        // For now, we keep all items and let LSP handle filtering
-        // In the future, we could do client-side filtering here
         self.trigger_prefix = current_prefix.to_string();
+        self.apply_filter();
+    }
+
+    fn apply_filter(&mut self) {
+        let prefix = self.trigger_prefix.clone();
+        let prefix_lower = prefix.to_lowercase();
+
+        let mut filtered: Vec<CompletionItem> = if prefix.is_empty() {
+            self.all_items.clone()
+        } else {
+            self.all_items
+                .iter()
+                .cloned()
+                .filter(|item| {
+                    let text = item
+                        .insert_text
+                        .as_deref()
+                        .unwrap_or(&item.label);
+                    text.to_lowercase().starts_with(&prefix_lower)
+                })
+                .collect()
+        };
+
+        // Deduplicate by (label, insert_text)
+        filtered.sort_by(|a, b| a.label.cmp(&b.label));
+        filtered.dedup_by(|a, b| a.label == b.label && a.insert_text == b.insert_text);
+
+        self.items = filtered;
+        if self.selected_index >= self.items.len() {
+            self.selected_index = 0;
+        }
     }
 }
 

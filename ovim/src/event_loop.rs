@@ -85,6 +85,10 @@ async fn process_editor_tick(
         editor.mark_dirty(); // Redraw when response arrives
     }
 
+    if editor.poll_pending_completion_response() {
+        editor.mark_dirty();
+    }
+
     // Only process new actions if not waiting for response
     if !editor.has_pending_lsp_response() {
         editor.process_pending_lsp_actions().await;

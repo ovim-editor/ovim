@@ -373,19 +373,33 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         KeyCode::Left => {
+            if editor.completion_menu().is_visible() {
+                editor.hide_completion_menu();
+            }
             let cursor = editor.buffer_mut().cursor_mut();
             if cursor.col() > 0 {
                 cursor.move_left(1);
             }
         }
         KeyCode::Right => {
+            if editor.completion_menu().is_visible() {
+                editor.hide_completion_menu();
+            }
             helpers::move_right(editor);
         }
         KeyCode::Up => {
-            helpers::move_up(editor);
+            if editor.completion_menu().is_visible() {
+                editor.completion_previous();
+            } else {
+                helpers::move_up(editor);
+            }
         }
         KeyCode::Down => {
-            helpers::move_down(editor);
+            if editor.completion_menu().is_visible() {
+                editor.completion_next();
+            } else {
+                helpers::move_down(editor);
+            }
         }
         _ => {}
     }
