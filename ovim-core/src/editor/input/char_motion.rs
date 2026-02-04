@@ -11,6 +11,8 @@ use crate::editor::input_state::CharMotion;
 use crate::editor::motions::Motions;
 use crate::editor::operators::Operator;
 use crate::editor::{Editor, FindDirection, FindType};
+use crate::editor::{Change, Range};
+use crate::editor::RegisterType;
 use crate::mode::Mode;
 
 /// Handles the second key in a character motion sequence.
@@ -73,6 +75,7 @@ fn handle_find_forward(
 ) {
     let start_line = editor.buffer().cursor().line();
     let start_col = editor.buffer().cursor().col();
+    let cursor_before = (start_line, start_col);
 
     let moved = Motions::find_char_forward(editor.buffer_mut(), target, count);
 
@@ -84,7 +87,20 @@ fn handle_find_forward(
         if let Some(op) = operator {
             let end_line = editor.buffer().cursor().line();
             let end_col = editor.buffer().cursor().col();
-            apply_operator_to_range(editor, op, start_line, start_col, end_line, end_col, true);
+            apply_operator_to_range(
+                editor,
+                op,
+                cursor_before,
+                target,
+                true,
+                false,
+                count,
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                true,
+            );
         }
     }
 }
@@ -98,6 +114,7 @@ fn handle_till_forward(
 ) {
     let start_line = editor.buffer().cursor().line();
     let start_col = editor.buffer().cursor().col();
+    let cursor_before = (start_line, start_col);
 
     let moved = Motions::till_char_forward(editor.buffer_mut(), target, count);
 
@@ -109,7 +126,20 @@ fn handle_till_forward(
         if let Some(op) = operator {
             let end_line = editor.buffer().cursor().line();
             let end_col = editor.buffer().cursor().col();
-            apply_operator_to_range(editor, op, start_line, start_col, end_line, end_col, true);
+            apply_operator_to_range(
+                editor,
+                op,
+                cursor_before,
+                target,
+                true,
+                true,
+                count,
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+                true,
+            );
         }
     }
 }
@@ -123,6 +153,7 @@ fn handle_find_backward(
 ) {
     let start_line = editor.buffer().cursor().line();
     let start_col = editor.buffer().cursor().col();
+    let cursor_before = (start_line, start_col);
 
     let moved = Motions::find_char_backward(editor.buffer_mut(), target, count);
 
@@ -133,7 +164,20 @@ fn handle_find_backward(
             let end_line = editor.buffer().cursor().line();
             let end_col = editor.buffer().cursor().col();
             // For backward motions, the end position is before start
-            apply_operator_to_range(editor, op, end_line, end_col, start_line, start_col, true);
+            apply_operator_to_range(
+                editor,
+                op,
+                cursor_before,
+                target,
+                false,
+                false,
+                count,
+                end_line,
+                end_col,
+                start_line,
+                start_col,
+                true,
+            );
         }
     }
 }
@@ -147,6 +191,7 @@ fn handle_till_backward(
 ) {
     let start_line = editor.buffer().cursor().line();
     let start_col = editor.buffer().cursor().col();
+    let cursor_before = (start_line, start_col);
 
     let moved = Motions::till_char_backward(editor.buffer_mut(), target, count);
 
@@ -156,7 +201,20 @@ fn handle_till_backward(
         if let Some(op) = operator {
             let end_line = editor.buffer().cursor().line();
             let end_col = editor.buffer().cursor().col();
-            apply_operator_to_range(editor, op, end_line, end_col, start_line, start_col, true);
+            apply_operator_to_range(
+                editor,
+                op,
+                cursor_before,
+                target,
+                false,
+                true,
+                count,
+                end_line,
+                end_col,
+                start_line,
+                start_col,
+                true,
+            );
         }
     }
 }
@@ -167,42 +225,92 @@ fn handle_till_backward(
 fn apply_operator_to_range(
     editor: &mut Editor,
     operator: Operator,
+    cursor_before: (usize, usize),
+    target: char,
+    forward: bool,
+    till: bool,
+    count: usize,
     start_line: usize,
     start_col: usize,
     end_line: usize,
     end_col: usize,
     inclusive: bool,
 ) {
-    // For inclusive motions (f), include the target character
-    let end_col = if inclusive { end_col + 1 } else { end_col };
+    // For inclusive motions (f), include the target character by making the end column exclusive.
+    let mut end_col = if inclusive {
+        end_col.saturating_add(1)
+    } else {
+        end_col
+    };
+
+    // Clamp end_col to the line length to avoid overflow/past-EOL issues.
+    if let Some(line) = editor.buffer().line(end_line) {
+        let line_len = line.trim_end_matches('\n').chars().count();
+        end_col = end_col.min(line_len);
+    }
 
     match operator {
         Operator::Delete => {
-            // Delete the range
-            editor
+            let deleted = editor
                 .buffer_mut()
                 .delete_range(start_line, start_col, end_line, end_col);
-            // Restore cursor to start position
+
+            if !deleted.is_empty() {
+                let range = Range::new((start_line, start_col), (end_line, end_col));
+                let change = Change::delete_char_motion(
+                    target,
+                    forward,
+                    till,
+                    count,
+                    cursor_before,
+                    deleted.clone(),
+                    range,
+                );
+                editor.delete_to_register_with_type(deleted, RegisterType::Character);
+                editor.add_change(change);
+                editor.mark_buffer_modified();
+            }
+
             editor
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(start_line, start_col);
         }
         Operator::Change => {
-            // Delete the range and enter insert mode
-            editor
+            let deleted = editor
                 .buffer_mut()
                 .delete_range(start_line, start_col, end_line, end_col);
+
+            if !deleted.is_empty() {
+                let range = Range::new((start_line, start_col), (end_line, end_col));
+                let change = Change::delete(range, deleted.clone(), cursor_before);
+                editor.delete_to_register_with_type(deleted, RegisterType::Character);
+                editor.add_change(change);
+                editor.mark_buffer_modified();
+            }
+
             editor
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(start_line, start_col);
+
+            // Group subsequent insert-mode edits into a composite change.
+            editor.start_change_building(cursor_before);
             editor.set_mode(Mode::Insert);
         }
         Operator::Yank => {
-            // For yank, we don't modify the buffer
-            // Just restore cursor to start position
-            editor.set_yank_flash_range(start_line, start_col, end_line, end_col.saturating_sub(1));
+            let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
+            let end_char = editor.buffer().rope().line_to_char(end_line) + end_col;
+            if end_char > start_char {
+                let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
+                editor.yank_to_register_with_type(yanked, RegisterType::Character);
+                editor.set_yank_flash_range(
+                    start_line,
+                    start_col,
+                    end_line,
+                    end_col.saturating_sub(1),
+                );
+            }
             editor
                 .buffer_mut()
                 .cursor_mut()
