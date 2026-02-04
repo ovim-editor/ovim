@@ -708,6 +708,7 @@ pub fn render_buffer(
     theme: &Theme,
     layout: &BufferLayout,
     line_cache: &mut super::line_cache::LineRenderCache,
+    render_diagnostic_virtual_text_inline: bool,
 ) -> usize {
     let area = layout.buffer_area;
     let buffer = editor.buffer();
@@ -1052,7 +1053,7 @@ pub fn render_buffer(
                 if has_wrap {
                     let mut visual_rows = split_line_into_rows(line, text_width);
                     // Append diagnostic virtual text to the first visual row (after splitting)
-                    if has_diagnostics {
+                    if has_diagnostics && render_diagnostic_virtual_text_inline {
                         if let Some(first_row) = visual_rows.first_mut() {
                             append_diagnostic_virtual_text(first_row, &line_diagnostics, text_width);
                         }
@@ -1079,7 +1080,7 @@ pub fn render_buffer(
                     }
                 } else {
                     // No wrap: append diagnostic virtual text before padding
-                    if has_diagnostics {
+                    if has_diagnostics && render_diagnostic_virtual_text_inline {
                         append_diagnostic_virtual_text(&mut line, &line_diagnostics, text_width);
                     }
                     let line_len: usize =
@@ -1207,6 +1208,137 @@ pub fn render_buffer(
     frame.render_widget(paragraph, text_area);
 
     start_line
+}
+
+/// Render diagnostic virtual text as an overlay using the full available terminal width.
+///
+/// This is primarily used when `textwidth` centering is enabled. In that mode, the main buffer
+/// rendering is intentionally constrained to `layout.buffer_area.width`, but users still expect
+/// diagnostic virtual text to use the extra right-side margin space.
+pub fn render_diagnostic_virtual_text_overlay(
+    frame: &mut Frame,
+    editor: &Editor,
+    layout: &BufferLayout,
+    full_area: ratatui::layout::Rect,
+) {
+    let buffer_area = layout.buffer_area;
+    if full_area.width <= buffer_area.width {
+        return;
+    }
+
+    let buffer = editor.buffer();
+    let rope = buffer.rope();
+    let wrap = editor.options.wrap;
+    let h_offset = editor.horizontal_offset();
+    let tab_width = editor.options.tab_width;
+
+    let visible_rows = buffer_area.height as usize;
+    let start_line = editor.scroll_offset();
+    let line_count = buffer.line_count();
+
+    let gutter_width_u16 = layout.gutter_width as u16;
+    let text_area_x = buffer_area.x + gutter_width_u16;
+    let wrap_width = layout.text_width.max(1);
+    let full_right = full_area.x + full_area.width;
+
+    let mut visual_rows_used = 0usize;
+    let mut line_idx = start_line;
+
+    while line_idx < line_count && visual_rows_used < visible_rows {
+        let first_row_screen = visual_rows_used;
+        let line_diagnostics = editor.diagnostics_for_line(line_idx);
+
+        let line_text_raw = if line_idx < rope.len_lines() {
+            rope.line(line_idx).to_string()
+        } else {
+            String::new()
+        };
+        let line_text_original = line_text_raw.trim_end_matches('\n');
+        let (expanded, _byte_mapping, _control_ranges, _char_mapping) =
+            expand_tabs_with_mapping(line_text_original, tab_width);
+
+        let display_source = if !wrap {
+            slice_horizontal_viewport(&expanded, h_offset, wrap_width).0
+        } else {
+            expanded
+        };
+
+        // Determine the first visual row's code width (excluding padding).
+        let mut first_row_text = if wrap {
+            let rows = split_line_into_rows(Line::from(display_source.to_string()), wrap_width);
+            let first = rows.first().cloned().unwrap_or_else(|| Line::from(""));
+            let text: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+            visual_rows_used += rows.len().max(1);
+            text
+        } else {
+            visual_rows_used += 1;
+            display_source.to_string()
+        };
+
+        // Strip trailing padding spaces.
+        while first_row_text.ends_with(' ') {
+            first_row_text.pop();
+        }
+        let code_width: usize = first_row_text.chars().map(char_display_width).sum();
+
+        if !line_diagnostics.is_empty() {
+            let diag = line_diagnostics[0];
+            let msg = diag.message.lines().next().unwrap_or("");
+            let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
+            let vtext_style = Style::default()
+                .fg(fg_color)
+                .bg(bg_color)
+                .add_modifier(Modifier::ITALIC);
+
+            // We want virtual text to start after the rendered code, even if that is past the
+            // centered textwidth. This allows it to appear in the right margin.
+            let mut x = text_area_x.saturating_add(code_width as u16);
+            let y = buffer_area.y + first_row_screen as u16;
+
+            if y < full_area.y || y >= full_area.y + full_area.height {
+                line_idx += 1;
+                continue;
+            }
+            if x >= full_right {
+                line_idx += 1;
+                continue;
+            }
+
+            let available = full_right.saturating_sub(x) as usize;
+            if available >= 6 {
+                // Draw unstyled gap, then styled message.
+                let buf = frame.buffer_mut();
+                let (nx, _) = buf.set_stringn(x, y, "  ", available, Style::default());
+                x = nx;
+                let available_after_gap = full_right.saturating_sub(x) as usize;
+                if available_after_gap > 0 {
+                    // Keep Vim-ish truncation at terminal edge.
+                    let prefix_width: usize =
+                        format!("{} ", icon).chars().map(char_display_width).sum();
+                    let max_msg_len = available_after_gap.saturating_sub(prefix_width);
+                    let mut render_msg = msg.to_string();
+                    if render_msg.chars().count() > max_msg_len {
+                        render_msg = format!(
+                            "{}...",
+                            render_msg
+                                .chars()
+                                .take(max_msg_len.saturating_sub(3))
+                                .collect::<String>()
+                        );
+                    }
+                    buf.set_stringn(
+                        x,
+                        y,
+                        format!("{} {}", icon, render_msg),
+                        available_after_gap,
+                        vtext_style,
+                    );
+                }
+            }
+        }
+
+        line_idx += 1;
+    }
 }
 
 /// A diagnostic range remapped to expanded char indices for rendering

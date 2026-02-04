@@ -175,12 +175,14 @@ fn render_buffer_area(
                 (vs, ly)
             } else {
                 let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-                let viewport_start = render_buffer(frame, editor, theme, &fallback_layout, line_cache);
+                let viewport_start =
+                    render_buffer(frame, editor, theme, &fallback_layout, line_cache, true);
                 (viewport_start, fallback_layout)
             }
         } else {
             let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-            let viewport_start = render_buffer(frame, editor, theme, &fallback_layout, line_cache);
+            let viewport_start =
+                render_buffer(frame, editor, theme, &fallback_layout, line_cache, true);
             (viewport_start, fallback_layout)
         }
     } else {
@@ -239,7 +241,20 @@ fn render_buffer_area(
             editor.ensure_wrap_map(single_layout.text_width);
         }
 
-        let viewport_start = render_buffer(frame, editor, theme, &single_layout, line_cache);
+        let full_area = areas.buffer_chunk;
+        let centered = buffer_area.width < full_area.width;
+        let render_inline_vtext = !centered;
+
+        let viewport_start =
+            render_buffer(frame, editor, theme, &single_layout, line_cache, render_inline_vtext);
+        if centered {
+            crate::ui::renderer::buffer::render_diagnostic_virtual_text_overlay(
+                frame,
+                editor,
+                &single_layout,
+                full_area,
+            );
+        }
         (viewport_start, single_layout)
     }
 }
@@ -475,7 +490,7 @@ fn render_window_tree(
             *current_index += 1;
 
             let layout = BufferLayout::compute(editor, area);
-            let viewport_start = render_buffer(frame, editor, theme, &layout, line_cache);
+            let viewport_start = render_buffer(frame, editor, theme, &layout, line_cache, true);
 
             if is_focused {
                 Some((viewport_start, layout))
