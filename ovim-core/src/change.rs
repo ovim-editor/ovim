@@ -78,6 +78,19 @@ pub enum Change {
         /// doesn't depend on the value of cursor_before.
         backwards: bool,
     },
+    /// Delete using a character find/till motion (df/dt/dF/dT).
+    ///
+    /// This exists so dot-repeat can re-evaluate the find motion rather than
+    /// repeating a fixed-width deletion.
+    DeleteCharMotion {
+        target: char,
+        forward: bool,
+        till: bool,
+        count: usize,
+        cursor_before: Position,
+        old_text: String,
+        old_range: Range,
+    },
     /// A composite of multiple changes (e.g., all changes during insert mode)
     Composite {
         changes: Vec<Change>,
@@ -189,6 +202,26 @@ impl Change {
             deleted_text,
             cursor_before,
             backwards: true,
+        }
+    }
+
+    pub fn delete_char_motion(
+        target: char,
+        forward: bool,
+        till: bool,
+        count: usize,
+        cursor_before: Position,
+        old_text: String,
+        old_range: Range,
+    ) -> Self {
+        Self::DeleteCharMotion {
+            target,
+            forward,
+            till,
+            count,
+            cursor_before,
+            old_text,
+            old_range,
         }
     }
 
@@ -348,6 +381,12 @@ impl Change {
                 let (end_line, end_col) = range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 // Position cursor at deletion start
+                buffer.cursor_mut().set_position(start_line, start_col);
+            }
+            Self::DeleteCharMotion { old_range, .. } => {
+                let (start_line, start_col) = old_range.start;
+                let (end_line, end_col) = old_range.end;
+                buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.cursor_mut().set_position(start_line, start_col);
             }
             Self::Composite {
@@ -532,6 +571,19 @@ impl Change {
                     .cursor_mut()
                     .set_position(cursor_before.0, cursor_before.1);
                 // Validate cursor position in case line no longer exists
+                buffer.validate_cursor_position();
+            }
+            Self::DeleteCharMotion {
+                old_range,
+                old_text,
+                cursor_before,
+                ..
+            } => {
+                let (line, col) = old_range.start;
+                buffer.insert_text_at(line, col, old_text);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
                 buffer.validate_cursor_position();
             }
             Self::Composite {
@@ -741,6 +793,80 @@ impl Change {
                     start_col
                 };
                 buffer.cursor_mut().set_position(start_line, final_col);
+            }
+            Self::DeleteCharMotion {
+                target,
+                forward,
+                till,
+                count,
+                old_text,
+                old_range,
+                ..
+            } => {
+                let cursor = buffer.cursor();
+                let line_idx = cursor.line();
+                let col = cursor.col();
+
+                let Some(line) = buffer.line(line_idx) else {
+                    *old_text = String::new();
+                    *old_range = Range::at((line_idx, col));
+                    return;
+                };
+                let line_text = line.trim_end_matches('\n');
+                let chars: Vec<char> = line_text.chars().collect();
+
+                let found = if *forward {
+                    let mut seen = 0usize;
+                    let mut found_idx = None;
+                    for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+                        if c == *target {
+                            seen += 1;
+                            if seen == *count {
+                                found_idx = Some(i);
+                                break;
+                            }
+                        }
+                    }
+                    found_idx
+                } else {
+                    if col == 0 {
+                        None
+                    } else {
+                        let mut seen = 0usize;
+                        let mut found_idx = None;
+                        for i in (0..col).rev() {
+                            if chars.get(i).copied() == Some(*target) {
+                                seen += 1;
+                                if seen == *count {
+                                    found_idx = Some(i);
+                                    break;
+                                }
+                            }
+                        }
+                        found_idx
+                    }
+                };
+
+                let Some(found_idx) = found else {
+                    *old_text = String::new();
+                    *old_range = Range::at((line_idx, col));
+                    return;
+                };
+
+                let (start_line, start_col, end_line, end_col) = if *forward {
+                    let end_excl = if *till { found_idx } else { found_idx + 1 };
+                    (line_idx, col, line_idx, end_excl)
+                } else {
+                    // Backward: delete from found_idx to current cursor inclusive (or exclusive for till).
+                    let end_excl = if *till { col } else { col + 1 };
+                    (line_idx, found_idx, line_idx, end_excl)
+                };
+
+                let actual_deleted = buffer.delete_range(start_line, start_col, end_line, end_col);
+                *old_text = actual_deleted;
+                *old_range = Range::new((start_line, start_col), (end_line, end_col));
+
+                buffer.cursor_mut().set_position(start_line, start_col);
             }
             Self::Composite {
                 changes,
@@ -1055,6 +1181,7 @@ impl Change {
                 result
             }
             Self::DeleteText { .. } => String::new(),
+            Self::DeleteCharMotion { .. } => String::new(),
             Self::NumberOperation { .. } => String::new(),
             Self::JoinLines { .. } => String::new(),
             Self::ChangeTextObject { replacement, .. } => replacement.clone(),
@@ -1070,6 +1197,7 @@ impl Change {
         match self {
             Self::InsertText { cursor_before, .. } => *cursor_before,
             Self::DeleteText { cursor_before, .. } => *cursor_before,
+            Self::DeleteCharMotion { cursor_before, .. } => *cursor_before,
             Self::Composite { cursor_before, .. } => *cursor_before,
             Self::NumberOperation { cursor_before, .. } => *cursor_before,
             Self::JoinLines { cursor_before, .. } => *cursor_before,
@@ -1086,6 +1214,7 @@ impl Change {
         match self {
             Self::InsertText { cursor_before, .. } => *cursor_before = pos,
             Self::DeleteText { cursor_before, .. } => *cursor_before = pos,
+            Self::DeleteCharMotion { cursor_before, .. } => *cursor_before = pos,
             Self::Composite { cursor_before, .. } => *cursor_before = pos,
             Self::NumberOperation { cursor_before, .. } => *cursor_before = pos,
             Self::JoinLines { cursor_before, .. } => *cursor_before = pos,
@@ -1102,6 +1231,7 @@ impl Change {
         match self {
             Self::InsertText { .. } => { /* InsertText has no cursor_after field */ }
             Self::DeleteText { .. } => { /* DeleteText has no cursor_after field */ }
+            Self::DeleteCharMotion { .. } => { /* DeleteCharMotion has no cursor_after field */ }
             Self::Composite { cursor_after, .. } => *cursor_after = pos,
             Self::NumberOperation { cursor_after, .. } => *cursor_after = pos,
             Self::JoinLines { cursor_after, .. } => *cursor_after = pos,

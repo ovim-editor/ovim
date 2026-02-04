@@ -117,6 +117,25 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let line_idx = cursor.line();
     let position = (line_idx, cursor.col());
 
+    // Special case: when the buffer does not end with a newline and the cursor
+    // is at EOF, a single '\n' would only add a trailing newline (still 1 Vim
+    // line). Vim's <CR> at EOF creates a *new empty line*, which corresponds to
+    // inserting two '\n' characters (end current line, then terminate the new
+    // empty line). We insert the second '\n' but keep the cursor on the newly
+    // created line.
+    let at_eof = {
+        let rope = editor.buffer().rope();
+        let line_start = rope.line_to_char(line_idx);
+        line_start + cursor.col() == rope.len_chars()
+    };
+    let ends_with_newline = editor
+        .buffer()
+        .rope()
+        .chars()
+        .last()
+        .is_some_and(|c| c == '\n');
+    let needs_double_newline = at_eof && !ends_with_newline;
+
     // Get indentation from current line
     let line_text = editor.buffer().line(line_idx).unwrap_or_default();
     let indent: String = line_text
@@ -129,6 +148,20 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let change = Change::insert(position, text_to_insert, cursor_before);
     change.apply(editor.buffer_mut());
     editor.add_change(change);
+
+    if needs_double_newline {
+        let cursor_after_first = (
+            editor.buffer().cursor().line(),
+            editor.buffer().cursor().col(),
+        );
+        let change = Change::insert(cursor_after_first, "\n".to_string(), cursor_before);
+        change.apply(editor.buffer_mut());
+        editor.add_change(change);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(cursor_after_first.0, cursor_after_first.1);
+    }
 
     Ok(())
 }

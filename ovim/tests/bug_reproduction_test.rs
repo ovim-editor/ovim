@@ -10,6 +10,53 @@ use ovim::editor::Editor;
 use ovim::mode::Mode;
 
 // ============================================================================
+// Bug: Complex edit + cf( + undo
+// ============================================================================
+
+#[test]
+fn test_undo_after_change_find_does_not_corrupt_buffer() {
+    let mut test = EditorTest::empty();
+
+    // iHello good world<CR><CR><Esc>
+    test.keys("i")
+        .type_text("Hello good world")
+        .press_enter()
+        .press_enter()
+        .press_esc();
+
+    // kk w d w
+    test.keys("kkwdw");
+    assert_eq!(test.buffer_content(), "Hello world\n\n\n");
+
+    // G i println!("Hello world"); <Esc>
+    test.keys("G").keys("i");
+    test.type_text("println!(\"Hello world\");");
+    test.press_esc();
+    assert_eq!(
+        test.buffer_content(),
+        "Hello world\n\nprintln!(\"Hello world\");\n"
+    );
+
+    // 0 c f ( <Esc>
+    test.keys("0cf(").press_esc();
+    assert_eq!(
+        test.buffer_content(),
+        "Hello world\n\n\"Hello world\");\n"
+    );
+    test.assert_mode(Mode::Normal);
+    test.assert_cursor(2, 0);
+
+    // u
+    test.keys("u");
+    assert_eq!(
+        test.buffer_content(),
+        "Hello world\n\nprintln!(\"Hello world\");\n"
+    );
+    test.assert_mode(Mode::Normal);
+    test.assert_cursor(2, 0);
+}
+
+// ============================================================================
 // Bug 1: Welcome screen showing when opening file from CLI
 // ============================================================================
 //
