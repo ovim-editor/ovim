@@ -9,7 +9,7 @@ pub fn fallback_completion_trigger_characters(language_id: &str) -> &'static [ch
         "rust" => &['.', ':'],
 
         // JVM languages
-        "java" | "kotlin" => &['.'],
+        "java" | "kotlin" | "scala" | "groovy" => &['.'],
 
         // JS/TS
         "javascript" | "typescript" => &['.', '\'', '"', '/', '@', '<'],
@@ -30,4 +30,3 @@ pub fn fallback_completion_trigger_characters(language_id: &str) -> &'static [ch
         _ => &['.'],
     }
 }
-
