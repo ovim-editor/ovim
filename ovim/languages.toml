@@ -169,6 +169,77 @@ root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.grad
 install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
 
 # ============================================================================
+# Kotlin
+# ============================================================================
+
+[[language]]
+id = "kotlin"
+name = "Kotlin"
+extensions = ["kt", "kts"]
+filenames = ["build.gradle.kts", "settings.gradle.kts"]
+
+[language.syntax]
+# Kotlin highlighting is currently best-effort; we reuse the Java grammar until
+# we add a dedicated Kotlin grammar crate.
+grammar = "tree-sitter-java"
+official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "hyperion-lsp"
+fallback_commands = [
+    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
+    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
+]
+root_markers = ["settings.gradle.kts", "settings.gradle", "pom.xml", "build.gradle.kts", "build.gradle"]
+install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+
+# ============================================================================
+# Groovy / Gradle (Groovy DSL)
+# ============================================================================
+
+[[language]]
+id = "groovy"
+name = "Groovy"
+extensions = ["groovy", "gradle"]
+filenames = ["build.gradle", "settings.gradle"]
+
+[language.syntax]
+grammar = "tree-sitter-groovy"
+file = { path = "src/syntax/queries/groovy.scm" }
+
+[language.lsp]
+command = "hyperion-lsp"
+fallback_commands = [
+    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
+    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
+]
+root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
+install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+
+# ============================================================================
+# Scala / SBT
+# ============================================================================
+
+[[language]]
+id = "scala"
+name = "Scala"
+extensions = ["scala", "sc", "sbt"]
+filenames = ["build.sbt"]
+
+[language.syntax]
+grammar = "tree-sitter-scala"
+official = { crate = "tree_sitter_scala", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "hyperion-lsp"
+fallback_commands = [
+    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
+    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
+]
+root_markers = ["build.sbt", "settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
+install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
+
+# ============================================================================
 # Markdown (Syntax only - no LSP needed for most use cases)
 # ============================================================================
 

@@ -9,6 +9,9 @@ pub enum Language {
     Tsx,
     Python,
     Java,
+    Kotlin,
+    Scala,
+    Groovy,
     Go,
     C,
     Cpp,
@@ -22,6 +25,8 @@ pub enum Language {
     Toml,
     Markdown,
     Zig,
+    /// Tree-sitter query files (used for highlight queries, etc.)
+    TreeSitterQuery,
 }
 
 /// Registry for language detection and grammar access
@@ -70,6 +75,15 @@ impl LanguageRegistry {
             // Java
             "java" => Some(Language::Java),
 
+            // Kotlin
+            "kt" | "kts" => Some(Language::Kotlin),
+
+            // Scala
+            "scala" | "sc" | "sbt" => Some(Language::Scala),
+
+            // Groovy (including Gradle build scripts)
+            "groovy" | "gradle" => Some(Language::Groovy),
+
             // Go
             "go" => Some(Language::Go),
 
@@ -105,6 +119,9 @@ impl LanguageRegistry {
 
             // Zig
             "zig" | "zon" => Some(Language::Zig),
+
+            // Tree-sitter query files
+            "scm" => Some(Language::TreeSitterQuery),
 
             _ => None,
         }
@@ -145,6 +162,13 @@ impl LanguageRegistry {
 
             // Go special files
             "go.mod" | "go.sum" => Some(Language::Go),
+
+            // Gradle build scripts
+            "build.gradle" | "settings.gradle" => Some(Language::Groovy),
+            "build.gradle.kts" | "settings.gradle.kts" => Some(Language::Kotlin),
+
+            // SBT build files (Scala)
+            "build.sbt" => Some(Language::Scala),
 
             // JSON special files
             ".eslintrc" | ".prettierrc" | ".babelrc" | "package.json" | "tsconfig.json"
@@ -193,6 +217,10 @@ impl LanguageRegistry {
             Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
+            // Kotlin: use Java grammar as a fallback until we add a dedicated Kotlin grammar.
+            Language::Kotlin => tree_sitter_java::LANGUAGE.into(),
+            Language::Scala => tree_sitter_scala::LANGUAGE.into(),
+            Language::Groovy => tree_sitter_groovy::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
             Language::C => tree_sitter_c::LANGUAGE.into(),
             Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
@@ -210,6 +238,9 @@ impl LanguageRegistry {
             Language::Toml => tree_sitter_json::LANGUAGE.into(),
             Language::Markdown => tree_sitter_md::LANGUAGE.into(),
             Language::Zig => tree_sitter_zig::LANGUAGE.into(),
+            // Tree-sitter query: use Bash grammar fallback for now (still gives *some* structure).
+            // TODO: add a dedicated tree-sitter-query grammar crate.
+            Language::TreeSitterQuery => tree_sitter_bash::LANGUAGE.into(),
         }
     }
 
@@ -227,6 +258,10 @@ impl LanguageRegistry {
             Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
             Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY,
             Language::Java => tree_sitter_java::HIGHLIGHTS_QUERY,
+            // Kotlin: Java highlights as a fallback.
+            Language::Kotlin => tree_sitter_java::HIGHLIGHTS_QUERY,
+            Language::Scala => tree_sitter_scala::HIGHLIGHTS_QUERY,
+            Language::Groovy => include_str!("queries/groovy.scm"),
             Language::Go => tree_sitter_go::HIGHLIGHTS_QUERY,
             Language::C => tree_sitter_c::HIGHLIGHT_QUERY,
             Language::Cpp => tree_sitter_cpp::HIGHLIGHT_QUERY,
@@ -242,32 +277,38 @@ impl LanguageRegistry {
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
             Language::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY,
+            // Tree-sitter query: basic fallback highlights.
+            Language::TreeSitterQuery => include_str!("queries/tree_sitter_query.scm"),
         }
     }
 
     /// Get LSP language identifier from file path
     /// Returns None if language is not supported by LSP
     pub fn get_lsp_language_id(file_path: &str) -> Option<&'static str> {
-        Self::detect_from_path(file_path).map(|lang| match lang {
-            Language::Rust => "rust",
-            Language::JavaScript => "javascript",
-            Language::TypeScript => "typescript",
-            Language::Tsx => "typescriptreact",
-            Language::Python => "python",
-            Language::Java => "java",
-            Language::Go => "go",
-            Language::C => "c",
-            Language::Cpp => "cpp",
-            Language::Ruby => "ruby",
-            Language::Bash => "bash",
-            Language::Dockerfile => "dockerfile",
-            Language::Json => "json",
-            Language::Yaml => "yaml",
-            Language::Html => "html",
-            Language::Css => "css",
-            Language::Toml => "toml",
-            Language::Markdown => "markdown",
-            Language::Zig => "zig",
+        Self::detect_from_path(file_path).and_then(|lang| match lang {
+            Language::Rust => Some("rust"),
+            Language::JavaScript => Some("javascript"),
+            Language::TypeScript => Some("typescript"),
+            Language::Tsx => Some("typescriptreact"),
+            Language::Python => Some("python"),
+            Language::Java => Some("java"),
+            Language::Kotlin => Some("kotlin"),
+            Language::Scala => Some("scala"),
+            Language::Groovy => Some("groovy"),
+            Language::Go => Some("go"),
+            Language::C => Some("c"),
+            Language::Cpp => Some("cpp"),
+            Language::Ruby => Some("ruby"),
+            Language::Bash => Some("bash"),
+            Language::Dockerfile => Some("dockerfile"),
+            Language::Json => Some("json"),
+            Language::Yaml => Some("yaml"),
+            Language::Html => Some("html"),
+            Language::Css => Some("css"),
+            Language::Toml => Some("toml"),
+            Language::Markdown => Some("markdown"),
+            Language::Zig => Some("zig"),
+            Language::TreeSitterQuery => None,
         })
     }
 
@@ -297,6 +338,15 @@ impl LanguageRegistry {
 
             // Java
             "java" => Some(Language::Java),
+
+            // Kotlin
+            "kotlin" | "kt" | "kts" => Some(Language::Kotlin),
+
+            // Scala
+            "scala" | "sc" | "sbt" => Some(Language::Scala),
+
+            // Groovy / Gradle
+            "groovy" | "gradle" => Some(Language::Groovy),
 
             // Go
             "go" | "golang" => Some(Language::Go),
@@ -336,6 +386,9 @@ impl LanguageRegistry {
 
             // Zig
             "zig" => Some(Language::Zig),
+
+            // Tree-sitter query language
+            "query" | "tree-sitter-query" | "treesitter" => Some(Language::TreeSitterQuery),
 
             _ => None,
         }
