@@ -8,10 +8,129 @@ use serde_json::Value;
 use crate::cli::{Command, LspCommand, SessionCommand};
 use crate::client::OvimClient;
 use crate::session::SessionInfo;
+use std::ffi::OsString;
 
 /// Resolve a session by name (no auto-discovery)
 fn resolve_session(session_name: &str) -> Result<SessionInfo> {
     SessionInfo::read(session_name).context(format!("Failed to find session '{}'", session_name))
+}
+
+fn resolve_default_session_name(session_name: Option<&str>) -> String {
+    session_name
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("OVIM_SESSION").ok())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    old: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &std::path::Path) -> Self {
+        let old = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, old }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(old) = self.old.take() {
+            std::env::set_var(self.key, old);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn with_temp_headless_session<F>(file_arg: &str, wait_lsp: bool, timeout_ms: u64, f: F) -> Result<()>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime};
+
+    let temp_dir = tempfile::tempdir().context("Failed to create temp session dir")?;
+    let _env_guard = EnvVarGuard::set("OVIM_SESSION_DIR", temp_dir.path());
+
+    let unique = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis();
+    let session_name = format!("oneshot-{}-{}", std::process::id(), unique);
+
+    let exe = std::env::current_exe().context("Failed to locate ovim executable")?;
+    let mut child = Command::new(exe)
+        .arg(file_arg)
+        .arg("--headless")
+        .arg("--session")
+        .arg(&session_name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Failed to start headless ovim session")?;
+
+    // Wait for the session file to appear.
+    let start = Instant::now();
+    let session = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            anyhow::bail!("Headless session exited early: {}", status);
+        }
+
+        match SessionInfo::read(&session_name) {
+            Ok(info) => break info,
+            Err(_) => {
+                if start.elapsed() > Duration::from_secs(5) {
+                    anyhow::bail!("Timed out waiting for headless session to start");
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+
+    let client = OvimClient::new(&session);
+    if wait_lsp {
+        wait_for_lsp_ready(&client, timeout_ms)?;
+    }
+
+    let result = f(&session_name);
+
+    // Best-effort cleanup.
+    #[cfg(unix)]
+    {
+        let _ = client.kill_session(&session);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    result
+}
+
+fn wait_for_lsp_ready(client: &OvimClient, timeout_ms: u64) -> Result<()> {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+
+    loop {
+        if let Ok(lsp_status) = client.get_lsp_status() {
+            let all_ready = !lsp_status.servers.is_empty()
+                && lsp_status.servers.iter().all(|s| s.has_capabilities);
+            if all_ready {
+                return Ok(());
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            anyhow::bail!("Timeout waiting for LSP to be ready");
+        }
+
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Expand \n escape sequences in a string (consistent with send_keys)
@@ -94,16 +213,90 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
 /// Execute LSP subcommands
 fn execute_lsp_command(command: LspCommand) -> Result<()> {
     match command {
-        LspCommand::Status { session, file } => cmd_lsp_status(session.as_deref(), file.as_deref()),
-        LspCommand::Hover { session } => cmd_hover(&session),
-        LspCommand::Definition { session } => cmd_goto_definition(&session),
-        LspCommand::References { session } => cmd_find_references(&session),
-        LspCommand::Diagnostics { session } => cmd_diagnostics(&session),
-        LspCommand::Symbols { session } => cmd_symbols(&session),
-        LspCommand::Outline { session } => cmd_outline(&session),
-        LspCommand::Symbol { query, session } => cmd_symbol(&query, &session),
-        LspCommand::Trace { session } => cmd_trace(&session),
-        LspCommand::Wait { session, timeout } => cmd_wait_lsp(&session, timeout),
+        LspCommand::Status { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_lsp_status)
+            } else {
+                cmd_lsp_status(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Hover { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_hover)
+            } else {
+                cmd_hover(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Definition { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_goto_definition)
+            } else {
+                cmd_goto_definition(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::References { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_find_references)
+            } else {
+                cmd_find_references(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Diagnostics { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_diagnostics)
+            } else {
+                cmd_diagnostics(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Symbols { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_symbols)
+            } else {
+                cmd_symbols(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Outline { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_outline)
+            } else {
+                cmd_outline(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Symbol { query, session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, |s| cmd_symbol(&query, s))
+            } else {
+                cmd_symbol(&query, &resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Trace { session, file } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, true, 30_000, cmd_trace)
+            } else {
+                cmd_trace(&resolve_default_session_name(session_name))
+            }
+        }
+        LspCommand::Wait {
+            session,
+            timeout,
+            file,
+        } => {
+            let session_name = session.as_deref();
+            if let Some(file) = file.as_deref() {
+                with_temp_headless_session(file, false, timeout, |s| cmd_wait_lsp(s, timeout))
+            } else {
+                cmd_wait_lsp(&resolve_default_session_name(session_name), timeout)
+            }
+        }
         LspCommand::Check { file, verbose } => cmd_check_lsp(&file, verbose),
         LspCommand::Languages { verbose } => cmd_list_languages(verbose),
     }
@@ -652,20 +845,9 @@ fn cmd_next_match(session_name: &str) -> Result<()> {
 
 // ─── LSP Commands ────────────────────────────────────────────────────────────
 
-/// Get LSP status from a session. If FILE is provided without --session, falls back
-/// to `ovim lsp check FILE` (no session needed).
-fn cmd_lsp_status(session_name: Option<&str>, file: Option<&str>) -> Result<()> {
-    if let Some(target) = file {
-        let file_arg = FileArg::parse(target);
-        return cmd_check_lsp(&file_arg.path, false);
-    }
-
-    let session_name = session_name
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("OVIM_SESSION").ok())
-        .unwrap_or_else(|| "default".to_string());
-
-    let session = resolve_session(&session_name)?;
+/// Get LSP status from a session
+fn cmd_lsp_status(session_name: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
 
     let client = OvimClient::new(&session);
     let lsp_status = client
