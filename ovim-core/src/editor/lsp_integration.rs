@@ -560,6 +560,21 @@ impl Editor {
         }
     }
 
+    pub fn lsp_document_sync_exists(&self) -> bool {
+        let Some(file_path) = self.buffer().file_path() else {
+            return false;
+        };
+        self.lsp_state.document_sync.contains_key(file_path)
+    }
+
+    pub fn lsp_document_is_modified(&self) -> Option<bool> {
+        let file_path = self.buffer().file_path()?;
+        self.lsp_state
+            .document_sync
+            .get(file_path)
+            .map(|s| s.is_modified())
+    }
+
     /// Mark buffer as saved (for LSP didSave tracking)
     pub fn mark_buffer_saved(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
