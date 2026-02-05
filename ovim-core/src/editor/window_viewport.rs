@@ -30,8 +30,17 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
+        // Get current cursor position to copy to new window
+        let cursor = self.buffer().cursor().clone();
+        let scroll_offset = self.scroll_offset();
+
         if let Some(wm) = &mut self.window_manager {
-            wm.split_focused(SplitDirection::Horizontal, 0);
+            wm.split_focused_with_cursor(
+                SplitDirection::Horizontal,
+                self.current_buffer_index,
+                cursor,
+                scroll_offset,
+            );
         }
     }
 
@@ -42,51 +51,97 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
+        // Get current cursor position to copy to new window
+        let cursor = self.buffer().cursor().clone();
+        let scroll_offset = self.scroll_offset();
+
         if let Some(wm) = &mut self.window_manager {
-            wm.split_focused(SplitDirection::Vertical, 0);
+            wm.split_focused_with_cursor(
+                SplitDirection::Vertical,
+                self.current_buffer_index,
+                cursor,
+                scroll_offset,
+            );
         }
+    }
+
+    /// Saves the buffer's cursor to the currently focused window
+    fn save_cursor_to_focused_window(&mut self) {
+        let cursor = self.buffer().cursor().clone();
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.cursor_mut().set_position(cursor.line(), cursor.col());
+            }
+        }
+    }
+
+    /// Restores the focused window's cursor to the buffer
+    fn restore_cursor_from_focused_window(&mut self) {
+        let (line, col) = if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                let cursor = window.cursor();
+                (cursor.line(), cursor.col())
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+        self.buffer_mut().cursor_mut().set_position(line, col);
     }
 
     /// Moves focus to the next window
     pub fn focus_next_window(&mut self) {
+        self.save_cursor_to_focused_window();
         if let Some(wm) = &mut self.window_manager {
             wm.focus_next();
         }
+        self.restore_cursor_from_focused_window();
     }
 
     /// Moves focus to the previous window
     pub fn focus_prev_window(&mut self) {
+        self.save_cursor_to_focused_window();
         if let Some(wm) = &mut self.window_manager {
             wm.focus_prev();
         }
+        self.restore_cursor_from_focused_window();
     }
 
     /// Moves focus to the window to the left
     pub fn focus_window_left(&mut self) {
+        self.save_cursor_to_focused_window();
         if let Some(wm) = &mut self.window_manager {
             wm.focus_left();
         }
+        self.restore_cursor_from_focused_window();
     }
 
     /// Moves focus to the window to the right
     pub fn focus_window_right(&mut self) {
+        self.save_cursor_to_focused_window();
         if let Some(wm) = &mut self.window_manager {
             wm.focus_right();
         }
+        self.restore_cursor_from_focused_window();
     }
 
     /// Moves focus to the window above
     pub fn focus_window_up(&mut self) {
+        self.save_cursor_to_focused_window();
         if let Some(wm) = &mut self.window_manager {
             wm.focus_up();
         }
+        self.restore_cursor_from_focused_window();
     }
 
     /// Moves focus to the window below
     pub fn focus_window_down(&mut self) {
+        self.save_cursor_to_focused_window();
         if let Some(wm) = &mut self.window_manager {
             wm.focus_down();
         }
+        self.restore_cursor_from_focused_window();
     }
 
     /// Gets the current number of windows

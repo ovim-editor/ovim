@@ -17,7 +17,20 @@ use super::styles::{
     get_git_sign_style, get_line_number_style, remap_highlights,
 };
 use crate::syntax::HighlightGroup;
+use ovim_core::buffer::Cursor;
 use std::ops::Range;
+
+/// Window-specific rendering context for multi-window support.
+/// When provided, these values override the editor's focused window state.
+#[derive(Default)]
+pub struct WindowRenderContext {
+    /// Override cursor position (for non-focused windows)
+    pub cursor: Option<Cursor>,
+    /// Override scroll offset (for non-focused windows)
+    pub scroll_offset: Option<usize>,
+    /// Override horizontal scroll offset (for non-focused windows)
+    pub horizontal_offset: Option<usize>,
+}
 
 /// Converts an expanded char index to a display column.
 fn expanded_char_to_display_col(text: &str, char_idx: usize) -> usize {
@@ -709,21 +722,33 @@ pub fn render_buffer(
     layout: &BufferLayout,
     line_cache: &mut super::line_cache::LineRenderCache,
     render_diagnostic_virtual_text_inline: bool,
+    window_context: Option<&WindowRenderContext>,
 ) -> usize {
     let area = layout.buffer_area;
     let buffer = editor.buffer();
     let rope = buffer.rope();
-    let cursor = buffer.cursor();
+
+    // Use window-specific cursor if provided (for non-focused windows)
+    let cursor = window_context
+        .and_then(|ctx| ctx.cursor.as_ref())
+        .unwrap_or_else(|| buffer.cursor());
+
     // Use Vim-compatible line count: trailing newline's phantom empty line
     // should not be rendered. The cursor is always bounded to real lines.
     let line_count = buffer.line_count();
 
     // Calculate visible range using scroll offset (not centering)
+    // Use window-specific scroll offset if provided
     let visible_lines = area.height as usize;
-    let start_line = editor.scroll_offset();
+    let start_line = window_context
+        .and_then(|ctx| ctx.scroll_offset)
+        .unwrap_or_else(|| editor.scroll_offset());
 
     // Get horizontal viewport settings
-    let h_offset = editor.horizontal_offset();
+    // Use window-specific horizontal offset if provided
+    let h_offset = window_context
+        .and_then(|ctx| ctx.horizontal_offset)
+        .unwrap_or_else(|| editor.horizontal_offset());
     let wrap = editor.options.wrap;
 
     // Use layout-provided dimensions
