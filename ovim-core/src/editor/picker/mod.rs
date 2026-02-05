@@ -33,6 +33,8 @@ pub struct Picker {
     pub(super) selected_index: usize,
     /// Base directory for file search
     pub(super) base_dir: PathBuf,
+    /// Preferred directory for ranking (typically the current file's folder)
+    pub(super) preferred_dir: PathBuf,
     /// Whether filtering is pending (for debouncing)
     pub(super) pending_filter: bool,
     /// Typed backend owning mode-specific state
@@ -46,6 +48,7 @@ impl Picker {
             g.start_search(
                 &self.query,
                 &self.base_dir,
+                &self.preferred_dir,
                 &mut self.all_results,
                 &mut self.filtered_results,
                 &mut self.selected_index,
@@ -96,7 +99,12 @@ impl Picker {
     /// Pre-fetches visible item indices in a single nucleo snapshot.
     pub fn prefetch_visible_range(&mut self, start: usize, count: usize) {
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
-            s.cached_visible_indices = s.nucleo.get_items_in_range(start as u32, count as u32);
+            if s.nucleo.is_empty_pattern() {
+                s.ensure_empty_pattern_order(&self.all_results, &self.preferred_dir);
+                s.cached_visible_indices = s.get_empty_pattern_items_in_range(start, count);
+            } else {
+                s.cached_visible_indices = s.nucleo.get_items_in_range(start as u32, count as u32);
+            }
             s.cached_visible_start = start;
         }
     }
@@ -104,6 +112,10 @@ impl Picker {
     /// Returns a reference to the nth filtered result (rank-ordered for nucleo).
     pub fn filtered_result(&self, idx: usize) -> Option<&PickerResult> {
         if let PickerBackend::Nucleo(ref s) = self.backend {
+            if s.nucleo.is_empty_pattern() {
+                let all_idx = s.get_empty_pattern_item_at_rank(idx)?;
+                return self.all_results.get(all_idx as usize);
+            }
             if idx >= s.cached_visible_start {
                 let cache_idx = idx - s.cached_visible_start;
                 if cache_idx < s.cached_visible_indices.len() {
@@ -141,6 +153,9 @@ impl Picker {
         self.query = query;
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
             s.nucleo.update_query(&self.query);
+            if s.nucleo.is_empty_pattern() {
+                s.rebuild_empty_pattern_order(&self.all_results, &self.preferred_dir);
+            }
         } else {
             self.apply_filter_internal();
         }
@@ -338,6 +353,11 @@ impl Picker {
         &self.base_dir
     }
 
+    /// Gets the preferred directory for ranking (typically the current file's folder)
+    pub fn preferred_dir(&self) -> &Path {
+        &self.preferred_dir
+    }
+
     /// Returns true if this picker mode supports the file filter field
     pub fn has_file_filter(&self) -> bool {
         matches!(self.backend, PickerBackend::Grep(_))
@@ -387,11 +407,14 @@ impl Picker {
     /// Adds a file result (for incremental loading)
     pub fn add_file_result(&mut self, result: PickerResult) {
         let idx = self.all_results.len() as u32;
-        let display = result.display.clone();
+        let match_text = self.nucleo_match_text_for(&result);
         self.all_results.push(result.clone());
 
-        if let PickerBackend::Nucleo(ref s) = self.backend {
-            s.nucleo.inject(idx, &display);
+        if let PickerBackend::Nucleo(ref mut s) = self.backend {
+            s.nucleo.inject(idx, &match_text);
+            if s.nucleo.is_empty_pattern() {
+                s.push_empty_pattern_item(idx, &result, &self.preferred_dir);
+            }
         } else if self.query.is_empty() {
             self.filtered_results.push(result);
         } else if fuzzy::fuzzy_score(&self.query, &result.display).is_some() {
@@ -435,6 +458,30 @@ impl Picker {
     /// Truncates a path in the middle if it's too long
     pub fn truncate_path(path: &str, max_len: usize) -> String {
         filter::truncate_path(path, max_len)
+    }
+
+    fn nucleo_match_text_for(&self, result: &PickerResult) -> String {
+        let preferred_dir = self.preferred_dir.as_path();
+        let base_dir = self.base_dir.as_path();
+        if preferred_dir == base_dir {
+            return result.display.clone();
+        }
+
+        let abs = std::path::Path::new(&result.location);
+        if let Ok(preferred_rel) = abs.strip_prefix(preferred_dir) {
+            // Prepend a preferred-dir-relative path to boost local results, but keep
+            // the base-relative display path searchable as well.
+            let preferred_rel = preferred_rel.to_string_lossy();
+            if preferred_rel.is_empty() {
+                result.display.clone()
+            } else {
+                format!("{} {}", preferred_rel, result.display)
+            }
+        } else if let Ok(base_rel) = abs.strip_prefix(base_dir) {
+            base_rel.to_string_lossy().to_string()
+        } else {
+            result.display.clone()
+        }
     }
 }
 

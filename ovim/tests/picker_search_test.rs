@@ -28,7 +28,7 @@ fn tick_picker(picker: &mut Picker) {
 }
 
 fn file_picker(files: &[&str]) -> Picker {
-    let mut picker = Picker::new_file_finder(PathBuf::from("/project"));
+    let mut picker = Picker::new_file_finder(PathBuf::from("/project"), PathBuf::from("/project"));
     for f in files {
         picker.add_file_result(file_result(f));
     }
@@ -326,7 +326,7 @@ fn pending_filter_applied_on_demand() {
 
 #[test]
 fn add_file_result_during_loading() {
-    let mut picker = Picker::new_file_finder(PathBuf::from("/project"));
+    let mut picker = Picker::new_file_finder(PathBuf::from("/project"), PathBuf::from("/project"));
 
     assert!(picker.is_loading());
     assert!(picker.should_spawn_file_loading());
@@ -345,7 +345,7 @@ fn add_file_result_during_loading() {
 
 #[test]
 fn add_file_result_with_active_query_filters_incrementally() {
-    let mut picker = Picker::new_file_finder(PathBuf::from("/project"));
+    let mut picker = Picker::new_file_finder(PathBuf::from("/project"), PathBuf::from("/project"));
     picker.set_query("main".to_string());
 
     picker.add_file_result(file_result("src/main.rs"));
@@ -381,7 +381,7 @@ fn shorter_filename_ranks_higher() {
 
 #[test]
 fn live_grep_empty_query_returns_nothing() {
-    let mut picker = Picker::new_live_grep(PathBuf::from("/tmp"));
+    let mut picker = Picker::new_live_grep(PathBuf::from("/tmp"), PathBuf::from("/tmp"));
 
     picker.set_query("".to_string());
     assert!(picker.filtered_results().is_empty());
@@ -403,7 +403,7 @@ fn live_grep_searches_real_files() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut picker = Picker::new_live_grep(dir_path.clone());
+        let mut picker = Picker::new_live_grep(dir_path.clone(), dir_path.clone());
         picker.set_query("needle".to_string());
 
         // Drain streaming results
@@ -459,7 +459,7 @@ fn live_grep_multiple_matches() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut picker = Picker::new_live_grep(dir_path);
+        let mut picker = Picker::new_live_grep(dir_path.clone(), dir_path);
         picker.set_query("foo".to_string());
 
         loop {
@@ -485,7 +485,8 @@ fn live_grep_no_match() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut picker = Picker::new_live_grep(dir.path().to_path_buf());
+        let mut picker =
+            Picker::new_live_grep(dir.path().to_path_buf(), dir.path().to_path_buf());
         picker.set_query("zzzznotfound".to_string());
 
         loop {

@@ -57,7 +57,7 @@ fn test_matches_file_filter_path_token() {
 
 #[test]
 fn test_toggle_field() {
-    let mut picker = Picker::new_live_grep(PathBuf::from("."));
+    let mut picker = Picker::new_live_grep(PathBuf::from("."), PathBuf::from("."));
     assert_eq!(picker.active_field(), PickerField::Query);
 
     picker.toggle_field();
@@ -69,7 +69,7 @@ fn test_toggle_field() {
 
 #[test]
 fn test_toggle_field_no_op_for_find_files() {
-    let mut picker = Picker::new_file_finder(PathBuf::from("."));
+    let mut picker = Picker::new_file_finder(PathBuf::from("."), PathBuf::from("."));
     assert_eq!(picker.active_field(), PickerField::Query);
 
     picker.toggle_field();
@@ -87,8 +87,8 @@ fn test_toggle_field_no_op_for_custom() {
 
 #[test]
 fn test_has_file_filter() {
-    assert!(!Picker::new_file_finder(PathBuf::from(".")).has_file_filter());
-    assert!(Picker::new_live_grep(PathBuf::from(".")).has_file_filter());
+    assert!(!Picker::new_file_finder(PathBuf::from("."), PathBuf::from(".")).has_file_filter());
+    assert!(Picker::new_live_grep(PathBuf::from("."), PathBuf::from(".")).has_file_filter());
     assert!(!Picker::new_custom(PathBuf::from("."), vec![]).has_file_filter());
     assert!(!Picker::new_completion(PathBuf::from("."), vec![]).has_file_filter());
     assert!(!Picker::new_lsp_locations(PathBuf::from("."), vec![]).has_file_filter());
@@ -96,7 +96,7 @@ fn test_has_file_filter() {
 
 #[test]
 fn test_active_field_mut_delegates_to_query() {
-    let mut picker = Picker::new_file_finder(PathBuf::from("."));
+    let mut picker = Picker::new_file_finder(PathBuf::from("."), PathBuf::from("."));
     picker.insert_char('a');
     picker.insert_char('b');
     assert_eq!(picker.query(), "ab");
@@ -105,7 +105,7 @@ fn test_active_field_mut_delegates_to_query() {
 
 #[test]
 fn test_active_field_mut_delegates_to_filter() {
-    let mut picker = Picker::new_live_grep(PathBuf::from("."));
+    let mut picker = Picker::new_live_grep(PathBuf::from("."), PathBuf::from("."));
     picker.toggle_field();
 
     picker.insert_char('*');
@@ -118,7 +118,7 @@ fn test_active_field_mut_delegates_to_filter() {
 
 #[test]
 fn test_backspace_in_filter_field() {
-    let mut picker = Picker::new_live_grep(PathBuf::from("."));
+    let mut picker = Picker::new_live_grep(PathBuf::from("."), PathBuf::from("."));
     picker.toggle_field();
     picker.insert_char('a');
     picker.insert_char('b');
@@ -129,7 +129,7 @@ fn test_backspace_in_filter_field() {
 
 #[test]
 fn test_insert_text_into_query() {
-    let mut picker = Picker::new_file_finder(PathBuf::from("."));
+    let mut picker = Picker::new_file_finder(PathBuf::from("."), PathBuf::from("."));
     picker.insert_text("hello");
     assert_eq!(picker.query(), "hello");
     assert_eq!(picker.query_cursor(), 5);
@@ -141,7 +141,7 @@ fn test_insert_text_into_query() {
 
 #[test]
 fn test_insert_text_at_cursor_midpoint() {
-    let mut picker = Picker::new_file_finder(PathBuf::from("."));
+    let mut picker = Picker::new_file_finder(PathBuf::from("."), PathBuf::from("."));
     picker.insert_text("ac");
     picker.move_cursor_left();
     picker.insert_text("b");
@@ -151,7 +151,7 @@ fn test_insert_text_at_cursor_midpoint() {
 
 #[test]
 fn test_insert_text_into_file_filter() {
-    let mut picker = Picker::new_live_grep(PathBuf::from("."));
+    let mut picker = Picker::new_live_grep(PathBuf::from("."), PathBuf::from("."));
     picker.toggle_field();
     picker.insert_text("*.rs");
     assert_eq!(picker.file_filter(), "*.rs");
@@ -161,7 +161,7 @@ fn test_insert_text_into_file_filter() {
 
 #[test]
 fn test_cursor_movement_in_filter_field() {
-    let mut picker = Picker::new_live_grep(PathBuf::from("."));
+    let mut picker = Picker::new_live_grep(PathBuf::from("."), PathBuf::from("."));
     picker.toggle_field();
     picker.insert_char('a');
     picker.insert_char('b');

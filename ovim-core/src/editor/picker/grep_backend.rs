@@ -32,6 +32,7 @@ impl GrepState {
         &mut self,
         query: &str,
         base_dir: &Path,
+        preferred_dir: &Path,
         all_results: &mut Vec<PickerResult>,
         filtered_results: &mut Vec<PickerResult>,
         selected_index: &mut usize,
@@ -52,7 +53,12 @@ impl GrepState {
         self.grep_cancel = Some(cancel.clone());
 
         let rx =
-            super::super::grep::spawn_grep_search(query.to_string(), base_dir.to_path_buf(), cancel);
+            super::super::grep::spawn_grep_search(
+                query.to_string(),
+                base_dir.to_path_buf(),
+                preferred_dir.to_path_buf(),
+                cancel,
+            );
         self.grep_rx = Some(rx);
         self.grep_stale = true;
     }

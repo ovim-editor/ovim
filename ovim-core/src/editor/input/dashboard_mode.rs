@@ -82,24 +82,24 @@ fn execute_dashboard_action(editor: &mut Editor, index: usize) -> Result<()> {
         }
         1 => {
             // Find File
-            let base_dir = editor.picker_base_dir();
-            let picker = Picker::new_file_finder(base_dir);
+            let (base_dir, preferred_dir) = editor.picker_dirs();
+            let picker = Picker::new_file_finder(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
             editor.mark_picker_selection_changed();
         }
         2 => {
             // Recent Files - for now, use file finder (TODO: add recent files picker)
-            let base_dir = editor.picker_base_dir();
-            let picker = Picker::new_file_finder(base_dir);
+            let (base_dir, preferred_dir) = editor.picker_dirs();
+            let picker = Picker::new_file_finder(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
             editor.mark_picker_selection_changed();
         }
         3 => {
             // Find Word (grep)
-            let base_dir = editor.picker_base_dir();
-            let picker = Picker::new_live_grep(base_dir);
+            let (base_dir, preferred_dir) = editor.picker_dirs();
+            let picker = Picker::new_live_grep(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
         }

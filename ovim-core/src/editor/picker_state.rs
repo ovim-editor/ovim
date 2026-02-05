@@ -26,9 +26,9 @@ pub struct PickerState {
     pub loading_preview: Option<String>,
     /// Last successfully shown preview path (to show while new one loads)
     pub last_shown_preview: Option<String>,
-    /// Cached file list for picker: (root_path, files, timestamp)
+    /// Cached file list for picker: (base_dir, preferred_dir, files, timestamp)
     /// Speeds up repeated picker opens by reusing file discovery results
-    pub file_list_cache: Option<(PathBuf, Vec<PickerResult>, Instant)>,
+    pub file_list_cache: Option<(PathBuf, PathBuf, Vec<PickerResult>, Instant)>,
     /// Cached picker layout rects from last render (for mouse hit-testing)
     pub last_layout: Option<PickerLayout>,
     /// Whether the last render was during rapid scrolling (to detect transition → not-rapid)

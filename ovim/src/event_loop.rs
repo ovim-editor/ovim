@@ -1208,11 +1208,13 @@ fn spawn_file_finder_loading(
             return;
         }
 
-        // Get the base directory for file search
+        // Get the base directory for file search (git root when available)
         let base_dir = picker.base_dir().to_path_buf();
+        // Preferred directory for local-first ordering (typically current file's folder)
+        let preferred_dir = picker.preferred_dir().to_path_buf();
 
         // Check for cached file list (5-minute TTL)
-        if let Some(cached_files) = editor.get_cached_file_list(&base_dir) {
+        if let Some(cached_files) = editor.get_cached_file_list(&base_dir, &preferred_dir) {
             // Use cache! Send all files via channel immediately
             let cached_files: Vec<editor::PickerResult> = cached_files.to_vec();
             let tx = file_tx.clone();
@@ -1240,6 +1242,7 @@ fn spawn_file_finder_loading(
 
         let tx = file_tx.clone();
         let base_dir_clone = base_dir.clone();
+        let preferred_dir_clone = preferred_dir.clone();
 
         // Spawn background task - doesn't block!
         // Also collects results for cache update
@@ -1248,41 +1251,64 @@ fn spawn_file_finder_loading(
 
             let mut collected_files = Vec::new();
 
-            // Use ignore crate's WalkBuilder which respects .gitignore
-            let walker = WalkBuilder::new(&base_dir_clone)
-                .hidden(false) // Don't automatically skip hidden files (keep .env, .eslintrc, etc.)
-                .git_ignore(true) // Respect .gitignore files
-                .git_global(true) // Respect global gitignore
-                .git_exclude(true) // Respect .git/info/exclude
-                .filter_entry(|entry| {
-                    // Skip .git directory (not in .gitignore but shouldn't be shown)
-                    entry.file_name() != ".git"
-                })
-                .build();
+            let mut roots: Vec<(std::path::PathBuf, bool)> = Vec::new();
+            if preferred_dir_clone != base_dir_clone && preferred_dir_clone.starts_with(&base_dir_clone)
+            {
+                roots.push((preferred_dir_clone.clone(), true));
+            }
+            roots.push((base_dir_clone.clone(), false));
 
-            // Walk the directory tree and send files as we find them
-            for entry in walker.filter_map(|e| e.ok()) {
-                let path = entry.path();
+            // Walk preferred subtree first, then base (excluding preferred) for local-first ordering.
+            for (root, is_preferred_root) in roots {
+                let base_dir_for_strip = base_dir_clone.clone();
+                let preferred_for_filter = preferred_dir_clone.clone();
 
-                if path.is_file() {
-                    if let Ok(relative_path) = path.strip_prefix(&base_dir_clone) {
-                        let display_path = relative_path.to_string_lossy().to_string();
-                        let result = editor::PickerResult {
-                            display: display_path,
-                            location: path.to_string_lossy().to_string(),
-                            line: 0,
-                            col: 0,
-                            match_positions: Vec::new(),
-                            content: None,
-                        };
+                // Use ignore crate's WalkBuilder which respects .gitignore
+                let walker = WalkBuilder::new(&root)
+                    .hidden(false) // Don't automatically skip hidden files (keep .env, .eslintrc, etc.)
+                    .git_ignore(true) // Respect .gitignore files
+                    .git_global(true) // Respect global gitignore
+                    .git_exclude(true) // Respect .git/info/exclude
+                    .filter_entry(move |entry| {
+                        // Skip .git directory (not in .gitignore but shouldn't be shown)
+                        if entry.file_name() == ".git" {
+                            return false;
+                        }
+                        // For the base-dir pass, skip the preferred subtree entirely to avoid duplicates.
+                        if !is_preferred_root
+                            && preferred_for_filter != base_dir_for_strip
+                            && entry.path().starts_with(&preferred_for_filter)
+                        {
+                            return false;
+                        }
+                        true
+                    })
+                    .build();
 
-                        // Collect for cache
-                        collected_files.push(result.clone());
+                // Walk the directory tree and send files as we find them
+                for entry in walker.filter_map(|e| e.ok()) {
+                    let path = entry.path();
 
-                        // Send result back (non-blocking)
-                        // If channel is closed (picker was closed), task will exit
-                        if tx.send(result).await.is_err() {
-                            break;
+                    if path.is_file() {
+                        if let Ok(relative_path) = path.strip_prefix(&base_dir_clone) {
+                            let display_path = relative_path.to_string_lossy().to_string();
+                            let result = editor::PickerResult {
+                                display: display_path,
+                                location: path.to_string_lossy().to_string(),
+                                line: 0,
+                                col: 0,
+                                match_positions: Vec::new(),
+                                content: None,
+                            };
+
+                            // Collect for cache
+                            collected_files.push(result.clone());
+
+                            // Send result back (non-blocking)
+                            // If channel is closed (picker was closed), task will exit
+                            if tx.send(result).await.is_err() {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1293,7 +1319,7 @@ fn spawn_file_finder_loading(
             FILE_LIST_CACHE_RESULTS
                 .lock()
                 .await
-                .replace((base_dir_clone, collected_files));
+                .replace((base_dir_clone, preferred_dir_clone, collected_files));
         });
     }
 }
@@ -1301,15 +1327,15 @@ fn spawn_file_finder_loading(
 /// Temporary storage for file list results from background task
 /// The main event loop will pick these up and update the Editor cache
 static FILE_LIST_CACHE_RESULTS: tokio::sync::Mutex<
-    Option<(std::path::PathBuf, Vec<editor::PickerResult>)>,
+    Option<(std::path::PathBuf, std::path::PathBuf, Vec<editor::PickerResult>)>,
 > = tokio::sync::Mutex::const_new(None);
 
 /// Picks up cached file list results from the background task and updates Editor cache
 pub fn update_file_list_cache_from_background(editor: &mut Editor) {
     // Non-blocking try_lock to avoid any contention with background task
     if let Ok(mut guard) = FILE_LIST_CACHE_RESULTS.try_lock() {
-        if let Some((root, files)) = guard.take() {
-            editor.update_file_list_cache(root, files);
+        if let Some((base_dir, preferred_dir, files)) = guard.take() {
+            editor.update_file_list_cache(base_dir, preferred_dir, files);
         }
     }
 }

@@ -26,6 +26,7 @@ const MAX_RESULTS: usize = 5000;
 pub fn spawn_grep_search(
     query: String,
     base_dir: PathBuf,
+    preferred_dir: PathBuf,
     cancel: Arc<AtomicBool>,
 ) -> mpsc::Receiver<PickerResult> {
     let (tx, rx) = mpsc::channel(512);
@@ -54,86 +55,161 @@ pub fn spawn_grep_search(
             Err(_) => return,
         };
 
-        let walker = WalkBuilder::new(&base_dir)
-            .hidden(true) // skip hidden files
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true)
-            .build();
+        let mut roots: Vec<(PathBuf, bool)> = Vec::new();
+        if preferred_dir != base_dir && preferred_dir.starts_with(&base_dir) {
+            roots.push((preferred_dir.clone(), true));
+        }
+        roots.push((base_dir.clone(), false));
 
         let mut result_count = 0usize;
 
-        for entry in walker {
-            if cancel.load(Ordering::Relaxed) {
-                break;
+        for (root, is_preferred_root) in roots {
+            let preferred_for_filter = preferred_dir.clone();
+            let base_for_filter = base_dir.clone();
+            let walker = WalkBuilder::new(&root)
+                .hidden(true) // skip hidden files
+                .git_ignore(true)
+                .git_global(true)
+                .git_exclude(true)
+                .filter_entry(move |entry| {
+                    // For the base-dir pass, skip the preferred subtree entirely to avoid duplicates.
+                    if !is_preferred_root && preferred_for_filter != base_for_filter {
+                        if entry.path().starts_with(&preferred_for_filter) {
+                            return false;
+                        }
+                    }
+                    true
+                })
+                .build();
+
+            for entry in walker {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                // Skip directories
+                if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+                    continue;
+                }
+
+                let file_path = entry.path().to_path_buf();
+
+                let mut searcher = Searcher::new();
+                searcher.set_binary_detection(grep_searcher::BinaryDetection::quit(0));
+
+                let tx_ref = &tx;
+                let cancel_ref = &cancel;
+                let base_dir_ref = &base_dir;
+                let result_count_ref = &mut result_count;
+
+                let _ = searcher.search_path(
+                    &matcher,
+                    &file_path,
+                    UTF8(|line_num, line_content| {
+                        if cancel_ref.load(Ordering::Relaxed) {
+                            return Ok(false); // stop searching this file
+                        }
+
+                        if *result_count_ref >= MAX_RESULTS {
+                            return Ok(false);
+                        }
+
+                        let rel_path = file_path
+                            .strip_prefix(base_dir_ref)
+                            .unwrap_or(&file_path)
+                            .to_string_lossy();
+                        let abs_path = file_path.to_string_lossy();
+
+                        let content = line_content.trim_end().to_string();
+                        let line = line_num as usize;
+
+                        let result = PickerResult {
+                            display: format!("{}:{}", rel_path, line),
+                            location: abs_path.to_string(),
+                            line: line.saturating_sub(1), // 0-indexed
+                            col: 0,
+                            match_positions: Vec::new(),
+                            content: Some(content),
+                        };
+
+                        *result_count_ref += 1;
+
+                        // If the receiver is dropped, stop searching
+                        if tx_ref.blocking_send(result).is_err() {
+                            return Ok(false);
+                        }
+
+                        Ok(true)
+                    }),
+                );
+
+                if result_count >= MAX_RESULTS {
+                    break;
+                }
             }
 
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            // Skip directories
-            if entry.file_type().map_or(true, |ft| !ft.is_file()) {
-                continue;
-            }
-
-            let file_path = entry.path().to_path_buf();
-
-            let mut searcher = Searcher::new();
-            searcher.set_binary_detection(grep_searcher::BinaryDetection::quit(0));
-
-            let tx_ref = &tx;
-            let cancel_ref = &cancel;
-            let base_dir_ref = &base_dir;
-            let result_count_ref = &mut result_count;
-
-            let _ = searcher.search_path(
-                &matcher,
-                &file_path,
-                UTF8(|line_num, line_content| {
-                    if cancel_ref.load(Ordering::Relaxed) {
-                        return Ok(false); // stop searching this file
-                    }
-
-                    if *result_count_ref >= MAX_RESULTS {
-                        return Ok(false);
-                    }
-
-                    let rel_path = file_path
-                        .strip_prefix(base_dir_ref)
-                        .unwrap_or(&file_path)
-                        .to_string_lossy();
-                    let abs_path = file_path.to_string_lossy();
-
-                    let content = line_content.trim_end().to_string();
-                    let line = line_num as usize;
-
-                    let result = PickerResult {
-                        display: format!("{}:{}", rel_path, line),
-                        location: abs_path.to_string(),
-                        line: line.saturating_sub(1), // 0-indexed
-                        col: 0,
-                        match_positions: Vec::new(),
-                        content: Some(content),
-                    };
-
-                    *result_count_ref += 1;
-
-                    // If the receiver is dropped, stop searching
-                    if tx_ref.blocking_send(result).is_err() {
-                        return Ok(false);
-                    }
-
-                    Ok(true)
-                }),
-            );
-
-            if result_count >= MAX_RESULTS {
+            if cancel.load(Ordering::Relaxed) || result_count >= MAX_RESULTS {
                 break;
             }
         }
     });
 
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_grep_prefers_preferred_dir_results_first() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let preferred = root.join("preferred");
+        let other = root.join("other");
+        fs::create_dir_all(&preferred).unwrap();
+        fs::create_dir_all(&other).unwrap();
+
+        fs::write(preferred.join("a.txt"), "needle\n").unwrap();
+        fs::write(preferred.join("b.txt"), "needle\n").unwrap();
+        fs::write(other.join("c.txt"), "needle\n").unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut rx = spawn_grep_search(
+            "needle".to_string(),
+            root.to_path_buf(),
+            preferred.clone(),
+            cancel,
+        );
+
+        let mut displays = Vec::new();
+        while let Some(r) = rx.recv().await {
+            displays.push(r.display);
+        }
+
+        assert!(!displays.is_empty());
+
+        // All preferred-dir matches should appear before any non-preferred-dir match.
+        let mut seen_non_preferred = false;
+        for d in displays {
+            let rel_path = d.split(':').next().unwrap_or("");
+            let is_preferred = rel_path.starts_with("preferred/");
+            if !is_preferred {
+                seen_non_preferred = true;
+            }
+            if seen_non_preferred {
+                assert!(
+                    !is_preferred,
+                    "saw preferred-dir match after non-preferred: {rel_path}"
+                );
+            }
+        }
+    }
 }

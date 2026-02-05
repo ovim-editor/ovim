@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 impl Picker {
     /// Creates a new file finder picker
-    pub fn new_file_finder(base_dir: PathBuf) -> Self {
+    pub fn new_file_finder(base_dir: PathBuf, preferred_dir: PathBuf) -> Self {
         Self {
             query: String::new(),
             query_cursor: 0,
@@ -19,13 +19,14 @@ impl Picker {
             filtered_results: Vec::new(),
             selected_index: 0,
             base_dir,
+            preferred_dir,
             pending_filter: false,
             backend: PickerBackend::Nucleo(NucleoState::new()),
         }
     }
 
     /// Creates a new live grep picker
-    pub fn new_live_grep(base_dir: PathBuf) -> Self {
+    pub fn new_live_grep(base_dir: PathBuf, preferred_dir: PathBuf) -> Self {
         Self {
             query: String::new(),
             query_cursor: 0,
@@ -36,6 +37,7 @@ impl Picker {
             filtered_results: Vec::new(),
             selected_index: 0,
             base_dir,
+            preferred_dir,
             pending_filter: false,
             backend: PickerBackend::Grep(GrepState::new()),
         }
@@ -43,6 +45,7 @@ impl Picker {
 
     pub(super) fn new_fuzzy_list(
         base_dir: PathBuf,
+        preferred_dir: PathBuf,
         results: Vec<PickerResult>,
         kind: FuzzyListKind,
     ) -> Self {
@@ -56,6 +59,7 @@ impl Picker {
             filtered_results: results,
             selected_index: 0,
             base_dir,
+            preferred_dir,
             pending_filter: false,
             backend: PickerBackend::FuzzyList(kind),
         }
@@ -78,8 +82,10 @@ impl Picker {
 
     /// Creates a new picker with custom items
     pub fn new_custom(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let preferred_dir = base_dir.clone();
         Self::new_fuzzy_list(
             base_dir,
+            preferred_dir,
             Self::items_to_results(items),
             FuzzyListKind::Custom,
         )
@@ -87,8 +93,10 @@ impl Picker {
 
     /// Creates a new completion picker with custom items
     pub fn new_completion(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let preferred_dir = base_dir.clone();
         Self::new_fuzzy_list(
             base_dir,
+            preferred_dir,
             Self::items_to_results(items),
             FuzzyListKind::Completion,
         )
@@ -96,8 +104,10 @@ impl Picker {
 
     /// Creates a new LSP locations picker
     pub fn new_lsp_locations(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let preferred_dir = base_dir.clone();
         Self::new_fuzzy_list(
             base_dir,
+            preferred_dir,
             Self::items_to_results(items),
             FuzzyListKind::LspLocations,
         )
@@ -105,7 +115,8 @@ impl Picker {
 
     /// Creates a new LSP locations picker with pre-built PickerResult items
     pub fn new_with_results(base_dir: PathBuf, results: Vec<PickerResult>) -> Self {
-        Self::new_fuzzy_list(base_dir, results, FuzzyListKind::LspLocations)
+        let preferred_dir = base_dir.clone();
+        Self::new_fuzzy_list(base_dir, preferred_dir, results, FuzzyListKind::LspLocations)
     }
 
     /// Sets the prompt for the picker
