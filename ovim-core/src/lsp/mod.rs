@@ -45,6 +45,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
+#[derive(Clone, Debug, Default)]
+struct StoredDiagnostics {
+    version: Option<i32>,
+    diagnostics: Vec<Diagnostic>,
+}
+
 /// Maximum document size in bytes (10MB)
 /// Protects against OOM when opening/syncing large files
 const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
@@ -132,7 +138,7 @@ pub struct LspManager {
 
     /// Diagnostics per file URI, per server_id
     /// Outer key: URI, inner key: server_id, value: diagnostics from that server
-    diagnostics: Mutex<HashMap<Uri, HashMap<String, Vec<Diagnostic>>>>,
+    diagnostics: Mutex<HashMap<Uri, HashMap<String, StoredDiagnostics>>>,
 
     /// Document versions for change tracking
     document_versions: Mutex<HashMap<Uri, i32>>,
@@ -364,12 +370,12 @@ impl LspManager {
     }
 
     /// Merges diagnostics from all servers for a URI, deduplicating by range+message
-    fn merge_diagnostics(server_map: &HashMap<String, Vec<Diagnostic>>) -> Vec<Diagnostic> {
+    fn merge_diagnostics(server_map: &HashMap<String, StoredDiagnostics>) -> Vec<Diagnostic> {
         use std::collections::HashSet;
         let mut seen = HashSet::new();
         let mut merged = Vec::new();
-        for diags in server_map.values() {
-            for diag in diags {
+        for stored in server_map.values() {
+            for diag in &stored.diagnostics {
                 // Deduplicate by (range, message) — different servers may report the same issue
                 let key = (
                     diag.range.start.line,
@@ -447,20 +453,64 @@ impl LspManager {
 
     /// Sets diagnostics for a file from a specific server
     /// (called when receiving publishDiagnostics)
-    pub async fn set_diagnostics(&self, uri: Uri, server_id: &str, diagnostics: Vec<Diagnostic>) {
+    pub async fn set_diagnostics(
+        &self,
+        uri: Uri,
+        server_id: &str,
+        diagnostics: Vec<Diagnostic>,
+        version: Option<i32>,
+    ) {
         crate::lsp_debug!(
             "DIAGNOSTICS",
-            "set_diagnostics: uri={} server={} count={}",
+            "set_diagnostics: uri={} server={} count={} version={:?}",
             uri.as_str(),
             server_id,
-            diagnostics.len()
+            diagnostics.len(),
+            version
         );
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
+
+        // If the server included a diagnostics version, ignore stale (out-of-order) publishes.
+        if let Some(diag_version) = version {
+            let current_doc_version = self.get_document_version(&uri).await;
+            if current_doc_version != 0 && diag_version < current_doc_version {
+                crate::lsp_debug!(
+                    "DIAGNOSTICS",
+                    "Ignoring stale diagnostics: uri={} server={} diag_version={} current_version={}",
+                    uri.as_str(),
+                    server_id,
+                    diag_version,
+                    current_doc_version
+                );
+                return;
+            }
+        }
+
         let mut diags = self.diagnostics.lock().await;
-        diags
-            .entry(uri)
-            .or_default()
-            .insert(server_id.to_string(), diagnostics);
+        let entry = diags.entry(uri).or_default();
+
+        if let Some(diag_version) = version {
+            if let Some(existing) = entry.get(server_id).and_then(|s| s.version) {
+                if diag_version < existing {
+                    crate::lsp_debug!(
+                        "DIAGNOSTICS",
+                        "Ignoring out-of-order diagnostics: server={} diag_version={} existing_version={}",
+                        server_id,
+                        diag_version,
+                        existing
+                    );
+                    return;
+                }
+            }
+        }
+
+        entry.insert(
+            server_id.to_string(),
+            StoredDiagnostics {
+                version,
+                diagnostics,
+            },
+        );
         self.diagnostics_changed.store(true, Ordering::SeqCst);
     }
 
@@ -531,7 +581,9 @@ mod tests {
 
         // Set diagnostics
         let diags = vec![]; // Empty for now
-        manager.set_diagnostics(uri.clone(), "rust", diags).await;
+        manager
+            .set_diagnostics(uri.clone(), "rust", diags, Some(1))
+            .await;
 
         // Verify stored
         assert_eq!(manager.get_diagnostics(&uri).await.len(), 0);
@@ -553,5 +605,35 @@ mod tests {
         assert_eq!(v2, 2);
 
         assert_eq!(manager.get_document_version(&uri).await, 2);
+    }
+
+    #[tokio::test]
+    async fn test_diagnostics_version_filtering() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
+
+        // Pretend we've already synced to version 3.
+        manager.increment_document_version(&uri).await; // 1
+        manager.increment_document_version(&uri).await; // 2
+        manager.increment_document_version(&uri).await; // 3
+        assert_eq!(manager.get_document_version(&uri).await, 3);
+
+        // Older diagnostics should be ignored.
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(2))
+            .await;
+        assert!(manager.get_diagnostics(&uri).await.is_empty());
+
+        // Current-version diagnostics should be accepted.
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(3))
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+
+        // Out-of-order older publish should not override newer stored one.
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![], Some(2))
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
     }
 }

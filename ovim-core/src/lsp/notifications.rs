@@ -816,6 +816,7 @@ impl LspManager {
                                     diag_params.uri,
                                     server_id,
                                     diag_params.diagnostics,
+                                    diag_params.version,
                                 )
                                 .await;
                             }
