@@ -125,6 +125,9 @@ impl Editor {
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
             self.switch_to_buffer(tab.current_buffer_index());
         }
+
+        // Ensure the UI re-renders after tab closure to prevent stale text.
+        self.mark_dirty();
     }
 
     /// Switches to the next tab

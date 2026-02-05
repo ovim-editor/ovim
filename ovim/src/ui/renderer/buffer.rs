@@ -772,6 +772,7 @@ pub fn render_buffer(
     let has_wrap = wrap && wrap_map.is_some();
     let mut visual_rows_used = 0;
     let buffer_version = buffer.version();
+    let buffer_id = editor.current_buffer_index();
 
     // Reset per-frame cache stats
     line_cache.reset_stats();
@@ -806,7 +807,7 @@ pub fn render_buffer(
                 && !has_bracket && !has_search && line_diagnostics_early.is_empty();
 
             if is_stable {
-                if let Some(cached_line) = line_cache.get(line_idx, buffer_version, h_offset, text_width, wrap, tab_width) {
+                if let Some(cached_line) = line_cache.get(buffer_id, line_idx, buffer_version, h_offset, text_width, wrap, tab_width) {
                     let cached_line = cached_line.clone();
                     // Use cached line — skip all expensive computation
                     if has_wrap {
@@ -1047,7 +1048,7 @@ pub fn render_buffer(
                 }
 
                 // Store in cache (stable lines will be served from cache next frame)
-                line_cache.put(line_idx, buffer_version, h_offset, text_width, wrap, tab_width, line.clone(), is_stable);
+                line_cache.put(buffer_id, line_idx, buffer_version, h_offset, text_width, wrap, tab_width, line.clone(), is_stable);
 
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
@@ -1108,7 +1109,7 @@ pub fn render_buffer(
             } else {
                 // Simple rendering path (no highlighting) — always stable
                 let simple_line = Line::from(line_text.to_string());
-                line_cache.put(line_idx, buffer_version, h_offset, text_width, wrap, tab_width, simple_line, true);
+                line_cache.put(buffer_id, line_idx, buffer_version, h_offset, text_width, wrap, tab_width, simple_line, true);
 
                 if has_wrap {
                     let chars: Vec<char> = line_text.chars().collect();

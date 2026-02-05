@@ -11,6 +11,8 @@ use std::collections::HashMap;
 /// Key identifying a cached rendered line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LineCacheKey {
+    /// Buffer identity (current buffer index)
+    buffer_id: usize,
     /// Logical line index in the buffer
     line_idx: usize,
     /// Buffer version when this line was rendered
@@ -100,6 +102,7 @@ impl LineRenderCache {
     /// - The cached entry had transient highlighting
     pub fn get(
         &mut self,
+        buffer_id: usize,
         line_idx: usize,
         buffer_version: usize,
         h_offset: usize,
@@ -116,6 +119,7 @@ impl LineRenderCache {
         }
 
         let key = LineCacheKey {
+            buffer_id,
             line_idx,
             buffer_version,
             h_offset,
@@ -140,6 +144,7 @@ impl LineRenderCache {
     /// (cursor line, visual selection, search highlights, yank flash).
     pub fn put(
         &mut self,
+        buffer_id: usize,
         line_idx: usize,
         buffer_version: usize,
         h_offset: usize,
@@ -158,6 +163,7 @@ impl LineRenderCache {
         }
 
         let key = LineCacheKey {
+            buffer_id,
             line_idx,
             buffer_version,
             h_offset,
@@ -191,9 +197,9 @@ mod tests {
     fn cache_hit() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1; // sync version
-        cache.put(0, 1, 0, 80, false, 4, make_line("hello"), true);
+        cache.put(1, 0, 1, 0, 80, false, 4, make_line("hello"), true);
 
-        let result = cache.get(0, 1, 0, 80, false, 4);
+        let result = cache.get(1, 0, 1, 0, 80, false, 4);
         assert!(result.is_some());
         assert_eq!(cache.hits, 1);
         assert_eq!(cache.misses, 0);
@@ -203,10 +209,10 @@ mod tests {
     fn cache_miss_version_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(0, 1, 0, 80, false, 4, make_line("hello"), true);
+        cache.put(1, 0, 1, 0, 80, false, 4, make_line("hello"), true);
 
         // Buffer version changed
-        let result = cache.get(0, 2, 0, 80, false, 4);
+        let result = cache.get(1, 0, 2, 0, 80, false, 4);
         assert!(result.is_none());
         assert_eq!(cache.misses, 1);
     }
@@ -215,10 +221,10 @@ mod tests {
     fn cache_miss_viewport_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(0, 1, 0, 80, false, 4, make_line("hello"), true);
+        cache.put(1, 0, 1, 0, 80, false, 4, make_line("hello"), true);
 
         // h_offset changed
-        let result = cache.get(0, 1, 5, 80, false, 4);
+        let result = cache.get(1, 0, 1, 5, 80, false, 4);
         assert!(result.is_none());
     }
 
@@ -227,9 +233,9 @@ mod tests {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
         // Store with is_stable=false (e.g., cursor line)
-        cache.put(0, 1, 0, 80, false, 4, make_line("cursor"), false);
+        cache.put(1, 0, 1, 0, 80, false, 4, make_line("cursor"), false);
 
-        let result = cache.get(0, 1, 0, 80, false, 4);
+        let result = cache.get(1, 0, 1, 0, 80, false, 4);
         assert!(result.is_none()); // Should not hit
     }
 

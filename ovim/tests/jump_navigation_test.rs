@@ -17,9 +17,9 @@ fn test_ctrl_o_jump_back() {
     test.assert_cursor(0, 0);
 }
 
-/// Test Ctrl-I (jump forward)
+/// Test Tab (jump forward)
 #[test]
-fn test_ctrl_i_jump_forward() {
+fn test_tab_jump_forward() {
     let mut test = EditorTest::new("line1\nline2\nline3\n");
 
     // Make a jump
@@ -30,7 +30,7 @@ fn test_ctrl_i_jump_forward() {
     test.assert_cursor(0, 0);
 
     // Jump forward again
-    test.keys("<C-i>");
+    test.keys("<Tab>");
 
     // Should be back at the end
     assert!(test.cursor().0 > 0);

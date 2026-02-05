@@ -23,6 +23,11 @@ impl Editor {
         self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToImplementation);
     }
 
+    /// Request go-to-implementation at current cursor position, opening in a new tab
+    pub fn request_goto_implementation_new_tab(&mut self) {
+        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToImplementationNewTab);
+    }
+
     /// Request go-to-type-definition at current cursor position
     pub fn request_goto_type(&mut self) {
         self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToType);
@@ -148,8 +153,8 @@ impl Editor {
         self.goto_definition_common(true).await
     }
 
-    /// Implementation of goto-implementation
-    pub(in crate::editor) async fn goto_implementation_impl(&mut self) -> Result<bool> {
+    /// Implementation of goto-implementation (optionally in a new tab)
+    async fn goto_implementation_common(&mut self, new_tab: bool) -> Result<bool> {
         let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
@@ -214,20 +219,31 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response = Some(
-            crate::editor::lsp_state::PendingLspResponse::Implementation(
-                crate::editor::lsp_state::PendingLspRequest {
-                    task,
-                    receiver: rx,
-                    started: std::time::Instant::now(),
-                },
-            ),
-        );
+        let pending = crate::editor::lsp_state::PendingLspRequest {
+            task,
+            receiver: rx,
+            started: std::time::Instant::now(),
+        };
+        self.lsp_state.pending_lsp_response = Some(if new_tab {
+            crate::editor::lsp_state::PendingLspResponse::ImplementationNewTab(pending)
+        } else {
+            crate::editor::lsp_state::PendingLspResponse::Implementation(pending)
+        });
 
         // Show loading status
         self.set_lsp_status("Jumping to implementation...".to_string());
 
         Ok(false) // Return immediately - result will be processed by poll_pending_lsp_responses
+    }
+
+    /// Implementation of goto-implementation (same buffer)
+    pub(in crate::editor) async fn goto_implementation_impl(&mut self) -> Result<bool> {
+        self.goto_implementation_common(false).await
+    }
+
+    /// Implementation of goto-implementation (new tab)
+    pub(in crate::editor) async fn goto_implementation_new_tab_impl(&mut self) -> Result<bool> {
+        self.goto_implementation_common(true).await
     }
 
     /// Implementation of goto-type-definition
