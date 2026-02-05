@@ -123,7 +123,7 @@ impl Editor {
         // Restore buffer index from new current tab (after close adjusts tab index)
         let new_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
-            self.current_buffer_index = tab.current_buffer_index();
+            self.switch_to_buffer(tab.current_buffer_index());
         }
     }
 
@@ -138,10 +138,10 @@ impl Editor {
         // Switch tab
         self.tab_page_manager.next_tab();
 
-        // Restore buffer index from new current tab
+        // Restore buffer index from new current tab (and run file-switch side effects)
         let new_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
-            self.current_buffer_index = tab.current_buffer_index();
+            self.switch_to_buffer(tab.current_buffer_index());
         }
     }
 
@@ -156,10 +156,10 @@ impl Editor {
         // Switch tab
         self.tab_page_manager.previous_tab();
 
-        // Restore buffer index from new current tab
+        // Restore buffer index from new current tab (and run file-switch side effects)
         let new_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
-            self.current_buffer_index = tab.current_buffer_index();
+            self.switch_to_buffer(tab.current_buffer_index());
         }
     }
 
@@ -174,10 +174,10 @@ impl Editor {
         // Switch tab
         self.tab_page_manager.switch_to_tab(index);
 
-        // Restore buffer index from new current tab
+        // Restore buffer index from new current tab (and run file-switch side effects)
         let new_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
-            self.current_buffer_index = tab.current_buffer_index();
+            self.switch_to_buffer(tab.current_buffer_index());
         }
     }
 
@@ -192,10 +192,10 @@ impl Editor {
         // Switch tab
         self.tab_page_manager.first_tab();
 
-        // Restore buffer index from new current tab
+        // Restore buffer index from new current tab (and run file-switch side effects)
         let new_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
-            self.current_buffer_index = tab.current_buffer_index();
+            self.switch_to_buffer(tab.current_buffer_index());
         }
     }
 
@@ -210,10 +210,10 @@ impl Editor {
         // Switch tab
         self.tab_page_manager.last_tab();
 
-        // Restore buffer index from new current tab
+        // Restore buffer index from new current tab (and run file-switch side effects)
         let new_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab(new_tab_idx) {
-            self.current_buffer_index = tab.current_buffer_index();
+            self.switch_to_buffer(tab.current_buffer_index());
         }
     }
 

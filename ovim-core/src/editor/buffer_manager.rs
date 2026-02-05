@@ -85,6 +85,9 @@ impl Editor {
             if let Some(new_path) = self.buffer().file_path() {
                 self.registers.set_current_file(new_path.to_string());
             }
+
+            // Refresh per-file diagnostic caches (counts + current_file_diagnostics)
+            self.request_diagnostics_refresh();
         }
     }
 
@@ -112,6 +115,9 @@ impl Editor {
             if let Some(new_path) = self.buffer().file_path() {
                 self.registers.set_current_file(new_path.to_string());
             }
+
+            // Refresh per-file diagnostic caches after file switch
+            self.request_diagnostics_refresh();
 
             // Mark that we need to send didClose for the old file
             if old_file_path.is_some() {
@@ -148,6 +154,9 @@ impl Editor {
             if let Some(new_path) = self.buffer().file_path() {
                 self.registers.set_current_file(new_path.to_string());
             }
+
+            // Refresh per-file diagnostic caches after file switch
+            self.request_diagnostics_refresh();
 
             // Mark that we need to send didClose for the old file
             if old_file_path.is_some() {
@@ -336,8 +345,8 @@ impl Editor {
 
         // Check if file is already open
         if let Some(index) = self.find_buffer_by_path(path_str) {
-            // Just switch to existing buffer
-            self.current_buffer_index = index;
+            // Switch to existing buffer (and run file-switch side effects)
+            self.switch_to_buffer(index);
             return Ok(());
         }
 

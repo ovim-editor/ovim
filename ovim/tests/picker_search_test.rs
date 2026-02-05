@@ -21,9 +21,30 @@ fn file_result(display: &str) -> PickerResult {
 /// FindFiles mode uses nucleo for async matching — we need to give
 /// the background threads time to process injected items and queries.
 fn tick_picker(picker: &mut Picker) {
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    for _ in 0..20 {
-        picker.tick();
+    // Nucleo runs in background threads; under full test load, a fixed number
+    // of ticks can be flaky. Instead, wait until the top result + match count
+    // stabilizes for a few consecutive polls.
+    let mut stable_polls = 0usize;
+    let mut last_count = None;
+    let mut last_top = None;
+
+    for _ in 0..300 {
+        let changed = picker.tick();
+        let count = picker.filtered_result_count();
+        let top = picker.filtered_result(0).map(|r| r.display.clone());
+
+        if !changed && last_count == Some(count) && last_top == top {
+            stable_polls += 1;
+            if stable_polls >= 5 {
+                break;
+            }
+        } else {
+            stable_polls = 0;
+        }
+
+        last_count = Some(count);
+        last_top = top;
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 
