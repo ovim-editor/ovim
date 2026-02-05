@@ -267,9 +267,16 @@ impl PickerState {
     const FILE_LIST_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
     /// Gets cached file list if available and fresh (less than 5 minutes old)
-    pub fn get_cached_file_list(&self, root: &std::path::Path) -> Option<&[super::PickerResult]> {
-        let (cached_root, files, timestamp) = self.file_list_cache.as_ref()?;
-        if cached_root == root && timestamp.elapsed() < Self::FILE_LIST_CACHE_TTL {
+    pub fn get_cached_file_list(
+        &self,
+        base_dir: &std::path::Path,
+        preferred_dir: &std::path::Path,
+    ) -> Option<&[super::PickerResult]> {
+        let (cached_base, cached_preferred, files, timestamp) = self.file_list_cache.as_ref()?;
+        if cached_base == base_dir
+            && cached_preferred == preferred_dir
+            && timestamp.elapsed() < Self::FILE_LIST_CACHE_TTL
+        {
             Some(files.as_slice())
         } else {
             None
@@ -279,10 +286,11 @@ impl PickerState {
     /// Stores the file list in cache with current timestamp
     pub fn update_file_list_cache(
         &mut self,
-        root: std::path::PathBuf,
+        base_dir: std::path::PathBuf,
+        preferred_dir: std::path::PathBuf,
         files: Vec<super::PickerResult>,
     ) {
-        self.file_list_cache = Some((root, files, std::time::Instant::now()));
+        self.file_list_cache = Some((base_dir, preferred_dir, files, std::time::Instant::now()));
     }
 
     /// Invalidates the file list cache (called on file save/create/delete)
@@ -334,6 +342,35 @@ impl Editor {
 
         // Fallback: current working directory
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    }
+
+    /// Returns `(base_dir, preferred_dir)` for picker operations.
+    ///
+    /// - `base_dir`: the broader search root (git root if available)
+    /// - `preferred_dir`: the current file's parent directory (local-first ranking)
+    pub fn picker_dirs(&self) -> (std::path::PathBuf, std::path::PathBuf) {
+        // Default both to CWD
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+        let Some(file_path) = self.buffer().file_path() else {
+            let base = self.picker_base_dir();
+            return (base.clone(), base);
+        };
+
+        let path = std::path::Path::new(file_path);
+        let abs_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+
+        let preferred = abs_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| cwd.clone());
+
+        let base = self.picker_base_dir();
+        (base, preferred)
     }
 
     /// Sets the picker
@@ -432,17 +469,23 @@ impl Editor {
     }
 
     /// Gets cached file list if available and fresh
-    pub fn get_cached_file_list(&self, root: &std::path::Path) -> Option<&[super::PickerResult]> {
-        self.picker_state.get_cached_file_list(root)
+    pub fn get_cached_file_list(
+        &self,
+        base_dir: &std::path::Path,
+        preferred_dir: &std::path::Path,
+    ) -> Option<&[super::PickerResult]> {
+        self.picker_state.get_cached_file_list(base_dir, preferred_dir)
     }
 
     /// Stores the file list in cache with current timestamp
     pub fn update_file_list_cache(
         &mut self,
-        root: std::path::PathBuf,
+        base_dir: std::path::PathBuf,
+        preferred_dir: std::path::PathBuf,
         files: Vec<super::PickerResult>,
     ) {
-        self.picker_state.update_file_list_cache(root, files);
+        self.picker_state
+            .update_file_list_cache(base_dir, preferred_dir, files);
     }
 
     /// Invalidates the file list cache

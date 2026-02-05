@@ -129,8 +129,8 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         // <Space>s... sequences
         (&['s'], 'f') => {
             // <Space>sf - Find files
-            let base_dir = editor.picker_base_dir();
-            let picker = Picker::new_file_finder(base_dir);
+            let (base_dir, preferred_dir) = editor.picker_dirs();
+            let picker = Picker::new_file_finder(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
             editor.mark_picker_selection_changed();
@@ -138,8 +138,8 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         }
         (&['s'], 'g') => {
             // <Space>sg - Live grep
-            let base_dir = editor.picker_base_dir();
-            let picker = Picker::new_live_grep(base_dir);
+            let (base_dir, preferred_dir) = editor.picker_dirs();
+            let picker = Picker::new_live_grep(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
             editor.reset_input_state();
