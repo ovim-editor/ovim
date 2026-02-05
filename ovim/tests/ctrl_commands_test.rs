@@ -78,16 +78,18 @@ fn test_ctrl_o_jump_back_normal() {
     test.assert_cursor(0, 0);
 }
 
-/// Test Ctrl-I (jump forward, same as Tab)
+/// Test Ctrl-I (go to implementation in new tab; no-op without LSP)
 #[test]
-fn test_ctrl_i_jump_forward() {
+fn test_ctrl_i_goto_implementation_no_lsp() {
     let mut test = EditorTest::new("line1\nline2\nline3\n");
 
     test.keys("G");
     test.keys("<C-o>");
+    test.assert_cursor(0, 0);
     test.keys("<C-i>");
 
-    assert!(test.cursor().0 > 0);
+    // Without LSP, cursor should remain unchanged.
+    test.assert_cursor(0, 0);
 }
 
 /// Test Ctrl-A (increment number)

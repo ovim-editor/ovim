@@ -233,6 +233,10 @@ impl Editor {
                 self.poll_location_response(pending, "Implementation", "LSP-IMPLEMENTATION", false)
             }
 
+            crate::editor::lsp_state::PendingLspResponse::ImplementationNewTab(pending) => {
+                self.poll_location_response(pending, "Implementation", "LSP-IMPLEMENTATION", true)
+            }
+
             crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending) => {
                 self.poll_location_response(pending, "Type", "LSP-TYPE", false)
             }
@@ -398,6 +402,8 @@ impl Editor {
                     crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending)
                 } else if label == "Definition" {
                     crate::editor::lsp_state::PendingLspResponse::Definition(pending)
+                } else if new_tab && label == "Implementation" {
+                    crate::editor::lsp_state::PendingLspResponse::ImplementationNewTab(pending)
                 } else if label == "Implementation" {
                     crate::editor::lsp_state::PendingLspResponse::Implementation(pending)
                 } else {
@@ -838,6 +844,7 @@ impl Editor {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
                 LspAction::GoToDefinitionNewTab => self.goto_definition_new_tab_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
+                LspAction::GoToImplementationNewTab => self.goto_implementation_new_tab_impl().await,
                 LspAction::GoToType => self.goto_type_impl().await,
                 LspAction::ShowHover => {
                     crate::lsp_debug!("LSP-HOVER", "About to call hover_impl()");

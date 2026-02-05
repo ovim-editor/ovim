@@ -123,6 +123,7 @@ pub enum PendingLspResponse {
     Definition(PendingLspRequest<Option<lsp_types::Location>>),
     DefinitionNewTab(PendingLspRequest<Option<lsp_types::Location>>),
     Implementation(PendingLspRequest<Option<lsp_types::Location>>),
+    ImplementationNewTab(PendingLspRequest<Option<lsp_types::Location>>),
     TypeDefinition(PendingLspRequest<Option<lsp_types::Location>>),
 }
 
@@ -156,6 +157,7 @@ pub enum LspAction {
     GoToDefinition,
     GoToDefinitionNewTab,
     GoToImplementation,
+    GoToImplementationNewTab,
     GoToType,
     ShowHover,
     Completion,

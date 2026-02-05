@@ -219,6 +219,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             repeat_find_motion(editor, true);
             Ok(true)
         }
+        KeyCode::Tab => {
+            editor.jump_forward();
+            Ok(true)
+        }
 
         _ => Ok(false),
     }
@@ -273,9 +277,10 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
             Ok(true)
         }
 
-        // Jump commands
+        // Go to implementation in new tab
         KeyCode::Char('i') => {
-            editor.jump_forward();
+            editor.request_goto_implementation_new_tab();
+            editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('o') => {

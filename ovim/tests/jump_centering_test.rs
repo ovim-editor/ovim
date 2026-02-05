@@ -143,11 +143,8 @@ fn test_jump_list_forward_centers_cursor() {
         ovim_core::Modifiers::CONTROL,
     );
 
-    // Now jump forward with Ctrl-I (should go to line 1 and center)
-    test.press_with(
-        ovim_core::KeyCode::Char('i'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    // Now jump forward with Tab (should go to line 1 and center)
+    test.keys("<Tab>");
 
     let viewport = ViewportAssertion::new(&test.editor);
 
@@ -158,7 +155,7 @@ fn test_jump_list_forward_centers_cursor() {
     assert_eq!(
         viewport.scroll_offset(),
         0,
-        "Ctrl-I jump to line 1 should try to center but saturate to 0. Got {}",
+        "Tab jump to line 1 should try to center but saturate to 0. Got {}",
         viewport.scroll_offset()
     );
 }

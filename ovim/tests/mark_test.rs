@@ -369,7 +369,7 @@ line 4
 }
 
 // ============================================================================
-// Jump list with Ctrl-O and Ctrl-I
+// Jump list with Ctrl-O and Tab
 // ============================================================================
 
 #[test]
@@ -396,7 +396,7 @@ line 4
 }
 
 #[test]
-fn test_ctrl_i_jump_forward() {
+fn test_tab_jump_forward() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
     test.keys("G")
@@ -405,10 +405,7 @@ fn test_ctrl_i_jump_forward() {
             ovim_core::KeyCode::Char('o'),
             ovim_core::Modifiers::CONTROL,
         ) // Back
-        .press_with(
-            ovim_core::KeyCode::Char('i'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Forward
+        .keys("<Tab>"); // Forward
 
     assert_eq!(
         test.buffer_content(),
