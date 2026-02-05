@@ -99,6 +99,17 @@ impl Editor {
         state.did_open_sent = true;
     }
 
+    /// Marks a document as opened and synced (didOpen sent with this exact content).
+    pub fn mark_document_opened_with_content(&mut self, file_path: &str, content: String) {
+        let state = self
+            .lsp_state
+            .document_sync
+            .entry(file_path.to_string())
+            .or_default();
+        state.did_open_sent = true;
+        state.mark_change_sent(content);
+    }
+
     /// Request LSP initialization for the current file
     pub fn request_lsp_init(&mut self) {
         self.lsp_state.needs_lsp_init = true;
