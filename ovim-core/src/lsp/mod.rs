@@ -470,22 +470,6 @@ impl LspManager {
         );
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
 
-        // If the server included a diagnostics version, ignore stale (out-of-order) publishes.
-        if let Some(diag_version) = version {
-            let current_doc_version = self.get_document_version(&uri).await;
-            if current_doc_version != 0 && diag_version < current_doc_version {
-                crate::lsp_debug!(
-                    "DIAGNOSTICS",
-                    "Ignoring stale diagnostics: uri={} server={} diag_version={} current_version={}",
-                    uri.as_str(),
-                    server_id,
-                    diag_version,
-                    current_doc_version
-                );
-                return;
-            }
-        }
-
         let mut diags = self.diagnostics.lock().await;
         let entry = diags.entry(uri).or_default();
 
@@ -612,19 +596,13 @@ mod tests {
         let manager = LspManager::new();
         let uri: Uri = "file:///test.rs".parse().unwrap();
 
-        // Pretend we've already synced to version 3.
-        manager.increment_document_version(&uri).await; // 1
-        manager.increment_document_version(&uri).await; // 2
-        manager.increment_document_version(&uri).await; // 3
-        assert_eq!(manager.get_document_version(&uri).await, 3);
-
-        // Older diagnostics should be ignored.
+        // First publish is accepted (even if it may be behind the editor's current buffer).
         manager
             .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(2))
             .await;
-        assert!(manager.get_diagnostics(&uri).await.is_empty());
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
 
-        // Current-version diagnostics should be accepted.
+        // Newer publish is accepted.
         manager
             .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(3))
             .await;
