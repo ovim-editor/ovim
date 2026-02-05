@@ -170,9 +170,11 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                 if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
                     let content = editor.buffer().rope().to_string();
                     if let Some(uri) = uri_from_file_path(&file_path) {
-                        let _ = lsp_manager.did_open(uri, &language_id, 1, content).await;
-                        // Mark as sent to prevent duplicate from ensure_lsp_document_synced
-                        editor.mark_document_opened(&file_path);
+                        let _ = lsp_manager
+                            .did_open_broadcast(uri, &language_id, 1, content.clone())
+                            .await;
+                        // Mark as sent+synced to prevent duplicate from ensure_lsp_document_synced
+                        editor.mark_document_opened_with_content(&file_path, content);
                         ovim_core::lsp_debug!("LSP", "Pre-warmed didOpen for {}", file_path);
                     }
                 }
