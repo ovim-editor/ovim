@@ -510,7 +510,27 @@ impl WindowManager {
     /// Splits the focused window
     pub fn split_focused(&mut self, direction: SplitDirection, buffer_id: usize) {
         let focused_idx = self.focused_window;
-        Self::split_window_by_index_static(&mut self.root, focused_idx, direction, buffer_id, 0);
+        Self::split_window_by_index_static(&mut self.root, focused_idx, direction, buffer_id, 0, None, None);
+    }
+
+    /// Splits the focused window, copying cursor and scroll state to new window
+    pub fn split_focused_with_cursor(
+        &mut self,
+        direction: SplitDirection,
+        buffer_id: usize,
+        cursor: Cursor,
+        scroll_offset: usize,
+    ) {
+        let focused_idx = self.focused_window;
+        Self::split_window_by_index_static(
+            &mut self.root,
+            focused_idx,
+            direction,
+            buffer_id,
+            0,
+            Some(cursor),
+            Some(scroll_offset),
+        );
     }
 
     /// Helper for recursive window splitting
@@ -520,12 +540,25 @@ impl WindowManager {
         direction: SplitDirection,
         buffer_id: usize,
         current_index: usize,
+        cursor: Option<Cursor>,
+        scroll_offset: Option<usize>,
     ) -> (bool, usize) {
         match node {
             WindowNode::Leaf(window) => {
                 if current_index == target_index {
                     // Found the window to split - create new window with same dimensions
-                    let new_window = Window::new(buffer_id, window.width(), window.height());
+                    let mut new_window = Window::new(buffer_id, window.width(), window.height());
+
+                    // Copy cursor and scroll state to both windows
+                    if let Some(ref cursor) = cursor {
+                        window.cursor_mut().set_position(cursor.line(), cursor.col());
+                        new_window.cursor_mut().set_position(cursor.line(), cursor.col());
+                    }
+                    if let Some(scroll) = scroll_offset {
+                        window.set_scroll_offset(scroll);
+                        new_window.set_scroll_offset(scroll);
+                    }
+
                     let old_window = std::mem::replace(window, Window::new(0, 0, 0));
 
                     // Replace this node with a split
@@ -547,6 +580,8 @@ impl WindowManager {
                     direction,
                     buffer_id,
                     current_index,
+                    cursor.clone(),
+                    scroll_offset,
                 );
                 if found {
                     (true, next_index)
@@ -557,6 +592,8 @@ impl WindowManager {
                         direction,
                         buffer_id,
                         next_index,
+                        cursor,
+                        scroll_offset,
                     )
                 }
             }

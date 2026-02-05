@@ -535,9 +535,8 @@ fn test_cursor_preserved_on_window_switch() {
     test.keys("<C-w>h");
 
     // Cursor should still be at line 2 in first window
-    // NOTE: Both windows share the same buffer, so cursor position is shared
-    // This test documents actual behavior, not ideal behavior
-    assert_eq!(test.cursor(), (2, 0));
+    // Each window has its own independent cursor position
+    assert_eq!(test.cursor(), (1, 0));
 }
 
 /// Test scroll position preserved when switching windows
@@ -562,16 +561,15 @@ fn test_scroll_preserved_on_window_switch() {
 
     let second_cursor = test.cursor();
 
-    // NOTE: Windows share the same buffer cursor, so positions are not independent
-    // This test documents actual behavior
+    // Each window has independent cursor position
     assert_eq!(first_cursor.0, 5); // Original position
     assert_eq!(second_cursor.0, 9); // New position
 
     // Navigate back to first window
     test.keys("<C-w>h");
 
-    // The cursor position is shared, so it will be at the last set position
-    assert_eq!(test.cursor(), second_cursor);
+    // Cursor should be restored to first window's position
+    assert_eq!(test.cursor(), first_cursor);
 }
 
 /// Test split, navigate, edit, navigate back - verify changes

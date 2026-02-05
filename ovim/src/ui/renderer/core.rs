@@ -13,7 +13,7 @@ use ratatui::{
 };
 use std::io;
 
-use super::buffer::render_buffer;
+use super::buffer::{render_buffer, WindowRenderContext};
 use super::dashboard::render_dashboard;
 use super::file_tree_widget::render_file_tree;
 use super::helpers::char_col_to_display_col;
@@ -176,13 +176,13 @@ fn render_buffer_area(
             } else {
                 let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
                 let viewport_start =
-                    render_buffer(frame, editor, theme, &fallback_layout, line_cache, true);
+                    render_buffer(frame, editor, theme, &fallback_layout, line_cache, true, None);
                 (viewport_start, fallback_layout)
             }
         } else {
             let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
             let viewport_start =
-                render_buffer(frame, editor, theme, &fallback_layout, line_cache, true);
+                render_buffer(frame, editor, theme, &fallback_layout, line_cache, true, None);
             (viewport_start, fallback_layout)
         }
     } else {
@@ -246,7 +246,7 @@ fn render_buffer_area(
         let render_inline_vtext = !centered;
 
         let viewport_start =
-            render_buffer(frame, editor, theme, &single_layout, line_cache, render_inline_vtext);
+            render_buffer(frame, editor, theme, &single_layout, line_cache, render_inline_vtext, None);
         if centered {
             crate::ui::renderer::buffer::render_diagnostic_virtual_text_overlay(
                 frame,
@@ -485,12 +485,32 @@ fn render_window_tree(
     line_cache: &mut LineRenderCache,
 ) -> Option<(usize, BufferLayout)> {
     match node {
-        WindowNode::Leaf(_window) => {
+        WindowNode::Leaf(window) => {
             let is_focused = *current_index == focused_index;
             *current_index += 1;
 
             let layout = BufferLayout::compute(editor, area);
-            let viewport_start = render_buffer(frame, editor, theme, &layout, line_cache, true);
+
+            // For non-focused windows, use the window's own cursor and scroll state
+            let window_context = if !is_focused {
+                Some(WindowRenderContext {
+                    cursor: Some(*window.cursor()),
+                    scroll_offset: Some(window.scroll_offset()),
+                    horizontal_offset: Some(window.horizontal_offset()),
+                })
+            } else {
+                None
+            };
+
+            let viewport_start = render_buffer(
+                frame,
+                editor,
+                theme,
+                &layout,
+                line_cache,
+                true,
+                window_context.as_ref(),
+            );
 
             if is_focused {
                 Some((viewport_start, layout))
