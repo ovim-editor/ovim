@@ -129,7 +129,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('g', KeyCode::Char(';')) => {
             // g; - jump to last change position
             if let Some(change) = editor.last_change() {
-                let pos = change.cursor_before();
+                let pos = change.edit_position();
                 editor.buffer_mut().cursor_mut().set_position(pos.0, pos.1);
             }
             editor.clear_count();

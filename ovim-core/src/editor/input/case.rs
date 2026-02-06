@@ -3,7 +3,7 @@
 //! Handles case transformations for characters and text ranges.
 
 use crate::buffer::Buffer;
-use crate::editor::{Change, Editor, Range};
+use crate::editor::Editor;
 use anyhow::Result;
 
 /// Type of case change operation
@@ -15,77 +15,69 @@ pub enum CaseChange {
 
 /// Toggle case of character at cursor position (~)
 pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
+    let cursor_before = editor.cursor_position();
+    let line_idx = cursor_before.0;
+    let col = cursor_before.1;
 
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
-        let chars: Vec<char> = line_text.chars().collect();
+    let Some(line) = editor.buffer().line(line_idx) else {
+        return Ok(());
+    };
+    let line_text = line.trim_end_matches('\n');
+    let chars: Vec<char> = line_text.chars().collect();
 
-        if col < chars.len() {
-            let ch = chars[col];
-            let toggled = if ch.is_lowercase() {
-                ch.to_uppercase().to_string()
-            } else {
-                ch.to_lowercase().to_string()
-            };
-
-            // Delete the character
-            let start_pos = (line_idx, col);
-            let end_pos = (line_idx, col + 1);
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, col, line_idx, col + 1);
-            let range = Range::new(start_pos, end_pos);
-            let delete_change = Change::delete(range, deleted, cursor_before);
-
-            // Insert the toggled character
-            let insert_change = Change::insert((line_idx, col), toggled.clone(), cursor_before);
-            insert_change.apply(editor.buffer_mut());
-
-            editor.add_change(delete_change);
-            editor.add_change(insert_change);
-
-            // Move cursor right (Vim behavior)
-            let new_col = col + toggled.chars().count();
-            if new_col < chars.len() {
-                editor.buffer_mut().cursor_mut().set_col(new_col);
-            }
-        }
+    if col >= chars.len() {
+        return Ok(());
     }
+
+    let ch = chars[col];
+    let toggled = if ch.is_lowercase() {
+        ch.to_uppercase().to_string()
+    } else {
+        ch.to_lowercase().to_string()
+    };
+
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_range(line_idx, col, line_idx, col + 1);
+        buf.insert_text_at(line_idx, col, &toggled);
+    });
+
+    // Move cursor right (Vim behavior)
+    let new_col = col + toggled.chars().count();
+    if new_col < chars.len() {
+        editor.buffer_mut().cursor_mut().set_col(new_col);
+    }
+
+    let cursor_after = editor.cursor_position();
+    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    // Case toggle repeat is not yet implemented (Chunk 4 - RepeatAction)
 
     Ok(())
 }
 
 /// Changes case of entire line(s)
 pub fn change_case_line(editor: &mut Editor, count: usize, case_change: CaseChange) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
+    let cursor_before = editor.cursor_position();
+    let start_line = cursor_before.0;
     let end_line = (start_line + count).min(editor.buffer().line_count());
 
-    for line_idx in start_line..end_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            let transformed = apply_case_change(line_text, &case_change);
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        for line_idx in start_line..end_line {
+            if let Some(line) = buf.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let transformed = apply_case_change(line_text, &case_change);
 
-            if transformed != line_text {
-                let line_len = line_text.chars().count();
-                let deleted = editor
-                    .buffer_mut()
-                    .delete_range(line_idx, 0, line_idx, line_len);
-                let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
-                let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-                let insert_change = Change::insert((line_idx, 0), transformed, cursor_before);
-                insert_change.apply(editor.buffer_mut());
-
-                editor.add_change(delete_change);
-                editor.add_change(insert_change);
+                if transformed != line_text {
+                    let line_len = line_text.chars().count();
+                    buf.delete_range(line_idx, 0, line_idx, line_len);
+                    buf.insert_text_at(line_idx, 0, &transformed);
+                }
             }
         }
+    });
+
+    let cursor_after = editor.cursor_position();
+    if !edits.is_empty() {
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
 
     Ok(())
@@ -126,19 +118,12 @@ where
     let transformed = apply_case_change(&text, &case_change);
 
     if transformed != text {
-        // Delete the old text
-        let deleted = editor
-            .buffer_mut()
-            .delete_range(start_line, start_col, end_line, end_col);
-        let delete_range = Range::new((start_line, start_col), (end_line, end_col));
-        let delete_change = Change::delete(delete_range, deleted, cursor_before);
+        let ((), edits) = editor.buffer_mut().record(|buf| {
+            buf.delete_range(start_line, start_col, end_line, end_col);
+            buf.insert_text_at(start_line, start_col, &transformed);
+        });
 
-        // Insert the transformed text
-        let insert_change = Change::insert((start_line, start_col), transformed, cursor_before);
-        insert_change.apply(editor.buffer_mut());
-
-        editor.add_change(delete_change);
-        editor.add_change(insert_change);
+        editor.push_recorded_undo(edits, cursor_before, cursor_before);
     }
 
     // Reset cursor to start position
@@ -152,33 +137,31 @@ where
 
 /// Changes case from cursor to end of line
 pub fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
+    let cursor_before = editor.cursor_position();
+    let line_idx = cursor_before.0;
+    let col = cursor_before.1;
 
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
-        let line_len = line_text.chars().count();
+    let Some(line) = editor.buffer().line(line_idx) else {
+        return Ok(());
+    };
+    let line_text = line.trim_end_matches('\n');
+    let line_len = line_text.chars().count();
 
-        if col < line_len {
-            let text_to_end: String = line_text.chars().skip(col).collect();
-            let transformed = apply_case_change(&text_to_end, &case_change);
+    if col >= line_len {
+        return Ok(());
+    }
 
-            if transformed != text_to_end {
-                let deleted = editor
-                    .buffer_mut()
-                    .delete_range(line_idx, col, line_idx, line_len);
-                let delete_range = Range::new((line_idx, col), (line_idx, line_len));
-                let delete_change = Change::delete(delete_range, deleted, cursor_before);
+    let text_to_end: String = line_text.chars().skip(col).collect();
+    let transformed = apply_case_change(&text_to_end, &case_change);
 
-                let insert_change = Change::insert((line_idx, col), transformed, cursor_before);
-                insert_change.apply(editor.buffer_mut());
+    if transformed != text_to_end {
+        let ((), edits) = editor.buffer_mut().record(|buf| {
+            buf.delete_range(line_idx, col, line_idx, line_len);
+            buf.insert_text_at(line_idx, col, &transformed);
+        });
 
-                editor.add_change(delete_change);
-                editor.add_change(insert_change);
-            }
-        }
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
 
     Ok(())

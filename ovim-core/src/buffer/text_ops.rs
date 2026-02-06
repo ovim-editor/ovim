@@ -1,4 +1,5 @@
 use super::Buffer;
+use crate::edit::Edit;
 
 impl Buffer {
     /// Inserts text at a specific position (line, col)
@@ -26,6 +27,14 @@ impl Buffer {
 
         self.rope.insert(insert_pos, text);
         self.modified = true;
+
+        // Record the edit if we're in a recording session
+        if let Some(ref mut edits) = self.recording {
+            edits.push(Edit::Insert {
+                offset: insert_pos,
+                text: text.to_string(),
+            });
+        }
 
         // Update buffer size metrics
         crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
@@ -105,6 +114,14 @@ impl Buffer {
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
 
+        // Record the edit if we're in a recording session
+        if let Some(ref mut edits) = self.recording {
+            edits.push(Edit::Delete {
+                offset: start_pos,
+                text: deleted.clone(),
+            });
+        }
+
         // Update buffer size metrics
         crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
         crate::metrics::BUFFER_LINES.set(self.rope.len_lines() as i64);
@@ -151,6 +168,14 @@ impl Buffer {
 
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
+
+        // Record the edit if we're in a recording session
+        if let Some(ref mut edits) = self.recording {
+            edits.push(Edit::Delete {
+                offset: start_pos,
+                text: deleted,
+            });
+        }
 
         crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
         crate::metrics::BUFFER_LINES.set(self.rope.len_lines() as i64);

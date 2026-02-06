@@ -62,7 +62,7 @@ fn test_dot_repeat_append() {
         .press('j') // Next line
         .press('.'); // Repeat append
 
-    assert_eq!(test.buffer_content(), "h!ello\nw!orld\n");
+    assert_eq!(test.buffer_content(), "h!ello\nwo!rld\n");
     test.assert_cursor(1, 2);
 }
 
@@ -197,7 +197,7 @@ fn test_dot_repeat_upper_case_X() {
         .press('.'); // Repeat (delete char before cursor 'l'), leaving "heo", cursor on 'e'
 
     assert_eq!(test.buffer_content(), "heo\n");
-    test.assert_cursor(0, 1);
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -448,7 +448,7 @@ fn test_dot_repeat_A_command() {
         .press('j')
         .press('.'); // Repeat
 
-    assert_eq!(test.buffer_content(), "hello!\nworl!d\n");
+    assert_eq!(test.buffer_content(), "hello!\nworld!\n");
     test.assert_cursor(1, 5);
 }
 

@@ -11,6 +11,7 @@ pub use highlighting::LineHighlights;
 pub use line_ending::LineEnding;
 
 use crate::change::ChangeManager;
+use crate::edit::Edit;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
 use crate::GitStatus;
@@ -59,6 +60,9 @@ pub struct Buffer {
     pub(super) version: usize,
     /// Code block cache for markdown files (language-specific highlighting inside fenced code blocks)
     pub(super) code_block_cache: Option<CodeBlockCache>,
+    /// When Some, insert_text_at/delete_range append Edit records here.
+    /// Used by `record()` to capture buffer mutations.
+    recording: Option<Vec<Edit>>,
 }
 
 impl Buffer {
@@ -84,6 +88,7 @@ impl Buffer {
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
+            recording: None,
         }
     }
 
@@ -174,6 +179,7 @@ impl Buffer {
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
+            recording: None,
         }
     }
 
@@ -331,6 +337,12 @@ impl Buffer {
     /// Gets the length of a line in characters (excluding newline)
     /// More efficient than getting the line and calling .len() on it
     pub fn line_len(&self, idx: usize) -> usize {
+        self.line_content_len(idx)
+    }
+
+    /// Characters excluding trailing newline (content length only).
+    /// Use this when you need the length of visible content on a line.
+    pub fn line_content_len(&self, idx: usize) -> usize {
         if idx >= self.line_count() {
             return 0;
         }
@@ -344,6 +356,17 @@ impl Buffer {
         }
 
         len
+    }
+
+    /// Characters including trailing newline (raw rope line length).
+    /// Use this when you need the actual rope character count for a line,
+    /// e.g. for computing absolute char offsets.
+    pub fn line_raw_len(&self, idx: usize) -> usize {
+        if idx >= self.line_count() {
+            return 0;
+        }
+
+        self.rope.line(idx).len_chars()
     }
 
     /// Gets a character at a specific position in a line (zero-allocation)
@@ -458,6 +481,27 @@ impl Buffer {
             }
         }
         None
+    }
+
+    /// Executes a closure while recording all buffer edits (insert_text_at, delete_range).
+    /// Returns the closure's result and the recorded edits.
+    ///
+    /// Recording is opt-in: existing code that doesn't call `record()` is unaffected.
+    /// Nested `record()` calls are not supported — the inner call will overwrite the
+    /// outer recording. This is intentional for now; nesting isn't needed yet.
+    pub fn record<F, R>(&mut self, f: F) -> (R, Vec<Edit>)
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        self.recording = Some(Vec::new());
+        let result = f(self);
+        let edits = self.recording.take().unwrap_or_default();
+        (result, edits)
+    }
+
+    /// Returns whether the buffer is currently recording edits.
+    pub fn is_recording(&self) -> bool {
+        self.recording.is_some()
     }
 
     /// Marks the buffer as unmodified (e.g., after saving)
@@ -747,5 +791,165 @@ mod tests {
         assert_eq!(buf1.rope().len_chars(), buf2.rope().len_chars());
         assert_eq!(buf1.rope().len_lines(), buf2.rope().len_lines());
         assert_eq!(buf1.line_count(), buf2.line_count());
+    }
+
+    // --- line_content_len / line_raw_len tests ---
+
+    #[test]
+    fn test_line_content_len_basic() {
+        let buf = Buffer::new_from_str("hello\nworld\n");
+        assert_eq!(buf.line_content_len(0), 5); // "hello" without \n
+        assert_eq!(buf.line_content_len(1), 5); // "world" without \n
+    }
+
+    #[test]
+    fn test_line_content_len_empty_line() {
+        let buf = Buffer::new_from_str("hello\n\nworld\n");
+        assert_eq!(buf.line_content_len(0), 5);
+        assert_eq!(buf.line_content_len(1), 0); // empty line
+        assert_eq!(buf.line_content_len(2), 5);
+    }
+
+    #[test]
+    fn test_line_content_len_empty_buffer() {
+        let buf = Buffer::new_from_str("");
+        assert_eq!(buf.line_content_len(0), 0);
+    }
+
+    #[test]
+    fn test_line_content_len_out_of_bounds() {
+        let buf = Buffer::new_from_str("hello\n");
+        assert_eq!(buf.line_content_len(99), 0);
+    }
+
+    #[test]
+    fn test_line_raw_len_basic() {
+        let buf = Buffer::new_from_str("hello\nworld\n");
+        assert_eq!(buf.line_raw_len(0), 6); // "hello\n"
+        assert_eq!(buf.line_raw_len(1), 6); // "world\n"
+    }
+
+    #[test]
+    fn test_line_raw_len_empty_line() {
+        let buf = Buffer::new_from_str("hello\n\nworld\n");
+        assert_eq!(buf.line_raw_len(0), 6);
+        assert_eq!(buf.line_raw_len(1), 1); // just "\n"
+        assert_eq!(buf.line_raw_len(2), 6);
+    }
+
+    #[test]
+    fn test_line_raw_len_empty_buffer() {
+        let buf = Buffer::new_from_str("");
+        assert_eq!(buf.line_raw_len(0), 0);
+    }
+
+    #[test]
+    fn test_line_raw_len_out_of_bounds() {
+        let buf = Buffer::new_from_str("hello\n");
+        assert_eq!(buf.line_raw_len(99), 0);
+    }
+
+    #[test]
+    fn test_line_len_matches_line_content_len() {
+        // line_len should be identical to line_content_len
+        let buf = Buffer::new_from_str("hello\n\nworld\n");
+        for i in 0..buf.line_count() {
+            assert_eq!(buf.line_len(i), buf.line_content_len(i));
+        }
+    }
+
+    // --- Buffer recording tests ---
+
+    #[test]
+    fn test_record_insert() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        let ((), edits) = buf.record(|b| {
+            b.insert_text_at(0, 5, " world");
+        });
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0],
+            crate::edit::Edit::Insert {
+                offset: 5,
+                text: " world".to_string()
+            }
+        );
+        assert_eq!(buf.rope().to_string(), "hello world\n");
+    }
+
+    #[test]
+    fn test_record_delete() {
+        let mut buf = Buffer::new_from_str("hello world\n");
+        let (deleted, edits) = buf.record(|b| b.delete_range(0, 5, 0, 11));
+        assert_eq!(deleted, " world");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0],
+            crate::edit::Edit::Delete {
+                offset: 5,
+                text: " world".to_string()
+            }
+        );
+        assert_eq!(buf.rope().to_string(), "hello\n");
+    }
+
+    #[test]
+    fn test_record_multiple_ops() {
+        let mut buf = Buffer::new_from_str("hello world\n");
+        let ((), edits) = buf.record(|b| {
+            // Delete " world"
+            b.delete_range(0, 5, 0, 11);
+            // Insert " rust"
+            b.insert_text_at(0, 5, " rust");
+        });
+        assert_eq!(edits.len(), 2);
+        assert_eq!(buf.rope().to_string(), "hello rust\n");
+    }
+
+    #[test]
+    fn test_record_no_ops() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        let ((), edits) = buf.record(|_b| {
+            // do nothing
+        });
+        assert!(edits.is_empty());
+        assert_eq!(buf.rope().to_string(), "hello\n");
+    }
+
+    #[test]
+    fn test_not_recording_by_default() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        assert!(!buf.is_recording());
+        buf.insert_text_at(0, 5, " world");
+        // No recording vec, so nothing captured — that's fine
+        assert_eq!(buf.rope().to_string(), "hello world\n");
+    }
+
+    #[test]
+    fn test_record_join_lines() {
+        let mut buf = Buffer::new_from_str("line1\nline2\n");
+        buf.cursor_mut().set_position(0, 0);
+        let (result, edits) = buf.record(|b| b.join_lines(1));
+        assert!(result.is_ok());
+        assert_eq!(buf.rope().to_string(), "line1 line2\n");
+        // join_lines does delete_range + insert_text_at internally
+        assert_eq!(edits.len(), 2);
+    }
+
+    #[test]
+    fn test_record_delete_char_range() {
+        let mut buf = Buffer::new_from_str("hello world\n");
+        let ((), edits) = buf.record(|b| {
+            b.delete_char_range(5, 11);
+        });
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0],
+            crate::edit::Edit::Delete {
+                offset: 5,
+                text: " world".to_string()
+            }
+        );
+        assert_eq!(buf.rope().to_string(), "hello\n");
     }
 }

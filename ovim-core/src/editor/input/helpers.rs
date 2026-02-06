@@ -203,7 +203,7 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
     };
 
     let range = Range::new(start_pos, end_pos);
-    let change = Change::delete(range, deleted_text, cursor_before);
+    let change = Change::delete_backward(range, deleted_text, cursor_before);
     change.apply(editor.buffer_mut());
     editor.add_change(change);
 
@@ -878,75 +878,41 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
 }
 
 pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
+    let cursor_before = editor.cursor_position();
 
-    // Capture the old text for undo (lines that will be affected)
-    let lines_to_join = count.max(1);
-    let end_line = (start_line + lines_to_join).min(editor.buffer().line_count());
-    let mut old_text = String::new();
-    for line_idx in start_line..end_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            old_text.push_str(&line);
-        }
-    }
-    let old_range = Range::new(cursor_before, (end_line.saturating_sub(1), 0));
+    let (result, edits) = editor.buffer_mut().record(|buf| buf.join_lines(count));
+    result?;
 
-    // Perform the join operation
-    editor.buffer_mut().join_lines(count)?;
-
-    // Track the change for dot-repeat and undo
-    let cursor_after = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
-    let change = Change::join_lines(
+    let cursor_after = editor.cursor_position();
+    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    editor.set_repeat_change(Change::join_lines(
         count,
         true,
         cursor_before,
         cursor_after,
-        old_text,
-        old_range,
-    );
-    editor.add_change(change);
+        String::new(),
+        Range::default(),
+    ));
 
     Ok(())
 }
 
 pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
+    let cursor_before = editor.cursor_position();
 
-    // Capture the old text for undo (lines that will be affected)
-    let lines_to_join = count.max(1);
-    let end_line = (start_line + lines_to_join).min(editor.buffer().line_count());
-    let mut old_text = String::new();
-    for line_idx in start_line..end_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            old_text.push_str(&line);
-        }
-    }
-    let old_range = Range::new(cursor_before, (end_line.saturating_sub(1), 0));
+    let (result, edits) = editor.buffer_mut().record(|buf| buf.join_lines_no_space(count));
+    result?;
 
-    // Perform the join operation
-    editor.buffer_mut().join_lines_no_space(count)?;
-
-    // Track the change for dot-repeat and undo
-    let cursor_after = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
-    let change = Change::join_lines(
+    let cursor_after = editor.cursor_position();
+    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    editor.set_repeat_change(Change::join_lines(
         count,
         false,
         cursor_before,
         cursor_after,
-        old_text,
-        old_range,
-    );
-    editor.add_change(change);
+        String::new(),
+        Range::default(),
+    ));
 
     Ok(())
 }
@@ -958,15 +924,32 @@ pub fn indent_lines_with_tracking(
     tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
-    let mut modified = false;
-    for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
+    let actual_end = end_line.min(editor.buffer().line_count());
+    let last_line = if actual_end > start_line {
+        actual_end - 1
+    } else {
+        start_line
+    };
+
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        for line_idx in start_line..actual_end {
+            let indent_str = " ".repeat(tab_width);
+            buf.insert_text_at(line_idx, 0, &indent_str);
+        }
+    });
+    if !edits.is_empty() {
+        // Position cursor on last indented line at col = tab_width
+        // (matches old behavior where Change::InsertText::apply moved cursor)
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(last_line, tab_width);
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        // Set repeat change: insert spaces at current cursor position
+        // (old behavior: last InsertText was the repeat template)
         let indent_str = " ".repeat(tab_width);
-        let change = Change::insert((line_idx, 0), indent_str.clone(), cursor_before);
-        change.apply(editor.buffer_mut());
-        editor.add_change(change);
-        modified = true;
-    }
-    if modified {
+        editor.set_repeat_change(Change::insert(cursor_after, indent_str, cursor_after));
         editor.mark_buffer_modified();
     }
     Ok(())
@@ -979,39 +962,45 @@ pub fn dedent_lines_with_tracking(
     tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
-    let mut modified = false;
-    for line_idx in start_line..end_line.min(editor.buffer().line_count()) {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            let chars: Vec<char> = line_text.chars().collect();
-            let mut chars_to_remove = 0;
+    // Track the last deletion for dot-repeat
+    let mut last_deleted = String::new();
+    let mut last_chars_removed = 0usize;
 
-            for &ch in chars.iter().take(tab_width) {
-                if ch == ' ' {
-                    chars_to_remove += 1;
-                } else if ch == '\t' {
-                    // A tab counts as one character to delete, completing
-                    // the removal of one indent level
-                    chars_to_remove += 1;
-                    break;
-                } else {
-                    break;
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        let actual_end = end_line.min(buf.line_count());
+        for line_idx in start_line..actual_end {
+            if let Some(line) = buf.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let chars: Vec<char> = line_text.chars().collect();
+                let mut chars_to_remove = 0;
+
+                for &ch in chars.iter().take(tab_width) {
+                    if ch == ' ' {
+                        chars_to_remove += 1;
+                    } else if ch == '\t' {
+                        chars_to_remove += 1;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+
+                if chars_to_remove > 0 {
+                    let deleted = buf.delete_range(line_idx, 0, line_idx, chars_to_remove);
+                    last_deleted = deleted;
+                    last_chars_removed = chars_to_remove;
                 }
             }
-
-            if chars_to_remove > 0 {
-                let deleted =
-                    editor
-                        .buffer_mut()
-                        .delete_range(line_idx, 0, line_idx, chars_to_remove);
-                let range = Range::new((line_idx, 0), (line_idx, chars_to_remove));
-                let change = Change::delete(range, deleted, cursor_before);
-                editor.add_change(change);
-                modified = true;
-            }
         }
-    }
-    if modified {
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        // Set repeat change: delete leading whitespace (same shape as last line's deletion)
+        if last_chars_removed > 0 {
+            let range = Range::new((0, 0), (0, last_chars_removed));
+            editor.set_repeat_change(Change::delete(range, last_deleted, (0, 0)));
+        }
         editor.mark_buffer_modified();
     }
     Ok(())

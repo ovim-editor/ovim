@@ -1,5 +1,6 @@
 ---
-source: tests/undo_redo_comprehensive_test.rs
+source: ovim/tests/undo_redo_comprehensive_test.rs
+assertion_line: 163
 expression: test.snapshot_state()
 ---
 Mode: Normal
@@ -8,4 +9,4 @@ Lines: 2
 
 Buffer:
 [l]ine 1
-line 1 line 2
+line 2

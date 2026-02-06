@@ -14,6 +14,7 @@ pub mod fold;
 pub mod color;
 pub mod syntax;
 pub mod change;
+pub mod edit;
 pub mod search;
 pub mod textobjects;
 pub mod buffer;
