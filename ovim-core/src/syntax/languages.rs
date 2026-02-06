@@ -25,6 +25,10 @@ pub enum Language {
     Toml,
     Markdown,
     Zig,
+    Sql,
+    CSharp,
+    Terraform,
+    Hcl,
     /// Tree-sitter query files (used for highlight queries, etc.)
     TreeSitterQuery,
 }
@@ -122,6 +126,18 @@ impl LanguageRegistry {
 
             // Tree-sitter query files
             "scm" => Some(Language::TreeSitterQuery),
+
+            // SQL
+            "sql" | "mysql" | "pgsql" | "sqlite" | "ddl" | "dml" => Some(Language::Sql),
+
+            // C#
+            "cs" | "csx" => Some(Language::CSharp),
+
+            // Terraform
+            "tf" | "tfvars" => Some(Language::Terraform),
+
+            // HCL (HashiCorp Configuration Language)
+            "hcl" | "nomad" | "vault" => Some(Language::Hcl),
 
             _ => None,
         }
@@ -238,6 +254,10 @@ impl LanguageRegistry {
             Language::Toml => tree_sitter_json::LANGUAGE.into(),
             Language::Markdown => tree_sitter_md::LANGUAGE.into(),
             Language::Zig => tree_sitter_zig::LANGUAGE.into(),
+            Language::Sql => tree_sitter_sequel::LANGUAGE.into(),
+            Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
+            Language::Hcl => tree_sitter_hcl::LANGUAGE.into(),
             // Tree-sitter query: use Bash grammar fallback for now (still gives *some* structure).
             // TODO: add a dedicated tree-sitter-query grammar crate.
             Language::TreeSitterQuery => tree_sitter_bash::LANGUAGE.into(),
@@ -277,6 +297,12 @@ impl LanguageRegistry {
             Language::Yaml => include_str!("queries/yaml.scm"),
             Language::Markdown => include_str!("queries/markdown.scm"),
             Language::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY,
+            Language::Sql => tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            // C#: Use custom query since tree-sitter-c-sharp doesn't export one
+            Language::CSharp => include_str!("queries/csharp.scm"),
+            // Terraform/HCL: Use custom query
+            Language::Terraform => include_str!("queries/terraform.scm"),
+            Language::Hcl => include_str!("queries/terraform.scm"),
             // Tree-sitter query: basic fallback highlights.
             Language::TreeSitterQuery => include_str!("queries/tree_sitter_query.scm"),
         }
@@ -308,6 +334,10 @@ impl LanguageRegistry {
             Language::Toml => Some("toml"),
             Language::Markdown => Some("markdown"),
             Language::Zig => Some("zig"),
+            Language::Sql => Some("sql"),
+            Language::CSharp => Some("csharp"),
+            Language::Terraform => Some("terraform"),
+            Language::Hcl => Some("hcl"),
             Language::TreeSitterQuery => None,
         })
     }
@@ -389,6 +419,16 @@ impl LanguageRegistry {
 
             // Tree-sitter query language
             "query" | "tree-sitter-query" | "treesitter" => Some(Language::TreeSitterQuery),
+
+            // SQL
+            "sql" | "mysql" | "pgsql" | "postgresql" | "sqlite" => Some(Language::Sql),
+
+            // C#
+            "csharp" | "cs" | "c#" => Some(Language::CSharp),
+
+            // Terraform / HCL
+            "terraform" | "tf" => Some(Language::Terraform),
+            "hcl" => Some(Language::Hcl),
 
             _ => None,
         }

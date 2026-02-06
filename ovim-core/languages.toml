@@ -534,6 +534,93 @@ install_hint = "Install from source: cargo install --git https://github.com/matt
 # Companion servers provide additional LSP support alongside primary servers.
 # They activate only when activation_markers are present in the project tree.
 
+# ============================================================================
+# SQL
+# ============================================================================
+
+[[language]]
+id = "sql"
+name = "SQL"
+extensions = ["sql", "mysql", "pgsql", "sqlite", "ddl", "dml"]
+
+[language.syntax]
+grammar = "tree-sitter-sequel"
+official = { crate = "tree_sitter_sequel", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "sqls"
+root_markers = [".git", ".sqls.yaml", "sqls.yaml"]
+install_hint = "Install with: go install github.com/sqls-server/sqls@latest"
+
+[language.lsp.auto_install]
+method = { type = "shell", command = "go install github.com/sqls-server/sqls@latest" }
+
+# ============================================================================
+# C#
+# ============================================================================
+
+[[language]]
+id = "csharp"
+name = "C#"
+extensions = ["cs", "csx"]
+
+[language.syntax]
+grammar = "tree-sitter-c-sharp"
+file = { path = "src/syntax/queries/csharp.scm" }
+
+[language.lsp]
+command = "csharp-ls"
+fallback_commands = [
+    "OmniSharp",
+    "~/.dotnet/tools/csharp-ls",
+]
+root_markers = [".csproj", ".sln", "global.json", ".git"]
+install_hint = "Install with: dotnet tool install --global csharp-ls"
+
+[language.lsp.auto_install]
+method = { type = "shell", command = "dotnet tool install --global csharp-ls" }
+
+# ============================================================================
+# Terraform
+# ============================================================================
+
+[[language]]
+id = "terraform"
+name = "Terraform"
+extensions = ["tf", "tfvars"]
+
+[language.syntax]
+grammar = "tree-sitter-hcl"
+file = { path = "src/syntax/queries/terraform.scm" }
+
+[language.lsp]
+command = "terraform-ls"
+args = ["serve"]
+root_markers = [".terraform", "main.tf", "terraform.tf", ".git"]
+install_hint = "Download from: https://releases.hashicorp.com/terraform-ls/ or brew install hashicorp/tap/terraform-ls"
+
+# ============================================================================
+# HCL (HashiCorp Configuration Language)
+# ============================================================================
+
+[[language]]
+id = "hcl"
+name = "HCL"
+extensions = ["hcl", "nomad", "vault"]
+
+[language.syntax]
+grammar = "tree-sitter-hcl"
+file = { path = "src/syntax/queries/terraform.scm" }
+
+# HCL files generally don't have a dedicated LSP, but Terraform LSP can be used
+# for Terraform-related HCL files. Users can configure project-specific LSP.
+
+# ============================================================================
+# Companion LSP Servers
+# ============================================================================
+# Companion servers provide additional LSP support alongside primary servers.
+# They activate only when activation_markers are present in the project tree.
+
 [[companion_lsp]]
 id = "tailwindcss"
 name = "Tailwind CSS"
