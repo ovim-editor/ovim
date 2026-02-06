@@ -10,11 +10,14 @@ The following languages have both syntax highlighting and LSP configured:
 
 | Language | Extensions | LSP Server | Auto-Install |
 |----------|------------|------------|--------------|
-| Rust | `.rs` | rust-analyzer | ✗ (install via rustup) |
+| Rust | `.rs` | rust-analyzer | ✓ (rustup) |
 | TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` | typescript-language-server | ✓ (npm) |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` | typescript-language-server | ✗ |
 | Python | `.py`, `.pyw`, `.pyi` | pyright-langserver | ✗ |
 | Java | `.java` | hyperion-lsp | ✓ (auto-download) |
+| SQL | `.sql`, `.mysql`, `.pgsql`, `.sqlite` | sqls | ✓ (go install) |
+| C# | `.cs`, `.csx` | csharp-ls | ✓ (dotnet tool) |
+| Terraform | `.tf`, `.tfvars` | terraform-ls | ✗ |
 
 ### Syntax Highlighting Only
 
@@ -30,6 +33,7 @@ These languages have syntax highlighting but no LSP configured by default:
 - C++ (`.cpp`, `.hpp`)
 - Ruby (`.rb`)
 - Bash (`.sh`, `.bash`)
+- HCL (`.hcl`, `.nomad`, `.vault`)
 
 ## Installing LSP Servers
 
@@ -65,6 +69,35 @@ pip install python-lsp-server
 ### Java
 
 Java has automatic download of the Hyperion LSP server. No manual installation required!
+
+### SQL
+
+```bash
+# Requires Go to be installed
+go install github.com/sqls-server/sqls@latest
+```
+
+Create a `.sqls.yaml` in your project root for database connection configuration.
+
+### C#
+
+```bash
+# Requires .NET SDK
+dotnet tool install --global csharp-ls
+
+# Alternative: OmniSharp
+# Download from: https://github.com/OmniSharp/omnisharp-roslyn/releases
+```
+
+### Terraform
+
+```bash
+# macOS
+brew install hashicorp/tap/terraform-ls
+
+# Or download from:
+# https://releases.hashicorp.com/terraform-ls/
+```
 
 ## Checking LSP Status
 
