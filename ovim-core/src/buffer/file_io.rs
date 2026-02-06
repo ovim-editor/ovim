@@ -118,6 +118,7 @@ impl Buffer {
             semantic_highlights: None,
             version: 0,
             code_block_cache: None,
+            recording: None,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading

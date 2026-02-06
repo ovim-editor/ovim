@@ -1,4 +1,5 @@
 use crate::buffer::Buffer;
+use crate::edit::Edit;
 use crate::search::Search;
 use crate::textobjects::TextObjects;
 use anyhow::Result;
@@ -172,6 +173,13 @@ pub enum Change {
         // Store original for undo
         old_text: String,
         old_range: Range,
+    },
+    /// Undo record backed by raw edits (from buffer recording).
+    /// Undo applies inverse edits in reverse; redo replays forward.
+    Recorded {
+        edits: Vec<Edit>,
+        cursor_before: Position,
+        cursor_after: Position,
     },
 }
 
@@ -349,6 +357,15 @@ impl Change {
         }
     }
 
+    /// Creates a Recorded change from raw buffer edits
+    pub fn recorded(edits: Vec<Edit>, cursor_before: Position, cursor_after: Position) -> Self {
+        Self::Recorded {
+            edits,
+            cursor_before,
+            cursor_after,
+        }
+    }
+
     /// Creates a ReplaceMode change (for R command)
     pub fn replace_mode(
         replacements: String,
@@ -518,6 +535,18 @@ impl Change {
                 let (end_line, end_col) = old_range.end;
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacement);
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
+            }
+            Self::Recorded {
+                edits,
+                cursor_after,
+                ..
+            } => {
+                for edit in edits {
+                    edit.apply(buffer);
+                }
                 buffer
                     .cursor_mut()
                     .set_position(cursor_after.0, cursor_after.1);
@@ -724,20 +753,39 @@ impl Change {
                     .cursor_mut()
                     .set_position(cursor_before.0, cursor_before.1);
             }
+            Self::Recorded {
+                edits,
+                cursor_before,
+                ..
+            } => {
+                // Apply inverse edits in reverse order
+                for edit in edits.iter().rev() {
+                    edit.inverse().apply(buffer);
+                }
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
+                buffer.validate_cursor_position();
+            }
         }
     }
 
     /// Repeats this change at the current cursor position
     pub fn repeat(&mut self, buffer: &mut Buffer) {
         match self {
-            Self::InsertText { text, .. } => {
+            Self::InsertText {
+                text,
+                position: self_pos,
+                ..
+            } => {
                 // Insert the same text at current position
-                let position = (buffer.cursor().line(), buffer.cursor().col());
-                let cursor_before = position;
+                let new_pos = (buffer.cursor().line(), buffer.cursor().col());
+                // Update self so undo targets the new position, not the original
+                *self_pos = new_pos;
                 Self::InsertText {
-                    position,
+                    position: new_pos,
                     text: text.clone(),
-                    cursor_before,
+                    cursor_before: new_pos,
                 }
                 .apply(buffer);
             }
@@ -763,9 +811,21 @@ impl Change {
                     // and calculate the start by going backwards
                     let new_start = if offset_line == 0 {
                         (cursor_pos.0, cursor_pos.1.saturating_sub(offset_col))
+                    } else if cursor_pos.1 == 0 {
+                        // Multi-line backwards deletion with cursor at col 0
+                        // (e.g. backspace at col 0 joining lines via I<BS>)
+                        let prev_line = cursor_pos.0.saturating_sub(offset_line);
+                        let prev_line_len = buffer
+                            .line(prev_line)
+                            .map(|s| s.trim_end_matches('\n').chars().count())
+                            .unwrap_or(0);
+                        (prev_line, prev_line_len)
                     } else {
-                        // Multi-line backwards deletion (shouldn't happen for X, but handle it)
-                        ((cursor_pos.0).saturating_sub(offset_line), 0)
+                        // Original was cross-line but cursor is mid-line now
+                        // (e.g. i<BS> at col 0, then repeat at col 2).
+                        // Constrain to same-line single-char delete — what BS
+                        // would actually do at this cursor position.
+                        (cursor_pos.0, cursor_pos.1.saturating_sub(1))
                     };
                     (new_start.0, new_start.1, cursor_pos.0, cursor_pos.1)
                 } else {
@@ -786,13 +846,7 @@ impl Change {
                 *deleted_text = actual_deleted;
 
                 // Position cursor at the start of the deletion
-                // For backwards deletion (X), cursor should be one position before the deletion
-                let final_col = if is_backwards && start_col > 0 {
-                    start_col - 1
-                } else {
-                    start_col
-                };
-                buffer.cursor_mut().set_position(start_line, final_col);
+                buffer.cursor_mut().set_position(start_line, start_col);
             }
             Self::DeleteCharMotion {
                 target,
@@ -1126,6 +1180,19 @@ impl Change {
                     buffer.cursor_mut().set_position(end_pos.0, final_col);
                 }
             }
+            Self::Recorded {
+                edits,
+                cursor_after,
+                ..
+            } => {
+                // Re-execute by applying edits forward
+                for edit in edits.iter() {
+                    edit.apply(buffer);
+                }
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
+            }
         }
     }
 
@@ -1189,6 +1256,31 @@ impl Change {
             Self::ChangeWord { replacement, .. } => replacement.clone(),
             Self::ReplaceMode { replacements, .. } => replacements.clone(),
             Self::ChangeSearchMatch { replacement, .. } => replacement.clone(),
+            Self::Recorded { edits, .. } => {
+                // Concatenate text from insert edits
+                let mut result = String::new();
+                for edit in edits {
+                    if let Edit::Insert { text, .. } = edit {
+                        result.push_str(text);
+                    }
+                }
+                result
+            }
+        }
+    }
+
+    /// Gets the position where the actual edit occurred.
+    /// For Composite changes (insert-mode sessions), this returns the first
+    /// inner change's cursor_before — i.e., where the cursor was AFTER
+    /// entry-mode repositioning (A, I, etc.) but before actual editing.
+    /// Used by g; to navigate to the changelist position.
+    pub fn edit_position(&self) -> Position {
+        match self {
+            Self::Composite { changes, cursor_before, .. } => {
+                changes.first().map(|c| c.cursor_before()).unwrap_or(*cursor_before)
+            }
+            Self::Recorded { cursor_before, .. } => *cursor_before,
+            _ => self.cursor_before(),
         }
     }
 
@@ -1206,6 +1298,7 @@ impl Change {
             Self::ChangeWord { cursor_before, .. } => *cursor_before,
             Self::ReplaceMode { cursor_before, .. } => *cursor_before,
             Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before,
+            Self::Recorded { cursor_before, .. } => *cursor_before,
         }
     }
 
@@ -1223,6 +1316,7 @@ impl Change {
             Self::ChangeWord { cursor_before, .. } => *cursor_before = pos,
             Self::ReplaceMode { cursor_before, .. } => *cursor_before = pos,
             Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before = pos,
+            Self::Recorded { cursor_before, .. } => *cursor_before = pos,
         }
     }
 
@@ -1240,6 +1334,7 @@ impl Change {
             Self::ChangeWord { cursor_after, .. } => *cursor_after = pos,
             Self::ReplaceMode { cursor_after, .. } => *cursor_after = pos,
             Self::ChangeSearchMatch { cursor_after, .. } => *cursor_after = pos,
+            Self::Recorded { cursor_after, .. } => *cursor_after = pos,
         }
     }
 }
@@ -1283,13 +1378,12 @@ impl ChangeBuilder {
         if self.changes.is_empty() {
             None
         } else if self.changes.len() == 1
-            && !matches!(
-                self.entry_mode,
-                InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove
-            )
+            && matches!(self.entry_mode, InsertEntryMode::Insert)
         {
-            // Unwrap single changes for most entry modes. OpenBelow/OpenAbove need
-            // the Composite wrapper to preserve entry_mode for dot-repeat.
+            // Only unwrap single changes when entry mode is plain Insert (i),
+            // which doesn't reposition the cursor. All other entry modes (I, a,
+            // A, o, O) need the Composite wrapper to preserve entry_mode so
+            // dot-repeat repositions the cursor correctly.
             Some(self.changes.into_iter().next().unwrap())
         } else {
             // Use explicitly set cursor_after, or fall back to current buffer cursor
