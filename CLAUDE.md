@@ -1,6 +1,6 @@
 # ovim
 
-A Neovim clone in Rust with LSP support and seamless headless mode.
+A Neovim inspired editor written in Rust with LSP support and seamless headless mode.
 
 ## Quick Reference
 
@@ -41,421 +41,41 @@ ovim session cleanup --max-age 7
 
 **Sessions are opt-in.** TUI mode doesn't register a session. Headless mode requires `--session NAME`. TUI users can opt in with `:session start NAME`.
 
-## Agent Interface (Recommended for AI/LLM agents)
-
-Stateless, surgical file manipulation — no session needed:
-
-```bash
-# Edit: find and replace text (literal match, \n for newlines)
-ovim edit FILE --line 42 --old "foo" --new "bar"        # Replace on specific line
-ovim edit FILE --old "unique string" --new "replacement" # Replace in whole file (must be unique)
-
-# Insert lines
-ovim insert FILE --after 42 --text "    new line"       # Insert after line 42
-ovim insert FILE --before 1 --text "use std::io;"       # Insert before line 1
-ovim insert FILE --after 0 --text "first line"          # Insert at start of file
-
-# Delete lines (inclusive)
-ovim delete-lines FILE --from 42 --to 45                # Delete lines 42-45
-
-# Read lines with line numbers
-ovim read-lines FILE --from 40 --to 60                  # Plain text output
-ovim read-lines FILE --from 40 --to 60 --json           # JSON output
-
-# Context & buffer (session-addressed, read-only)
-ovim context -s SESSION                                 # 21-line window around cursor
-ovim buffer -s SESSION                                  # Full buffer content
-```
-
-File operations use direct file I/O (no session required). Line numbers are 1-indexed. Use `\n` in `--old`/`--new`/`--text` for multi-line strings.
-
 ## Architecture
 
 ```
-src/
-├── api/           # REST API (Axum) - /health, /lsp/status, /snapshot, etc.
-├── buffer/        # Rope-based text buffer (ropey)
-├── editor/        # Core logic, operators, motions, LSP actions
-│   ├── input.rs   # Key event handling
-│   ├── operators.rs  # d, c, y operators
-│   ├── motions.rs    # Cursor movement
-│   └── mod.rs        # Main editor state + LSP integration
-├── lsp/           # Language Server Protocol client
-│   ├── mod.rs     # LspManager (coordinator)
-│   ├── server.rs  # LanguageServer (individual server)
-│   └── logger.rs  # Request/response logging
-├── session/       # Session persistence & discovery
-├── ui/            # Terminal UI (ratatui + crossterm)
-└── main.rs        # Event loops (TUI & headless)
+ovim-core/               # Shared library crate
+├── src/
+│   ├── syntax/          # Tree-sitter grammars & highlighting
+│   │   ├── languages.rs # Language enum & detection
+│   │   └── queries/     # Custom .scm highlight queries
+│   ├── buffer/          # Rope-based text buffer (ropey)
+│   ├── lsp/             # LSP client implementation
+│   └── ...
+└── languages.toml       # Language configurations (embedded at compile time)
+
+ovim/                    # Binary crate
+├── src/
+│   ├── api/             # REST API (Axum) - /health, /lsp/status, /snapshot, etc.
+│   ├── editor/          # Core logic, operators, motions, LSP actions
+│   │   ├── input.rs     # Key event handling
+│   │   ├── operators.rs # d, c, y operators
+│   │   ├── motions.rs   # Cursor movement
+│   │   └── mod.rs       # Main editor state + LSP integration
+│   ├── ui/              # Terminal UI (ratatui + crossterm)
+│   ├── cli.rs           # CLI argument parsing
+│   ├── subcommands.rs   # CLI subcommand handlers
+│   └── main.rs          # Event loops (TUI & headless)
 ```
 
-## Development Workflow
-
-### Headless Mode (Recommended)
-
-1. **Start session**: `ovim src/main.rs --headless --session myproject`
-2. **Control it**: `ovim send "ggK" -s myproject`
-3. **Check LSP**: `ovim lsp status -s myproject`
-4. **Kill it**: `ovim session kill -s myproject`
-
-Sessions stored in:
-- macOS: `~/Library/Caches/ovim/sessions/`
-- Linux: `~/.cache/ovim/sessions/`
-
-### Session Model
-
-**Sessions are opt-in.** TUI mode doesn't register a session by default. Headless mode requires `--session NAME`.
-
-TUI users can enable session access at runtime:
-```
-:session start myproject    " Registers session, enables API access
-:session stop               " Unregisters session
-:session list               " Shows active sessions
-```
-
-All session-addressed CLI commands require an explicit `-s SESSION` flag — there is no auto-discovery.
-
-### Language Support
-
-**Introspection Commands**:
-```bash
-ovim lsp languages              # Show all configured languages
-ovim lsp languages --verbose    # Show detailed LSP configuration
-ovim lsp check file.rs          # Check language detection & LSP status for file
-ovim lsp check file.ts --verbose # Show full config + installation hints
-```
-
-**Supported Languages** (out-of-the-box):
-- **Rust** - rust-analyzer (install via `rustup component add rust-analyzer`)
-- **TypeScript/JavaScript** - typescript-language-server (auto-installs via npm)
-- **Python** - pyright-langserver (install via `pip install pyright`)
-- **Java** - hyperion-lsp (auto-downloads, zero config!)
-- **Markdown, JSON, YAML, HTML, CSS, Go, C/C++, Ruby, Bash** - syntax highlighting only
-
-**Adding/Customizing Languages**:
-Create `~/.config/ovim/languages.toml`:
-```toml
-[[language]]
-id = "go"
-name = "Go"
-extensions = ["go"]
-
-[language.lsp]
-command = "gopls"
-root_markers = ["go.mod"]
-install_hint = "go install golang.org/x/tools/gopls@latest"
-```
-
-See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for complete guide.
-
-### LSP Features
-
-**Zero-config TypeScript** (auto-install):
-```bash
-ovim app.tsx  # Detects TypeScript, offers to install LSP via npm
-```
-
-**Zero-config Java** (auto-download):
-```bash
-ovim MyClass.java  # Auto-downloads jdtls, detects Java version, full IDE
-```
-
-**LSP Logging** (all requests/responses logged to stderr):
-```
-[LSP-REQUEST] Method: textDocument/hover | Request ID: Number(2) | Server: rust
-[LSP-RESPONSE] Success: textDocument/hover | Took: 751.5µs
-```
-
-**LSP Introspection**:
-```bash
-curl http://127.0.0.1:PORT/v1/lsp/status  # Server states, pending requests
-curl http://127.0.0.1:PORT/v1/health      # LSP readiness check
-```
-
-### REST API Endpoints
-
-**HTTP Server**: Always runs on both headless and UI modes on `http://127.0.0.1:PORT`
-
-**API Version**: All endpoints are available under `/v1/` prefix (recommended) and without prefix (legacy, deprecated).
-
-| Endpoint | Method | Use Case |
-|----------|--------|----------|
-| `/v1/health` | GET | Health + LSP readiness |
-| `/v1/lsp/status` | GET | Server states & pending requests |
-| `/v1/snapshot` | GET | Complete editor state (buffer, cursor, mode, registers, marks) |
-| `/v1/buffer` | GET/PUT | Buffer content |
-| `/v1/cursor` | GET | Cursor position |
-| `/v1/mode` | GET | Current mode |
-| `/v1/keys` | POST | Send keystrokes (e.g., `{"keys": "ggK"}`) |
-| `/v1/command` | POST | Execute ex command (e.g., `{"command": "w"}`) |
-| `/v1/render` | GET | ANSI rendering |
-| `/v1/mcp` | POST | Model Context Protocol (MCP) JSON-RPC 2.0 endpoint |
-
-**Note**: Legacy unversioned endpoints (e.g., `/health`, `/buffer`) still work but are deprecated and will be removed in ovim v1.0. They return `X-API-Deprecation` and `Sunset` headers. Update your clients to use `/v1/` prefix.
-
-### MCP (Model Context Protocol) Support
-
-**ovim** is MCP-compliant, exposing its capabilities as an MCP server via JSON-RPC 2.0.
-
-**Supported MCP Methods**:
-- `initialize` - Capability negotiation
-- `tools/list` - List available tools
-- `tools/call` - Execute tools
-
-**Available Tools**:
-- `send_keys` - Send Vim key sequences to editor
-- `get_buffer` - Get current buffer content
-- `set_buffer` - Replace buffer content
-- `get_cursor` - Get cursor position
-- `set_mode` - Change editor mode (NORMAL, INSERT, VISUAL, etc.)
-- `execute_command` - Execute ex commands
-- `lsp_hover` - Get LSP hover information
-- `lsp_goto_definition` - Jump to definition
-- `get_snapshot` - Get complete editor state
-- `get_health` - Get session health and LSP readiness
-- `get_lsp_status` - Get language server status
-- `get_context_window` - Get 21-line context around cursor (AI-optimized)
-- `list_sessions` - List all active sessions
-
-**Escape Sequences** (for `send_keys`):
-When sending key sequences, use these escape sequences for special keys:
-```
-\e      Escape key
-\c      Ctrl+C (cancel/interrupt)
-\n      Enter/newline
-\\      Literal backslash
-```
-
-Examples:
-```
-send_keys("/pattern\n")         # Search for pattern and confirm
-send_keys("i\e")                # Insert mode, then escape
-send_keys("d3w\\e")             # Delete 3 words (literal backslash at end)
-```
-
-**Context Window** (AI-First Feature):
-The `get_context_window` tool returns a 21-line view (10 above, current, 10 below) with:
-- Header showing filename, mode, and cursor position: `[ovim: file.rs | NORMAL | L42:C15]`
-- Line numbers with cursor marker (`>>`) and position indicator (`^`)
-- Automatic line truncation at 80 characters with `...`
-- `FILE END` marker when end of file is visible
-
-Example:
-```json
-{
-  "context": "[ovim: main.rs | NORMAL | L17:C7]\n   15 | // Start line\n   16 | \n>> 17 | let x = calculate(data);\n                   ^\n   18 | print(x);\nFILE END\n",
-  "file": "main.rs",
-  "mode": "NORMAL",
-  "line": 16,
-  "column": 7
-}
-```
-
-This tool is optimized for AI workflows - use it to get contextual information without fetching the entire buffer.
-
-**Session Parameter**:
-All MCP tools (except `list_sessions`) support an optional `session` parameter to specify which session to target. This is useful when multiple ovim sessions are running:
-
-```
-send_keys(keys="ggdd", session="my_session")
-set_mode(mode="INSERT", session="my_session")
-```
-
-**Resources**:
-- `resources/list` - List available resources (buffer, snapshot, lsp/status, current file)
-- `resources/read` - Read resource content
-- `prompts/list` - List available prompts (empty for now)
-
-**Example MCP Usage**:
-```bash
-# Initialize
-curl -X POST http://127.0.0.1:PORT/v1/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"client","version":"1.0"}}}'
-
-# List tools
-curl -X POST http://127.0.0.1:PORT/v1/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
-
-# Call tool (send keys)
-curl -X POST http://127.0.0.1:PORT/v1/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_keys","arguments":{"keys":"gg"}}}'
-
-# Set editor mode (ensures correct state before operations)
-curl -X POST http://127.0.0.1:PORT/v1/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"set_mode","arguments":{"mode":"NORMAL"}}}'
-
-# Read resource
-curl -X POST http://127.0.0.1:PORT/v1/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"ovim://buffer"}}'
-```
-
-**Available Resources**:
-- `ovim://context-window` - 21-line context around cursor (text/plain, AI-optimized!)
-- `ovim://buffer` - Current buffer content (text/plain)
-- `ovim://snapshot` - Complete editor state (application/json)
-- `ovim://lsp/status` - LSP server status (application/json)
-- `file://PATH` - Current file being edited (text/plain)
-
-### Auto-Injection for Claude Code
-
-For seamless AI editing with Claude Code CLI, set up auto-context injection:
-
-**Option 1: Using `ovim context` (Recommended)**
-Every time you message Claude Code, automatically include the current editor context:
-
-```bash
-# In .claude/hooks/before_response.sh (create if needed)
-#!/bin/bash
-ovim context -s my-session | head -30
-```
-
-Then Claude Code will whisper the context into every response automatically.
-
-**Option 2: Manual context fetching**
-Just ask for context when you need it:
-
-```bash
-ovim context -s my-session
-```
-
-**Why this matters:**
-- **Before**: Blind, asking for full buffers (116+ lines of JSON)
-- **Now**: Always see context (21 lines, formatted for reading)
-- **Impact**: AI can work with surgical precision, not bulk replacements
-
-The context window includes the header `[ovim: file.rs | NORMAL | L42:C15]` so you (and Claude) always know where you are.
-
-### Testing
-
-```bash
-# Unit tests
-cargo test
-
-# Headless integration tests
-./target/release/ovim test.txt --headless --session test &
-./ovim-ctl send test "iHello World<Esc>"
-./ovim-ctl snapshot test | jq '.buffer.content'
-./ovim-ctl kill test
-```
-
-More details in ./notes/TESTING.md
-
-### Lua Configuration
-
-Create `~/.config/ovim/init.lua`:
-```lua
-vim.opt.number = true
-vim.opt.relativenumber = true
-vim.opt.tabstop = 4
-vim.opt.shiftwidth = 4
-
--- Reload with :ConfigReload or :reload
-```
-
-## Key Implementation Details
-
-### Session Management
-- **Sessions are opt-in**: TUI mode doesn't register. Headless requires `--session NAME`.
-- TUI users can opt in at runtime with `:session start NAME` / `:session stop`
-- `SessionInfo` struct in `session.rs` with PID, port, file, LSP status
-- Written on startup (headless) or on `:session start` (TUI), auto-deleted on exit
-- PID verification with process start time to prevent PID reuse issues
-- Session health checks verify API endpoint accessibility
-- Session expiry support (optional max-age) for long-running cleanup
-- Atomic writes with temp files to prevent corruption
-- Detailed cleanup reporting with dry-run support
-
-### LSP Integration
-- `LspManager` coordinates multiple language servers
-- `LanguageServer` handles individual server lifecycle
-- Full request/response logging with timing
-- Non-blocking with `try_lock()` to avoid blocking background tasks
-- Debounced `didChange` notifications (150ms) to reduce traffic
-
-### API Architecture
-- Axum server on random port (port 0 → OS assigns)
-- Tokio channels communicate with main event loop
-- Thread-safe state mutations on main thread
-- Port sent back via oneshot channel for session file
-
-### Headless Event Loop
-- Processes API requests, LSP notifications, LSP actions
-- 50ms timeout for API requests (non-blocking)
-- 10ms sleep to avoid busy loop
-- Graceful shutdown with session cleanup
-
-## Code Style
-
-```bash
-cargo fmt      # Format code
-cargo clippy   # Lints
-cargo test     # Tests
-```
-
-## Debugging
-
-```bash
-# LSP logs are in stderr (when --headless)
-./target/release/ovim file.rs --headless 2>&1 | grep LSP-
-
-# Check session files
-cat ~/Library/Caches/ovim/sessions/test.json  # macOS
-cat ~/.cache/ovim/sessions/test.json          # Linux
-
-# Test LSP endpoints
-curl http://127.0.0.1:PORT/v1/lsp/status | jq '.'
-curl http://127.0.0.1:PORT/v1/health | jq '.'
-```
-
-## AI-First IDE
-
-ovim is designed as an **AI-first IDE** with native MCP support and integrated CLI:
-
-**Multi-Session Workflows:**
-```bash
-# Spawn sessions for multiple files
-ovim src/main.rs --headless --session main &
-ovim src/lib.rs --headless --session lib &
-
-# Query and edit via CLI
-ovim buffer -s main
-ovim send "ggdd" -s lib
-
-# Coordinate changes
-ovim session list             # See all active sessions
-ovim session kill -s main     # Kill specific session
-```
-
-### MCP for Any LLM Client
-
-The **HTTP `/mcp` endpoint** is the primary MCP interface. Any tool can use ovim's MCP by:
-
-1. **Discovering sessions**: Read `~/.cache/ovim/sessions/*.json` for port info
-2. **Sending MCP requests**: POST JSON-RPC 2.0 to `http://127.0.0.1:PORT/mcp`
-
-**Supported MCP clients:**
-- Claude Desktop (via `ovim install claude`)
-- Cursor IDE (via `ovim install cursor`)
-- Custom tools (POST to `/mcp` endpoint)
-- Any MCP-compatible client
-
-**Example workflows:**
-```bash
-# Install for Claude/Cursor
-ovim install claude
-ovim install cursor
-
-# Or just use HTTP directly with any tool
-curl -X POST http://127.0.0.1:PORT/v1/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-```
-
+## Gotchas
+
+- **tree-sitter version conflicts**: We use `tree-sitter = "0.25"`. Some grammar crates require older versions (0.19, 0.20, 0.24). Check docs.rs for compatibility before adding.
+- **Workspace structure**: `ovim-core` contains shared logic (syntax, buffer, LSP types), `ovim` is the binary. Language/syntax code lives in ovim-core.
+- **Highlight queries**: Some grammars export `HIGHLIGHTS_QUERY`, others `HIGHLIGHT_QUERY` (singular). Some export neither and need custom `.scm` files.
+- **eprintln!()**: Breaks TUI rendering. Use only for headless debugging, then remove before committing.
+- **Large files**: `editor/mod.rs` is already ~3k lines. Refactor before adding more code there.
+- **Multi-agent work**: If tests fail unexpectedly, another agent may be working on the codebase. Don't `git stash` their changes.
 
 ## Common Tasks
 
@@ -488,71 +108,110 @@ curl -X POST http://127.0.0.1:PORT/v1/mcp \
 2. Call from operator dispatch in `editor/input.rs`
 3. Add tests in `tests/`
 
-## Performance
+**Add new language support:**
+1. Check tree-sitter grammar crate compatibility with `tree-sitter = "0.25"` on docs.rs
+2. Add grammar crate to `ovim-core/Cargo.toml`
+3. Add variant to `Language` enum in `ovim-core/src/syntax/languages.rs`
+4. Update these functions in `languages.rs`:
+   - `detect_from_extension()` - file extension mappings
+   - `get_tree_sitter_language()` - grammar binding (e.g., `tree_sitter_foo::LANGUAGE.into()`)
+   - `get_highlight_query()` - query source (official constant or custom `.scm` file)
+   - `get_lsp_language_id()` - LSP language identifier string
+   - `from_info_string()` - markdown code fence support
+5. Add language config block to `ovim-core/languages.toml`
+6. If grammar doesn't export highlights query, create `ovim-core/src/syntax/queries/<lang>.scm`
+7. Update `user-docs/LANGUAGE_SUPPORT.md`
+8. Test with `ovim lsp check test.<ext> --verbose`
 
-### Large File Optimizations
-**Thresholds**: 50K lines or 5MB triggers optimizations
-
-**Implemented**:
-- `Buffer::is_large_file()` - detects large files (buffer/mod.rs:591-607)
-- Auto-disable syntax highlighting for files >50K lines (buffer/mod.rs:554-580)
-- Render dirty flag - only redraws on state changes (editor/mod.rs:210, event_loop.rs:196-205)
-- `/metrics` endpoint - buffer size, render count, timing (event_loop.rs:516-537)
-
-**Impact**: 10-20x faster large file loading, 10-50x less idle CPU
-
-**Generate benchmarks**: `./generate-benchmarks.sh` (not committed, regenerate locally)
-
-### LSP Hover Fix
-**Issue**: Debounced `didChange` (150ms) causes stale hover data when pressing `K` immediately after typing
-
-**Fix**: Flush pending changes before hover/goto_definition requests (editor/mod.rs:2367-2376, 3367-3378)
-- Pattern: acquire lock → flush → release → 10ms delay → re-acquire → request
-- Prevents lock contention while ensuring LSP has latest content
-
-## Environment
+## Testing
 
 ```bash
-# Working directory
-/Users/adrian.helvik/Personal/ovim
+cargo fmt      # Format code
+cargo clippy   # Lints
+cargo test     # All tests
 
-# Platform
-Darwin 24.4.0 (macOS)
+# Test specific areas
+cargo test syntax --lib              # Syntax highlighting tests
+cargo test buffer --lib              # Buffer tests
+cargo test -p ovim-core              # Core library tests only
 
-# Build target
-aarch64-apple-darwin
-
-# Dependencies
-ropey, ratatui, crossterm, axum, tokio, lsp-types, mlua (optional)
+# Verify new language support
+ovim lsp check test.sql --verbose    # Check language detection
+ovim lsp languages                   # List all languages
 ```
 
-## Best practices
+## Language Support
 
-Files should be no longer than 3k lines of code. When it starts creeping up towards 2k lines, refactor.
-If a file is too large to read, immediately start refactoring it by splitting it up into chunks that are readable and making fields public to just *get smaller files*. First dirty refactor, then clean it up, then proceed with what you were working on before.
-Remember to remove debug logging after debugging sessions, as one stray eprintln!() may break the user facing TUI.
-Commit as you go.
+Run `ovim lsp languages` to see all supported languages.
 
-## Note taking
+**Languages with LSP**: Rust, TypeScript, JavaScript, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, CSS, TOML, Zig, Lua, Elixir
 
-- Keep notes within the notes folder at the root of the repo
-- Keep notes structured and up to date
-- Notes include IMPLEMENTATION_STATUS.md, DESIGN.md, etc. Keep these up to date.
+**Syntax highlighting only**: Markdown, HCL
+
+See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for installation instructions.
+
+## REST API & MCP
+
+**HTTP Server**: Runs on `http://127.0.0.1:PORT` (random port, stored in session file)
+
+| Endpoint | Method | Use Case |
+|----------|--------|----------|
+| `/v1/health` | GET | Health + LSP readiness |
+| `/v1/lsp/status` | GET | Server states & pending requests |
+| `/v1/snapshot` | GET | Complete editor state |
+| `/v1/buffer` | GET/PUT | Buffer content |
+| `/v1/keys` | POST | Send keystrokes |
+| `/v1/command` | POST | Execute ex command |
+| `/v1/mcp` | POST | MCP JSON-RPC 2.0 endpoint |
+
+For MCP protocol details, see [user-docs/MCP.md](user-docs/MCP.md).
+
+## Key Implementation Details
+
+### Session Management
+- **Sessions are opt-in**: TUI mode doesn't register. Headless requires `--session NAME`.
+- `SessionInfo` struct in `session.rs` with PID, port, file, LSP status
+- Session files: macOS `~/Library/Caches/ovim/sessions/`, Linux `~/.cache/ovim/sessions/`
+
+### LSP Integration
+- `LspManager` coordinates multiple language servers
+- `LanguageServer` handles individual server lifecycle
+- Debounced `didChange` notifications (150ms) to reduce traffic
+- Flush pending changes before hover/goto_definition to avoid stale data
+
+### API Architecture
+- Axum server on random port (port 0 → OS assigns)
+- Tokio channels communicate with main event loop
+- Thread-safe state mutations on main thread
+
+## Debugging
+
+```bash
+# LSP logs (headless mode)
+./target/release/ovim file.rs --headless 2>&1 | grep LSP-
+
+# Check session files
+cat ~/Library/Caches/ovim/sessions/test.json  # macOS
+cat ~/.cache/ovim/sessions/test.json          # Linux
+
+# Test endpoints
+curl http://127.0.0.1:PORT/v1/health | jq '.'
+```
+
+## Best Practices
+
+- **File size**: Keep files under 2k lines, refactor at 3k. Split large files before adding more code.
+- **Debug logging**: Remove `eprintln!()` before committing - breaks TUI.
+- **Commits**: Commit early and often when code is in a good state.
+- **Multi-agent**: If your changes overlap with another agent's uncommitted work, don't commit. Let the user consolidate.
+- **Tests failing unexpectedly**: Another agent may be working. Don't `git stash` to check - you'll lose their progress.
 
 ## Documentation
 
-Document the structure of the codebase in the code-docs/ folder. Keep it neat and organized.
+- **notes/**: Internal design docs, implementation status, architecture decisions
+- **code-docs/**: Codebase structure documentation
+- **user-docs/**: User-facing documentation (language support, MCP, etc.)
 
-Document usage in the user-docs/ folder. It should be well organized and easy to understand for users.
+## User Instructions
 
-## User instructions
-
-User instructions are located in PRIORITIES.md and should be prioritized before other tasks. Only check off the tasks (when done and verified), don't edit the text.
-
-## "Pre-existing test failures"? Also avoid running the full test suite
-
-This likely means that another agent is working on unrelated functionality. It is critical that you don't `git stash` to check if it is pre-existing. The user will handle consolidation and running the full test suite in such cases. If you stash another agent's progress, they'll get confused and mess up.
-
-## Committing
-
-Commit early and often when the code is in a good state. Commit your changes. If your changes overlap with changes from another agent, don't commit.
+Check `PRIORITIES.md` for current priorities. Only check off tasks when done and verified.
