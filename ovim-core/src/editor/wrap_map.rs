@@ -182,19 +182,19 @@ impl WrapMap {
             return (base_row, col);
         }
 
-        // Find which sub-line the column falls on.
-        // `col` is a display column. We need to figure out which wrap segment it lands in.
-        // The wrap_points are char indices, but col is a display column.
-        // For cursor_to_visual, we work in display columns per segment.
+        // Walk characters, tracking display columns per wrap segment.
+        // `col` is a display column; wrap_points are char indices.
+        // Invariant: at each wrap point, col >= segment_start_display
+        // (otherwise we would have broken at a previous wrap point).
         let mut segment_start_display = 0;
         let mut current_display = 0;
         let mut sub_line = 0;
         let mut wp_idx = 0;
 
         for (char_idx, ch) in line_text.chars().enumerate() {
-            // Check if we've crossed a wrap point
             if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
-                if col < current_display || (col >= segment_start_display && col < current_display) {
+                if col < current_display {
+                    // col is in the segment that just ended
                     break;
                 }
                 segment_start_display = current_display;
@@ -210,13 +210,8 @@ impl WrapMap {
             current_display += ch_width;
         }
 
-        // col might be beyond all wrap points
-        if col >= segment_start_display {
-            let visual_col = col - segment_start_display;
-            (base_row + sub_line, visual_col)
-        } else {
-            (base_row, col)
-        }
+        let visual_col = col - segment_start_display;
+        (base_row + sub_line, visual_col)
     }
 
     /// Simpler cursor_to_visual that works like the old API when line text isn't available.
@@ -390,5 +385,110 @@ mod tests {
         let map = WrapMap::new(1, 3, 4, 0, make_text(&["世世世"]));
         assert_eq!(map.visual_lines_for(0), 3); // not 2!
         assert_eq!(map.total_visual_lines(), 3);
+    }
+
+    // ---- cursor_to_visual tests ----
+
+    #[test]
+    fn test_cursor_to_visual_no_wrap() {
+        let map = WrapMap::new(1, 80, 4, 0, make_text(&["hello"]));
+        // No wrapping, col maps directly
+        assert_eq!(map.cursor_to_visual(0, 0, "hello"), (0, 0));
+        assert_eq!(map.cursor_to_visual(0, 3, "hello"), (0, 3));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_ascii_wrap() {
+        // 10 chars, wrap at 5 → wrap_point at char 5
+        // Row 0: "abcde" (display cols 0..5), Row 1: "fghij" (display cols 5..10)
+        let text = "abcdefghij";
+        let map = WrapMap::new(1, 5, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 2);
+
+        // Col 0-4 → sub_line 0
+        assert_eq!(map.cursor_to_visual(0, 0, text), (0, 0));
+        assert_eq!(map.cursor_to_visual(0, 4, text), (0, 4));
+        // Col 5+ → sub_line 1
+        assert_eq!(map.cursor_to_visual(0, 5, text), (0 + 1, 0));
+        assert_eq!(map.cursor_to_visual(0, 9, text), (0 + 1, 4));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_multiple_wraps() {
+        // 15 chars, wrap at 5 → 3 visual rows
+        let text = "aaaaabbbbbccccc";
+        let map = WrapMap::new(1, 5, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 3);
+
+        assert_eq!(map.cursor_to_visual(0, 0, text), (0, 0));
+        assert_eq!(map.cursor_to_visual(0, 4, text), (0, 4));
+        assert_eq!(map.cursor_to_visual(0, 5, text), (1, 0));
+        assert_eq!(map.cursor_to_visual(0, 9, text), (1, 4));
+        assert_eq!(map.cursor_to_visual(0, 10, text), (2, 0));
+        assert_eq!(map.cursor_to_visual(0, 14, text), (2, 4));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_wide_chars() {
+        // "世世世" with wrap_width=3
+        // 世 = width 2, so each gets its own row (2+2=4 > 3)
+        // wrap_points at char 1 and char 2
+        // Row 0: 世 (display cols 0..2), Row 1: 世 (display cols 2..4), Row 2: 世
+        let text = "世世世";
+        let map = WrapMap::new(1, 3, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 3);
+
+        assert_eq!(map.cursor_to_visual(0, 0, text), (0, 0)); // first 世
+        assert_eq!(map.cursor_to_visual(0, 2, text), (1, 0)); // second 世
+        assert_eq!(map.cursor_to_visual(0, 4, text), (2, 0)); // third 世
+    }
+
+    #[test]
+    fn test_cursor_to_visual_mixed_ascii_wide() {
+        // "ab世cd" wrap_width=4
+        // a(1) b(1) → 2, 世(2) → 4, fits! c(1) → 5 > 4, wraps
+        // Row 0: "ab世" (cols 0-3), Row 1: "cd" (cols 4-5)
+        let text = "ab世cd";
+        let map = WrapMap::new(1, 4, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 2);
+
+        assert_eq!(map.cursor_to_visual(0, 0, text), (0, 0)); // a
+        assert_eq!(map.cursor_to_visual(0, 1, text), (0, 1)); // b
+        assert_eq!(map.cursor_to_visual(0, 2, text), (0, 2)); // 世 (starts at display col 2)
+        assert_eq!(map.cursor_to_visual(0, 4, text), (1, 0)); // c (wrapped)
+        assert_eq!(map.cursor_to_visual(0, 5, text), (1, 1)); // d
+    }
+
+    #[test]
+    fn test_cursor_to_visual_with_tabs() {
+        // "a\tb" with tab_width=4, wrap_width=6
+        // a = 1 col, \t = 3 cols (4 - 1%4 = 3), b = 1 col → total 5, fits
+        let text = "a\tb";
+        let map = WrapMap::new(1, 6, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 1);
+        assert_eq!(map.cursor_to_visual(0, 0, text), (0, 0));
+        assert_eq!(map.cursor_to_visual(0, 4, text), (0, 4)); // b at display col 4
+    }
+
+    #[test]
+    fn test_cursor_to_visual_col_at_wrap_boundary() {
+        // 10 chars, wrap at 5
+        // Col 5 is the first col of the second row
+        let text = "abcdefghij";
+        let map = WrapMap::new(1, 5, 4, 0, make_text(&[text]));
+        // Col exactly at boundary goes to next row
+        assert_eq!(map.cursor_to_visual(0, 5, text), (1, 0));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_second_line() {
+        // Two lines: first wraps, second doesn't
+        let l0 = "a".repeat(10);
+        let l1 = "bbb";
+        let map = WrapMap::new(2, 5, 4, 0, make_text(&[&l0, l1]));
+        // Line 0: 2 visual rows (base_row 0)
+        // Line 1: 1 visual row (base_row 2)
+        assert_eq!(map.cursor_to_visual(1, 0, l1), (2, 0));
+        assert_eq!(map.cursor_to_visual(1, 2, l1), (2, 2));
     }
 }

@@ -279,9 +279,8 @@ fn substitute_chars(editor: &mut Editor) -> Result<()> {
 
 /// S - substitute entire line
 fn substitute_line(editor: &mut Editor) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
+    let cursor_before = editor.cursor_position();
+    let start_line = editor.buffer().cursor().line();
     let count = editor.effective_count();
     let end_line = (start_line + count).min(editor.buffer().line_count());
 
@@ -293,64 +292,57 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
         String::new()
     };
 
-    if count == 1 {
-        // Single line: clear content but preserve the line itself
-        if let Some(line) = editor.buffer().line(start_line) {
-            let content_len = line.trim_end_matches('\n').chars().count();
-            if content_len > 0 {
-                let deleted =
-                    editor
-                        .buffer_mut()
-                        .delete_range(start_line, 0, start_line, content_len);
-                let range = Range::new((start_line, 0), (start_line, content_len));
-                let change = Change::delete(range, deleted.clone(), cursor_before);
-                editor.delete_to_register_with_type(deleted, RegisterType::Line);
-                editor.add_change(change);
+    // Record all edits atomically (delete + indent insert = single undo)
+    let (deleted_text, edits) = editor.buffer_mut().record(|buf| {
+        if count == 1 {
+            // Single line: clear content but preserve the line itself
+            let deleted = if let Some(line) = buf.line(start_line) {
+                let content_len = line.trim_end_matches('\n').chars().count();
+                if content_len > 0 {
+                    buf.delete_range(start_line, 0, start_line, content_len)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            // Insert indentation
+            if !indent.is_empty() {
+                buf.insert_text_at(start_line, 0, &indent);
             }
-        }
 
-        // Insert indentation
-        if !indent.is_empty() {
-            let indent_len = indent.chars().count();
-            editor.buffer_mut().insert_text_at(start_line, 0, &indent);
-            let change = Change::insert((start_line, 0), indent, cursor_before);
-            editor.add_change(change);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(start_line, indent_len);
+            deleted
         } else {
-            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-        }
-    } else {
-        // Multi-line: delete all lines, insert a blank line with indent
-        let start_pos = (start_line, 0);
-        let end_pos = (end_line, 0);
-        let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
-        let range = Range::new(start_pos, end_pos);
-        let change = Change::delete(range, deleted.clone(), cursor_before);
-        editor.delete_to_register_with_type(deleted, RegisterType::Line);
-        editor.add_change(change);
+            // Multi-line: delete all lines, insert a blank line with indent
+            let deleted = buf.delete_range(start_line, 0, end_line, 0);
 
-        // Insert a new line with indentation
-        let new_line_text = format!("{}\n", indent);
-        let indent_len = indent.chars().count();
-        editor
-            .buffer_mut()
-            .insert_text_at(start_line, 0, &new_line_text);
-        let change = Change::insert((start_line, 0), new_line_text, cursor_before);
-        editor.add_change(change);
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(start_line, indent_len);
+            let new_line_text = format!("{}\n", indent);
+            buf.insert_text_at(start_line, 0, &new_line_text);
+
+            deleted
+        }
+    });
+
+    // Store deleted text in register
+    if !deleted_text.is_empty() {
+        editor.delete_to_register_with_type(deleted_text, RegisterType::Line);
+    }
+
+    // Position cursor at end of indentation
+    let indent_len = indent.chars().count();
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, indent_len);
+
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
 
     editor.clear_count();
-    let insert_cursor = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
+    let insert_cursor = editor.cursor_position();
     editor.start_change_building(insert_cursor);
     editor.set_mode(Mode::Insert);
     Ok(())
