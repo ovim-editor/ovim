@@ -281,43 +281,34 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Perform substitution with change tracking (non-confirm mode)
-    let cursor_before = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
+    // Perform substitution atomically (single undo for all lines)
+    let cursor_before = editor.cursor_position();
 
-    for line_idx in start_line..=end_line.min(editor.buffer().line_count().saturating_sub(1)) {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        for line_idx in start_line..=end_line.min(buf.line_count().saturating_sub(1)) {
+            if let Some(line) = buf.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
 
-            // Perform the substitution
-            let new_text = if global {
-                // Replace all occurrences
-                regex
-                    .replace_all(line_text, replacement.as_str())
-                    .to_string()
-            } else {
-                // Replace first occurrence
-                regex.replace(line_text, replacement.as_str()).to_string()
-            };
+                let new_text = if global {
+                    regex
+                        .replace_all(line_text, replacement.as_str())
+                        .to_string()
+                } else {
+                    regex.replace(line_text, replacement.as_str()).to_string()
+                };
 
-            if new_text != line_text {
-                // Delete old line content and insert new
-                let line_len = line_text.chars().count();
-                let deleted = editor
-                    .buffer_mut()
-                    .delete_range(line_idx, 0, line_idx, line_len);
-                let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
-                let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-                let insert_change = Change::insert((line_idx, 0), new_text, cursor_before);
-                insert_change.apply(editor.buffer_mut());
-
-                editor.add_change(delete_change);
-                editor.add_change(insert_change);
+                if new_text != line_text {
+                    let line_len = line_text.chars().count();
+                    buf.delete_range(line_idx, 0, line_idx, line_len);
+                    buf.insert_text_at(line_idx, 0, &new_text);
+                }
             }
         }
+    });
+
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
 
     Ok(())
@@ -500,59 +491,47 @@ fn handle_global_command(
             editor.set_lsp_status(format!("Yanked {} line(s)", matching_lines.len()));
         }
         _ if sub_command.starts_with("s/") => {
-            // Run substitute on matching lines
-            for &line_idx in &matching_lines {
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    let line_text = line.trim_end_matches('\n');
+            // Parse substitute pattern once, outside the loop
+            let parts: Vec<&str> = sub_command.splitn(4, '/').collect();
+            if parts.len() >= 3 {
+                let sub_pattern = parts[1];
+                let replacement = parts[2];
+                let flags = if parts.len() >= 4 { parts[3] } else { "" };
 
-                    // Parse substitute pattern: s/pattern/replacement/flags
-                    let parts: Vec<&str> = sub_command.splitn(4, '/').collect();
-                    if parts.len() < 3 {
-                        continue;
-                    }
+                let global = flags.contains('g');
+                let ignore_case = flags.contains('i');
 
-                    let sub_pattern = parts[1];
-                    let replacement = parts[2];
-                    let flags = if parts.len() >= 4 { parts[3] } else { "" };
+                use regex::RegexBuilder;
+                if let Ok(sub_regex) = RegexBuilder::new(sub_pattern)
+                    .case_insensitive(ignore_case)
+                    .build()
+                {
+                    // Run substitute on matching lines atomically (single undo)
+                    let cursor_before = editor.cursor_position();
 
-                    let global = flags.contains('g');
-                    let ignore_case = flags.contains('i');
+                    let ((), edits) = editor.buffer_mut().record(|buf| {
+                        for &line_idx in &matching_lines {
+                            if let Some(line) = buf.line(line_idx) {
+                                let line_text = line.trim_end_matches('\n');
 
-                    // Compile regex
-                    use regex::RegexBuilder;
-                    let sub_regex = match RegexBuilder::new(sub_pattern)
-                        .case_insensitive(ignore_case)
-                        .build()
-                    {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
+                                let new_text = if global {
+                                    sub_regex.replace_all(line_text, replacement).to_string()
+                                } else {
+                                    sub_regex.replace(line_text, replacement).to_string()
+                                };
 
-                    // Perform substitution
-                    let new_text = if global {
-                        sub_regex.replace_all(line_text, replacement).to_string()
-                    } else {
-                        sub_regex.replace(line_text, replacement).to_string()
-                    };
+                                if new_text != line_text {
+                                    let line_len = line_text.chars().count();
+                                    buf.delete_range(line_idx, 0, line_idx, line_len);
+                                    buf.insert_text_at(line_idx, 0, &new_text);
+                                }
+                            }
+                        }
+                    });
 
-                    if new_text != line_text {
-                        let cursor_before = (
-                            editor.buffer().cursor().line(),
-                            editor.buffer().cursor().col(),
-                        );
-                        let line_len = line_text.chars().count();
-
-                        let deleted = editor
-                            .buffer_mut()
-                            .delete_range(line_idx, 0, line_idx, line_len);
-                        let delete_range = Range::new((line_idx, 0), (line_idx, line_len));
-                        let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-                        let insert_change = Change::insert((line_idx, 0), new_text, cursor_before);
-                        insert_change.apply(editor.buffer_mut());
-
-                        editor.add_change(delete_change);
-                        editor.add_change(insert_change);
+                    if !edits.is_empty() {
+                        let cursor_after = editor.cursor_position();
+                        editor.push_recorded_undo(edits, cursor_before, cursor_after);
                     }
                 }
             }

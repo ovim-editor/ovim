@@ -466,63 +466,56 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
     match reg_type {
         RegisterType::Block => {
             // Block paste - insert each line at the same column on consecutive lines
+            // Record all inserts atomically (single undo for entire block paste)
             let block_lines: Vec<&str> = text.split('\n').collect();
             let paste_col = col + 1; // Paste after cursor
-            let mut last_pasted_line = line_idx;
-            let mut last_pasted_text = "";
 
-            for (i, block_line) in block_lines.iter().enumerate() {
-                let target_line = line_idx + i;
-                if target_line >= editor.buffer().line_count() {
-                    break; // Don't create new lines for block paste
-                }
+            let (last_paste_info, edits) = editor.buffer_mut().record(|buf| {
+                let mut last_line = line_idx;
+                let mut last_text_len: usize = 0;
 
-                // Get current line and check if it's the final empty line (from trailing newline)
-                if let Some(line_text) = editor.buffer().line(target_line) {
-                    let line_content = line_text.trim_end_matches('\n');
-
-                    // Skip the final empty line (implicit from trailing newline)
-                    if line_content.is_empty() && target_line == editor.buffer().line_count() - 1 {
+                for (i, block_line) in block_lines.iter().enumerate() {
+                    let target_line = line_idx + i;
+                    if target_line >= buf.line_count() {
                         break;
                     }
 
-                    let line_len = line_content.chars().count();
+                    if let Some(line_text) = buf.line(target_line) {
+                        let line_content = line_text.trim_end_matches('\n');
 
-                    // Calculate insertion position
-                    let insert_col = if paste_col > line_len {
-                        // Pad the line with spaces if needed
-                        let padding = " ".repeat(paste_col - line_len);
-                        let padded_text = format!("{}{}", padding, block_line);
-                        let change =
-                            Change::insert((target_line, line_len), padded_text, cursor_before);
-                        change.apply(editor.buffer_mut());
-                        editor.add_change(change);
-                        last_pasted_line = target_line;
-                        last_pasted_text = block_line;
-                        continue;
-                    } else {
-                        paste_col
-                    };
+                        if line_content.is_empty() && target_line == buf.line_count() - 1 {
+                            break;
+                        }
 
-                    // Insert the block line at the column
-                    let change = Change::insert(
-                        (target_line, insert_col),
-                        block_line.to_string(),
-                        cursor_before,
-                    );
-                    change.apply(editor.buffer_mut());
-                    editor.add_change(change);
-                    last_pasted_line = target_line;
-                    last_pasted_text = block_line;
+                        let line_len = line_content.chars().count();
+
+                        if paste_col > line_len {
+                            let padding = " ".repeat(paste_col - line_len);
+                            let padded_text = format!("{}{}", padding, block_line);
+                            buf.insert_text_at(target_line, line_len, &padded_text);
+                        } else {
+                            buf.insert_text_at(target_line, paste_col, block_line);
+                        }
+
+                        last_line = target_line;
+                        last_text_len = block_line.chars().count();
+                    }
                 }
-            }
 
-            // Position cursor at the end of the last pasted block line
-            let new_col = paste_col + last_pasted_text.chars().count();
+                (last_line, last_text_len)
+            });
+
+            let (last_pasted_line, last_text_char_count) = last_paste_info;
+            let new_col = paste_col + last_text_char_count;
             editor
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(last_pasted_line, new_col);
+
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
         }
         RegisterType::Line => {
             // Line paste - insert after current line
@@ -608,55 +601,55 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
 
     match reg_type {
         RegisterType::Block => {
+            // Block paste before - record all inserts atomically (single undo)
             let block_lines: Vec<&str> = text.split('\n').collect();
             let paste_col = col;
-            let mut last_pasted_line = line_idx;
-            let mut last_pasted_text = "";
 
-            for (i, block_line) in block_lines.iter().enumerate() {
-                let target_line = line_idx + i;
-                if target_line >= editor.buffer().line_count() {
-                    break;
-                }
+            let (last_paste_info, edits) = editor.buffer_mut().record(|buf| {
+                let mut last_line = line_idx;
+                let mut last_text_len: usize = 0;
 
-                if let Some(line_text) = editor.buffer().line(target_line) {
-                    let line_content = line_text.trim_end_matches('\n');
-                    if line_content.is_empty() && target_line == editor.buffer().line_count() - 1 {
+                for (i, block_line) in block_lines.iter().enumerate() {
+                    let target_line = line_idx + i;
+                    if target_line >= buf.line_count() {
                         break;
                     }
 
-                    let line_len = line_content.chars().count();
-                    let insert_col = if paste_col > line_len {
-                        let padding = " ".repeat(paste_col - line_len);
-                        let padded_text = format!("{}{}", padding, block_line);
-                        let change =
-                            Change::insert((target_line, line_len), padded_text, cursor_before);
-                        change.apply(editor.buffer_mut());
-                        editor.add_change(change);
-                        last_pasted_line = target_line;
-                        last_pasted_text = block_line;
-                        continue;
-                    } else {
-                        paste_col
-                    };
+                    if let Some(line_text) = buf.line(target_line) {
+                        let line_content = line_text.trim_end_matches('\n');
+                        if line_content.is_empty() && target_line == buf.line_count() - 1 {
+                            break;
+                        }
 
-                    let change = Change::insert(
-                        (target_line, insert_col),
-                        block_line.to_string(),
-                        cursor_before,
-                    );
-                    change.apply(editor.buffer_mut());
-                    editor.add_change(change);
-                    last_pasted_line = target_line;
-                    last_pasted_text = block_line;
+                        let line_len = line_content.chars().count();
+
+                        if paste_col > line_len {
+                            let padding = " ".repeat(paste_col - line_len);
+                            let padded_text = format!("{}{}", padding, block_line);
+                            buf.insert_text_at(target_line, line_len, &padded_text);
+                        } else {
+                            buf.insert_text_at(target_line, paste_col, block_line);
+                        }
+
+                        last_line = target_line;
+                        last_text_len = block_line.chars().count();
+                    }
                 }
-            }
 
-            let new_col = paste_col + last_pasted_text.chars().count();
+                (last_line, last_text_len)
+            });
+
+            let (last_pasted_line, last_text_char_count) = last_paste_info;
+            let new_col = paste_col + last_text_char_count;
             editor
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(last_pasted_line, new_col);
+
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
         }
         RegisterType::Line => {
             // Line paste before - insert at end of previous line (newline splits correctly)
