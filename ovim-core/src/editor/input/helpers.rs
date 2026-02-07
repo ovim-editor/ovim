@@ -4,6 +4,7 @@
 
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
+use crate::repeat_action::RepeatAction;
 use crate::unicode::grapheme_count;
 use anyhow::Result;
 
@@ -878,14 +879,10 @@ pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
 
     let cursor_after = editor.cursor_position();
     editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    editor.set_repeat_change(Change::join_lines(
+    editor.set_repeat_action(RepeatAction::JoinLines {
         count,
-        true,
-        cursor_before,
-        cursor_after,
-        String::new(),
-        Range::default(),
-    ));
+        add_space: true,
+    });
 
     Ok(())
 }
@@ -898,14 +895,10 @@ pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
 
     let cursor_after = editor.cursor_position();
     editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    editor.set_repeat_change(Change::join_lines(
+    editor.set_repeat_action(RepeatAction::JoinLines {
         count,
-        false,
-        cursor_before,
-        cursor_after,
-        String::new(),
-        Range::default(),
-    ));
+        add_space: false,
+    });
 
     Ok(())
 }
@@ -939,10 +932,11 @@ pub fn indent_lines_with_tracking(
             .set_position(last_line, tab_width);
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        // Set repeat change: insert spaces at current cursor position
-        // (old behavior: last InsertText was the repeat template)
-        let indent_str = " ".repeat(tab_width);
-        editor.set_repeat_change(Change::insert(cursor_after, indent_str, cursor_after));
+        let line_count = actual_end - start_line;
+        editor.set_repeat_action(RepeatAction::IndentLines {
+            line_count,
+            tab_width,
+        });
         editor.mark_buffer_modified();
     }
     Ok(())
@@ -955,10 +949,6 @@ pub fn dedent_lines_with_tracking(
     tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
-    // Track the last deletion for dot-repeat
-    let mut last_deleted = String::new();
-    let mut last_chars_removed = 0usize;
-
     let ((), edits) = editor.buffer_mut().record(|buf| {
         let actual_end = end_line.min(buf.line_count());
         for line_idx in start_line..actual_end {
@@ -979,9 +969,7 @@ pub fn dedent_lines_with_tracking(
                 }
 
                 if chars_to_remove > 0 {
-                    let deleted = buf.delete_range(line_idx, 0, line_idx, chars_to_remove);
-                    last_deleted = deleted;
-                    last_chars_removed = chars_to_remove;
+                    buf.delete_range(line_idx, 0, line_idx, chars_to_remove);
                 }
             }
         }
@@ -989,11 +977,11 @@ pub fn dedent_lines_with_tracking(
     if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        // Set repeat change: delete leading whitespace (same shape as last line's deletion)
-        if last_chars_removed > 0 {
-            let range = Range::new((0, 0), (0, last_chars_removed));
-            editor.set_repeat_change(Change::delete(range, last_deleted, (0, 0)));
-        }
+        let line_count = end_line.min(editor.buffer().line_count()) - start_line;
+        editor.set_repeat_action(RepeatAction::DedentLines {
+            line_count,
+            tab_width,
+        });
         editor.mark_buffer_modified();
     }
     Ok(())

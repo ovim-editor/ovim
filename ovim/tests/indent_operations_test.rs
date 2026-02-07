@@ -662,17 +662,19 @@ fn test_dedent_tabs() {
 fn test_indent_dot_repeat() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys(">>") // Indent
+    test.keys(">>") // Indent line 1
         .keys("j") // Move down
-        .press('.') // Repeat
+        .press('.') // Repeat indent on line 2
         .keys("j")
-        .press('.'); // Repeat again
+        .press('.'); // Repeat indent on line 3
 
+    // Bug fix: dot-repeat now correctly indents at col 0 (like >>)
+    // instead of inserting spaces at cursor position
     assert_eq!(
         test.buffer_content(),
-        "    line 1\nline     2\nline     3\n"
+        "    line 1\n    line 2\n    line 3\n"
     );
-    test.assert_cursor(2, 9);
+    test.assert_cursor(2, 4);
 }
 
 #[test]

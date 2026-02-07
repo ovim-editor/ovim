@@ -6,6 +6,7 @@
 use crate::editor::input::helpers;
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
+use crate::repeat_action::RepeatAction;
 use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
 
@@ -366,6 +367,8 @@ fn toggle_case(editor: &mut Editor) -> Result<()> {
     for _ in 0..count {
         case::toggle_case_at_cursor(editor)?;
     }
+    // Set repeat action with the full count (overrides per-char set_repeat_action)
+    editor.set_repeat_action(RepeatAction::ToggleCase { count });
     editor.clear_count();
     Ok(())
 }

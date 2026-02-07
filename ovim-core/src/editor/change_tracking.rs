@@ -2,6 +2,7 @@
 
 use super::{Change, Editor, Position};
 use crate::edit::Edit;
+use crate::repeat_action::RepeatAction;
 
 impl Editor {
     /// Pops the last change from the undo stack (without undoing it)
@@ -31,6 +32,23 @@ impl Editor {
     /// Buffer mutations are captured via `record()` so the undo entry uses
     /// mechanical inverse edits rather than semantic replay.
     pub fn repeat_last_change(&mut self) {
+        // Try RepeatAction first (semantic repeat for Pattern B operations)
+        if let Some(action) = self.buffer().change_manager().last_repeat_action.clone() {
+            let buf = self.buffer_mut();
+            let before = (buf.cursor().line(), buf.cursor().col());
+            let ((), edits) = buf.record(|b| {
+                action.execute(b);
+            });
+            let after = (buf.cursor().line(), buf.cursor().col());
+            if !edits.is_empty() {
+                let undo_change = Change::recorded(edits, before, after);
+                buf.change_manager_mut().undo_stack.push(undo_change);
+                buf.change_manager_mut().redo_stack.clear();
+            }
+            return;
+        }
+
+        // Fall back to Change-based repeat
         let buf = self.buffer_mut();
         if let Some(change) = buf.change_manager().last_change().cloned() {
             let mut repeated = change;
@@ -69,6 +87,7 @@ impl Editor {
     ) {
         let change = Change::recorded(edits, cursor_before, cursor_after);
         let cm = self.buffer_mut().change_manager_mut();
+        cm.last_edit_position = Some(cursor_before);
         cm.undo_stack.push(change);
         cm.redo_stack.clear();
     }
@@ -78,9 +97,21 @@ impl Editor {
         self.buffer_mut().change_manager_mut().last_change = Some(change);
     }
 
+    /// Sets a semantic repeat action for dot-repeat (mutually exclusive with last_change).
+    pub fn set_repeat_action(&mut self, action: RepeatAction) {
+        let cm = self.buffer_mut().change_manager_mut();
+        cm.last_repeat_action = Some(action);
+        cm.last_change = None; // Mutual exclusion: RepeatAction wins
+    }
+
     /// Returns the current cursor position as (line, col).
     pub fn cursor_position(&self) -> Position {
         (self.buffer().cursor().line(), self.buffer().cursor().col())
+    }
+
+    /// Returns the last position where an edit occurred (for g; navigation).
+    pub fn last_edit_position(&self) -> Option<Position> {
+        self.buffer().change_manager().last_edit_position
     }
 
     /// Updates the . register with the last inserted text
