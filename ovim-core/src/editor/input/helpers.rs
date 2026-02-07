@@ -975,6 +975,8 @@ pub fn dedent_lines_with_tracking(
         }
     });
     if !edits.is_empty() {
+        // Clamp cursor to new line length after dedent
+        clamp_cursor_to_buffer(editor);
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         let line_count = end_line.min(editor.buffer().line_count()) - start_line;

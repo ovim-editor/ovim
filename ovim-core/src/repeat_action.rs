@@ -70,6 +70,17 @@ impl RepeatAction {
                         }
                     }
                 }
+                // Clamp cursor: line may have shortened
+                let cur_line = buffer.cursor().line();
+                let cur_col = buffer.cursor().col();
+                if let Some(line) = buffer.line(cur_line) {
+                    let line_len = line.trim_end_matches('\n').chars().count();
+                    if cur_col > 0 && cur_col >= line_len {
+                        buffer
+                            .cursor_mut()
+                            .set_col(if line_len > 0 { line_len - 1 } else { 0 });
+                    }
+                }
             }
             Self::ToggleCase { count } => {
                 for _ in 0..*count {
@@ -92,9 +103,16 @@ impl RepeatAction {
                     };
                     buffer.delete_range(line_idx, col, line_idx, col + 1);
                     buffer.insert_text_at(line_idx, col, &toggled);
+                    // Re-read line length: toggling may change char count (e.g. ß → SS)
                     let new_col = col + toggled.chars().count();
-                    if new_col < chars.len() {
+                    let new_line_len = buffer
+                        .line(line_idx)
+                        .map(|l| l.trim_end_matches('\n').chars().count())
+                        .unwrap_or(0);
+                    if new_col < new_line_len {
                         buffer.cursor_mut().set_col(new_col);
+                    } else {
+                        break; // At end of line — stop, don't re-toggle same char
                     }
                 }
             }

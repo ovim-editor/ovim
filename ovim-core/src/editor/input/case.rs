@@ -15,19 +15,20 @@ pub enum CaseChange {
 }
 
 /// Toggle case of character at cursor position (~)
-pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
+/// Returns true if the cursor advanced (more chars available).
+pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<bool> {
     let cursor_before = editor.cursor_position();
     let line_idx = cursor_before.0;
     let col = cursor_before.1;
 
     let Some(line) = editor.buffer().line(line_idx) else {
-        return Ok(());
+        return Ok(false);
     };
     let line_text = line.trim_end_matches('\n');
     let chars: Vec<char> = line_text.chars().collect();
 
     if col >= chars.len() {
-        return Ok(());
+        return Ok(false);
     }
 
     let ch = chars[col];
@@ -43,8 +44,15 @@ pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
     });
 
     // Move cursor right (Vim behavior)
+    // Re-read line length: toggling may change char count (e.g. ß → SS)
     let new_col = col + toggled.chars().count();
-    if new_col < chars.len() {
+    let new_line_len = editor
+        .buffer()
+        .line(line_idx)
+        .map(|l| l.trim_end_matches('\n').chars().count())
+        .unwrap_or(0);
+    let advanced = new_col < new_line_len;
+    if advanced {
         editor.buffer_mut().cursor_mut().set_col(new_col);
     }
 
@@ -52,7 +60,7 @@ pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
     editor.push_recorded_undo(edits, cursor_before, cursor_after);
     editor.set_repeat_action(RepeatAction::ToggleCase { count: 1 });
 
-    Ok(())
+    Ok(advanced)
 }
 
 /// Changes case of entire line(s)
