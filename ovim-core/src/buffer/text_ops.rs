@@ -1,5 +1,6 @@
 use super::Buffer;
 use crate::edit::Edit;
+use crate::unicode::grapheme_count;
 
 impl Buffer {
     /// Inserts text at a specific position (line, col)
@@ -270,6 +271,90 @@ impl Buffer {
         }
 
         Ok(())
+    }
+
+    /// Remove up to tab_width leading whitespace chars from lines [start, end).
+    pub fn dedent_lines_at(&mut self, start: usize, end: usize, tab_width: usize) {
+        let actual_end = end.min(self.line_count());
+        for line_idx in start..actual_end {
+            if let Some(line) = self.line(line_idx) {
+                let line_text = line.trim_end_matches('\n');
+                let chars: Vec<char> = line_text.chars().collect();
+                let mut remove = 0;
+                for &ch in chars.iter().take(tab_width) {
+                    if ch == ' ' {
+                        remove += 1;
+                    } else if ch == '\t' {
+                        remove += 1;
+                        break;
+                    } else {
+                        break;
+                    }
+                }
+                if remove > 0 {
+                    self.delete_range(line_idx, 0, line_idx, remove);
+                }
+            }
+        }
+    }
+
+    /// Clamp cursor column to valid range for current line (normal mode: last char).
+    pub fn clamp_cursor_col(&mut self) {
+        let line = self.cursor().line();
+        let col = self.cursor().col();
+        if let Some(line_text) = self.line(line) {
+            let line_len = grapheme_count(line_text.trim_end_matches('\n'));
+            if col > 0 && col >= line_len {
+                self.cursor_mut()
+                    .set_col(if line_len > 0 { line_len - 1 } else { 0 });
+            }
+        }
+    }
+
+    /// Indent lines [start, end) by inserting tab_width spaces at column 0.
+    pub fn indent_lines_at(&mut self, start: usize, end: usize, tab_width: usize) {
+        let actual_end = end.min(self.line_count());
+        let indent_str = " ".repeat(tab_width);
+        for line_idx in start..actual_end {
+            self.insert_text_at(line_idx, 0, &indent_str);
+        }
+    }
+
+    /// Toggle case of character at cursor, advance cursor.
+    /// Returns true if cursor advanced (more chars available on line).
+    pub fn toggle_char_at_cursor(&mut self) -> bool {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        let Some(line) = self.line(line_idx) else {
+            return false;
+        };
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+        if col >= chars.len() {
+            return false;
+        }
+
+        let ch = chars[col];
+        let toggled = if ch.is_lowercase() {
+            ch.to_uppercase().to_string()
+        } else {
+            ch.to_lowercase().to_string()
+        };
+        self.delete_range(line_idx, col, line_idx, col + 1);
+        self.insert_text_at(line_idx, col, &toggled);
+
+        // Re-read line length: toggling may change char count (e.g. ß → SS)
+        let new_col = col + toggled.chars().count();
+        let new_line_len = self
+            .line(line_idx)
+            .map(|l| l.trim_end_matches('\n').chars().count())
+            .unwrap_or(0);
+        if new_col < new_line_len {
+            self.cursor_mut().set_col(new_col);
+            true
+        } else {
+            false
+        }
     }
 
     /// Gets the word under the cursor

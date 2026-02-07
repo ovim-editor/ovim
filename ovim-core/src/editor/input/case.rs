@@ -18,43 +18,8 @@ pub enum CaseChange {
 /// Returns true if the cursor advanced (more chars available).
 pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<bool> {
     let cursor_before = editor.cursor_position();
-    let line_idx = cursor_before.0;
-    let col = cursor_before.1;
 
-    let Some(line) = editor.buffer().line(line_idx) else {
-        return Ok(false);
-    };
-    let line_text = line.trim_end_matches('\n');
-    let chars: Vec<char> = line_text.chars().collect();
-
-    if col >= chars.len() {
-        return Ok(false);
-    }
-
-    let ch = chars[col];
-    let toggled = if ch.is_lowercase() {
-        ch.to_uppercase().to_string()
-    } else {
-        ch.to_lowercase().to_string()
-    };
-
-    let ((), edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_range(line_idx, col, line_idx, col + 1);
-        buf.insert_text_at(line_idx, col, &toggled);
-    });
-
-    // Move cursor right (Vim behavior)
-    // Re-read line length: toggling may change char count (e.g. ß → SS)
-    let new_col = col + toggled.chars().count();
-    let new_line_len = editor
-        .buffer()
-        .line(line_idx)
-        .map(|l| l.trim_end_matches('\n').chars().count())
-        .unwrap_or(0);
-    let advanced = new_col < new_line_len;
-    if advanced {
-        editor.buffer_mut().cursor_mut().set_col(new_col);
-    }
+    let (advanced, edits) = editor.buffer_mut().record(|buf| buf.toggle_char_at_cursor());
 
     let cursor_after = editor.cursor_position();
     editor.push_recorded_undo(edits, cursor_before, cursor_after);

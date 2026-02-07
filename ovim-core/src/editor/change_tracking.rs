@@ -92,11 +92,6 @@ impl Editor {
         cm.redo_stack.clear();
     }
 
-    /// Sets the dot-repeat register without pushing to the undo stack.
-    pub fn set_repeat_change(&mut self, change: Change) {
-        self.buffer_mut().change_manager_mut().last_change = Some(change);
-    }
-
     /// Sets a semantic repeat action for dot-repeat (mutually exclusive with last_change).
     pub fn set_repeat_action(&mut self, action: RepeatAction) {
         let cm = self.buffer_mut().change_manager_mut();
