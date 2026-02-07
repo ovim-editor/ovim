@@ -127,9 +127,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_mode(Mode::Insert);
         }
         ('g', KeyCode::Char(';')) => {
-            // g; - jump to last change position
-            if let Some(change) = editor.last_change() {
-                let pos = change.edit_position();
+            // g; - jump to last edit position
+            if let Some(pos) = editor.last_edit_position() {
                 editor.buffer_mut().cursor_mut().set_position(pos.0, pos.1);
             }
             editor.clear_count();

@@ -1,5 +1,6 @@
 use crate::buffer::Buffer;
 use crate::edit::Edit;
+use crate::repeat_action::RepeatAction;
 use crate::search::Search;
 use crate::textobjects::TextObjects;
 use anyhow::Result;
@@ -1412,6 +1413,10 @@ pub struct ChangeManager {
     pub last_change: Option<Change>,
     /// Tracks the undo stack size at last save (None if never saved)
     pub save_point: Option<usize>,
+    /// Last position where an edit occurred (for g; navigation)
+    pub last_edit_position: Option<Position>,
+    /// Semantic repeat action for dot-repeat (mutually exclusive with last_change)
+    pub last_repeat_action: Option<RepeatAction>,
 }
 
 impl Default for ChangeManager {
@@ -1428,6 +1433,8 @@ impl ChangeManager {
             current_builder: None,
             last_change: None,
             save_point: Some(0), // Start at save point (empty buffer is saved)
+            last_edit_position: None,
+            last_repeat_action: None,
         }
     }
 
@@ -1464,9 +1471,11 @@ impl ChangeManager {
 
     /// Pushes a change to the undo stack
     pub fn push_change(&mut self, change: Change) {
+        self.last_edit_position = Some(change.edit_position());
         self.undo_stack.push(change.clone());
         self.redo_stack.clear(); // Clear redo stack on new change
         self.last_change = Some(change);
+        self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
     }
 
     /// Undoes the last change

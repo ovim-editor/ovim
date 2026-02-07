@@ -4,6 +4,7 @@
 
 use crate::buffer::Buffer;
 use crate::editor::Editor;
+use crate::repeat_action::RepeatAction;
 use anyhow::Result;
 
 /// Type of case change operation
@@ -49,7 +50,7 @@ pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<()> {
 
     let cursor_after = editor.cursor_position();
     editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    // Case toggle repeat is not yet implemented (Chunk 4 - RepeatAction)
+    editor.set_repeat_action(RepeatAction::ToggleCase { count: 1 });
 
     Ok(())
 }
