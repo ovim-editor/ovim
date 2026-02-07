@@ -365,7 +365,10 @@ fn yank_line(editor: &mut Editor) -> Result<()> {
 fn toggle_case(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
     for _ in 0..count {
-        case::toggle_case_at_cursor(editor)?;
+        let advanced = case::toggle_case_at_cursor(editor)?;
+        if !advanced {
+            break; // At end of line — stop, don't re-toggle same char
+        }
     }
     // Set repeat action with the full count (overrides per-char set_repeat_action)
     editor.set_repeat_action(RepeatAction::ToggleCase { count });
