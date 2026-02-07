@@ -318,17 +318,17 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     // Get tab width from config or use default
     let tab_width = editor.options.tab_width;
 
-    // Create indent string
-    let indent_str = " ".repeat(tab_width);
-
     // Insert indent at beginning of line
-    editor.buffer_mut().insert_text_at(line_idx, 0, &indent_str);
+    editor
+        .buffer_mut()
+        .indent_lines_at(line_idx, line_idx + 1, tab_width);
 
     // Update cursor position - move column right by tab_width
     let new_col = col + tab_width;
     editor.buffer_mut().cursor_mut().set_col(new_col);
 
-    // Create change for undo
+    // Create change for undo (Pattern A — composes with insert-mode undo group)
+    let indent_str = " ".repeat(tab_width);
     let change = Change::insert((line_idx, 0), indent_str, cursor_before);
     editor.add_change(change);
 
@@ -918,10 +918,7 @@ pub fn indent_lines_with_tracking(
     };
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
-        for line_idx in start_line..actual_end {
-            let indent_str = " ".repeat(tab_width);
-            buf.insert_text_at(line_idx, 0, &indent_str);
-        }
+        buf.indent_lines_at(start_line, actual_end, tab_width);
     });
     if !edits.is_empty() {
         // Position cursor on last indented line at col = tab_width
@@ -951,28 +948,7 @@ pub fn dedent_lines_with_tracking(
 ) -> Result<()> {
     let ((), edits) = editor.buffer_mut().record(|buf| {
         let actual_end = end_line.min(buf.line_count());
-        for line_idx in start_line..actual_end {
-            if let Some(line) = buf.line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
-                let chars: Vec<char> = line_text.chars().collect();
-                let mut chars_to_remove = 0;
-
-                for &ch in chars.iter().take(tab_width) {
-                    if ch == ' ' {
-                        chars_to_remove += 1;
-                    } else if ch == '\t' {
-                        chars_to_remove += 1;
-                        break;
-                    } else {
-                        break;
-                    }
-                }
-
-                if chars_to_remove > 0 {
-                    buf.delete_range(line_idx, 0, line_idx, chars_to_remove);
-                }
-            }
-        }
+        buf.dedent_lines_at(start_line, actual_end, tab_width);
     });
     if !edits.is_empty() {
         // Clamp cursor to new line length after dedent
@@ -1006,23 +982,8 @@ pub fn clamp_cursor_to_buffer(editor: &mut Editor) {
         editor.buffer_mut().cursor_mut().set_line(clamped_line);
     }
 
-    // Then, clamp column to valid range for the line
-    let current_line = editor.buffer().cursor().line();
-    if let Some(line) = editor.buffer().line(current_line) {
-        let line_text = line.trim_end_matches('\n');
-        let line_len = line_text.chars().count();
-        let cursor_col = editor.buffer().cursor().col();
-
-        if line_len == 0 {
-            // Empty line, set to column 0
-            if cursor_col != 0 {
-                editor.buffer_mut().cursor_mut().set_col(0);
-            }
-        } else if cursor_col >= line_len {
-            // Past end of line, clamp to last character
-            editor.buffer_mut().cursor_mut().set_col(line_len - 1);
-        }
-    }
+    // Then, clamp column to valid range for the line (grapheme-aware)
+    editor.buffer_mut().clamp_cursor_col();
 }
 
 /// Exit visual mode and save the selection for gv command
