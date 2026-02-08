@@ -5,13 +5,13 @@ pub use dashboard::MENU_ITEMS;
 
 // Internal modules
 mod buffer;
-pub mod line_cache;
 pub mod cat_animation;
 mod core;
 pub mod dashboard;
 mod file_tree_widget;
 mod helpers;
 mod layout;
+pub mod line_cache;
 pub mod lsp_manager;
 mod markdown;
 mod overlays;

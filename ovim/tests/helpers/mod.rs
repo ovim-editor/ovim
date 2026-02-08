@@ -1,14 +1,14 @@
+pub mod dsl;
 pub mod test_session;
 mod viewport_assertions;
-pub mod dsl;
 
 pub use test_session::TestSession;
 #[allow(unused_imports)]
 pub use viewport_assertions::ViewportAssertion;
 
-use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 #[macro_export]
 macro_rules! editor_test {
@@ -337,18 +337,10 @@ impl EditorTest {
                                 self.press_with(KeyCode::Char(c), Modifiers::CONTROL)
                             } else {
                                 match char_part {
-                                    "[" => {
-                                        self.press_with(KeyCode::Char('['), Modifiers::CONTROL)
-                                    }
-                                    "]" => {
-                                        self.press_with(KeyCode::Char(']'), Modifiers::CONTROL)
-                                    }
-                                    "^" => {
-                                        self.press_with(KeyCode::Char('^'), Modifiers::CONTROL)
-                                    }
-                                    " " => {
-                                        self.press_with(KeyCode::Char(' '), Modifiers::CONTROL)
-                                    }
+                                    "[" => self.press_with(KeyCode::Char('['), Modifiers::CONTROL),
+                                    "]" => self.press_with(KeyCode::Char(']'), Modifiers::CONTROL),
+                                    "^" => self.press_with(KeyCode::Char('^'), Modifiers::CONTROL),
+                                    " " => self.press_with(KeyCode::Char(' '), Modifiers::CONTROL),
                                     _ => panic!("Unknown Ctrl key: <{}>", special_key),
                                 }
                             }

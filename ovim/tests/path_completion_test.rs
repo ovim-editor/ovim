@@ -1,7 +1,7 @@
 mod helpers;
-use ovim_core::KeyCode;
 use helpers::EditorTest;
 use ovim::mode::Mode;
+use ovim_core::KeyCode;
 use std::fs;
 use tempfile::TempDir;
 

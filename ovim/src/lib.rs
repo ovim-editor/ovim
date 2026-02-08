@@ -7,10 +7,10 @@
 #![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
 
 pub mod api;
-pub mod key_convert;
 pub mod cli;
 pub mod client;
 pub mod daemon;
+pub mod key_convert;
 pub mod mcp_stdio_server;
 pub mod subcommands;
 pub mod ui;

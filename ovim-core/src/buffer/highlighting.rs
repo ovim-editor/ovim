@@ -44,11 +44,7 @@ fn find_inline_code_spans(line: &str) -> Vec<Range<usize>> {
                     if close_count == backtick_count {
                         // Found matching close - span covers open backticks through close backticks
                         // Use byte position after the last closing backtick
-                        let close_byte_end = if i < len {
-                            indexed[i].0
-                        } else {
-                            line.len()
-                        };
+                        let close_byte_end = if i < len { indexed[i].0 } else { line.len() };
                         spans.push(open_byte_start..close_byte_end);
                         found_close = true;
                         break;

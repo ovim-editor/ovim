@@ -1,7 +1,7 @@
 mod helpers;
-use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
 use ovim::mode::Mode;
+use ovim_core::{KeyCode, Modifiers};
 
 // ============================================================================
 // 'v' command - Character-wise visual mode

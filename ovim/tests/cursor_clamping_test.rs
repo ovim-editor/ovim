@@ -1,6 +1,6 @@
-use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
 use ovim_core::buffer::Buffer;
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {
@@ -308,9 +308,16 @@ fn test_dedent_clamps_cursor_with_emoji() {
 
     // Line should now be "a👨‍👩‍👧‍👦b\n"
     let line = editor.buffer().line(0).unwrap();
-    assert_eq!(line.trim_end_matches('\n'), "a👨\u{200d}👩\u{200d}👧\u{200d}👦b");
+    assert_eq!(
+        line.trim_end_matches('\n'),
+        "a👨\u{200d}👩\u{200d}👧\u{200d}👦b"
+    );
 
     // Cursor should be clamped to valid grapheme position
     let col = editor.buffer().cursor().col();
-    assert!(col <= 2, "cursor col {} should be <= 2 (last grapheme index)", col);
+    assert!(
+        col <= 2,
+        "cursor col {} should be <= 2 (last grapheme index)",
+        col
+    );
 }

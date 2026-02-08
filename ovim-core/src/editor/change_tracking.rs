@@ -34,6 +34,20 @@ impl Editor {
     pub fn repeat_last_change(&mut self) {
         // Try RepeatAction first (semantic repeat for Pattern B operations)
         if let Some(action) = self.buffer().change_manager().last_repeat_action.clone() {
+            // Paste repeat needs Editor-level access (registers), handle specially
+            match &action {
+                RepeatAction::PasteAfter | RepeatAction::PasteBefore => {
+                    let is_after = matches!(action, RepeatAction::PasteAfter);
+                    let _ = if is_after {
+                        crate::editor::input::helpers::paste_after(self)
+                    } else {
+                        crate::editor::input::helpers::paste_before(self)
+                    };
+                    return;
+                }
+                _ => {}
+            }
+
             let buf = self.buffer_mut();
             let before = (buf.cursor().line(), buf.cursor().col());
             let ((), edits) = buf.record(|b| {

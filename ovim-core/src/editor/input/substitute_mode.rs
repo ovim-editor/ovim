@@ -4,8 +4,8 @@
 //! Keys: y (yes), n (no/skip), a (all), q (quit), l (last - substitute and quit)
 
 use crate::editor::Editor;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Handles input in SubstituteConfirm mode
 /// Keys: y (yes), n (no/skip), a (all), q (quit), l (last - substitute and quit)

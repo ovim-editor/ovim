@@ -844,7 +844,9 @@ impl Editor {
                 LspAction::GoToDefinition => self.goto_definition_impl().await,
                 LspAction::GoToDefinitionNewTab => self.goto_definition_new_tab_impl().await,
                 LspAction::GoToImplementation => self.goto_implementation_impl().await,
-                LspAction::GoToImplementationNewTab => self.goto_implementation_new_tab_impl().await,
+                LspAction::GoToImplementationNewTab => {
+                    self.goto_implementation_new_tab_impl().await
+                }
                 LspAction::GoToType => self.goto_type_impl().await,
                 LspAction::ShowHover => {
                     crate::lsp_debug!("LSP-HOVER", "About to call hover_impl()");

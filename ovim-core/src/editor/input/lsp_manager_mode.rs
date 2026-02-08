@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 use crate::editor::Editor;
 

@@ -8,8 +8,8 @@ use crate::editor::{
     Editor, FindDirection, FindType, Motions, Operator, PendingSemanticChange, Range,
 };
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Try to handle a pending command.
 ///

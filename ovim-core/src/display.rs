@@ -151,18 +151,18 @@ mod tests {
         assert!(is_control_char('\x01')); // SOH
         assert!(is_control_char('\x1b')); // ESC
         assert!(is_control_char('\x7f')); // DEL
-        assert!(!is_control_char('\t'));   // tab excluded
-        assert!(!is_control_char('\n'));   // newline excluded
+        assert!(!is_control_char('\t')); // tab excluded
+        assert!(!is_control_char('\n')); // newline excluded
         assert!(!is_control_char('a'));
-        assert!(!is_control_char(' '));    // space is 0x20, not control
+        assert!(!is_control_char(' ')); // space is 0x20, not control
     }
 
     #[test]
     fn test_control_char_caret() {
-        assert_eq!(control_char_caret('\x00'), Some(['^', '@']));  // NUL
-        assert_eq!(control_char_caret('\x01'), Some(['^', 'A']));  // SOH
-        assert_eq!(control_char_caret('\x1b'), Some(['^', '[']));  // ESC
-        assert_eq!(control_char_caret('\x7f'), Some(['^', '?']));  // DEL
+        assert_eq!(control_char_caret('\x00'), Some(['^', '@'])); // NUL
+        assert_eq!(control_char_caret('\x01'), Some(['^', 'A'])); // SOH
+        assert_eq!(control_char_caret('\x1b'), Some(['^', '['])); // ESC
+        assert_eq!(control_char_caret('\x7f'), Some(['^', '?'])); // DEL
         assert_eq!(control_char_caret('\t'), None);
         assert_eq!(control_char_caret('a'), None);
     }
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(char_display_width('\x00'), 2); // control char = 2
         assert_eq!(char_display_width('\x1b'), 2); // ESC = 2
         assert_eq!(char_display_width('a'), 1);
-        assert_eq!(char_display_width('世'), 2);   // wide char = 2
+        assert_eq!(char_display_width('世'), 2); // wide char = 2
     }
 
     #[test]

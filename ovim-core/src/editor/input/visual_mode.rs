@@ -10,8 +10,8 @@
 
 use crate::editor::{Editor, Motions, TextObjectRange, TextObjects};
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 use super::char_motion;
 use super::helpers;
@@ -134,7 +134,11 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     KeyCode::Char(c) => c,
                     _ => return Ok(()),
                 };
-                apply_text_object(editor, TextObjects::quoted_string(editor.buffer(), quote, false), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::quoted_string(editor.buffer(), quote, false),
+                    false,
+                );
                 return Ok(());
             }
             ('a', KeyCode::Char('"')) | ('a', KeyCode::Char('\'')) | ('a', KeyCode::Char('`')) => {
@@ -142,31 +146,59 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     KeyCode::Char(c) => c,
                     _ => return Ok(()),
                 };
-                apply_text_object(editor, TextObjects::quoted_string(editor.buffer(), quote, true), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::quoted_string(editor.buffer(), quote, true),
+                    false,
+                );
                 return Ok(());
             }
             ('i', KeyCode::Char('(')) | ('i', KeyCode::Char(')')) | ('i', KeyCode::Char('b')) => {
-                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '(', ')', false), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::paired_delimiters(editor.buffer(), '(', ')', false),
+                    false,
+                );
                 return Ok(());
             }
             ('a', KeyCode::Char('(')) | ('a', KeyCode::Char(')')) | ('a', KeyCode::Char('b')) => {
-                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '(', ')', true), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::paired_delimiters(editor.buffer(), '(', ')', true),
+                    false,
+                );
                 return Ok(());
             }
             ('i', KeyCode::Char('[')) | ('i', KeyCode::Char(']')) => {
-                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '[', ']', false), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::paired_delimiters(editor.buffer(), '[', ']', false),
+                    false,
+                );
                 return Ok(());
             }
             ('a', KeyCode::Char('[')) | ('a', KeyCode::Char(']')) => {
-                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '[', ']', true), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::paired_delimiters(editor.buffer(), '[', ']', true),
+                    false,
+                );
                 return Ok(());
             }
             ('i', KeyCode::Char('{')) | ('i', KeyCode::Char('}')) | ('i', KeyCode::Char('B')) => {
-                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '{', '}', false), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::paired_delimiters(editor.buffer(), '{', '}', false),
+                    false,
+                );
                 return Ok(());
             }
             ('a', KeyCode::Char('{')) | ('a', KeyCode::Char('}')) | ('a', KeyCode::Char('B')) => {
-                apply_text_object(editor, TextObjects::paired_delimiters(editor.buffer(), '{', '}', true), false);
+                apply_text_object(
+                    editor,
+                    TextObjects::paired_delimiters(editor.buffer(), '{', '}', true),
+                    false,
+                );
                 return Ok(());
             }
             _ => {

@@ -52,13 +52,12 @@ impl GrepState {
         let cancel = Arc::new(AtomicBool::new(false));
         self.grep_cancel = Some(cancel.clone());
 
-        let rx =
-            super::super::grep::spawn_grep_search(
-                query.to_string(),
-                base_dir.to_path_buf(),
-                preferred_dir.to_path_buf(),
-                cancel,
-            );
+        let rx = super::super::grep::spawn_grep_search(
+            query.to_string(),
+            base_dir.to_path_buf(),
+            preferred_dir.to_path_buf(),
+            cancel,
+        );
         self.grep_rx = Some(rx);
         self.grep_stale = true;
     }

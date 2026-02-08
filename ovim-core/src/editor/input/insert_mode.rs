@@ -11,8 +11,8 @@
 
 use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 use super::helpers;
 

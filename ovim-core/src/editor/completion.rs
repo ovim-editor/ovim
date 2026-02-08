@@ -118,10 +118,7 @@ impl CompletionMenu {
                 .iter()
                 .cloned()
                 .filter(|item| {
-                    let text = item
-                        .insert_text
-                        .as_deref()
-                        .unwrap_or(&item.label);
+                    let text = item.insert_text.as_deref().unwrap_or(&item.label);
                     text.to_lowercase().starts_with(&prefix_lower)
                 })
                 .collect()
@@ -171,7 +168,11 @@ mod tests {
     #[test]
     fn completion_menu_dedupes_obvious_duplicates() {
         let mut menu = CompletionMenu::new();
-        menu.show(vec![item("Result"), item("Result"), item("Res")], 0, "re".to_string());
+        menu.show(
+            vec![item("Result"), item("Result"), item("Res")],
+            0,
+            "re".to_string(),
+        );
         let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels, vec!["Res".to_string(), "Result".to_string()]);
     }

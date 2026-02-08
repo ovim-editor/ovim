@@ -1,10 +1,15 @@
 use crate::buffer::Buffer;
+use crate::change::TextObjectType;
 
-/// Semantic repeat actions for dot-repeat.
+/// Semantic repeat actions for dot-repeat (Pattern B).
 ///
-/// Unlike `Change` (which handles both undo and repeat), RepeatAction
+/// Unlike `Change` (which handles both undo and repeat), `RepeatAction`
 /// captures only the intent needed to re-execute an operation at the
 /// current cursor position. Undo is handled separately via `Change::Recorded`.
+///
+/// Use Pattern B for normal-mode-only operations where repeat is
+/// position-independent and no insert-mode entry is needed.
+/// See the module doc in `change.rs` for the full boundary guide.
 #[derive(Clone, Debug)]
 pub enum RepeatAction {
     /// J / gJ — join lines
@@ -15,6 +20,41 @@ pub enum RepeatAction {
     DedentLines { line_count: usize, tab_width: usize },
     /// ~ — toggle case at cursor
     ToggleCase { count: usize },
+    /// Ctrl-A / Ctrl-X — increment/decrement number
+    NumberOperation { delta: i64 },
+    /// di" / di( / diw — delete text object
+    DeleteTextObject { object_type: TextObjectType },
+    /// df / dt / dF / dT — delete to character motion
+    DeleteCharMotion {
+        target: char,
+        forward: bool,
+        till: bool,
+        count: usize,
+    },
+    /// x — delete character(s) forward
+    DeleteCharForward { count: usize },
+    /// X — delete character(s) backward
+    DeleteCharBackward { count: usize },
+    /// dd — delete line(s)
+    DeleteLines { count: usize },
+    /// D / d$ — delete to end of line
+    DeleteToEndOfLine,
+    /// dw — delete word forward
+    DeleteWordForward { count: usize },
+    /// dj — delete current + count lines down
+    DeleteLineDown { count: usize },
+    /// dk — delete current + count lines up
+    DeleteLineUp { count: usize },
+    /// d} — delete to paragraph forward
+    DeleteParagraphForward { count: usize },
+    /// d{ — delete to paragraph backward
+    DeleteParagraphBackward { count: usize },
+    /// dl — delete character(s) at cursor (same as x but from dl)
+    DeleteRight { count: usize },
+    /// p — paste after cursor
+    PasteAfter,
+    /// P — paste before cursor
+    PasteBefore,
 }
 
 impl RepeatAction {
@@ -56,6 +96,54 @@ impl RepeatAction {
                         break;
                     }
                 }
+            }
+            Self::NumberOperation { delta } => {
+                buffer.modify_number_at_cursor(*delta);
+            }
+            Self::DeleteTextObject { object_type } => {
+                buffer.delete_text_object(object_type);
+            }
+            Self::DeleteCharMotion {
+                target,
+                forward,
+                till,
+                count,
+            } => {
+                buffer.delete_char_motion(*target, *forward, *till, *count);
+            }
+            Self::DeleteCharForward { count } => {
+                buffer.delete_chars_forward(*count);
+            }
+            Self::DeleteCharBackward { count } => {
+                buffer.delete_chars_backward(*count);
+            }
+            Self::DeleteLines { count } => {
+                buffer.delete_lines(*count);
+            }
+            Self::DeleteToEndOfLine => {
+                buffer.delete_to_end_of_line();
+            }
+            Self::DeleteWordForward { count } => {
+                buffer.delete_word_forward(*count);
+            }
+            Self::DeleteLineDown { count } => {
+                buffer.delete_line_down(*count);
+            }
+            Self::DeleteLineUp { count } => {
+                buffer.delete_line_up(*count);
+            }
+            Self::DeleteParagraphForward { count } => {
+                buffer.delete_paragraph_forward(*count);
+            }
+            Self::DeleteParagraphBackward { count } => {
+                buffer.delete_paragraph_backward(*count);
+            }
+            Self::DeleteRight { count } => {
+                buffer.delete_chars_forward(*count);
+            }
+            Self::PasteAfter | Self::PasteBefore => {
+                // Paste repeat is handled at the Editor level (needs register access)
+                // This should not be called directly on buffer
             }
         }
     }

@@ -4,16 +4,16 @@
 //! character for find/till motions. It also handles operator combinations
 //! like df, dt, cf, ct.
 
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 use crate::editor::input_state::CharMotion;
 use crate::editor::motions::Motions;
 use crate::editor::operators::Operator;
-use crate::editor::{Editor, FindDirection, FindType};
-use crate::editor::{Change, Range};
 use crate::editor::RegisterType;
+use crate::editor::{Change, Editor, FindDirection, FindType, Range};
 use crate::mode::Mode;
+use crate::repeat_action::RepeatAction;
 
 /// Handles the second key in a character motion sequence.
 ///
@@ -251,30 +251,26 @@ fn apply_operator_to_range(
 
     match operator {
         Operator::Delete => {
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(start_line, start_col, end_line, end_col);
+            let (deleted, edits) = editor.buffer_mut().record(|buf| {
+                let d = buf.delete_range(start_line, start_col, end_line, end_col);
+                buf.cursor_mut().set_position(start_line, start_col);
+                d
+            });
+            let cursor_after = editor.cursor_position();
 
-            if !deleted.is_empty() {
-                let range = Range::new((start_line, start_col), (end_line, end_col));
-                let change = Change::delete_char_motion(
+            if !edits.is_empty() {
+                if !deleted.is_empty() {
+                    editor.delete_to_register_with_type(deleted, RegisterType::Character);
+                }
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::DeleteCharMotion {
                     target,
                     forward,
                     till,
                     count,
-                    cursor_before,
-                    deleted.clone(),
-                    range,
-                );
-                editor.delete_to_register_with_type(deleted, RegisterType::Character);
-                editor.add_change(change);
+                });
                 editor.mark_buffer_modified();
             }
-
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(start_line, start_col);
         }
         Operator::Change => {
             let deleted = editor
@@ -302,7 +298,11 @@ fn apply_operator_to_range(
             let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
             let end_char = editor.buffer().rope().line_to_char(end_line) + end_col;
             if end_char > start_char {
-                let yanked = editor.buffer().rope().slice(start_char..end_char).to_string();
+                let yanked = editor
+                    .buffer()
+                    .rope()
+                    .slice(start_char..end_char)
+                    .to_string();
                 editor.yank_to_register_with_type(yanked, RegisterType::Character);
                 editor.set_yank_flash_range(
                     start_line,

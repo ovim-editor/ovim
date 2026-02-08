@@ -9,10 +9,10 @@ pub use routes::create_router;
 pub use state::{
     format_context_window, parse_key_string, ApiRequest, ApiResponse, ApiState, BufferInfo,
     ContextWindowInfo, CursorPosition, DiagnosticCounts, DiagnosticItem, DiagnosticsInfo,
-    EditorSnapshot, ErrorResponse, HealthInfo, LspServerInfoItem, LspStatusInfo, MetricsInfo,
-    ModeInfo, OutlineInfo, OutlineSymbol, PickerInfo, PickerResultInfo, RenderInfo, SendKeysResult,
-    SuccessResponse, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode, VisualSelection,
-    LinesResponse, LineEntry,
+    EditorSnapshot, ErrorResponse, HealthInfo, LineEntry, LinesResponse, LspServerInfoItem,
+    LspStatusInfo, MetricsInfo, ModeInfo, OutlineInfo, OutlineSymbol, PickerInfo, PickerResultInfo,
+    RenderInfo, SendKeysResult, SuccessResponse, SymbolSearchInfo, SymbolSearchResult, TraceInfo,
+    TraceNode, VisualSelection,
 };
 
 use anyhow::Result;

@@ -30,7 +30,11 @@ impl NucleoState {
         }
     }
 
-    pub fn ensure_empty_pattern_order(&mut self, all_results: &[PickerResult], preferred_dir: &Path) {
+    pub fn ensure_empty_pattern_order(
+        &mut self,
+        all_results: &[PickerResult],
+        preferred_dir: &Path,
+    ) {
         if self.empty_pattern_built_for_len != all_results.len() {
             self.rebuild_empty_pattern_order(all_results, preferred_dir);
         }

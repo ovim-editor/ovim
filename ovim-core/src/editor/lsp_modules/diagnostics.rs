@@ -77,7 +77,10 @@ impl Editor {
 
         // Also update the full diagnostics list for inline display
         // Re-create URI to verify it matches what we used for counting
-        let query_uri = self.buffer().file_path().and_then(crate::lsp::uri_from_file_path);
+        let query_uri = self
+            .buffer()
+            .file_path()
+            .and_then(crate::lsp::uri_from_file_path);
         crate::log_debug!(
             "diagnostics",
             "update_diagnostic_cache: query_uri for get={:?}",
@@ -115,7 +118,8 @@ impl Editor {
 
     /// Get diagnostics for a specific line from cached diagnostics
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
-        let result: Vec<_> = self.lsp_state
+        let result: Vec<_> = self
+            .lsp_state
             .current_file_diagnostics
             .iter()
             .filter(|d| d.range.start.line as usize == line)
@@ -127,7 +131,11 @@ impl Editor {
                 "diagnostics_for_line({}): 0 matches in {} cached diagnostics, first diag line={}",
                 line,
                 self.lsp_state.current_file_diagnostics.len(),
-                self.lsp_state.current_file_diagnostics.first().map(|d| d.range.start.line).unwrap_or(0)
+                self.lsp_state
+                    .current_file_diagnostics
+                    .first()
+                    .map(|d| d.range.start.line)
+                    .unwrap_or(0)
             );
         }
         result

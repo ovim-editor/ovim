@@ -375,10 +375,7 @@ fn test_indent_undo_redo() {
 
     test.keys(">>")
         .press('u') // Undo
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Redo
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Redo
 
     assert_eq!(test.buffer_content(), "    line 1\n");
     test.assert_cursor(0, 4);
@@ -696,10 +693,7 @@ fn test_ctrl_t_indent_in_insert() {
     let mut test = EditorTest::new("line");
 
     test.press('i')
-        .press_with(
-            ovim_core::KeyCode::Char('t'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Indent in insert mode
+        .press_with(ovim_core::KeyCode::Char('t'), ovim_core::Modifiers::CONTROL) // Indent in insert mode
         .press_esc();
 
     // Ctrl-T in insert mode adds one level of indentation (4 spaces by default)
@@ -713,10 +707,7 @@ fn test_ctrl_d_dedent_in_insert() {
     let mut test = EditorTest::new("    line");
 
     test.press('i')
-        .press_with(
-            ovim_core::KeyCode::Char('d'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Dedent in insert mode
+        .press_with(ovim_core::KeyCode::Char('d'), ovim_core::Modifiers::CONTROL) // Dedent in insert mode
         .press_esc();
 
     // Ctrl-D in insert mode removes one level of indentation (4 spaces)

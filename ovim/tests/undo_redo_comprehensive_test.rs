@@ -22,10 +22,7 @@ fn test_redo_single_change() {
 
     test.press('x') // Delete
         .press('u') // Undo
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Redo
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Redo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -51,14 +48,8 @@ fn test_redo_multiple_changes() {
         .press('x')
         .press('u')
         .press('u')
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        )
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        );
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL);
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -88,10 +79,7 @@ fn test_undo_redo_branch() {
         .press('u') // Undo change 2
         .keys("dw") // New branch
         .press('u') // Undo dw
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Redo dw
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Redo dw
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -195,10 +183,11 @@ fn test_undo_paste_before() {
 fn test_redo_paste() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("yiw").keys("$").press('p').press('u').press_with(
-        ovim_core::KeyCode::Char('r'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    test.keys("yiw")
+        .keys("$")
+        .press('p')
+        .press('u')
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL);
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -255,18 +244,9 @@ fn test_redo_sequence() {
         .press('u')
         .press('u')
         .press('u')
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        )
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        )
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        );
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL);
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -288,10 +268,7 @@ fn test_undo_at_beginning() {
 fn test_redo_at_end() {
     let mut test = EditorTest::new("hello");
 
-    test.press_with(
-        ovim_core::KeyCode::Char('r'),
-        ovim_core::Modifiers::CONTROL,
-    ); // Nothing to redo
+    test.press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Nothing to redo
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -306,18 +283,9 @@ fn test_undo_all_then_redo_all() {
         .press('u')
         .press('u')
         .press('u') // Undo all
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        )
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        )
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Redo all
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Redo all
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -344,10 +312,7 @@ fn test_redo_with_count() {
         .press('x')
         .keys("3u")
         .keys("3")
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Redo 3 times
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Redo 3 times
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -657,10 +622,9 @@ fn test_U_after_leaving_line() {
 fn test_ctrl_r_redo() {
     let mut test = EditorTest::new("hello");
 
-    test.press('x').press('u').press_with(
-        ovim_core::KeyCode::Char('r'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    test.press('x')
+        .press('u')
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL);
 
     assert_snapshot!(test.snapshot_state());
 }
@@ -684,10 +648,7 @@ fn test_complex_undo_redo_sequence() {
         .type_text("NEW")
         .press_esc()
         .press('u') // Undo new change
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Redo
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL); // Redo
 
     assert_snapshot!(test.snapshot_state());
 }

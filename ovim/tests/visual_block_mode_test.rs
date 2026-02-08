@@ -1,6 +1,6 @@
 mod helpers;
-use ovim_core::{KeyCode, Modifiers};
 use helpers::EditorTest;
+use ovim_core::{KeyCode, Modifiers};
 
 // ============================================================================
 // Ctrl-V command - Visual Block mode (CRITICAL for Neovim-like experience)

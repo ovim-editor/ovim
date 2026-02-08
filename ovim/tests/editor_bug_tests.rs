@@ -11,18 +11,17 @@ fn test_dot_repeat_i_backspace_joins_lines() {
     // I<Backspace><Esc> on line 1 joins it with line 0, then . on line 1 (was line 2)
     let mut test = EditorTest::new("aaa\nbbb\nccc");
 
-    test.press('j')               // go to line 1 ("bbb")
-        .press('I')               // insert at first non-blank (col 0)
-        .press_backspace()        // delete newline → join with "aaa"
-        .press_esc();             // back to normal
+    test.press('j') // go to line 1 ("bbb")
+        .press('I') // insert at first non-blank (col 0)
+        .press_backspace() // delete newline → join with "aaa"
+        .press_esc(); // back to normal
 
     assert_eq!(test.buffer_content(), "aaabbb\nccc\n");
     test.assert_cursor(0, 2);
 
     // Dot repeat: FirstNonBlank repositions cursor to col 0,
     // so the backwards cross-line deletion correctly joins lines
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "aaabbbccc\n");
     test.assert_cursor(0, 5);
@@ -33,17 +32,17 @@ fn test_dot_repeat_i_backspace_indented_lines() {
     // Same test but with indented lines (FirstNonBlank lands at non-zero col)
     let mut test = EditorTest::new("  aaa\n  bbb\n  ccc");
 
-    test.press('j')               // line 1 ("  bbb")
-        .press('I')               // cursor to col 2 (first non-blank)
-        .press_backspace()        // delete char before cursor — this deletes space, NOT newline
-        .press_backspace()        // delete another space
-        .press_backspace()        // NOW delete newline, joining with line 0
+    test.press('j') // line 1 ("  bbb")
+        .press('I') // cursor to col 2 (first non-blank)
+        .press_backspace() // delete char before cursor — this deletes space, NOT newline
+        .press_backspace() // delete another space
+        .press_backspace() // NOW delete newline, joining with line 0
         .press_esc();
 
     assert_eq!(test.buffer_content(), "  aaabbb\n  ccc\n");
 
-    test.press('j')               // go to "  ccc"
-        .press('.');              // dot repeat
+    test.press('j') // go to "  ccc"
+        .press('.'); // dot repeat
 
     assert_eq!(test.buffer_content(), "  aaabbbccc\n");
 }
@@ -53,20 +52,18 @@ fn test_dot_repeat_i_backspace_multiple_times() {
     // I<BS><Esc> repeated multiple times via .
     let mut test = EditorTest::new("a\nb\nc\nd");
 
-    test.press('j')               // line 1
+    test.press('j') // line 1
         .press('I')
         .press_backspace()
         .press_esc();
 
     assert_eq!(test.buffer_content(), "ab\nc\nd\n");
 
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "abc\nd\n");
 
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "abcd\n");
 }
@@ -76,16 +73,16 @@ fn test_dot_repeat_i_multiple_backspaces_across_newline() {
     // I<BS><BS><Esc> — backspace removes newline then a char from prev line
     let mut test = EditorTest::new("ab\ncd\nef");
 
-    test.press('j')               // line 1 ("cd")
-        .press('I')               // col 0
-        .press_backspace()        // delete newline → "abcd"
-        .press_backspace()        // delete 'b' → "acd"
+    test.press('j') // line 1 ("cd")
+        .press('I') // col 0
+        .press_backspace() // delete newline → "abcd"
+        .press_backspace() // delete 'b' → "acd"
         .press_esc();
 
     assert_eq!(test.buffer_content(), "acd\nef\n");
     test.assert_cursor(0, 0);
 
-    test.press('j')               // line 1 ("ef")
+    test.press('j') // line 1 ("ef")
         .press('.');
 
     assert_eq!(test.buffer_content(), "acef\n");
@@ -103,17 +100,16 @@ fn test_dot_repeat_i_backspace_at_col0_via_i() {
     // Use I (FirstNonBlank) for guaranteed line-join repeat.
     let mut test = EditorTest::new("aaa\nbbb\nccc");
 
-    test.press('j')               // line 1
-        .press('i')               // insert at col 0
-        .press_backspace()        // join with previous line
+    test.press('j') // line 1
+        .press('i') // insert at col 0
+        .press_backspace() // join with previous line
         .press_esc();
 
     assert_eq!(test.buffer_content(), "aaabbb\nccc\n");
     test.assert_cursor(0, 2);
 
     // j preserves col 2 → repeat at col 2 deletes one char (same-line BS)
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "aaabbb\ncc\n");
 }
@@ -123,14 +119,14 @@ fn test_dot_repeat_a_backspace() {
     // a<BS><Esc> — append then backspace deletes char under cursor
     let mut test = EditorTest::new("abc\ndef");
 
-    test.press('a')               // append after 'a' (col 1)
-        .press_backspace()        // delete 'a' (the char we just moved past)
+    test.press('a') // append after 'a' (col 1)
+        .press_backspace() // delete 'a' (the char we just moved past)
         .press_esc();
 
     assert_eq!(test.buffer_content(), "bc\ndef\n");
 
-    test.press('j')               // line 1 ("def")
-        .press('.');              // repeat: a moves right, BS deletes
+    test.press('j') // line 1 ("def")
+        .press('.'); // repeat: a moves right, BS deletes
 
     assert_eq!(test.buffer_content(), "bc\nef\n");
 }
@@ -140,14 +136,13 @@ fn test_dot_repeat_A_backspace() {
     // A<BS><Esc> at end of line deletes last char
     let mut test = EditorTest::new("abc\ndef");
 
-    test.press('A')               // append at end of line (after 'c')
-        .press_backspace()        // delete 'c'
+    test.press('A') // append at end of line (after 'c')
+        .press_backspace() // delete 'c'
         .press_esc();
 
     assert_eq!(test.buffer_content(), "ab\ndef\n");
 
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "ab\nde\n");
 }
@@ -157,15 +152,15 @@ fn test_dot_repeat_backspace_deleting_char_not_newline() {
     // i at col 2, then BS — deletes a regular character
     let mut test = EditorTest::new("abcd\nefgh");
 
-    test.keys("ll")               // col 2
+    test.keys("ll") // col 2
         .press('i')
-        .press_backspace()        // delete 'b'
+        .press_backspace() // delete 'b'
         .press_esc();
 
     assert_eq!(test.buffer_content(), "acd\nefgh\n");
 
-    test.press('j')               // line 1
-        .keys("ll")              // col 2
+    test.press('j') // line 1
+        .keys("ll") // col 2
         .press('.');
 
     assert_eq!(test.buffer_content(), "acd\negh\n");
@@ -180,15 +175,11 @@ fn test_dot_repeat_I_type_then_backspace() {
     // I + type "X" + BS + Esc — net effect: nothing (inserted then deleted)
     let mut test = EditorTest::new("hello\nworld");
 
-    test.press('I')
-        .type_text("X")
-        .press_backspace()
-        .press_esc();
+    test.press('I').type_text("X").press_backspace().press_esc();
 
     assert_eq!(test.buffer_content(), "hello\nworld\n");
 
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "hello\nworld\n");
 }
@@ -198,15 +189,11 @@ fn test_dot_repeat_A_backspace_type() {
     // A<BS>X<Esc> — replace last char with X
     let mut test = EditorTest::new("abc\ndef");
 
-    test.press('A')
-        .press_backspace()
-        .type_text("X")
-        .press_esc();
+    test.press('A').press_backspace().type_text("X").press_esc();
 
     assert_eq!(test.buffer_content(), "abX\ndef\n");
 
-    test.press('j')
-        .press('.');
+    test.press('j').press('.');
 
     assert_eq!(test.buffer_content(), "abX\ndeX\n");
 }
@@ -220,7 +207,7 @@ fn test_backspace_at_start_of_buffer_noop() {
     let mut test = EditorTest::new("hello");
 
     test.press('i')
-        .press_backspace()        // should be no-op
+        .press_backspace() // should be no-op
         .press_esc();
 
     assert_eq!(test.buffer_content(), "hello\n");
@@ -231,9 +218,9 @@ fn test_backspace_at_start_of_buffer_noop() {
 fn test_backspace_joining_with_empty_previous_line() {
     let mut test = EditorTest::new("\nhello");
 
-    test.press('j')               // line 1
+    test.press('j') // line 1
         .press('I')
-        .press_backspace()        // join with empty line above
+        .press_backspace() // join with empty line above
         .press_esc();
 
     assert_eq!(test.buffer_content(), "hello\n");
@@ -244,10 +231,7 @@ fn test_backspace_joining_with_empty_previous_line() {
 fn test_backspace_joining_last_two_lines() {
     let mut test = EditorTest::new("first\nlast");
 
-    test.press('j')
-        .press('I')
-        .press_backspace()
-        .press_esc();
+    test.press('j').press('I').press_backspace().press_esc();
 
     assert_eq!(test.buffer_content(), "firstlast\n");
     test.assert_cursor(0, 4);
@@ -270,8 +254,7 @@ fn test_J_join_lines() {
 fn test_J_then_undo() {
     let mut test = EditorTest::new("hello\nworld");
 
-    test.press('J')
-        .press('u');
+    test.press('J').press('u');
 
     assert_eq!(test.buffer_content(), "hello\nworld\n");
 }
@@ -307,8 +290,8 @@ fn test_dk_on_first_line() {
 fn test_dj_on_last_line() {
     let mut test = EditorTest::new("line1\nline2\nline3");
 
-    test.keys("GG")              // go to last line
-        .keys("dj");            // delete down from last line — should handle gracefully
+    test.keys("GG") // go to last line
+        .keys("dj"); // delete down from last line — should handle gracefully
 
     let content = test.buffer_content();
     assert!(!content.is_empty());
@@ -322,7 +305,7 @@ fn test_dj_on_last_line() {
 fn test_d_dollar_on_empty_line() {
     let mut test = EditorTest::new("hello\n\nworld");
 
-    test.press('j')               // go to empty line
+    test.press('j') // go to empty line
         .keys("d$");
 
     // d$ on empty line should be a no-op (nothing to delete)
@@ -333,7 +316,7 @@ fn test_d_dollar_on_empty_line() {
 fn test_dd_on_last_line_multiline() {
     let mut test = EditorTest::new("first\nsecond\nthird");
 
-    test.keys("G")                // go to last line
+    test.keys("G") // go to last line
         .keys("dd");
 
     assert_eq!(test.buffer_content(), "first\nsecond\n");
@@ -343,9 +326,7 @@ fn test_dd_on_last_line_multiline() {
 fn test_cw_on_single_char_word() {
     let mut test = EditorTest::new("a big word");
 
-    test.keys("cw")
-        .type_text("the")
-        .press_esc();
+    test.keys("cw").type_text("the").press_esc();
 
     assert_eq!(test.buffer_content(), "the big word\n");
 }
@@ -354,9 +335,9 @@ fn test_cw_on_single_char_word() {
 fn test_diw_on_whitespace() {
     let mut test = EditorTest::new("hello   world");
 
-    test.keys("w")                // move to 'w' in "world"
-        .press('h')              // back to whitespace
-        .keys("diw");            // delete inner word (whitespace between words)
+    test.keys("w") // move to 'w' in "world"
+        .press('h') // back to whitespace
+        .keys("diw"); // delete inner word (whitespace between words)
 
     // diw on whitespace deletes the whitespace
     assert_eq!(test.buffer_content(), "helloworld\n");
@@ -371,12 +352,12 @@ fn test_visual_delete_across_lines_then_dot() {
     let mut test = EditorTest::new("aaa\nbbb\nccc\nddd");
 
     test.press('v')
-        .press('j')              // select "aaa\nb"
-        .press('d');             // delete selection
+        .press('j') // select "aaa\nb"
+        .press('d'); // delete selection
 
     let _content_after_delete = test.buffer_content();
 
-    test.press('.');             // dot repeat — should delete same span
+    test.press('.'); // dot repeat — should delete same span
 
     // Just verify it doesn't crash and produces valid output
     let final_content = test.buffer_content();
@@ -387,8 +368,7 @@ fn test_visual_delete_across_lines_then_dot() {
 fn test_v_dollar_different_line_lengths() {
     let mut test = EditorTest::new("short\na very long line");
 
-    test.press('v')
-        .keys("$");              // select to end of "short"
+    test.press('v').keys("$"); // select to end of "short"
 
     // Should select to end of line, not beyond
     test.assert_mode(Mode::Visual);
@@ -403,15 +383,11 @@ fn test_undo_after_dot_repeat_i_backspace() {
     // I<BS><Esc>.u — undo should restore only the repeated change
     let mut test = EditorTest::new("aaa\nbbb\nccc");
 
-    test.press('j')
-        .press('I')
-        .press_backspace()
-        .press_esc();             // "aaabbb\nccc"
+    test.press('j').press('I').press_backspace().press_esc(); // "aaabbb\nccc"
 
-    test.press('j')
-        .press('.');              // "aaabbbccc"
+    test.press('j').press('.'); // "aaabbbccc"
 
-    test.press('u');              // undo the dot repeat
+    test.press('u'); // undo the dot repeat
 
     assert_eq!(test.buffer_content(), "aaabbb\nccc\n");
 }
@@ -420,16 +396,16 @@ fn test_undo_after_dot_repeat_i_backspace() {
 fn test_dd_dot_undo_undo() {
     let mut test = EditorTest::new("line1\nline2\nline3\nline4");
 
-    test.keys("dd");              // delete line1
+    test.keys("dd"); // delete line1
     assert_eq!(test.buffer_content(), "line2\nline3\nline4\n");
 
-    test.press('.');              // delete line2
+    test.press('.'); // delete line2
     assert_eq!(test.buffer_content(), "line3\nline4\n");
 
-    test.press('u');              // undo: restore line2
+    test.press('u'); // undo: restore line2
     assert_eq!(test.buffer_content(), "line2\nline3\nline4\n");
 
-    test.press('u');              // undo: restore line1
+    test.press('u'); // undo: restore line1
     assert_eq!(test.buffer_content(), "line1\nline2\nline3\nline4\n");
 }
 
@@ -437,17 +413,14 @@ fn test_dd_dot_undo_undo() {
 fn test_insert_dot_undo_chain() {
     let mut test = EditorTest::new("aaa\nbbb");
 
-    test.press('i')
-        .type_text("X")
-        .press_esc();             // "Xaaa\nbbb"
+    test.press('i').type_text("X").press_esc(); // "Xaaa\nbbb"
 
-    test.press('j')
-        .press('.');              // "Xaaa\nXbbb"
+    test.press('j').press('.'); // "Xaaa\nXbbb"
 
-    test.press('u');              // undo dot: "Xaaa\nbbb"
+    test.press('u'); // undo dot: "Xaaa\nbbb"
     assert_eq!(test.buffer_content(), "Xaaa\nbbb\n");
 
-    test.press('u');              // undo original: "aaa\nbbb"
+    test.press('u'); // undo original: "aaa\nbbb"
     assert_eq!(test.buffer_content(), "aaa\nbbb\n");
 }
 
@@ -459,7 +432,7 @@ fn test_insert_dot_undo_chain() {
 fn test_dot_repeat_gJ_join_without_space() {
     let mut test = EditorTest::new("hello\nworld\nfoo");
 
-    test.keys("gJ");             // join without space
+    test.keys("gJ"); // join without space
     assert_eq!(test.buffer_content(), "helloworld\nfoo\n");
 
     test.press('.');
@@ -470,11 +443,10 @@ fn test_dot_repeat_gJ_join_without_space() {
 fn test_dot_repeat_x_at_end_of_line() {
     let mut test = EditorTest::new("ab\ncd");
 
-    test.keys("$x");             // delete last char of line 0
+    test.keys("$x"); // delete last char of line 0
     assert_eq!(test.buffer_content(), "a\ncd\n");
 
-    test.press('j')
-        .keys("$.");             // repeat on line 1
+    test.press('j').keys("$."); // repeat on line 1
 
     assert_eq!(test.buffer_content(), "a\nc\n");
 }

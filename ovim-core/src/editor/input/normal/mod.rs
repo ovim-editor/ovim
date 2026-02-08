@@ -14,8 +14,8 @@ mod pending_commands;
 mod text_objects;
 
 use crate::editor::Editor;
-use anyhow::Result;
 use crate::KeyEvent;
+use anyhow::Result;
 
 /// Handle a key event in normal mode.
 ///

@@ -1701,10 +1701,7 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
 fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
     use crate::session::SessionInfo;
 
-    let subcmd = command
-        .strip_prefix("session")
-        .unwrap_or("")
-        .trim();
+    let subcmd = command.strip_prefix("session").unwrap_or("").trim();
 
     match subcmd {
         "" | "list" => {
@@ -1712,7 +1709,10 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             match SessionInfo::list_all() {
                 Ok(sessions) if sessions.is_empty() => {
                     let msg = if editor.active_session.is_some() {
-                        format!("Active session: {}", editor.active_session.as_ref().unwrap())
+                        format!(
+                            "Active session: {}",
+                            editor.active_session.as_ref().unwrap()
+                        )
                     } else {
                         "No registered sessions. Use :session start NAME to register.".to_string()
                     };
@@ -1784,10 +1784,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                 }
             };
 
-            let file = editor
-                .buffer()
-                .file_path()
-                .map(|s| s.to_string());
+            let file = editor.buffer().file_path().map(|s| s.to_string());
 
             let session_info = SessionInfo::new(port, file, name.to_string());
             match session_info.write() {

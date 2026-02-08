@@ -2,8 +2,8 @@
 //!
 //! Renders a welcome screen with ASCII logo and interactive menu.
 
-use crate::editor::Editor;
 use super::CatAnimation;
+use crate::editor::Editor;
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},

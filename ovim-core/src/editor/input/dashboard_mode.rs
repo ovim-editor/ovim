@@ -3,11 +3,11 @@
 //! Handles the start screen dashboard with menu navigation and shortcuts.
 //! j/k navigate menu, Enter selects, or press shortcut key directly.
 
+use crate::dashboard::MENU_ITEMS;
 use crate::editor::{Editor, Picker};
 use crate::mode::Mode;
-use crate::dashboard::MENU_ITEMS;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Handles input in Dashboard mode
 /// j/k navigate menu, Enter selects, or press shortcut key directly

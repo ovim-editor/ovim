@@ -19,7 +19,9 @@ pub enum CaseChange {
 pub fn toggle_case_at_cursor(editor: &mut Editor) -> Result<bool> {
     let cursor_before = editor.cursor_position();
 
-    let (advanced, edits) = editor.buffer_mut().record(|buf| buf.toggle_char_at_cursor());
+    let (advanced, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.toggle_char_at_cursor());
 
     let cursor_after = editor.cursor_position();
     editor.push_recorded_undo(edits, cursor_before, cursor_after);

@@ -171,16 +171,8 @@ impl LineRenderCache {
             wrap,
             tab_width,
         };
-        self.entries.insert(
-            line_idx,
-            (
-                key,
-                CachedLine {
-                    line,
-                    is_stable,
-                },
-            ),
-        );
+        self.entries
+            .insert(line_idx, (key, CachedLine { line, is_stable }));
     }
 }
 

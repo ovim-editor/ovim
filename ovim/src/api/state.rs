@@ -267,7 +267,7 @@ pub struct VisualSelection {
 }
 
 // Re-export from ovim-core
-pub use ovim_core::command_result::{SuccessResponse, ErrorResponse};
+pub use ovim_core::command_result::{ErrorResponse, SuccessResponse};
 
 impl From<ovim_core::CommandResult> for ApiResponse {
     fn from(cr: ovim_core::CommandResult) -> Self {

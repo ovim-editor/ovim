@@ -559,10 +559,7 @@ fn test_ctrl_w_delete_word() {
 
     test.press('i')
         .type_text("test ")
-        .press_with(
-            ovim_core::KeyCode::Char('w'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Delete word (deletes "test ")
+        .press_with(ovim_core::KeyCode::Char('w'), ovim_core::Modifiers::CONTROL) // Delete word (deletes "test ")
         .press_esc();
 
     // Ctrl-W deletes trailing whitespace + preceding word ("test ")
@@ -576,10 +573,7 @@ fn test_ctrl_u_delete_line() {
 
     test.press('i')
         .type_text("inserted text")
-        .press_with(
-            ovim_core::KeyCode::Char('u'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Delete to start of line (deletes "inserted text")
+        .press_with(ovim_core::KeyCode::Char('u'), ovim_core::Modifiers::CONTROL) // Delete to start of line (deletes "inserted text")
         .press_esc();
 
     // Ctrl-U deletes all text inserted before cursor on current line
@@ -592,10 +586,7 @@ fn test_ctrl_t_indent() {
     let mut test = EditorTest::new("hello");
 
     test.press('i')
-        .press_with(
-            ovim_core::KeyCode::Char('t'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Indent (adds shiftwidth spaces)
+        .press_with(ovim_core::KeyCode::Char('t'), ovim_core::Modifiers::CONTROL) // Indent (adds shiftwidth spaces)
         .press_esc();
 
     // Ctrl-T indents the line by one shiftwidth (4 spaces by default)
@@ -608,10 +599,7 @@ fn test_ctrl_d_dedent() {
     let mut test = EditorTest::new("    hello");
 
     test.press('i')
-        .press_with(
-            ovim_core::KeyCode::Char('d'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Dedent (removes one shiftwidth)
+        .press_with(ovim_core::KeyCode::Char('d'), ovim_core::Modifiers::CONTROL) // Dedent (removes one shiftwidth)
         .press_esc();
 
     // Ctrl-D removes one shiftwidth (4 spaces) of indent
@@ -627,10 +615,7 @@ fn test_ctrl_a_insert_last_text() {
         .type_text("first")
         .press_esc()
         .press('i')
-        .press_with(
-            ovim_core::KeyCode::Char('a'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Insert last inserted text
+        .press_with(ovim_core::KeyCode::Char('a'), ovim_core::Modifiers::CONTROL) // Insert last inserted text
         .press_esc();
 
     // After first insert: "firsttest", cursor at 4
@@ -647,10 +632,7 @@ fn test_ctrl_r_insert_register() {
 
     test.keys("\"ayiw") // Yank "test" to register 'a'
         .press('i')
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        )
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL)
         .press('a') // Insert from register 'a'
         .press_esc();
 
@@ -667,10 +649,7 @@ fn test_ctrl_n_completion() {
 
     test.press('o')
         .type_text("hel")
-        .press_with(
-            ovim_core::KeyCode::Char('n'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Next completion (if implemented)
+        .press_with(ovim_core::KeyCode::Char('n'), ovim_core::Modifiers::CONTROL) // Next completion (if implemented)
         .press_esc();
 
     // Ctrl-N completion may not be implemented, so "hel" remains
@@ -684,10 +663,7 @@ fn test_ctrl_p_completion_previous() {
 
     test.press('o')
         .type_text("hel")
-        .press_with(
-            ovim_core::KeyCode::Char('p'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Previous completion (if implemented)
+        .press_with(ovim_core::KeyCode::Char('p'), ovim_core::Modifiers::CONTROL) // Previous completion (if implemented)
         .press_esc();
 
     // Ctrl-P completion may not be implemented, so "hel" remains
@@ -700,14 +676,8 @@ fn test_ctrl_x_ctrl_l_line_completion() {
     let mut test = EditorTest::new("hello world");
 
     test.press('o')
-        .press_with(
-            ovim_core::KeyCode::Char('x'),
-            ovim_core::Modifiers::CONTROL,
-        )
-        .press_with(
-            ovim_core::KeyCode::Char('l'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Line completion
+        .press_with(ovim_core::KeyCode::Char('x'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('l'), ovim_core::Modifiers::CONTROL) // Line completion
         .press_esc();
 
     assert_eq!(test.buffer_content(), "hello world\nxl\n");

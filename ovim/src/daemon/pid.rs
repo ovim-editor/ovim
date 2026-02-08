@@ -342,7 +342,8 @@ pub fn get_process_cmdline(pid: i32) -> Result<String> {
     };
 
     if rc != 0 {
-        return Err(std::io::Error::last_os_error()).context("sysctl(KERN_PROCARGS2) sizing failed");
+        return Err(std::io::Error::last_os_error())
+            .context("sysctl(KERN_PROCARGS2) sizing failed");
     }
 
     let mut buf = vec![0u8; size as usize];

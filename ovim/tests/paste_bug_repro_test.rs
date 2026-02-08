@@ -28,9 +28,9 @@ fn test_linewise_paste_single_line_no_trailing_newline() {
 fn test_linewise_paste_after_insert_and_dd() {
     let mut test = EditorTest::new("AB");
 
-    test.keys("dd");       // Delete "AB", register = "AB\n" (Line)
+    test.keys("dd"); // Delete "AB", register = "AB\n" (Line)
     test.keys("i```<Esc>"); // Insert backticks, buffer = "```"
-    test.keys("p");        // Paste linewise
+    test.keys("p"); // Paste linewise
 
     assert_eq!(test.buffer_content(), "```\nAB\n");
 }
@@ -40,9 +40,9 @@ fn test_linewise_paste_after_insert_and_dd() {
 fn test_linewise_paste_empty_buffer() {
     let mut test = EditorTest::new("hello");
 
-    test.keys("yy");  // Yank "hello\n"
-    test.keys("dd");  // Delete entire buffer (now empty)
-    test.keys("p");   // Paste linewise
+    test.keys("yy"); // Yank "hello\n"
+    test.keys("dd"); // Delete entire buffer (now empty)
+    test.keys("p"); // Paste linewise
 
     assert_eq!(test.buffer_content(), "hello\n");
 }
@@ -52,9 +52,9 @@ fn test_linewise_paste_empty_buffer() {
 fn test_characterwise_paste_on_empty_line() {
     let mut test = EditorTest::new("hello\n\nworld");
 
-    test.keys("yiw");  // Yank "hello"
-    test.keys("j");    // Move to empty line
-    test.keys("p");    // Paste on empty line
+    test.keys("yiw"); // Yank "hello"
+    test.keys("j"); // Move to empty line
+    test.keys("p"); // Paste on empty line
 
     // Should insert on the empty line, not on the next line
     assert_eq!(test.buffer_content(), "hello\nhello\nworld\n");
@@ -65,9 +65,9 @@ fn test_characterwise_paste_on_empty_line() {
 fn test_characterwise_paste_at_end_of_line() {
     let mut test = EditorTest::new("abc");
 
-    test.keys("yiw");  // Yank "abc"
-    test.keys("$");    // Move to end (col 2)
-    test.keys("p");    // Paste after last char
+    test.keys("yiw"); // Yank "abc"
+    test.keys("$"); // Move to end (col 2)
+    test.keys("p"); // Paste after last char
 
     assert_eq!(test.buffer_content(), "abcabc\n");
 }
@@ -102,9 +102,9 @@ fn test_paste_undo_no_residue() {
 fn test_linewise_paste_at_end_with_trailing_newline() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("yy");  // Yank line 1
-    test.keys("G");   // Go to last line
-    test.keys("p");   // Paste after
+    test.keys("yy"); // Yank line 1
+    test.keys("G"); // Go to last line
+    test.keys("p"); // Paste after
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\n");
     test.assert_cursor(3, 0);

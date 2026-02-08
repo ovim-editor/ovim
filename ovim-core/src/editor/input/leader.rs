@@ -7,8 +7,8 @@
 //! - `<Space>o` - Document outline
 //! - etc.
 
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 use crate::editor::input_state::InputState;
 use crate::editor::{Editor, Picker};

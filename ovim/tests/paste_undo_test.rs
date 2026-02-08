@@ -1,5 +1,5 @@
-use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use ovim::editor::{Editor, InputHandler};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Helper function to create a KeyEvent
 fn key(code: KeyCode) -> KeyEvent {

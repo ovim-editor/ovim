@@ -6,8 +6,8 @@
 use crate::editor::input::helpers;
 use crate::editor::{Editor, InsertEntryMode, Motions};
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 /// Try to handle a mode transition command.
 ///
