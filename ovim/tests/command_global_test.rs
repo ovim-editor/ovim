@@ -112,4 +112,3 @@ fn test_command_global_no_matches_is_non_destructive() {
     assert_eq!(test.buffer_content(), "one\ntwo\nthree\n");
     assert_eq!(test.editor.lsp_status(), "No matching lines found");
 }
-

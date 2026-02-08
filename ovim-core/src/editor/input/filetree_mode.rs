@@ -6,8 +6,8 @@
 
 use crate::editor::Editor;
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Handles input in FileTree mode
 pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

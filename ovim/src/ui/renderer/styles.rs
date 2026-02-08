@@ -103,7 +103,9 @@ const BLAME_COLORS: [Color; 12] = [
 
 /// Returns a deterministic color for a blame commit hash
 pub fn blame_color_for_hash(hash: &str) -> Color {
-    let idx: usize = hash.bytes().fold(0usize, |acc, b| acc.wrapping_mul(31).wrapping_add(b as usize));
+    let idx: usize = hash.bytes().fold(0usize, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(b as usize)
+    });
     BLAME_COLORS[idx % BLAME_COLORS.len()]
 }
 

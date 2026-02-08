@@ -69,8 +69,7 @@ impl Editor {
                     .line(cursor_line)
                     .map(|s| {
                         let line_text = s.trim_end_matches('\n');
-                        let start =
-                            byte_offset_for_grapheme(line_text, trigger_col).unwrap_or(0);
+                        let start = byte_offset_for_grapheme(line_text, trigger_col).unwrap_or(0);
                         let end = byte_offset_for_grapheme(line_text, cursor_col)
                             .unwrap_or(line_text.len());
                         line_text
@@ -80,10 +79,7 @@ impl Editor {
                     })
                     .unwrap_or_default();
 
-                let range = Range::new(
-                    (cursor_line, trigger_col),
-                    (cursor_line, cursor_col),
-                );
+                let range = Range::new((cursor_line, trigger_col), (cursor_line, cursor_col));
                 let change = Change::delete(range, deleted_text, cursor_before);
                 change.apply(self.buffer_mut());
                 changes.push(change);

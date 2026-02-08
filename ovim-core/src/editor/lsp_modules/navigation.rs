@@ -6,10 +6,10 @@
 //! - `get_trace` — call hierarchy at cursor (LSP only)
 
 use super::super::Editor;
+use crate::lsp::uri_to_file_path;
 use crate::navigation_types::{
     OutlineInfo, OutlineSymbol, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode,
 };
-use crate::lsp::uri_to_file_path;
 
 impl Editor {
     /// Returns a structural outline of the current document.

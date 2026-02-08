@@ -9,8 +9,9 @@ use crate::editor::{
     TextObjectType, TextObjects,
 };
 use crate::mode::Mode;
-use anyhow::Result;
+use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Try to handle a text object after operator + 'i' or 'a'.
 ///
@@ -94,44 +95,48 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     };
 
     // Determine the TextObjectType for semantic repeat
+    let inner = text_obj_type == 'i';
     let object_type: Option<TextObjectType> = match key_event.code {
-        KeyCode::Char('w') => Some(TextObjectType::Word {
-            inner: text_obj_type == 'i',
-        }),
+        KeyCode::Char('w') => Some(TextObjectType::Word { inner }),
         KeyCode::Char('"') | KeyCode::Char('\'') | KeyCode::Char('`') => {
             let quote = match key_event.code {
                 KeyCode::Char(c) => c,
                 _ => unreachable!(),
             };
-            Some(TextObjectType::Quote {
-                char: quote,
-                inner: text_obj_type == 'i',
-            })
+            Some(TextObjectType::Quote { char: quote, inner })
         }
         KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
             Some(TextObjectType::Paired {
                 open: '(',
                 close: ')',
-                inner: text_obj_type == 'i',
+                inner,
             })
         }
         KeyCode::Char('[') | KeyCode::Char(']') => Some(TextObjectType::Paired {
             open: '[',
             close: ']',
-            inner: text_obj_type == 'i',
+            inner,
         }),
         KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
             Some(TextObjectType::Paired {
                 open: '{',
                 close: '}',
-                inner: text_obj_type == 'i',
+                inner,
             })
         }
         KeyCode::Char('<') | KeyCode::Char('>') => Some(TextObjectType::Paired {
             open: '<',
             close: '>',
-            inner: text_obj_type == 'i',
+            inner,
         }),
+        KeyCode::Char('p') => Some(TextObjectType::Paragraph { inner }),
+        KeyCode::Char('s') => Some(TextObjectType::Sentence { inner }),
+        KeyCode::Char('t') => Some(TextObjectType::Tag { inner }),
+        KeyCode::Char('i') => Some(TextObjectType::Indent {
+            inner,
+            tab_width: editor.options.tab_width,
+        }),
+        KeyCode::Char('f') => Some(TextObjectType::Function { inner }),
         _ => None,
     };
 
@@ -177,32 +182,31 @@ fn apply_delete_operator(
     range: TextObjectRange,
     object_type: Option<TextObjectType>,
 ) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
+    let cursor_before = editor.cursor_position();
 
     let deleted = TextObjects::yank_range(editor.buffer(), range)?;
 
-    let change_range = Range::new(
-        (range.start_line, range.start_col),
-        (range.end_line, range.end_col),
-    );
-
-    let change = if let Some(obj_type) = object_type {
-        let cursor_after = (range.start_line, range.start_col);
-        Change::delete_text_object(
-            obj_type,
-            cursor_before,
-            cursor_after,
-            deleted.clone(),
-            change_range,
-        )
-    } else {
-        Change::delete(change_range, deleted.clone(), cursor_before)
-    };
-
-    change.apply(editor.buffer_mut());
-    editor.delete_to_register(deleted);
-    editor.add_change(change);
+    if let Some(obj_type) = object_type {
+        // Pattern B: record() + push_recorded_undo() + set_repeat_action()
+        let ((), edits) = editor.buffer_mut().record(|buf| {
+            buf.delete_range(
+                range.start_line,
+                range.start_col,
+                range.end_line,
+                range.end_col,
+            );
+            buf.cursor_mut()
+                .set_position(range.start_line, range.start_col);
+        });
+        let cursor_after = editor.cursor_position();
+        if !edits.is_empty() {
+            editor.delete_to_register(deleted);
+            editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            editor.set_repeat_action(RepeatAction::DeleteTextObject {
+                object_type: obj_type,
+            });
+        }
+    }
     helpers::clamp_cursor_to_buffer(editor);
 
     Ok(())

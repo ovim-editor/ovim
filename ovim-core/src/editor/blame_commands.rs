@@ -95,8 +95,7 @@ impl Editor {
         self.lsp_state.hover_info = Some(text.to_string());
         self.lsp_state.hover_scroll = 0;
         self.lsp_state.hover_position = Some((line, col));
-        self.lsp_state.hover_content_type =
-            crate::editor::lsp_state::HoverContentType::BlameInfo;
+        self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::BlameInfo;
         self.mode = crate::mode::Mode::HoverPreview;
         self.mark_dirty();
     }

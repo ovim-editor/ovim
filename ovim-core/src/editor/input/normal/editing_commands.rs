@@ -7,8 +7,8 @@ use crate::editor::input::helpers;
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 use super::super::case;
 
@@ -101,31 +101,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 /// x - delete character(s) under cursor
 fn delete_char_forward(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
+    let cursor_before = editor.cursor_position();
 
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
-        let chars_count = line_text.chars().count();
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_chars_forward(count)
+    });
 
-        if col < chars_count {
-            let end_col = (col + count).min(chars_count);
-            let start_pos = (line_idx, col);
-            let end_pos = (line_idx, end_col);
-
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, col, line_idx, end_col);
-            let range = Range::new(start_pos, end_pos);
-            let change = Change::delete(range, deleted.clone(), cursor_before);
-
-            editor.delete_to_register(deleted);
-            editor.add_change(change);
-
-            helpers::clamp_cursor_to_buffer(editor);
-        }
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.delete_to_register(deleted);
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        editor.set_repeat_action(RepeatAction::DeleteCharForward { count });
     }
     editor.clear_count();
     Ok(())
@@ -134,31 +120,17 @@ fn delete_char_forward(editor: &mut Editor) -> Result<()> {
 /// X - delete character(s) before cursor
 fn delete_char_backward(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
+    let cursor_before = editor.cursor_position();
 
-    if col > 0 {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let _line_text = line.trim_end_matches('\n');
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_chars_backward(count)
+    });
 
-            let start_col = col.saturating_sub(count);
-            let start_pos = (line_idx, start_col);
-            let end_pos = (line_idx, col);
-
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, start_col, line_idx, col);
-            let range = Range::new(start_pos, end_pos);
-            let change = Change::delete_backward(range, deleted.clone(), cursor_before);
-
-            editor.delete_to_register(deleted);
-            editor.add_change(change);
-
-            editor.buffer_mut().cursor_mut().set_col(start_col);
-            helpers::clamp_cursor_to_buffer(editor);
-        }
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.delete_to_register(deleted);
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        editor.set_repeat_action(RepeatAction::DeleteCharBackward { count });
     }
     editor.clear_count();
     Ok(())
@@ -166,30 +138,17 @@ fn delete_char_backward(editor: &mut Editor) -> Result<()> {
 
 /// D - delete to end of line
 fn delete_to_end_of_line(editor: &mut Editor) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
+    let cursor_before = editor.cursor_position();
 
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
-        let line_len = line_text.chars().count();
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_to_end_of_line()
+    });
 
-        if col < line_len {
-            let start_pos = (line_idx, col);
-            let end_pos = (line_idx, line_len);
-
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, col, line_idx, line_len);
-            let range = Range::new(start_pos, end_pos);
-            let change = Change::delete(range, deleted.clone(), cursor_before);
-
-            editor.delete_to_register(deleted);
-            editor.add_change(change);
-
-            helpers::clamp_cursor_to_buffer(editor);
-        }
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.delete_to_register(deleted);
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        editor.set_repeat_action(RepeatAction::DeleteToEndOfLine);
     }
     editor.clear_count();
     Ok(())

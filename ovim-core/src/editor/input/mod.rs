@@ -1,7 +1,7 @@
 use crate::editor::{Editor, InputState};
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 /// Command handling submodule
 mod commands;
@@ -16,7 +16,7 @@ mod numbers;
 mod case;
 
 /// Helper functions for cursor movement and editing
-mod helpers;
+pub(crate) mod helpers;
 
 /// Character motion handler (f, t, F, T, r, m, ', `) - new state machine
 mod char_motion;
@@ -89,8 +89,7 @@ impl InputHandler {
 
         // Global keybindings (work in any mode)
         // Cmd+1 - toggle file tree
-        if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(Modifiers::SUPER)
-        {
+        if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(Modifiers::SUPER) {
             editor.toggle_file_tree();
             return Ok(());
         }

@@ -1,8 +1,8 @@
 //! Subcommand implementations for controlling ovim sessions
 #![allow(clippy::print_stdout)]
 
-use anyhow::{Context, Result};
 use crate::cli::FileArg;
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::cli::{Command, LspCommand, SessionCommand};
@@ -45,7 +45,12 @@ impl Drop for EnvVarGuard {
     }
 }
 
-fn with_temp_headless_session<F>(file_arg: &str, wait_lsp: bool, timeout_ms: u64, f: F) -> Result<()>
+fn with_temp_headless_session<F>(
+    file_arg: &str,
+    wait_lsp: bool,
+    timeout_ms: u64,
+    f: F,
+) -> Result<()>
 where
     F: FnOnce(&str) -> Result<()>,
 {
@@ -269,7 +274,11 @@ fn execute_lsp_command(command: LspCommand) -> Result<()> {
                 cmd_outline(&resolve_default_session_name(session_name))
             }
         }
-        LspCommand::Symbol { query, session, file } => {
+        LspCommand::Symbol {
+            query,
+            session,
+            file,
+        } => {
             let session_name = session.as_deref();
             if let Some(file) = file.as_deref() {
                 with_temp_headless_session(file, true, 30_000, |s| cmd_symbol(&query, s))
@@ -315,12 +324,7 @@ fn execute_session_command(command: SessionCommand) -> Result<()> {
 // ─── File Operations (direct file I/O) ──────────────────────────────────────
 
 /// Replace text in a file (direct file I/O, no session needed)
-fn cmd_edit_file(
-    file_path: &str,
-    line: Option<usize>,
-    old: &str,
-    new: &str,
-) -> Result<()> {
+fn cmd_edit_file(file_path: &str, line: Option<usize>, old: &str, new: &str) -> Result<()> {
     let old_expanded = expand_escapes(old);
     let new_expanded = expand_escapes(new);
 
@@ -508,12 +512,7 @@ fn cmd_delete_lines_file(file_path: &str, from: usize, to: usize) -> Result<()> 
 }
 
 /// Read lines from a file (direct file I/O)
-fn cmd_read_lines_file(
-    file_path: &str,
-    from: usize,
-    to: usize,
-    json_output: bool,
-) -> Result<()> {
+fn cmd_read_lines_file(file_path: &str, from: usize, to: usize, json_output: bool) -> Result<()> {
     let content = std::fs::read_to_string(file_path)
         .context(format!("Failed to read file: {}", file_path))?;
 
@@ -561,8 +560,10 @@ fn atomic_write(file_path: &str, content: &str) -> Result<()> {
     let path = std::path::Path::new(file_path);
     let tmp_path = path.with_extension("tmp");
 
-    let mut f = std::fs::File::create(&tmp_path)
-        .context(format!("Failed to create temp file: {}", tmp_path.display()))?;
+    let mut f = std::fs::File::create(&tmp_path).context(format!(
+        "Failed to create temp file: {}",
+        tmp_path.display()
+    ))?;
     f.write_all(content.as_bytes())?;
     f.flush()?;
     f.sync_all()?;
@@ -722,13 +723,8 @@ fn cmd_context_for_file(target: &str) -> Result<()> {
         .min(total_lines - 1);
     let col_0 = file_arg.col.unwrap_or(1).saturating_sub(1);
 
-    let ctx = crate::api::format_context_window(
-        &contents,
-        line_0,
-        col_0,
-        Some(&file_arg.path),
-        "NORMAL",
-    );
+    let ctx =
+        crate::api::format_context_window(&contents, line_0, col_0, Some(&file_arg.path), "NORMAL");
     print!("{}", ctx);
     Ok(())
 }

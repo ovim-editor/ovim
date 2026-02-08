@@ -116,7 +116,12 @@ impl Picker {
     /// Creates a new LSP locations picker with pre-built PickerResult items
     pub fn new_with_results(base_dir: PathBuf, results: Vec<PickerResult>) -> Self {
         let preferred_dir = base_dir.clone();
-        Self::new_fuzzy_list(base_dir, preferred_dir, results, FuzzyListKind::LspLocations)
+        Self::new_fuzzy_list(
+            base_dir,
+            preferred_dir,
+            results,
+            FuzzyListKind::LspLocations,
+        )
     }
 
     /// Sets the prompt for the picker

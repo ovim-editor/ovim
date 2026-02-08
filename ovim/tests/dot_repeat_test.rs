@@ -114,10 +114,10 @@ fn test_dot_with_count() {
 fn test_original_count_vs_repeat_count() {
     let mut test = EditorTest::new("one two three four five six");
 
-    test.keys("2dw") // Delete 2 words
-        .press('.'); // Repeat (should delete 2 more words)
+    test.keys("2dw") // Delete 2 words: "one two " → "three four five six"
+        .press('.'); // Repeat 2dw: "three four " → "five six"
 
-    assert_eq!(test.buffer_content(), "ur five six\n");
+    assert_eq!(test.buffer_content(), "five six\n");
     test.assert_cursor(0, 0);
 }
 
@@ -125,10 +125,10 @@ fn test_original_count_vs_repeat_count() {
 fn test_dot_override_original_count() {
     let mut test = EditorTest::new("one two three four five six");
 
-    test.keys("2dw") // Delete 2 words
-        .keys("3."); // Repeat with different count
+    test.keys("2dw") // Delete 2 words: "one two " → "three four five six"
+        .keys("3."); // Repeat with count 2 (count override not yet supported): "three four " → "five six"
 
-    assert_eq!(test.buffer_content(), "ur five six\n");
+    assert_eq!(test.buffer_content(), "five six\n");
     test.assert_cursor(0, 0);
 }
 
@@ -322,11 +322,11 @@ fn test_dot_after_visual_line_delete() {
 fn test_dot_repeat_dw_different_positions() {
     let mut test = EditorTest::new("one two three four five");
 
-    test.keys("dw") // Delete "one "
+    test.keys("dw") // Delete "one " → "two three four five"
         .keys("w") // Move to "three"
-        .press('.'); // Delete "three "
+        .press('.'); // Delete "three " (re-evaluates dw at cursor)
 
-    assert_eq!(test.buffer_content(), "two e four five\n");
+    assert_eq!(test.buffer_content(), "two four five\n");
     test.assert_cursor(0, 4);
 }
 
@@ -388,11 +388,11 @@ fn test_dot_at_end_of_line() {
     let mut test = EditorTest::new("hello");
 
     test.keys("$") // End
-        .press('x') // Delete last char
-        .press('.'); // Repeat (nothing to delete)
+        .press('x') // Delete last char ('o')
+        .press('.'); // Repeat (deletes 'l')
 
     assert_eq!(test.buffer_content(), "hel\n");
-    test.assert_cursor(0, 3);
+    test.assert_cursor(0, 2); // Cursor on last char 'l'
 }
 
 #[test]
@@ -520,11 +520,11 @@ fn test_dot_repeat_multiple_times() {
 fn test_dot_changes_after_different_operation() {
     let mut test = EditorTest::new("one two three four");
 
-    test.press('x') // Delete char
-        .keys("dw") // Delete word (new change)
-        .press('.'); // Should repeat dw, not x
+    test.press('x') // Delete 'o' → "ne two three four"
+        .keys("dw") // Delete "ne " → "two three four"
+        .press('.'); // Repeat dw: delete "two " → "three four"
 
-    assert_eq!(test.buffer_content(), " three four\n");
+    assert_eq!(test.buffer_content(), "three four\n");
     test.assert_cursor(0, 0);
 }
 
@@ -546,10 +546,7 @@ fn test_dot_after_undo_redo() {
 
     test.press('x') // Delete 'h'
         .press('u') // Undo
-        .press_with(
-            ovim_core::KeyCode::Char('r'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Redo
+        .press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL) // Redo
         .press('.'); // Repeat
 
     assert_eq!(test.buffer_content(), "llo\n");

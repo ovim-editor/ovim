@@ -118,9 +118,7 @@ fn ok(message: Option<String>) -> CommandResult {
 }
 
 fn err(msg: impl Into<String>) -> CommandResult {
-    CommandResult::Error(ErrorResponse {
-        error: msg.into(),
-    })
+    CommandResult::Error(ErrorResponse { error: msg.into() })
 }
 
 // ---------------------------------------------------------------------------

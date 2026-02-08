@@ -31,8 +31,8 @@ pub use logger::{get_log_path, init_lsp_logging};
 pub use protocol::{JsonRpcMessage, RequestId};
 pub use server::{LanguageServer, LanguageServerHealth};
 pub use supervisor::{RestartPolicy, TaskSupervisor};
-pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
 pub use trigger_chars::fallback_completion_trigger_characters;
+pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
 pub use utils::compute_simple_diff;
 
 use anyhow::Result;
@@ -347,7 +347,10 @@ impl LspManager {
             .collect()
     }
 
-    pub async fn completion_trigger_characters_for_servers(&self, server_ids: &[String]) -> Vec<char> {
+    pub async fn completion_trigger_characters_for_servers(
+        &self,
+        server_ids: &[String],
+    ) -> Vec<char> {
         use std::collections::HashSet;
         let mut set: HashSet<char> = HashSet::new();
         for sid in server_ids {

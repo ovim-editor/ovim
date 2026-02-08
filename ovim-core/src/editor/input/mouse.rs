@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::{MouseButton, MouseEvent, MouseEventKind};
+use anyhow::Result;
 
 use crate::display::display_col_to_char_col;
 use crate::editor::Editor;

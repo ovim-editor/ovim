@@ -506,8 +506,7 @@ fn live_grep_no_match() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut picker =
-            Picker::new_live_grep(dir.path().to_path_buf(), dir.path().to_path_buf());
+        let mut picker = Picker::new_live_grep(dir.path().to_path_buf(), dir.path().to_path_buf());
         picker.set_query("zzzznotfound".to_string());
 
         loop {

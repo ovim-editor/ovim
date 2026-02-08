@@ -175,14 +175,28 @@ fn render_buffer_area(
                 (vs, ly)
             } else {
                 let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-                let viewport_start =
-                    render_buffer(frame, editor, theme, &fallback_layout, line_cache, true, None);
+                let viewport_start = render_buffer(
+                    frame,
+                    editor,
+                    theme,
+                    &fallback_layout,
+                    line_cache,
+                    true,
+                    None,
+                );
                 (viewport_start, fallback_layout)
             }
         } else {
             let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-            let viewport_start =
-                render_buffer(frame, editor, theme, &fallback_layout, line_cache, true, None);
+            let viewport_start = render_buffer(
+                frame,
+                editor,
+                theme,
+                &fallback_layout,
+                line_cache,
+                true,
+                None,
+            );
             (viewport_start, fallback_layout)
         }
     } else {
@@ -245,8 +259,15 @@ fn render_buffer_area(
         let centered = buffer_area.width < full_area.width;
         let render_inline_vtext = !centered;
 
-        let viewport_start =
-            render_buffer(frame, editor, theme, &single_layout, line_cache, render_inline_vtext, None);
+        let viewport_start = render_buffer(
+            frame,
+            editor,
+            theme,
+            &single_layout,
+            line_cache,
+            render_inline_vtext,
+            None,
+        );
         if centered {
             crate::ui::renderer::buffer::render_diagnostic_virtual_text_overlay(
                 frame,
@@ -434,7 +455,8 @@ fn set_cursor_position(
 
         let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
             if let Some(wrap_map) = editor.wrap_map() {
-                let (abs_visual_row, visual_col) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+                let (abs_visual_row, visual_col) =
+                    wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
                 let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
                 let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
                 let screen_col = visual_col;
@@ -666,7 +688,11 @@ impl Renderer {
     }
 
     /// Renders editor to a frame (used by both TUI and headless rendering)
-    pub fn render_to_frame(frame: &mut Frame, editor: &mut Editor, line_cache: &mut LineRenderCache) {
+    pub fn render_to_frame(
+        frame: &mut Frame,
+        editor: &mut Editor,
+        line_cache: &mut LineRenderCache,
+    ) {
         clear_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {
@@ -693,7 +719,8 @@ impl Renderer {
         }
 
         // Render buffer content
-        let (viewport_start, layout) = render_buffer_area(frame, editor, &theme, &areas, line_cache);
+        let (viewport_start, layout) =
+            render_buffer_area(frame, editor, &theme, &areas, line_cache);
 
         // Update viewport dimensions and cache layout for mouse coordinate conversion
         editor.set_viewport_height(layout.buffer_area.height as usize);

@@ -5,8 +5,8 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{Editor, FindDirection, FindType, Motions, Search};
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 /// Try to handle a motion command.
 ///

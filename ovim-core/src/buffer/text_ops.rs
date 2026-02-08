@@ -1,5 +1,7 @@
 use super::Buffer;
+use crate::change::{find_number_at_or_after, format_number, parse_number, TextObjectType};
 use crate::edit::Edit;
+use crate::textobjects::TextObjects;
 use crate::unicode::grapheme_count;
 
 impl Buffer {
@@ -399,5 +401,322 @@ impl Buffer {
         // Only allocate String for the final word
         let word: String = chars[start..end].iter().collect();
         Some((word, start, end))
+    }
+
+    /// Finds the number at/after cursor, applies delta, replaces it in-place.
+    /// Positions cursor on the last digit of the new number.
+    pub fn modify_number_at_cursor(&mut self, delta: i64) {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+
+        let Some(line) = self.line(line_idx) else {
+            return;
+        };
+        let line_text = line.trim_end_matches('\n');
+
+        let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, col) else {
+            return;
+        };
+        let Ok((mut value, base, prefix_len)) = parse_number(&number_str) else {
+            return;
+        };
+
+        let has_plus_sign = number_str.starts_with('+');
+        value += delta;
+        let mut new_number_str = format_number(value, base, prefix_len);
+
+        // Preserve explicit '+' sign for positive numbers
+        if has_plus_sign && value >= 0 && !new_number_str.starts_with('+') {
+            new_number_str = format!("+{}", new_number_str);
+        }
+
+        self.delete_range(line_idx, start_col, line_idx, end_col);
+        self.insert_text_at(line_idx, start_col, &new_number_str);
+
+        let new_end_col = start_col + new_number_str.len() - 1;
+        self.cursor_mut().set_position(line_idx, new_end_col);
+    }
+
+    /// Finds and deletes a text object at the current cursor position.
+    pub fn delete_text_object(&mut self, object_type: &TextObjectType) {
+        let range = match object_type {
+            TextObjectType::Word { inner } => {
+                if *inner {
+                    TextObjects::inner_word(self)
+                } else {
+                    TextObjects::around_word(self)
+                }
+            }
+            TextObjectType::Quote { char, inner } => {
+                TextObjects::quoted_string(self, *char, !*inner)
+            }
+            TextObjectType::Paired { open, close, inner } => {
+                TextObjects::paired_delimiters(self, *open, *close, !*inner)
+            }
+            TextObjectType::Paragraph { inner } => {
+                if *inner {
+                    TextObjects::inner_paragraph(self)
+                } else {
+                    TextObjects::around_paragraph(self)
+                }
+            }
+            TextObjectType::Sentence { inner } => {
+                if *inner {
+                    TextObjects::inner_sentence(self)
+                } else {
+                    TextObjects::around_sentence(self)
+                }
+            }
+            TextObjectType::Tag { inner } => TextObjects::tag(self, !*inner),
+            TextObjectType::Indent { inner, tab_width } => {
+                if *inner {
+                    TextObjects::inner_indent(self, *tab_width)
+                } else {
+                    TextObjects::around_indent(self, *tab_width)
+                }
+            }
+            TextObjectType::Function { inner } => {
+                if *inner {
+                    TextObjects::inner_function(self)
+                } else {
+                    TextObjects::around_function(self)
+                }
+            }
+        };
+        if let Some(range) = range {
+            self.delete_range(
+                range.start_line,
+                range.start_col,
+                range.end_line,
+                range.end_col,
+            );
+            self.cursor_mut()
+                .set_position(range.start_line, range.start_col);
+        }
+    }
+
+    /// Deletes text found by a character find/till motion on the current line.
+    /// Returns the deleted text (for register storage).
+    pub fn delete_char_motion(
+        &mut self,
+        target: char,
+        forward: bool,
+        till: bool,
+        count: usize,
+    ) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+
+        let Some(line) = self.line(line_idx) else {
+            return String::new();
+        };
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        let found = if forward {
+            let mut seen = 0usize;
+            let mut found_idx = None;
+            for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+                if c == target {
+                    seen += 1;
+                    if seen == count {
+                        found_idx = Some(i);
+                        break;
+                    }
+                }
+            }
+            found_idx
+        } else {
+            if col == 0 {
+                None
+            } else {
+                let mut seen = 0usize;
+                let mut found_idx = None;
+                for i in (0..col).rev() {
+                    if chars.get(i).copied() == Some(target) {
+                        seen += 1;
+                        if seen == count {
+                            found_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+                found_idx
+            }
+        };
+
+        let Some(found_idx) = found else {
+            return String::new();
+        };
+
+        let (start_col, end_col) = if forward {
+            let end_excl = if till { found_idx } else { found_idx + 1 };
+            (col, end_excl)
+        } else {
+            let end_excl = if till { col } else { col + 1 };
+            (found_idx, end_excl)
+        };
+
+        let deleted = self.delete_range(line_idx, start_col, line_idx, end_col);
+        self.cursor_mut().set_position(line_idx, start_col);
+        deleted
+    }
+
+    /// Deletes count characters forward from cursor (x command).
+    /// Returns the deleted text. Clamps to end of line.
+    pub fn delete_chars_forward(&mut self, count: usize) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        let Some(line) = self.line(line_idx) else {
+            return String::new();
+        };
+        let line_len = line.trim_end_matches('\n').chars().count();
+        if col >= line_len {
+            return String::new();
+        }
+        let end_col = (col + count).min(line_len);
+        let deleted = self.delete_range(line_idx, col, line_idx, end_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes count characters backward from cursor (X command).
+    /// Returns the deleted text. Clamps to start of line.
+    pub fn delete_chars_backward(&mut self, count: usize) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        if col == 0 {
+            return String::new();
+        }
+        let start_col = col.saturating_sub(count);
+        let deleted = self.delete_range(line_idx, start_col, line_idx, col);
+        self.cursor_mut().set_position(line_idx, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes count lines from cursor line (dd command).
+    /// Returns the deleted text.
+    pub fn delete_lines(&mut self, count: usize) -> String {
+        let start_line = self.cursor().line();
+        let end_line = (start_line + count).min(self.line_count());
+        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        // Clamp cursor to buffer bounds
+        let new_line = start_line.min(self.line_count().saturating_sub(1));
+        self.cursor_mut().set_position(new_line, 0);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to end of line (D / d$ command).
+    /// Returns the deleted text.
+    pub fn delete_to_end_of_line(&mut self) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        let Some(line) = self.line(line_idx) else {
+            return String::new();
+        };
+        let line_len = line.trim_end_matches('\n').chars().count();
+        if col >= line_len {
+            return String::new();
+        }
+        let deleted = self.delete_range(line_idx, col, line_idx, line_len);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to next word boundary (dw command).
+    /// Returns the deleted text.
+    pub fn delete_word_forward(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::word_forward(self, count);
+
+        let end_line = self.cursor().line();
+        let mut end_col = self.cursor().col();
+
+        // dw should stop at end of line, not cross newlines
+        if end_line > start_line {
+            if let Some(line) = self.line(start_line) {
+                let line_len = line.trim_end_matches('\n').chars().count();
+                self.cursor_mut().set_position(start_line, start_col);
+                let deleted = self.delete_range(start_line, start_col, start_line, line_len);
+                self.cursor_mut().set_position(start_line, start_col);
+                self.clamp_cursor_col();
+                return deleted;
+            }
+        } else if end_line == start_line && end_col == start_col && end_line + 1 >= self.line_count()
+        {
+            // Motion didn't move — last word on last line. Delete to end of line.
+            if let Some(line) = self.line(end_line) {
+                end_col = line.trim_end_matches('\n').chars().count();
+            }
+        }
+
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
+        self.cursor_mut().set_position(start_line, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes current line and count lines below (dj command).
+    /// Returns the deleted text.
+    pub fn delete_line_down(&mut self, count: usize) -> String {
+        let start_line = self.cursor().line();
+        let end_line = (start_line + count + 1).min(self.line_count());
+        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let new_line = start_line.min(self.line_count().saturating_sub(1));
+        self.cursor_mut().set_position(new_line, 0);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes current line and count lines above (dk command).
+    /// Returns the deleted text.
+    pub fn delete_line_up(&mut self, count: usize) -> String {
+        let end_line = self.cursor().line() + 1;
+        let start_line = self.cursor().line().saturating_sub(count);
+        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let new_line = start_line.min(self.line_count().saturating_sub(1));
+        self.cursor_mut().set_position(new_line, 0);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to paragraph forward (d} command).
+    /// Returns the deleted text.
+    pub fn delete_paragraph_forward(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::paragraph_forward(self, count);
+        let end_line = self.cursor().line();
+
+        let deleted = self.delete_range(start_line, start_col, end_line, 0);
+        self.cursor_mut().set_position(start_line, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from paragraph backward to cursor (d{ command).
+    /// Returns the deleted text.
+    pub fn delete_paragraph_backward(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let end_line = self.cursor().line();
+        let end_col = self.cursor().col();
+
+        Motions::paragraph_backward(self, count);
+        let start_line = self.cursor().line();
+
+        let deleted = self.delete_range(start_line, 0, end_line, end_col);
+        self.cursor_mut().set_position(start_line, 0);
+        self.clamp_cursor_col();
+        deleted
     }
 }

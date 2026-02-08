@@ -379,10 +379,7 @@ fn test_ctrl_o_jump_back() {
     test.keys("G") // Jump 1
         .keys("gg") // Jump 2
         .keys("G") // Jump 3
-        .press_with(
-            ovim_core::KeyCode::Char('o'),
-            ovim_core::Modifiers::CONTROL,
-        ); // Jump back
+        .press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL); // Jump back
 
     assert_eq!(
         test.buffer_content(),
@@ -401,10 +398,7 @@ fn test_tab_jump_forward() {
 
     test.keys("G")
         .keys("gg")
-        .press_with(
-            ovim_core::KeyCode::Char('o'),
-            ovim_core::Modifiers::CONTROL,
-        ) // Back
+        .press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL) // Back
         .keys("<Tab>"); // Forward
 
     assert_eq!(
@@ -427,14 +421,8 @@ fn test_jump_list_multiple() {
     test.keys("j").keys("j").keys("j").keys("j");
 
     // Jump back multiple times
-    test.press_with(
-        ovim_core::KeyCode::Char('o'),
-        ovim_core::Modifiers::CONTROL,
-    )
-    .press_with(
-        ovim_core::KeyCode::Char('o'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    test.press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL)
+        .press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL);
 
     assert_eq!(
         test.buffer_content(),

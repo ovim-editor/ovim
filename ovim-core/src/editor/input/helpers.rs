@@ -8,6 +8,23 @@ use crate::repeat_action::RepeatAction;
 use crate::unicode::grapheme_count;
 use anyhow::Result;
 
+type Position = (usize, usize);
+
+/// Calculate end position after inserting text at a given start position.
+fn calculate_end_position(start: Position, text: &str) -> Position {
+    let mut line = start.0;
+    let mut col = start.1;
+    for ch in text.chars() {
+        if ch == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
 // Helper methods for cursor movement and editing
 
 pub fn move_left(editor: &mut Editor) {
@@ -516,29 +533,26 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::PasteAfter);
             }
         }
         RegisterType::Line => {
             // Line paste - insert after current line
             let rope_line = editor.buffer().rope().line(line_idx);
             let line_char_len = rope_line.len_chars();
-            let has_trailing_newline = line_char_len > 0
-                && rope_line.char(line_char_len - 1) == '\n';
-            let (position, text) = if has_trailing_newline {
-                // Line has trailing newline - insert at the newline position
-                // (which is end of line including newline, so text goes on next line)
-                ((line_idx, line_char_len), text)
-            } else if line_char_len == 0 {
-                // Empty buffer (no content at all) - insert directly
-                ((line_idx, 0), text)
-            } else {
-                // Last line without trailing newline - prepend \n to create new line
-                let text = format!("\n{}", text.trim_end_matches('\n'));
-                ((line_idx, line_char_len), text)
-            };
-            let change = Change::insert(position, text, cursor_before);
-            change.apply(editor.buffer_mut());
-            editor.add_change(change);
+            let has_trailing_newline =
+                line_char_len > 0 && rope_line.char(line_char_len - 1) == '\n';
+
+            let ((), edits) = editor.buffer_mut().record(|buf| {
+                if has_trailing_newline {
+                    buf.insert_text_at(line_idx, line_char_len, &text);
+                } else if line_char_len == 0 {
+                    buf.insert_text_at(line_idx, 0, &text);
+                } else {
+                    let insert_text = format!("\n{}", text.trim_end_matches('\n'));
+                    buf.insert_text_at(line_idx, line_char_len, &insert_text);
+                };
+            });
 
             // Vim: cursor on first non-blank of the new line
             let new_line = line_idx + 1;
@@ -555,6 +569,12 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(new_line, first_non_blank);
+
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::PasteAfter);
+            }
         }
         RegisterType::Character => {
             // Character paste - insert after cursor
@@ -566,23 +586,31 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
                 .map(|l| l.trim_end_matches('\n').chars().count())
                 .unwrap_or(0);
             let paste_col = (col + 1).min(line_content_len);
-            let position = (line_idx, paste_col);
-            let change = Change::insert(position, text, cursor_before);
-            change.apply(editor.buffer_mut());
-            editor.add_change(change);
-            // change.apply() sets cursor one-past-end via calculate_end_position.
-            // Vim places cursor on the last character of pasted text.
-            // If cursor col > 0, move back by 1 to land on last char.
-            let cur = editor.buffer().cursor();
-            let cur_col = cur.col();
-            let cur_line = cur.line();
-            if cur_col > 0 {
+
+            let text_clone = text.clone();
+            let ((), edits) = editor.buffer_mut().record(|buf| {
+                buf.insert_text_at(line_idx, paste_col, &text_clone);
+            });
+
+            // Calculate end position and place cursor on last char of pasted text
+            let end_pos = calculate_end_position((line_idx, paste_col), &text);
+            if end_pos.1 > 0 {
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(cur_line, cur_col - 1);
+                    .set_position(end_pos.0, end_pos.1 - 1);
+            } else {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(end_pos.0, 0);
             }
-            // If col == 0 (text ended with \n), cursor is already at correct position
+
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::PasteAfter);
+            }
         }
     }
 
@@ -650,20 +678,20 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::PasteBefore);
             }
         }
         RegisterType::Line => {
             // Line paste before - insert at end of previous line (newline splits correctly)
             // For first line, insert at (0, 0) as there's no previous line
-            let position = if line_idx > 0 {
-                let prev_line_len = editor.buffer().rope().line(line_idx - 1).len_chars();
-                (line_idx - 1, prev_line_len)
-            } else {
-                (0, 0)
-            };
-            let change = Change::insert(position, text, cursor_before);
-            change.apply(editor.buffer_mut());
-            editor.add_change(change);
+            let ((), edits) = editor.buffer_mut().record(|buf| {
+                if line_idx > 0 {
+                    let prev_line_len = buf.rope().line(line_idx - 1).len_chars();
+                    buf.insert_text_at(line_idx - 1, prev_line_len, &text);
+                } else {
+                    buf.insert_text_at(0, 0, &text);
+                }
+            });
 
             // Vim: cursor on first non-blank of the pasted line
             let pasted_line = line_idx; // Text was inserted before current line
@@ -680,13 +708,32 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(pasted_line, first_non_blank);
+
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::PasteBefore);
+            }
         }
         RegisterType::Character => {
             // Character paste before cursor
-            let position = (line_idx, col);
-            let change = Change::insert(position, text, cursor_before);
-            change.apply(editor.buffer_mut());
-            editor.add_change(change);
+            let text_clone = text.clone();
+            let ((), edits) = editor.buffer_mut().record(|buf| {
+                buf.insert_text_at(line_idx, col, &text_clone);
+            });
+
+            // Position cursor at end of pasted text (same as old Change::insert().apply())
+            let end_pos = calculate_end_position((line_idx, col), &text);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(end_pos.0, end_pos.1);
+
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                editor.set_repeat_action(RepeatAction::PasteBefore);
+            }
         }
     }
 
@@ -890,7 +937,9 @@ pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
 pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (result, edits) = editor.buffer_mut().record(|buf| buf.join_lines_no_space(count));
+    let (result, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.join_lines_no_space(count));
     result?;
 
     let cursor_after = editor.cursor_position();
@@ -1002,7 +1051,10 @@ pub fn save_and_clear_visual(editor: &mut Editor) {
 }
 
 /// Transform visual selection text using the given function (shared by uppercase/lowercase/toggle case)
-fn transform_visual_selection(editor: &mut Editor, transform: impl Fn(&str) -> String) -> Result<()> {
+fn transform_visual_selection(
+    editor: &mut Editor,
+    transform: impl Fn(&str) -> String,
+) -> Result<()> {
     let mode = editor.mode();
     let cursor_before = (
         editor.buffer().cursor().line(),
@@ -1035,8 +1087,7 @@ fn transform_visual_selection(editor: &mut Editor, transform: impl Fn(&str) -> S
                         line_text.to_string(),
                         cursor_before,
                     ));
-                    all_changes
-                        .push(Change::insert((line_idx, 0), transformed, cursor_before));
+                    all_changes.push(Change::insert((line_idx, 0), transformed, cursor_before));
                 }
             }
         }
@@ -1475,7 +1526,9 @@ pub fn auto_indent_lines(
 
             // Increase indent if line ends with opening bracket (ignore trailing whitespace)
             let trimmed_end = trimmed.trim_end();
-            if trimmed_end.ends_with('{') || trimmed_end.ends_with('(') || trimmed_end.ends_with('[')
+            if trimmed_end.ends_with('{')
+                || trimmed_end.ends_with('(')
+                || trimmed_end.ends_with('[')
             {
                 current_indent += tab_width;
             }
@@ -1540,7 +1593,11 @@ pub fn auto_indent_lines_with_tracking(
         }
 
         // Desired indentation for *this* line (before any opening-bracket bump)
-        let line_indent = if trimmed.is_empty() { 0 } else { current_indent };
+        let line_indent = if trimmed.is_empty() {
+            0
+        } else {
+            current_indent
+        };
 
         // Calculate current leading spaces
         let current_spaces = count_leading_spaces(line_text, tab_width);

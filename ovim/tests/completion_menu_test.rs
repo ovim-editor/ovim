@@ -18,9 +18,11 @@ fn completion_tab_accepts_and_undo_redo_work() {
 
     // Cursor is at end; completion should replace the "fo" prefix.
     let trigger_col = "let x = ".chars().count();
-    t.editor
-        .completion_menu_mut()
-        .show(vec![completion_item("foo")], trigger_col, "fo".to_string());
+    t.editor.completion_menu_mut().show(
+        vec![completion_item("foo")],
+        trigger_col,
+        "fo".to_string(),
+    );
 
     t.press_key(KeyCode::Tab);
     assert_eq!(t.editor.buffer().line(0).unwrap(), "let x = foo\n");
@@ -40,9 +42,11 @@ fn completion_ctrl_y_accepts() {
     t.keys("A");
 
     let trigger_col = "let x = ".chars().count();
-    t.editor
-        .completion_menu_mut()
-        .show(vec![completion_item("foo")], trigger_col, "fo".to_string());
+    t.editor.completion_menu_mut().show(
+        vec![completion_item("foo")],
+        trigger_col,
+        "fo".to_string(),
+    );
 
     t.keys("<C-y>");
     assert_eq!(t.editor.buffer().line(0).unwrap(), "let x = foo\n");
@@ -60,9 +64,15 @@ fn completion_arrows_navigate_menu_without_moving_cursor() {
         "f".to_string(),
     );
 
-    let before = (t.editor.buffer().cursor().line(), t.editor.buffer().cursor().col());
+    let before = (
+        t.editor.buffer().cursor().line(),
+        t.editor.buffer().cursor().col(),
+    );
     t.press_key(KeyCode::Down);
-    let after = (t.editor.buffer().cursor().line(), t.editor.buffer().cursor().col());
+    let after = (
+        t.editor.buffer().cursor().line(),
+        t.editor.buffer().cursor().col(),
+    );
     assert_eq!(before, after);
     assert_eq!(t.editor.completion_menu().selected_index(), 1);
 

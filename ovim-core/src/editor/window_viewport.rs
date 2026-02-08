@@ -70,7 +70,9 @@ impl Editor {
         let cursor = self.buffer().cursor().clone();
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
-                window.cursor_mut().set_position(cursor.line(), cursor.col());
+                window
+                    .cursor_mut()
+                    .set_position(cursor.line(), cursor.col());
             }
         }
     }

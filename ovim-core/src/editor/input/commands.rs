@@ -1,8 +1,8 @@
 use crate::command_result::CommandResult;
 use crate::editor::path_completion::extract_path_from_command;
 use crate::editor::{Change, Editor, Mode, Range};
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Handles input in Command mode
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

@@ -5,8 +5,8 @@
 
 use crate::editor::Editor;
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 /// Handles input in Picker mode
 pub fn handle_picker_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

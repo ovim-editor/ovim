@@ -101,10 +101,7 @@ fn test_jump_list_back_centers_cursor() {
     test.keys("gg");
 
     // Jump back with Ctrl-O (should go to line 30 and center)
-    test.press_with(
-        ovim_core::KeyCode::Char('o'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    test.press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL);
 
     let viewport = ViewportAssertion::new(&test.editor);
 
@@ -138,10 +135,7 @@ fn test_jump_list_forward_centers_cursor() {
     test.keys("gg"); // Jump to line 1
 
     // Jump back
-    test.press_with(
-        ovim_core::KeyCode::Char('o'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    test.press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL);
 
     // Now jump forward with Tab (should go to line 1 and center)
     test.keys("<Tab>");

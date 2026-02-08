@@ -4,8 +4,10 @@
 //! Completions are typically triggered by Ctrl+N or automatically in insert mode.
 
 use super::super::Editor;
-use crate::unicode::{byte_offset_for_grapheme, grapheme_at_index, grapheme_count, grapheme_indices};
 use crate::lsp::uri_from_file_path;
+use crate::unicode::{
+    byte_offset_for_grapheme, grapheme_at_index, grapheme_count, grapheme_indices,
+};
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 
@@ -119,10 +121,10 @@ impl Editor {
                         }
                     }
                 } else {
-                match grapheme_at_index(&line_text, cursor.col().saturating_sub(1)) {
-                    Some(".") => Some('.'),
-                    _ => None,
-                }
+                    match grapheme_at_index(&line_text, cursor.col().saturating_sub(1)) {
+                        Some(".") => Some('.'),
+                        _ => None,
+                    }
                 }
             } else {
                 None
@@ -145,19 +147,20 @@ impl Editor {
         // Snapshot sync state so we can flush document changes in the background without blocking UI.
         let state_key = file_path.clone();
         let content = self.buffer().rope().to_string();
-        let (needs_did_open, needs_flush, old_content) = match self.lsp_state.document_sync.get(&state_key) {
-            None => (true, true, None),
-            Some(state) => {
-                let did_open_missing = !state.did_open_sent;
-                let old = state.last_synced_content.clone();
-                // In insert mode we may not mark `buffer_modified` until leaving insert mode.
-                // For completions, always treat the document as needing a flush if the content
-                // differs from what we last synced.
-                let content_changed = old.as_deref().is_none_or(|old| old != content);
-                let needs_flush = state.is_modified() || content_changed;
-                (did_open_missing, needs_flush, old)
-            }
-        };
+        let (needs_did_open, needs_flush, old_content) =
+            match self.lsp_state.document_sync.get(&state_key) {
+                None => (true, true, None),
+                Some(state) => {
+                    let did_open_missing = !state.did_open_sent;
+                    let old = state.last_synced_content.clone();
+                    // In insert mode we may not mark `buffer_modified` until leaving insert mode.
+                    // For completions, always treat the document as needing a flush if the content
+                    // differs from what we last synced.
+                    let content_changed = old.as_deref().is_none_or(|old| old != content);
+                    let needs_flush = state.is_modified() || content_changed;
+                    (did_open_missing, needs_flush, old)
+                }
+            };
 
         // Resolve all server_ids for this language (primary + companions)
         let server_ids = lsp.servers_for_language(language_id);
@@ -173,7 +176,8 @@ impl Editor {
 
         let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
 
-        self.lsp_state.completion_request_seq = self.lsp_state.completion_request_seq.wrapping_add(1);
+        self.lsp_state.completion_request_seq =
+            self.lsp_state.completion_request_seq.wrapping_add(1);
         let seq = self.lsp_state.completion_request_seq;
 
         // Spawn completion request in background (non-blocking)
@@ -219,14 +223,15 @@ impl Editor {
             })
         });
 
-        self.lsp_state.pending_completion = Some(crate::editor::lsp_state::PendingCompletionRequest {
-            seq,
-            request: crate::editor::lsp_state::PendingLspRequest {
-                task,
-                receiver: rx,
-                started: std::time::Instant::now(),
-            },
-        });
+        self.lsp_state.pending_completion =
+            Some(crate::editor::lsp_state::PendingCompletionRequest {
+                seq,
+                request: crate::editor::lsp_state::PendingLspRequest {
+                    task,
+                    receiver: rx,
+                    started: std::time::Instant::now(),
+                },
+            });
 
         self.set_lsp_status("Requesting completions...".to_string());
         Ok(true)
@@ -249,9 +254,7 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
     let mut start_byte = before_cursor.len();
     let graphemes: Vec<(usize, &str)> = grapheme_indices(before_cursor).collect();
     for (byte_offset, grapheme) in graphemes.into_iter().rev() {
-        let is_ident = grapheme
-            .chars()
-            .all(|c| c == '_' || c.is_alphanumeric());
+        let is_ident = grapheme.chars().all(|c| c == '_' || c.is_alphanumeric());
         if !is_ident {
             break;
         }
@@ -259,8 +262,7 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
     }
 
     let trigger_col = grapheme_count(&line_text[..start_byte.min(line_text.len())]);
-    let trigger_prefix = line_text[start_byte.min(cursor_byte)..cursor_byte]
-        .to_string();
+    let trigger_prefix = line_text[start_byte.min(cursor_byte)..cursor_byte].to_string();
 
     (trigger_col, trigger_prefix)
 }

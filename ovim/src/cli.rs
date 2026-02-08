@@ -49,8 +49,7 @@ impl FileArg {
 
         match parts.as_slice() {
             [col_str, line_str, path] => {
-                if let (Ok(line), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>())
-                {
+                if let (Ok(line), Ok(col)) = (line_str.parse::<usize>(), col_str.parse::<usize>()) {
                     if line > 0 && col > 0 && !path.is_empty() {
                         return FileArg {
                             path: path.to_string(),

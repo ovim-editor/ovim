@@ -90,4 +90,3 @@ edition = "2021"
         last_counts
     );
 }
-

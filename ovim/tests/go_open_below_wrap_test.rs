@@ -37,4 +37,3 @@ fn go_then_open_below_keeps_new_line_visible_with_wrap() {
     // - newly inserted blank line (cursor)
     assert_eq!(test.editor.scroll_offset(), 3);
 }
-

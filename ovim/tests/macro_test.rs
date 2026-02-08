@@ -482,13 +482,13 @@ fn test_macro_with_dot_repeat() {
 
     test.press('q')
         .press('a')
-        .keys("dw") // Delete word
+        .keys("dw") // Delete word: "one " → "two three"
         .press('q')
         .press('@')
-        .press('a')
-        .press('.'); // Repeat last change
+        .press('a') // Replay dw: "two " → "three"
+        .press('.'); // Repeat dw (re-evaluates at cursor): "three" → ""
 
-    assert_eq!(test.buffer_content(), "e\n");
+    assert_eq!(test.buffer_content(), "\n");
     test.assert_cursor(0, 0);
 }
 

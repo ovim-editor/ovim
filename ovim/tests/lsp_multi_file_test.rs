@@ -146,10 +146,7 @@ fn main() {
     test.keys("gd");
 
     // Go back with Ctrl-O
-    test.press_with(
-        ovim_core::KeyCode::Char('o'),
-        ovim_core::Modifiers::CONTROL,
-    );
+    test.press_with(ovim_core::KeyCode::Char('o'), ovim_core::Modifiers::CONTROL);
 
     // Should be back at original position (or close to it)
     test.assert_mode(ovim::mode::Mode::Normal);

@@ -9,8 +9,14 @@ fn tab_switch_requests_diagnostics_refresh_for_new_current_file() {
     std::fs::write(&file1, "fn a() {}\n").unwrap();
     std::fs::write(&file2, "fn b() {}\n").unwrap();
 
-    let file1 = std::fs::canonicalize(&file1).unwrap().to_string_lossy().to_string();
-    let file2 = std::fs::canonicalize(&file2).unwrap().to_string_lossy().to_string();
+    let file1 = std::fs::canonicalize(&file1)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file2 = std::fs::canonicalize(&file2)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     let mut t = EditorTest::new("fn a() {}\n");
     t.set_file_path(file1.clone());
@@ -42,8 +48,14 @@ fn tab_switch_next_tab_requests_diagnostics_refresh() {
     std::fs::write(&file1, "fn a() {}\n").unwrap();
     std::fs::write(&file2, "fn b() {}\n").unwrap();
 
-    let file1 = std::fs::canonicalize(&file1).unwrap().to_string_lossy().to_string();
-    let file2 = std::fs::canonicalize(&file2).unwrap().to_string_lossy().to_string();
+    let file1 = std::fs::canonicalize(&file1)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file2 = std::fs::canonicalize(&file2)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
 
     let mut t = EditorTest::new("fn a() {}\n");
     t.set_file_path(file1);
@@ -61,4 +73,3 @@ fn tab_switch_next_tab_requests_diagnostics_refresh() {
         "Expected tab switching to request diagnostics refresh"
     );
 }
-

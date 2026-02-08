@@ -4,8 +4,8 @@
 
 use crate::editor::Editor;
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent};
+use anyhow::Result;
 
 /// Handles input in Search mode
 pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {

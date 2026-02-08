@@ -176,7 +176,8 @@ impl WrapMap {
     /// Requires the line text to properly compute wrap points for wide chars.
     pub fn cursor_to_visual(&self, line: usize, col: usize, line_text: &str) -> (usize, usize) {
         let base_row = self.logical_to_visual(line);
-        let wrap_points = crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
+        let wrap_points =
+            crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
 
         if wrap_points.is_empty() {
             return (base_row, col);

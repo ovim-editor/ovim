@@ -221,10 +221,7 @@ impl GitBlame {
                 let oid_hex = format!("{}", commit_id);
                 let hash = oid_hex[..5.min(oid_hex.len())].to_string();
                 let sig = hunk.final_signature();
-                let author = sig
-                    .name()
-                    .unwrap_or("Unknown")
-                    .to_string();
+                let author = sig.name().unwrap_or("Unknown").to_string();
                 let timestamp = sig.when().seconds();
                 let start = hunk.final_start_line(); // 1-indexed
                 let count = hunk.lines_in_hunk();
@@ -298,11 +295,7 @@ pub fn commit_info<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<Commit
     let oid = Oid::from_str(oid_hex)?;
     let commit = repo.find_commit(oid)?;
 
-    let author = commit
-        .author()
-        .name()
-        .unwrap_or("Unknown")
-        .to_string();
+    let author = commit.author().name().unwrap_or("Unknown").to_string();
     let time = commit.author().when();
     let dt = Utc.timestamp_opt(time.seconds(), 0).single();
     let date = dt

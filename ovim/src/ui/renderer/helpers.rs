@@ -140,8 +140,8 @@ mod tests {
         let (text, _, control_ranges, _) = expand_tabs_with_mapping("\x1b[31mred\x1b[0m", 4);
         assert_eq!(text, "^[[31mred^[[0m");
         assert_eq!(control_ranges.len(), 2);
-        assert_eq!(control_ranges[0], 0..2);   // first ^[
-        assert_eq!(control_ranges[1], 9..11);  // second ^[
+        assert_eq!(control_ranges[0], 0..2); // first ^[
+        assert_eq!(control_ranges[1], 9..11); // second ^[
     }
 
     #[test]

@@ -7,7 +7,10 @@ use crossterm::event as ct;
 use ovim_core::key as core;
 
 pub fn convert_key_event(ke: ct::KeyEvent) -> core::KeyEvent {
-    core::KeyEvent::new(convert_key_code(ke.code), convert_key_modifiers(ke.modifiers))
+    core::KeyEvent::new(
+        convert_key_code(ke.code),
+        convert_key_modifiers(ke.modifiers),
+    )
 }
 
 pub fn convert_key_code(kc: ct::KeyCode) -> core::KeyCode {

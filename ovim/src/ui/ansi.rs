@@ -2,8 +2,8 @@ use anyhow::Result;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::editor::Editor;
 use super::renderer::line_cache::LineRenderCache;
+use crate::editor::Editor;
 
 /// Renders the editor to an in-memory buffer and returns ANSI output.
 /// Used for headless mode to get pixel-perfect terminal representation.

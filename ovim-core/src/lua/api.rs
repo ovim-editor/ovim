@@ -254,7 +254,11 @@ fn create_opt_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                         let s = s.to_str().map_err(mlua::Error::external)?;
                         format!("set margincolor={}", s)
                     }
-                    _ => return Err(mlua::Error::external("margincolor must be a string (hex color or 'none')")),
+                    _ => {
+                        return Err(mlua::Error::external(
+                            "margincolor must be a string (hex color or 'none')",
+                        ))
+                    }
                 },
                 "marginpadding" => match value {
                     mlua::Value::Integer(n) => format!("set marginpadding={}", n),

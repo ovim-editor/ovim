@@ -544,7 +544,9 @@ impl Editor {
     }
 
     /// Returns a mutable reference to the cat animation (if active).
-    pub fn cat_animation_mut(&mut self) -> Option<&mut Box<dyn crate::dashboard::DashboardAnimation>> {
+    pub fn cat_animation_mut(
+        &mut self,
+    ) -> Option<&mut Box<dyn crate::dashboard::DashboardAnimation>> {
         self.ui_panels.cat_animation.as_mut()
     }
 
@@ -769,7 +771,8 @@ impl Editor {
         // logical line counts can prevent scrolling far enough to reveal the final logical
         // lines when a wrapped line appears near EOF. Instead, derive the maximum scroll
         // offset from total visual rows.
-        let wrap_width_known = self.viewport.wrap_map.is_some() || self.render_cache.last_text_width > 0;
+        let wrap_width_known =
+            self.viewport.wrap_map.is_some() || self.render_cache.last_text_width > 0;
 
         let max_scroll = if wrap_map_usable {
             self.viewport
@@ -836,7 +839,8 @@ impl Editor {
                     cursor_col,
                     self.options.tab_width,
                 );
-                let (cursor_visual_row, _) = wrap_map.cursor_to_visual(cursor_line, disp_col, &line_text);
+                let (cursor_visual_row, _) =
+                    wrap_map.cursor_to_visual(cursor_line, disp_col, &line_text);
                 let viewport_visual_start = wrap_map.logical_to_visual(current_offset);
 
                 if cursor_visual_row < viewport_visual_start + scrolloff {
@@ -963,7 +967,11 @@ impl Editor {
         }
         let max_visual_start = total_visual - visible_rows;
         let (line, sub_line) = wrap_map.visual_to_logical(max_visual_start);
-        let candidate = if sub_line > 0 { line.saturating_add(1) } else { line };
+        let candidate = if sub_line > 0 {
+            line.saturating_add(1)
+        } else {
+            line
+        };
         candidate.min(max_line)
     }
 
@@ -1011,8 +1019,12 @@ impl Editor {
             .to_string();
         let cursor_display_col =
             crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width);
-        let cursor_subline =
-            Self::cursor_subline_in_wrapped_line(&line_text, cursor_display_col, wrap_width, tab_width);
+        let cursor_subline = Self::cursor_subline_in_wrapped_line(
+            &line_text,
+            cursor_display_col,
+            wrap_width,
+            tab_width,
+        );
 
         // Fast path: if cursor is logically far below the viewport, just position it near bottom.
         let logical_view_end = current_offset + visible_rows.saturating_sub(1);

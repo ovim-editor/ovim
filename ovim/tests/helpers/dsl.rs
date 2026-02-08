@@ -46,7 +46,10 @@ fn assert_editor_matches_fixture(test: &EditorTest, expect: &Fixture) {
     let expected_buffer = normalize_expected_buffer(&expect.content);
     assert_eq!(actual_buffer, expected_buffer, "Buffer content mismatch");
 
-    if matches!(expect.mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
+    if matches!(
+        expect.mode,
+        Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+    ) {
         assert_eq!(
             test.get_visual_selection(),
             expect.expected_visual_selection,

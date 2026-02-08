@@ -113,12 +113,7 @@ pub async fn kill_process_forcefully(pid: i32) -> Result<ProcessKillStatus> {
             Ok(ProcessKillStatus::Stuck)
         }
         state => {
-            ovim_core::log_error!(
-                "daemon",
-                "Process {} in unexpected state: {}",
-                pid,
-                state
-            );
+            ovim_core::log_error!("daemon", "Process {} in unexpected state: {}", pid, state);
             anyhow::bail!("Process {} survived SIGKILL and is in state {}", pid, state)
         }
     }

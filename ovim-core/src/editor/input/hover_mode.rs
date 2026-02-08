@@ -6,8 +6,8 @@
 
 use crate::editor::Editor;
 use crate::mode::Mode;
-use anyhow::Result;
 use crate::{KeyCode, KeyEvent, Modifiers};
+use anyhow::Result;
 
 /// Handles input in HoverPreview mode (quick peek, any key dismisses except K)
 ///

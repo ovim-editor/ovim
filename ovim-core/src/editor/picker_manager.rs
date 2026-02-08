@@ -474,7 +474,8 @@ impl Editor {
         base_dir: &std::path::Path,
         preferred_dir: &std::path::Path,
     ) -> Option<&[super::PickerResult]> {
-        self.picker_state.get_cached_file_list(base_dir, preferred_dir)
+        self.picker_state
+            .get_cached_file_list(base_dir, preferred_dir)
     }
 
     /// Stores the file list in cache with current timestamp

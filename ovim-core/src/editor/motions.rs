@@ -324,7 +324,12 @@ impl Motions {
                     raw
                 };
 
-            (cursor.line(), cursor.col(), total_lines, rope.line(cursor.line()).to_string())
+            (
+                cursor.line(),
+                cursor.col(),
+                total_lines,
+                rope.line(cursor.line()).to_string(),
+            )
         };
 
         if line_idx >= total_lines {
@@ -343,8 +348,7 @@ impl Motions {
                 if !next_trimmed.is_empty() {
                     let next_chars: Vec<char> = next_trimmed.chars().collect();
                     // Start at first non-ws, then move to end of that word
-                    let Some(start_col) = next_chars.iter().position(|c| !c.is_whitespace())
-                    else {
+                    let Some(start_col) = next_chars.iter().position(|c| !c.is_whitespace()) else {
                         next_line += 1;
                         continue;
                     };

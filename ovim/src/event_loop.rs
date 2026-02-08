@@ -871,8 +871,8 @@ async fn handle_api_request(
 
 #[cfg(test)]
 mod tests {
-    use super::handle_terminal_resize;
     use super::compute_text_width;
+    use super::handle_terminal_resize;
     use ovim::editor::Editor;
 
     #[test]
@@ -893,10 +893,7 @@ mod tests {
 
         // Move cursor to EOF and ensure scroll offset is set.
         let last_line = editor.buffer().line_count().saturating_sub(1);
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(last_line, 0);
+        editor.buffer_mut().cursor_mut().set_position(last_line, 0);
         editor.update_scroll_offset();
 
         // Shrink the pane; cursor should remain visible in the new viewport.
@@ -987,7 +984,9 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
     let deleted = editor
         .buffer_mut()
         .delete_range(match_line, match_col, match_line, end_col);
-    editor.buffer_mut().insert_text_at(match_line, match_col, new);
+    editor
+        .buffer_mut()
+        .insert_text_at(match_line, match_col, new);
 
     // Record composite change for undo
     let change = ovim::editor::Change::composite(
@@ -1056,11 +1055,7 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
         .insert_text_at(ins_line, ins_col, &text_with_nl);
 
     // Record change for undo
-    let change = ovim::editor::Change::insert(
-        (ins_line, ins_col),
-        text_with_nl,
-        cursor_before,
-    );
+    let change = ovim::editor::Change::insert((ins_line, ins_col), text_with_nl, cursor_before);
     editor.add_change(change);
 
     ApiResponse::Success(SuccessResponse {
@@ -1110,9 +1105,7 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
         0
     };
 
-    let deleted = editor
-        .buffer_mut()
-        .delete_range(from, 0, end_line, end_col);
+    let deleted = editor.buffer_mut().delete_range(from, 0, end_line, end_col);
 
     // Record change for undo
     let change = ovim::editor::Change::delete(
@@ -1252,7 +1245,8 @@ fn spawn_file_finder_loading(
             let mut collected_files = Vec::new();
 
             let mut roots: Vec<(std::path::PathBuf, bool)> = Vec::new();
-            if preferred_dir_clone != base_dir_clone && preferred_dir_clone.starts_with(&base_dir_clone)
+            if preferred_dir_clone != base_dir_clone
+                && preferred_dir_clone.starts_with(&base_dir_clone)
             {
                 roots.push((preferred_dir_clone.clone(), true));
             }
@@ -1316,10 +1310,11 @@ fn spawn_file_finder_loading(
 
             // Store collected files in a static to be picked up by cache update
             // This is a workaround since we can't update Editor state from within a spawned task
-            FILE_LIST_CACHE_RESULTS
-                .lock()
-                .await
-                .replace((base_dir_clone, preferred_dir_clone, collected_files));
+            FILE_LIST_CACHE_RESULTS.lock().await.replace((
+                base_dir_clone,
+                preferred_dir_clone,
+                collected_files,
+            ));
         });
     }
 }
@@ -1327,7 +1322,11 @@ fn spawn_file_finder_loading(
 /// Temporary storage for file list results from background task
 /// The main event loop will pick these up and update the Editor cache
 static FILE_LIST_CACHE_RESULTS: tokio::sync::Mutex<
-    Option<(std::path::PathBuf, std::path::PathBuf, Vec<editor::PickerResult>)>,
+    Option<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Vec<editor::PickerResult>,
+    )>,
 > = tokio::sync::Mutex::const_new(None);
 
 /// Picks up cached file list results from the background task and updates Editor cache

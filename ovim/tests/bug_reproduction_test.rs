@@ -39,10 +39,7 @@ fn test_undo_after_change_find_does_not_corrupt_buffer() {
 
     // 0 c f ( <Esc>
     test.keys("0cf(").press_esc();
-    assert_eq!(
-        test.buffer_content(),
-        "Hello world\n\n\"Hello world\");\n"
-    );
+    assert_eq!(test.buffer_content(), "Hello world\n\n\"Hello world\");\n");
     test.assert_mode(Mode::Normal);
     test.assert_cursor(2, 0);
 
@@ -355,7 +352,11 @@ fn test_sentence_backward_on_empty_line() {
 
     // Should have moved to line 1 (empty line) or line 0
     let (line, _col) = test.cursor();
-    assert!(line <= 1, "Should move backward past empty line, got line {}", line);
+    assert!(
+        line <= 1,
+        "Should move backward past empty line, got line {}",
+        line
+    );
 }
 
 // ============================================================================

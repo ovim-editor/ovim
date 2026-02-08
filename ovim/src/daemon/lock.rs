@@ -136,11 +136,7 @@ async fn try_acquire_lock(lock_path: &Path) -> std::io::Result<File> {
 
 /// Force break a stale lock
 async fn force_break_lock(lock_path: &Path) -> Result<()> {
-    ovim_core::log_warn!(
-        "daemon",
-        "Force breaking lock: {}",
-        lock_path.display()
-    );
+    ovim_core::log_warn!("daemon", "Force breaking lock: {}", lock_path.display());
 
     // Remove the lock file
     if let Err(e) = tokio::fs::remove_file(lock_path).await {

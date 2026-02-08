@@ -452,7 +452,12 @@ fn compute_blame_brackets(
 
             result.push((bracket, hash.clone(), author, color));
         } else {
-            result.push((BlameBracket::None, String::new(), String::new(), Color::DarkGray));
+            result.push((
+                BlameBracket::None,
+                String::new(),
+                String::new(),
+                Color::DarkGray,
+            ));
         }
     }
 
@@ -497,9 +502,19 @@ fn build_gutter_line(
 
             let text = if show_info && !hash.is_empty() {
                 let info_str = format!("{} {}", hash, author);
-                format!("{} {:content_width$}", bracket_ch, info_str, content_width = content_width)
+                format!(
+                    "{} {:content_width$}",
+                    bracket_ch,
+                    info_str,
+                    content_width = content_width
+                )
             } else {
-                format!("{} {:content_width$}", bracket_ch, "", content_width = content_width)
+                format!(
+                    "{} {:content_width$}",
+                    bracket_ch,
+                    "",
+                    content_width = content_width
+                )
             };
 
             // Truncate to blame_width
@@ -572,12 +587,7 @@ fn append_diagnostic_virtual_text(
     let row_width: usize = row
         .spans
         .iter()
-        .map(|s| {
-            s.content
-                .chars()
-                .map(char_display_width)
-                .sum::<usize>()
-        })
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
         .sum();
 
     // Need at least 6 cols: "  " + icon + " " + 1 char message
@@ -585,7 +595,8 @@ fn append_diagnostic_virtual_text(
     if remaining < 6 {
         // Re-pad to avoid shrinking the row if we removed padding spans above.
         if row_width < text_width {
-            row.spans.push(Span::raw(" ".repeat(text_width - row_width)));
+            row.spans
+                .push(Span::raw(" ".repeat(text_width - row_width)));
         }
         return;
     }
@@ -617,15 +628,11 @@ fn append_diagnostic_virtual_text(
     let new_width: usize = row
         .spans
         .iter()
-        .map(|s| {
-            s.content
-                .chars()
-                .map(char_display_width)
-                .sum::<usize>()
-        })
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
         .sum();
     if new_width < text_width {
-        row.spans.push(Span::raw(" ".repeat(text_width - new_width)));
+        row.spans
+            .push(Span::raw(" ".repeat(text_width - new_width)));
     }
 }
 
@@ -638,12 +645,7 @@ fn split_line_into_rows(line: Line<'static>, width: usize) -> Vec<Line<'static>>
     let total_width: usize = line
         .spans
         .iter()
-        .map(|s| {
-            s.content
-                .chars()
-                .map(char_display_width)
-                .sum::<usize>()
-        })
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
         .sum();
 
     if total_width <= width {
@@ -807,7 +809,12 @@ pub fn render_buffer(
     let blame_brackets = if blame_width > 0 {
         if let Some(blame) = buffer.git_blame() {
             let author_width = blame_width.saturating_sub(1 + 1 + 5 + 1 + 1); // bracket+sp+hash+sp+trailing_sp
-            Some(compute_blame_brackets(blame, start_line, line_count.min(start_line + visible_lines + 50), author_width))
+            Some(compute_blame_brackets(
+                blame,
+                start_line,
+                line_count.min(start_line + visible_lines + 50),
+                author_width,
+            ))
         } else {
             None
         }
@@ -824,15 +831,31 @@ pub fn render_buffer(
                 .map(|((sl, _), (el, _))| line_idx >= sl && line_idx <= el)
                 .unwrap_or(false);
             let is_cursor_line_early = cursorline && line_idx == cursor_line_idx;
-            let has_yank_flash = editor.yank_flash.as_ref().map_or(false, |f| f.contains_line(line_idx));
+            let has_yank_flash = editor
+                .yank_flash
+                .as_ref()
+                .map_or(false, |f| f.contains_line(line_idx));
             let line_diagnostics_early = editor.diagnostics_for_line(line_idx);
-            let has_bracket = bracket_positions.map_or(false, |((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
+            let has_bracket = bracket_positions
+                .map_or(false, |((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
             let has_search = current_search.is_some();
-            let is_stable = !has_visual_on_line && !is_cursor_line_early && !has_yank_flash
-                && !has_bracket && !has_search && line_diagnostics_early.is_empty();
+            let is_stable = !has_visual_on_line
+                && !is_cursor_line_early
+                && !has_yank_flash
+                && !has_bracket
+                && !has_search
+                && line_diagnostics_early.is_empty();
 
             if is_stable {
-                if let Some(cached_line) = line_cache.get(buffer_id, line_idx, buffer_version, h_offset, text_width, wrap, tab_width) {
+                if let Some(cached_line) = line_cache.get(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                ) {
                     let cached_line = cached_line.clone();
                     // Use cached line — skip all expensive computation
                     if has_wrap {
@@ -843,9 +866,16 @@ pub fn render_buffer(
                             }
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
-                                    editor, buffer, line_idx, line_num_width,
-                                    cursor_line_idx, row_idx > 0, &line_diagnostics_early,
-                                    blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                    editor,
+                                    buffer,
+                                    line_idx,
+                                    line_num_width,
+                                    cursor_line_idx,
+                                    row_idx > 0,
+                                    &line_diagnostics_early,
+                                    blame_brackets
+                                        .as_ref()
+                                        .and_then(|b| b.get(line_idx - start_line)),
                                     blame_width,
                                 ));
                             }
@@ -853,16 +883,29 @@ pub fn render_buffer(
                             visual_rows_used += 1;
                         }
                     } else {
-                        let line_len: usize = cached_line.spans.iter().map(|s| s.content.chars().count()).sum();
+                        let line_len: usize = cached_line
+                            .spans
+                            .iter()
+                            .map(|s| s.content.chars().count())
+                            .sum();
                         let mut padded = cached_line;
                         if line_len < text_width {
-                            padded.spans.push(Span::raw(" ".repeat(text_width - line_len)));
+                            padded
+                                .spans
+                                .push(Span::raw(" ".repeat(text_width - line_len)));
                         }
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
-                                editor, buffer, line_idx, line_num_width,
-                                cursor_line_idx, false, &line_diagnostics_early,
-                                blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                editor,
+                                buffer,
+                                line_idx,
+                                line_num_width,
+                                cursor_line_idx,
+                                false,
+                                &line_diagnostics_early,
+                                blame_brackets
+                                    .as_ref()
+                                    .and_then(|b| b.get(line_idx - start_line)),
                                 blame_width,
                             ));
                         }
@@ -879,7 +922,8 @@ pub fn render_buffer(
             let line_text_original = line_text_raw.trim_end_matches('\n');
 
             // Expand tabs to spaces for proper rendering and get byte mapping
-            let (line_text, byte_mapping, control_ranges, char_mapping) = expand_tabs_with_mapping(line_text_original, tab_width);
+            let (line_text, byte_mapping, control_ranges, char_mapping) =
+                expand_tabs_with_mapping(line_text_original, tab_width);
 
             // Keep a reference to expanded text before slicing (for highlight remapping)
             let expanded_text = line_text.clone();
@@ -921,8 +965,16 @@ pub fn render_buffer(
 
             // Remap visual selection columns from original to expanded char indices
             let remapped_visual_selection = visual_selection.map(|((sl, sc), (el, ec))| {
-                let sc = if line_idx == sl { remap_char_col(sc, &char_mapping) } else { sc };
-                let ec = if line_idx == el { remap_char_col(ec, &char_mapping) } else { ec };
+                let sc = if line_idx == sl {
+                    remap_char_col(sc, &char_mapping)
+                } else {
+                    sc
+                };
+                let ec = if line_idx == el {
+                    remap_char_col(ec, &char_mapping)
+                } else {
+                    ec
+                };
                 ((sl, sc), (el, ec))
             });
 
@@ -930,10 +982,14 @@ pub fn render_buffer(
             let remapped_visual_selection = if !wrap {
                 remapped_visual_selection.map(|((sl, sc), (el, ec))| {
                     let adjust = |expanded_char_col: usize| -> usize {
-                        let display_col = expanded_char_to_display_col(&expanded_text, expanded_char_col);
+                        let display_col =
+                            expanded_char_to_display_col(&expanded_text, expanded_char_col);
                         let viewport_display_col = display_col.saturating_sub(h_offset);
                         let offset_adjustment = if precedes { 1 } else { 0 };
-                        display_col_to_char_idx(&line_text, viewport_display_col + offset_adjustment)
+                        display_col_to_char_idx(
+                            &line_text,
+                            viewport_display_col + offset_adjustment,
+                        )
                     };
                     let sc = if line_idx == sl { adjust(sc) } else { sc };
                     let ec = if line_idx == el { adjust(ec) } else { ec };
@@ -958,13 +1014,17 @@ pub fn render_buffer(
             let bracket_col = if !wrap {
                 bracket_col.and_then(|expanded_char_col| {
                     // Convert expanded char index to display column
-                    let display_col = expanded_char_to_display_col(&expanded_text, expanded_char_col);
+                    let display_col =
+                        expanded_char_to_display_col(&expanded_text, expanded_char_col);
                     // Check if bracket is in visible horizontal range
                     if display_col >= h_offset && display_col < h_offset + text_width {
                         // Convert to char index in the sliced text
                         let viewport_display_col = display_col - h_offset;
                         let offset_adjustment = if precedes { 1 } else { 0 };
-                        let sliced_char_idx = display_col_to_char_idx(&line_text, viewport_display_col + offset_adjustment);
+                        let sliced_char_idx = display_col_to_char_idx(
+                            &line_text,
+                            viewport_display_col + offset_adjustment,
+                        );
                         Some(sliced_char_idx)
                     } else {
                         None // Bracket is outside viewport
@@ -977,36 +1037,61 @@ pub fn render_buffer(
             // Reuse diagnostics already fetched for cache check
             let line_diagnostics = line_diagnostics_early;
             let has_diagnostics = !line_diagnostics.is_empty();
-            let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics.iter().filter_map(|d| {
-                // Convert UTF-16 offsets to char indices, then remap through expansion
-                let start_char = utf16_offset_to_char_idx(line_text_original, d.range.start.character as usize);
-                let end_char = utf16_offset_to_char_idx(line_text_original, d.range.end.character as usize);
-                let color = match d.severity {
-                    Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
-                    Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                    Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                    Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                    _ => Color::Red,
-                };
-                let expanded_start = remap_char_col(start_char, &char_mapping);
-                let expanded_end = remap_char_col(end_char, &char_mapping);
+            let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics
+                .iter()
+                .filter_map(|d| {
+                    // Convert UTF-16 offsets to char indices, then remap through expansion
+                    let start_char = utf16_offset_to_char_idx(
+                        line_text_original,
+                        d.range.start.character as usize,
+                    );
+                    let end_char = utf16_offset_to_char_idx(
+                        line_text_original,
+                        d.range.end.character as usize,
+                    );
+                    let color = match d.severity {
+                        Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
+                        Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
+                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                        Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
+                        _ => Color::Red,
+                    };
+                    let expanded_start = remap_char_col(start_char, &char_mapping);
+                    let expanded_end = remap_char_col(end_char, &char_mapping);
 
-                // Adjust for horizontal viewport in nowrap mode
-                if !wrap {
-                    let start_display = expanded_char_to_display_col(&expanded_text, expanded_start);
-                    let end_display = expanded_char_to_display_col(&expanded_text, expanded_end);
-                    // Skip if entirely outside viewport
-                    if end_display <= h_offset || start_display >= h_offset + text_width {
-                        return None;
+                    // Adjust for horizontal viewport in nowrap mode
+                    if !wrap {
+                        let start_display =
+                            expanded_char_to_display_col(&expanded_text, expanded_start);
+                        let end_display =
+                            expanded_char_to_display_col(&expanded_text, expanded_end);
+                        // Skip if entirely outside viewport
+                        if end_display <= h_offset || start_display >= h_offset + text_width {
+                            return None;
+                        }
+                        let offset_adj = if precedes { 1 } else { 0 };
+                        let sliced_start = display_col_to_char_idx(
+                            &line_text,
+                            start_display.saturating_sub(h_offset) + offset_adj,
+                        );
+                        let sliced_end = display_col_to_char_idx(
+                            &line_text,
+                            end_display.saturating_sub(h_offset) + offset_adj,
+                        );
+                        Some(RemappedDiagnostic {
+                            start: sliced_start,
+                            end: sliced_end,
+                            color,
+                        })
+                    } else {
+                        Some(RemappedDiagnostic {
+                            start: expanded_start,
+                            end: expanded_end,
+                            color,
+                        })
                     }
-                    let offset_adj = if precedes { 1 } else { 0 };
-                    let sliced_start = display_col_to_char_idx(&line_text, start_display.saturating_sub(h_offset) + offset_adj);
-                    let sliced_end = display_col_to_char_idx(&line_text, end_display.saturating_sub(h_offset) + offset_adj);
-                    Some(RemappedDiagnostic { start: sliced_start, end: sliced_end, color })
-                } else {
-                    Some(RemappedDiagnostic { start: expanded_start, end: expanded_end, color })
-                }
-            }).collect();
+                })
+                .collect();
 
             // Check if this line is in a yank flash region
             let yank_flash = editor.yank_flash.as_ref().and_then(|flash| {
@@ -1073,7 +1158,17 @@ pub fn render_buffer(
                 }
 
                 // Store in cache (stable lines will be served from cache next frame)
-                line_cache.put(buffer_id, line_idx, buffer_version, h_offset, text_width, wrap, tab_width, line.clone(), is_stable);
+                line_cache.put(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                    line.clone(),
+                    is_stable,
+                );
 
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
@@ -1081,7 +1176,11 @@ pub fn render_buffer(
                     // Append diagnostic virtual text to the first visual row (after splitting)
                     if has_diagnostics && render_diagnostic_virtual_text_inline {
                         if let Some(first_row) = visual_rows.first_mut() {
-                            append_diagnostic_virtual_text(first_row, &line_diagnostics, text_width);
+                            append_diagnostic_virtual_text(
+                                first_row,
+                                &line_diagnostics,
+                                text_width,
+                            );
                         }
                     }
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
@@ -1097,7 +1196,9 @@ pub fn render_buffer(
                                 cursor_line_idx,
                                 row_idx > 0,
                                 &line_diagnostics,
-                                blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                blame_brackets
+                                    .as_ref()
+                                    .and_then(|b| b.get(line_idx - start_line)),
                                 blame_width,
                             ));
                         }
@@ -1124,7 +1225,9 @@ pub fn render_buffer(
                             cursor_line_idx,
                             false,
                             &line_diagnostics,
-                            blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                            blame_brackets
+                                .as_ref()
+                                .and_then(|b| b.get(line_idx - start_line)),
                             blame_width,
                         ));
                     }
@@ -1134,7 +1237,17 @@ pub fn render_buffer(
             } else {
                 // Simple rendering path (no highlighting) — always stable
                 let simple_line = Line::from(line_text.to_string());
-                line_cache.put(buffer_id, line_idx, buffer_version, h_offset, text_width, wrap, tab_width, simple_line, true);
+                line_cache.put(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                    simple_line,
+                    true,
+                );
 
                 if has_wrap {
                     let chars: Vec<char> = line_text.chars().collect();
@@ -1148,7 +1261,9 @@ pub fn render_buffer(
                                 cursor_line_idx,
                                 false,
                                 &[],
-                                blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                blame_brackets
+                                    .as_ref()
+                                    .and_then(|b| b.get(line_idx - start_line)),
                                 blame_width,
                             ));
                         }
@@ -1168,7 +1283,9 @@ pub fn render_buffer(
                                     cursor_line_idx,
                                     chunk_idx > 0,
                                     &[],
-                                    blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                                    blame_brackets
+                                        .as_ref()
+                                        .and_then(|b| b.get(line_idx - start_line)),
                                     blame_width,
                                 ));
                             }
@@ -1194,7 +1311,9 @@ pub fn render_buffer(
                             cursor_line_idx,
                             false,
                             &[],
-                            blame_brackets.as_ref().and_then(|b| b.get(line_idx - start_line)),
+                            blame_brackets
+                                .as_ref()
+                                .and_then(|b| b.get(line_idx - start_line)),
                             blame_width,
                         ));
                     }
@@ -1532,7 +1651,8 @@ pub fn render_line_with_highlights(
         } else if is_search_match {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         } else if is_control {
-            let color = crate::key_convert::convert_core_color(theme.get_color(HighlightGroup::SpecialKey));
+            let color =
+                crate::key_convert::convert_core_color(theme.get_color(HighlightGroup::SpecialKey));
             Style::default().fg(color)
         } else if let Some(group) = syntax_group {
             let color = crate::key_convert::convert_core_color(theme.get_color(group));
