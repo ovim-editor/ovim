@@ -106,9 +106,7 @@ impl Editor {
         }
 
         // Cancel any existing pending hover request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::Hover(old)) =
-            self.lsp_state.pending_lsp_response.take()
-        {
+        if let Some(old) = self.lsp_state.pending_lsp_responses.hover.take() {
             crate::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
             old.task.abort();
         }
@@ -173,14 +171,12 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response =
-            Some(crate::editor::lsp_state::PendingLspResponse::Hover(
-                crate::editor::lsp_state::PendingLspRequest {
-                    task,
-                    receiver: rx,
-                    started: std::time::Instant::now(),
-                },
-            ));
+        self.lsp_state.pending_lsp_responses.hover =
+            Some(crate::editor::lsp_state::PendingLspRequest {
+                task,
+                receiver: rx,
+                started: std::time::Instant::now(),
+            });
 
         // Show loading status
         self.set_lsp_status("Loading hover...".to_string());

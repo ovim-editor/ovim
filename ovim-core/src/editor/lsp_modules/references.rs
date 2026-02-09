@@ -341,11 +341,14 @@ impl Editor {
                     return;
                 }
                 let symbol = &self.lsp_state.available_document_symbols[index];
-                let file_path = self
-                    .buffer()
-                    .file_path()
-                    .expect("Document symbols require a file");
-                let uri = uri_from_file_path(file_path).expect("Invalid file path");
+                let Some(file_path) = self.buffer().file_path() else {
+                    self.set_lsp_status("Document symbols require a saved file".to_string());
+                    return;
+                };
+                let Some(uri) = uri_from_file_path(file_path) else {
+                    self.set_lsp_status("Invalid file path".to_string());
+                    return;
+                };
                 Location {
                     uri,
                     range: symbol.selection_range,

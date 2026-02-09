@@ -549,17 +549,22 @@ impl LanguageServer {
                                 if let Some(req) = pending_req {
                                     // CRITICAL FIX: Propagate errors instead of just logging
                                     if let Some(error) = msg.error {
-                                        // LSP Error Code -32800 is "Request Cancelled"
-                                        // This is expected when we cancel requests, not a real error
+                                        // LSP Error Codes for expected/benign responses:
+                                        // -32800: Request Cancelled (client or server cancelled)
+                                        // -32801: Content Modified (document changed, results stale)
                                         const LSP_ERROR_REQUEST_CANCELLED: i32 = -32800;
+                                        const LSP_ERROR_CONTENT_MODIFIED: i32 = -32801;
 
-                                        if error.code == LSP_ERROR_REQUEST_CANCELLED {
-                                            // Request was cancelled - this is expected behavior
+                                        if error.code == LSP_ERROR_REQUEST_CANCELLED
+                                            || error.code == LSP_ERROR_CONTENT_MODIFIED
+                                        {
+                                            // Request was cancelled or invalidated - expected behavior
                                             // Log at debug level, not error level
                                             crate::lsp_debug!(
                                                 &inner_clone.log_prefix(),
-                                                "Request ID {:?} cancelled by server (code -32800): {}",
+                                                "Request ID {:?} invalidated by server (code {}): {}",
                                                 id,
+                                                error.code,
                                                 error.message
                                             );
 
@@ -1084,33 +1089,19 @@ impl LanguageServer {
 
         let (tx, rx) = oneshot::channel();
 
-        // Register pending request with metadata
+        // Check pending count without inserting (insert after send to avoid orphaned entries)
         {
-            let mut pending = self.inner.pending_requests.lock().await;
-
-            // Check if we've hit the hard limit on pending requests
+            let pending = self.inner.pending_requests.lock().await;
             if pending.len() >= MAX_PENDING_REQUESTS {
-                // eprintln!("[LSP-ERROR] Too many pending requests: {}/{}", pending.len(), MAX_PENDING_REQUESTS);
                 return Err(anyhow!(
                     "Too many pending LSP requests ({}/{}) - server may be slow or hanging",
                     pending.len(),
                     MAX_PENDING_REQUESTS
                 ));
             }
-
-            // eprintln!("[LSP-REQUEST] Pending requests before: {} | Adding: {}", pending.len(), method);
-
-            pending.insert(
-                request_id.clone(),
-                PendingRequest {
-                    sender: tx,
-                    sent_at: Instant::now(),
-                    method: method.to_string(),
-                },
-            );
         }
 
-        // Send request
+        // Build request message
         let msg = JsonRpcMessage::request(request_id.clone(), method.to_string(), params);
 
         // Check message size by serializing to bytes (avoids double serialization)
@@ -1148,6 +1139,21 @@ impl LanguageServer {
                 method
             )
         })?;
+
+        // NOW insert pending entry - message is sent, safe to track.
+        // The reader task needs to lock pending_requests to deliver the response,
+        // so our insert will complete before any response can be processed.
+        {
+            let mut pending = self.inner.pending_requests.lock().await;
+            pending.insert(
+                request_id.clone(),
+                PendingRequest {
+                    sender: tx,
+                    sent_at: Instant::now(),
+                    method: method.to_string(),
+                },
+            );
+        }
 
         // Wait for response with timeout
         // Use longer timeout for initialize request (jdtls can be very slow)
@@ -1284,6 +1290,15 @@ impl LanguageServer {
 
         // Transition to ShuttingDown state
         self.transition_to(ServerState::ShuttingDown).await;
+
+        // Drain pending requests before shutdown — callers waiting on responses
+        // get a clear error instead of hanging until timeout
+        {
+            let mut pending = self.inner.pending_requests.lock().await;
+            for (_id, req) in pending.drain() {
+                let _ = req.sender.send(Err(anyhow!("LSP server shutting down")));
+            }
+        }
 
         // Step 1: Send LSP shutdown request
         let shutdown_result = tokio::time::timeout(
@@ -1536,8 +1551,8 @@ impl LanguageServer {
             .store(caps.call_hierarchy_provider.is_some(), Ordering::Relaxed);
 
         // Cache type hierarchy support
-        // Note: type_hierarchy_provider doesn't exist in lsp-types 0.95
-        // Will be available when upgrading to lsp-types 0.96+
+        // TODO(OV-00132): type_hierarchy_provider requires lsp-types 0.96+
+        // Hardcoded to false until we upgrade from 0.95
         self.inner
             .cap_type_hierarchy
             .store(false, Ordering::Relaxed);
@@ -1580,7 +1595,7 @@ impl LanguageServer {
             "textDocument/documentHighlight" => Some(&self.inner.cap_document_highlight),
             "textDocument/foldingRange" => Some(&self.inner.cap_folding_range),
             "textDocument/prepareCallHierarchy" => Some(&self.inner.cap_call_hierarchy),
-            "textDocument/executeCommand" => Some(&self.inner.cap_execute_command),
+            "workspace/executeCommand" => Some(&self.inner.cap_execute_command),
             "textDocument/inlayHint" => Some(&self.inner.cap_inlay_hint),
             "textDocument/semanticTokens"
             | "textDocument/semanticTokens/full"

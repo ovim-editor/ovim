@@ -7,6 +7,20 @@ use super::{server::ServerState, utils::marked_string_to_text, LspManager, LspSe
 use anyhow::Result;
 use lsp_types::{Diagnostic, Uri};
 
+/// Parse an LSP response, logging any parse failures instead of silently swallowing them.
+fn parse_lsp_response<T: serde::de::DeserializeOwned>(
+    result: serde_json::Value,
+    method: &str,
+) -> Option<T> {
+    match serde_json::from_value::<T>(result) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            crate::lsp_warn!("LSP-PARSE", "{}: failed to parse response: {}", method, e);
+            None
+        }
+    }
+}
+
 impl LspManager {
     pub async fn goto_definition(
         &self,
@@ -43,7 +57,8 @@ impl LspManager {
             .request("textDocument/definition", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+        let response: Option<GotoDefinitionResponse> =
+            parse_lsp_response(result, "textDocument/definition");
 
         // Convert response to single location (take first if multiple)
         Ok(response.and_then(|resp| match resp {
@@ -93,7 +108,8 @@ impl LspManager {
             .request("textDocument/declaration", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+        let response: Option<GotoDefinitionResponse> =
+            parse_lsp_response(result, "textDocument/declaration");
 
         // Convert response to single location (take first if multiple)
         Ok(response.and_then(|resp| match resp {
@@ -145,7 +161,8 @@ impl LspManager {
             .request("textDocument/implementation", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<GotoImplementationResponse> = serde_json::from_value(result).ok();
+        let response: Option<GotoImplementationResponse> =
+            parse_lsp_response(result, "textDocument/implementation");
 
         // Convert response to single location (take first if multiple)
         Ok(response.and_then(|resp| match resp {
@@ -197,7 +214,8 @@ impl LspManager {
             .request("textDocument/typeDefinition", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<GotoTypeDefinitionResponse> = serde_json::from_value(result).ok();
+        let response: Option<GotoTypeDefinitionResponse> =
+            parse_lsp_response(result, "textDocument/typeDefinition");
 
         // Convert response to single location (take first if multiple)
         Ok(response.and_then(|resp| match resp {
@@ -377,7 +395,8 @@ impl LspManager {
             .request("textDocument/completion", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<CompletionResponse> = serde_json::from_value(result).ok();
+        let response: Option<CompletionResponse> =
+            parse_lsp_response(result, "textDocument/completion");
 
         Ok(response
             .map(|resp| match resp {
@@ -421,7 +440,8 @@ impl LspManager {
             .request("textDocument/formatting", serde_json::to_value(params)?)
             .await?;
 
-        let edits: Option<Vec<lsp_types::TextEdit>> = serde_json::from_value(result).ok();
+        let edits: Option<Vec<lsp_types::TextEdit>> =
+            parse_lsp_response(result, "textDocument/formatting");
 
         Ok(edits.unwrap_or_default())
     }
@@ -481,7 +501,8 @@ impl LspManager {
             )
             .await?;
 
-        let edits: Option<Vec<lsp_types::TextEdit>> = serde_json::from_value(result).ok();
+        let edits: Option<Vec<lsp_types::TextEdit>> =
+            parse_lsp_response(result, "textDocument/rangeFormatting");
 
         Ok(edits.unwrap_or_default())
     }
@@ -532,7 +553,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::CodeActionOrCommand>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "textDocument/codeAction");
 
         Ok(response.unwrap_or_default())
     }
@@ -577,7 +598,8 @@ impl LspManager {
             .request("textDocument/references", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::Location>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::Location>> =
+            parse_lsp_response(result, "textDocument/references");
 
         Ok(response.unwrap_or_default())
     }
@@ -613,7 +635,7 @@ impl LspManager {
             .await?;
 
         let response: Option<lsp_types::PrepareRenameResponse> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "textDocument/prepareRename");
 
         Ok(response)
     }
@@ -654,7 +676,8 @@ impl LspManager {
             .request("textDocument/rename", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<lsp_types::WorkspaceEdit> = serde_json::from_value(result).ok();
+        let response: Option<lsp_types::WorkspaceEdit> =
+            parse_lsp_response(result, "textDocument/rename");
 
         Ok(response)
     }
@@ -708,7 +731,8 @@ impl LspManager {
             .request("textDocument/signatureHelp", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<lsp_types::SignatureHelp> = serde_json::from_value(result).ok();
+        let response: Option<lsp_types::SignatureHelp> =
+            parse_lsp_response(result, "textDocument/signatureHelp");
 
         Ok(response)
     }
@@ -744,7 +768,8 @@ impl LspManager {
             .request("textDocument/selectionRange", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::SelectionRange>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::SelectionRange>> =
+            parse_lsp_response(result, "textDocument/selectionRange");
 
         // Return the first (and only) selection range
         Ok(response.and_then(|ranges| ranges.into_iter().next()))
@@ -852,7 +877,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::DocumentHighlight>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "textDocument/documentHighlight");
 
         Ok(response.unwrap_or_default())
     }
@@ -957,7 +982,8 @@ impl LspManager {
             .request("textDocument/foldingRange", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<Vec<lsp_types::FoldingRange>> = serde_json::from_value(result).ok();
+        let response: Option<Vec<lsp_types::FoldingRange>> =
+            parse_lsp_response(result, "textDocument/foldingRange");
 
         Ok(response.unwrap_or_default())
     }
@@ -1002,7 +1028,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::CallHierarchyItem>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "textDocument/prepareCallHierarchy");
 
         Ok(response)
     }
@@ -1037,7 +1063,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::CallHierarchyIncomingCall>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "callHierarchy/incomingCalls");
 
         Ok(response)
     }
@@ -1072,7 +1098,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::CallHierarchyOutgoingCall>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "callHierarchy/outgoingCalls");
 
         Ok(response)
     }
@@ -1117,7 +1143,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::TypeHierarchyItem>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "textDocument/prepareTypeHierarchy");
 
         Ok(response)
     }
@@ -1152,7 +1178,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::TypeHierarchyItem>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "typeHierarchy/supertypes");
 
         Ok(response)
     }
@@ -1187,7 +1213,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::TypeHierarchyItem>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "typeHierarchy/subtypes");
 
         Ok(response)
     }
@@ -1519,7 +1545,8 @@ impl LspManager {
             return Ok(None);
         }
 
-        let response: Option<lsp_types::Hover> = serde_json::from_value(result).ok();
+        let response: Option<lsp_types::Hover> =
+            parse_lsp_response(result, "textDocument/hover");
         Ok(response.and_then(|hover| match hover.contents {
             lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
             lsp_types::HoverContents::Array(mut contents) => {
@@ -1624,7 +1651,8 @@ impl LspManager {
             .request("textDocument/completion", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<CompletionResponse> = serde_json::from_value(result).ok();
+        let response: Option<CompletionResponse> =
+            parse_lsp_response(result, "textDocument/completion");
         Ok(response
             .map(|resp| match resp {
                 CompletionResponse::Array(items) => items,
@@ -1709,7 +1737,8 @@ impl LspManager {
             .request("textDocument/definition", serde_json::to_value(params)?)
             .await?;
 
-        let response: Option<GotoDefinitionResponse> = serde_json::from_value(result).ok();
+        let response: Option<GotoDefinitionResponse> =
+            parse_lsp_response(result, "textDocument/definition");
         Ok(response.and_then(|resp| match resp {
             GotoDefinitionResponse::Scalar(location) => Some(location),
             GotoDefinitionResponse::Array(locations) => locations.into_iter().next(),
@@ -1809,7 +1838,7 @@ impl LspManager {
             .await?;
 
         let response: Option<Vec<lsp_types::CodeActionOrCommand>> =
-            serde_json::from_value(result).ok();
+            parse_lsp_response(result, "textDocument/codeAction");
         Ok(response.unwrap_or_default())
     }
 }

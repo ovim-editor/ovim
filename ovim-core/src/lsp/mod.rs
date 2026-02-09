@@ -24,9 +24,11 @@ mod server;
 mod supervisor;
 mod trigger_chars;
 mod types;
+pub mod position;
 mod utils;
 
 pub use logger::{get_log_path, init_lsp_logging};
+pub use position::{char_col_to_utf16, utf16_to_char_col};
 
 pub use protocol::{JsonRpcMessage, RequestId};
 pub use server::{LanguageServer, LanguageServerHealth};
@@ -36,7 +38,7 @@ pub use types::{uri_from_file_path, uri_to_file_path, LspPosition, LspRange};
 pub use utils::compute_simple_diff;
 
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use lsp_types::{Diagnostic, Uri};
 use std::collections::HashMap;
 use std::path::Path;
@@ -169,6 +171,12 @@ pub struct LspManager {
     /// BUG FIX: Counter for dropped notifications when channel is full
     /// Prevents blocking when notification receiver is slow
     dropped_notifications: Arc<AtomicU64>,
+
+    /// Tracks servers currently being started (prevents concurrent duplicate starts)
+    starting_servers: DashSet<String>,
+
+    /// Handles to notification listener tasks (for cleanup on server stop)
+    listener_handles: DashMap<String, tokio::task::JoinHandle<()>>,
 }
 
 /// Builds a composite server ID for companion LSP servers.
@@ -198,6 +206,8 @@ impl LspManager {
             workspace_edit_tx,
             workspace_edit_rx: Mutex::new(workspace_edit_rx),
             dropped_notifications: Arc::new(AtomicU64::new(0)),
+            starting_servers: DashSet::new(),
+            listener_handles: DashMap::new(),
         }
     }
 
@@ -245,34 +255,50 @@ impl LspManager {
             return Ok(()); // Already running
         }
 
-        lsp_debug!("LspManager", "Spawning server: {} {:?}", command, args);
-        // Spawn and initialize without holding the lock (this can take 10-60 seconds)
-        let mut server = LanguageServer::spawn(language, command, args).await?;
-        lsp_debug!("LspManager", "Server spawned successfully");
-
-        let root_uri =
-            uri_from_file_path(root_path).ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
-        lsp_debug!("LspManager", "Root URI: {}", root_uri.as_str());
-
-        lsp_debug!("LspManager", "Calling initialize...");
-        server.initialize(root_uri).await?;
-        lsp_debug!("LspManager", "Initialize completed successfully");
-
-        // Insert into servers map
-        // Double-check in case another task started the same server
-        if let Some(mut existing) = self.servers.insert(language.to_string(), server) {
-            // Another thread won the race - clean up the existing server
-            if let Err(e) = existing.shutdown().await {
-                lsp_warn!(
-                    "LspManager",
-                    "Failed to shut down redundant server for {}: {}",
-                    language,
-                    e
-                );
-            }
+        // Prevent concurrent duplicate starts
+        if !self.starting_servers.insert(language.to_string()) {
+            lsp_debug!(
+                "LspManager",
+                "Server start already in progress for {}",
+                language
+            );
+            return Ok(());
         }
 
-        Ok(())
+        let result = async {
+            lsp_debug!("LspManager", "Spawning server: {} {:?}", command, args);
+            // Spawn and initialize without holding the lock (this can take 10-60 seconds)
+            let mut server = LanguageServer::spawn(language, command, args).await?;
+            lsp_debug!("LspManager", "Server spawned successfully");
+
+            let root_uri = uri_from_file_path(root_path)
+                .ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
+            lsp_debug!("LspManager", "Root URI: {}", root_uri.as_str());
+
+            lsp_debug!("LspManager", "Calling initialize...");
+            server.initialize(root_uri).await?;
+            lsp_debug!("LspManager", "Initialize completed successfully");
+
+            // Insert into servers map
+            // Double-check in case another task started the same server
+            if let Some(mut existing) = self.servers.insert(language.to_string(), server) {
+                // Another thread won the race - clean up the existing server
+                if let Err(e) = existing.shutdown().await {
+                    lsp_warn!(
+                        "LspManager",
+                        "Failed to shut down redundant server for {}: {}",
+                        language,
+                        e
+                    );
+                }
+            }
+
+            Ok(())
+        }
+        .await;
+
+        self.starting_servers.remove(language);
+        result
     }
 
     /// Starts a companion language server with an explicit server_id
@@ -299,34 +325,50 @@ impl LspManager {
             return Ok(());
         }
 
-        lsp_debug!(
-            "LspManager",
-            "Spawning companion server: {} {:?}",
-            command,
-            args
-        );
-        // Extract language part for the server's language field
-        let language = server_id.split(':').next().unwrap_or(server_id);
-        let mut server = LanguageServer::spawn(language, command, args).await?;
-
-        let root_uri =
-            uri_from_file_path(root_path).ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
-
-        server.initialize(root_uri).await?;
-        lsp_debug!("LspManager", "Companion server {} initialized", server_id);
-
-        if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
-            if let Err(e) = existing.shutdown().await {
-                lsp_warn!(
-                    "LspManager",
-                    "Failed to shut down redundant companion server for {}: {}",
-                    server_id,
-                    e
-                );
-            }
+        // Prevent concurrent duplicate starts
+        if !self.starting_servers.insert(server_id.to_string()) {
+            lsp_debug!(
+                "LspManager",
+                "Companion server start already in progress for {}",
+                server_id
+            );
+            return Ok(());
         }
 
-        Ok(())
+        let result = async {
+            lsp_debug!(
+                "LspManager",
+                "Spawning companion server: {} {:?}",
+                command,
+                args
+            );
+            // Extract language part for the server's language field
+            let language = server_id.split(':').next().unwrap_or(server_id);
+            let mut server = LanguageServer::spawn(language, command, args).await?;
+
+            let root_uri = uri_from_file_path(root_path)
+                .ok_or_else(|| anyhow::anyhow!("Invalid root path"))?;
+
+            server.initialize(root_uri).await?;
+            lsp_debug!("LspManager", "Companion server {} initialized", server_id);
+
+            if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
+                if let Err(e) = existing.shutdown().await {
+                    lsp_warn!(
+                        "LspManager",
+                        "Failed to shut down redundant companion server for {}: {}",
+                        server_id,
+                        e
+                    );
+                }
+            }
+
+            Ok(())
+        }
+        .await;
+
+        self.starting_servers.remove(server_id);
+        result
     }
 
     /// Returns all server_ids that serve the given language_id.
@@ -365,9 +407,24 @@ impl LspManager {
 
     /// Stops a language server
     pub async fn stop_server(&self, language: &str) -> Result<()> {
+        // Abort notification listener for this server
+        if let Some((_, handle)) = self.listener_handles.remove(language) {
+            handle.abort();
+        }
+
         if let Some((_, mut server)) = self.servers.remove(language) {
             server.shutdown().await?;
         }
+
+        // Clean up diagnostics from this server
+        {
+            let mut diags = self.diagnostics.lock().await;
+            for (_uri, server_map) in diags.iter_mut() {
+                server_map.remove(language);
+            }
+        }
+        // Signal diagnostics changed so UI refreshes
+        self.diagnostics_changed.store(true, Ordering::SeqCst);
 
         Ok(())
     }

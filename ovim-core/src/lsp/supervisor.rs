@@ -127,6 +127,10 @@ impl TaskSupervisor {
 
                 match result {
                     Ok(()) => {
+                        // Reset restart counter if task ran for a healthy duration
+                        if start.elapsed() > Duration::from_secs(60) {
+                            restarts = 0;
+                        }
                         // Check if we should restart on success
                         match policy {
                             RestartPolicy::Always { .. } => {
@@ -180,9 +184,14 @@ impl TaskSupervisor {
                             break;
                         }
 
+                        // Reset counter if task ran for a healthy duration before failing
+                        if uptime > Duration::from_secs(60) {
+                            restarts = 0;
+                        }
+
                         // Calculate exponential backoff
                         restarts += 1;
-                        let backoff = initial_backoff * restarts;
+                        let backoff = initial_backoff * 2u32.pow(restarts.saturating_sub(1));
 
                         // Update status to Restarting
                         {

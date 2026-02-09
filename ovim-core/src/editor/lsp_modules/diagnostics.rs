@@ -22,8 +22,22 @@ impl Editor {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Some(uri) = uri_from_file_path(file_path) {
                     let diagnostics = lsp.get_diagnostics(&uri).await;
-                    // Update count cache
-                    self.lsp_state.diagnostic_count = self.get_diagnostic_count().await;
+                    // Compute count directly from fetched diagnostics (not from cached count)
+                    let mut errors = 0;
+                    let mut warnings = 0;
+                    let mut info = 0;
+                    let mut hints = 0;
+                    for d in &diagnostics {
+                        match d.severity {
+                            Some(lsp_types::DiagnosticSeverity::ERROR) => errors += 1,
+                            Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
+                            Some(lsp_types::DiagnosticSeverity::INFORMATION) => info += 1,
+                            Some(lsp_types::DiagnosticSeverity::HINT) => hints += 1,
+                            None => warnings += 1,
+                            _ => {}
+                        }
+                    }
+                    self.lsp_state.diagnostic_count = (errors, warnings, info, hints);
                     // Cache full diagnostic list
                     self.lsp_state.current_file_diagnostics = diagnostics;
                     return;
@@ -176,12 +190,22 @@ impl Editor {
             return;
         }
 
+        // Convert diagnostic positions from UTF-16 to char columns for comparison
+        let line_text: String = {
+            let rope = self.buffer().rope();
+            if line < rope.len_lines() {
+                rope.line(line).chars().take_while(|&c| c != '\n').collect()
+            } else {
+                String::new()
+            }
+        };
+
         // Find diagnostic covering cursor column, or first on line
         let diagnostic = diagnostics
             .iter()
             .find(|d| {
-                let start = d.range.start.character as usize;
-                let end = d.range.end.character as usize;
+                let start = crate::lsp::utf16_to_char_col(&line_text, d.range.start.character);
+                let end = crate::lsp::utf16_to_char_col(&line_text, d.range.end.character);
                 col >= start && col <= end
             })
             .or_else(|| diagnostics.first())

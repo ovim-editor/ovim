@@ -1,5 +1,8 @@
 //! Utility functions for LSP module
 
+use super::position::char_col_to_utf16;
+#[cfg(test)]
+use super::position::utf16_to_char_col;
 use lsp_types::{Position, Range};
 
 /// Computes a simple diff between old and new content for incremental sync.
@@ -26,8 +29,8 @@ pub fn compute_simple_diff(
     // Use split('\n') instead of .lines() to preserve trailing newline information.
     // "foo\nbar\n" splits into ["foo", "bar", ""] which correctly represents
     // the empty line after the trailing \n (matching LSP's line model).
-    let old_lines: Vec<&str> = old_content.split('\n').collect();
-    let new_lines: Vec<&str> = new_content.split('\n').collect();
+    let old_lines: Vec<&str> = old_content.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let new_lines: Vec<&str> = new_content.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
 
     // Find first differing line from start
     let mut start_line = 0;
@@ -87,11 +90,11 @@ pub fn compute_simple_diff(
 
         let start_pos = Position {
             line: start_line as u32,
-            character: start_char as u32,
+            character: char_col_to_utf16(old_line, start_char),
         };
         let end_pos = Position {
             line: start_line as u32,
-            character: end_char_old as u32,
+            character: char_col_to_utf16(old_line, end_char_old),
         };
         let new_text: String = new_chars[start_char..end_char_new].iter().collect();
 
@@ -132,11 +135,11 @@ pub fn compute_simple_diff(
         let prev_line = old_lines[start_line - 1];
         let sp = Position {
             line: (start_line - 1) as u32,
-            character: prev_line.chars().count() as u32,
+            character: char_col_to_utf16(prev_line, prev_line.chars().count()),
         };
         let ep = Position {
             line: (end_line_old - 1) as u32,
-            character: old_lines[end_line_old - 1].chars().count() as u32,
+            character: char_col_to_utf16(old_lines[end_line_old - 1], old_lines[end_line_old - 1].chars().count()),
         };
         (sp, ep)
     } else if start_line > 0 {
@@ -145,12 +148,12 @@ pub fn compute_simple_diff(
         let prev_line = old_lines[start_line - 1];
         let anchor = Position {
             line: (start_line - 1) as u32,
-            character: prev_line.chars().count() as u32,
+            character: char_col_to_utf16(prev_line, prev_line.chars().count()),
         };
         let ep = if old_changed > 0 {
             Position {
                 line: (end_line_old - 1) as u32,
-                character: old_lines[end_line_old - 1].chars().count() as u32,
+                character: char_col_to_utf16(old_lines[end_line_old - 1], old_lines[end_line_old - 1].chars().count()),
             }
         } else {
             anchor
@@ -165,7 +168,7 @@ pub fn compute_simple_diff(
         let ep = if old_changed > 0 {
             Position {
                 line: (end_line_old - 1) as u32,
-                character: old_lines[end_line_old - 1].chars().count() as u32,
+                character: char_col_to_utf16(old_lines[end_line_old - 1], old_lines[end_line_old - 1].chars().count()),
             }
         } else {
             sp
@@ -225,23 +228,28 @@ pub(crate) fn marked_string_to_text(marked: lsp_types::MarkedString) -> String {
 /// Helper: apply an LSP text edit to a string (for testing)
 #[cfg(test)]
 fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
-    let lines: Vec<&str> = content.split('\n').collect();
-    let mut result = String::new();
+    let raw_lines: Vec<&str> = content.split('\n').collect();
+    // Stripped lines for position conversion (matching what compute_simple_diff sees)
+    let lines: Vec<&str> = raw_lines
+        .iter()
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
 
-    // Flatten content into chars with positions
+    // Compute byte offsets using the raw (original) lines
     let mut offset = 0;
     let mut line_offsets = Vec::new();
-    for line in &lines {
+    for line in &raw_lines {
         line_offsets.push(offset);
         offset += line.len() + 1; // +1 for \n
     }
 
-    // Convert LSP positions to byte offsets
+    // Convert LSP positions to byte offsets using STRIPPED lines for char conversion
     let start_offset = if (range.start.line as usize) < lines.len() {
         let line = lines[range.start.line as usize];
+        let char_col = utf16_to_char_col(line, range.start.character);
         let char_offset: usize = line
             .chars()
-            .take(range.start.character as usize)
+            .take(char_col)
             .map(|c| c.len_utf8())
             .sum();
         line_offsets[range.start.line as usize] + char_offset
@@ -251,9 +259,10 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
 
     let end_offset = if (range.end.line as usize) < lines.len() {
         let line = lines[range.end.line as usize];
+        let char_col = utf16_to_char_col(line, range.end.character);
         let char_offset: usize = line
             .chars()
-            .take(range.end.character as usize)
+            .take(char_col)
             .map(|c| c.len_utf8())
             .sum();
         line_offsets[range.end.line as usize] + char_offset
@@ -261,6 +270,7 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
         content.len()
     };
 
+    let mut result = String::new();
     result.push_str(&content[..start_offset]);
     result.push_str(new_text);
     result.push_str(&content[end_offset..]);
@@ -271,7 +281,9 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Verify that applying the computed diff to old_content produces new_content
+    /// Verify that applying the computed diff to old_content produces new_content.
+    /// For CRLF content, comparison is done after normalizing \r\n to \n since
+    /// compute_simple_diff strips \r from lines and emits \n-only replacement text.
     fn assert_diff_correct(old: &str, new: &str) {
         let result = compute_simple_diff(old, new);
         if old == new {
@@ -280,8 +292,12 @@ mod tests {
         }
         let (range, new_text) = result.expect("Expected Some diff");
         let applied = apply_edit(old, &range, &new_text);
+        // Normalize CRLF for comparison: the diff engine strips \r, so replacement
+        // text uses \n only. Comparing normalized forms is the correct semantic check.
+        let applied_normalized = applied.replace("\r\n", "\n");
+        let new_normalized = new.replace("\r\n", "\n");
         assert_eq!(
-            applied, new,
+            applied_normalized, new_normalized,
             "\nDiff produced wrong result.\nOld: {:?}\nNew: {:?}\nRange: ({},{}) -> ({},{})\nText: {:?}\nGot: {:?}",
             old, new,
             range.start.line, range.start.character,
@@ -407,5 +423,21 @@ mod tests {
     #[test]
     fn test_remove_trailing_newline() {
         assert_diff_correct("foo\nbar\n", "foo\nbar");
+    }
+
+    #[test]
+    fn test_emoji_single_line_change() {
+        // Emoji (supplementary chars) should use UTF-16 positions correctly
+        assert_diff_correct("a🦀b", "a🦀c");
+    }
+
+    #[test]
+    fn test_crlf_line_endings() {
+        assert_diff_correct("line1\r\nline2\r\n", "line1\r\nmodified\r\n");
+    }
+
+    #[test]
+    fn test_crlf_insert_line() {
+        assert_diff_correct("line1\r\nline3\r\n", "line1\r\nline2\r\nline3\r\n");
     }
 }

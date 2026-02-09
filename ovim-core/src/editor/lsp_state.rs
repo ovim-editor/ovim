@@ -117,17 +117,55 @@ pub struct PendingLspRequest<T> {
     pub started: std::time::Instant,
 }
 
-/// Pending LSP response (non-blocking infrastructure for Phase 1-5)
-pub enum PendingLspResponse {
-    Hover(PendingLspRequest<Option<String>>),
-    Definition(PendingLspRequest<Option<lsp_types::Location>>),
-    DefinitionNewTab(PendingLspRequest<Option<lsp_types::Location>>),
-    Implementation(PendingLspRequest<Option<lsp_types::Location>>),
-    ImplementationNewTab(PendingLspRequest<Option<lsp_types::Location>>),
-    TypeDefinition(PendingLspRequest<Option<lsp_types::Location>>),
+/// Concurrent pending LSP response slots -- each request type has its own field,
+/// so hover and goto can be in-flight simultaneously without conflict.
+pub struct PendingLspResponses {
+    pub hover: Option<PendingLspRequest<Option<String>>>,
+    /// (new_tab, request) -- collapses Definition/DefinitionNewTab into one field
+    pub definition: Option<(bool, PendingLspRequest<Option<lsp_types::Location>>)>,
+    /// (new_tab, request) -- collapses Implementation/ImplementationNewTab
+    pub implementation: Option<(bool, PendingLspRequest<Option<lsp_types::Location>>)>,
+    pub type_definition: Option<PendingLspRequest<Option<lsp_types::Location>>>,
 }
 
-/// Pending completion request (kept separate from PendingLspResponse to avoid
+impl Default for PendingLspResponses {
+    fn default() -> Self {
+        Self {
+            hover: None,
+            definition: None,
+            implementation: None,
+            type_definition: None,
+        }
+    }
+}
+
+impl PendingLspResponses {
+    /// Returns true if any response slot is occupied.
+    pub fn any_pending(&self) -> bool {
+        self.hover.is_some()
+            || self.definition.is_some()
+            || self.implementation.is_some()
+            || self.type_definition.is_some()
+    }
+
+    /// Abort and clear all pending response slots.
+    pub fn abort_all(&mut self) {
+        if let Some(old) = self.hover.take() {
+            old.task.abort();
+        }
+        if let Some((_, old)) = self.definition.take() {
+            old.task.abort();
+        }
+        if let Some((_, old)) = self.implementation.take() {
+            old.task.abort();
+        }
+        if let Some(old) = self.type_definition.take() {
+            old.task.abort();
+        }
+    }
+}
+
+/// Pending completion request (kept separate from PendingLspResponses to avoid
 /// blocking other LSP actions while completions are in-flight).
 pub struct PendingCompletionRequest {
     pub seq: u64,
@@ -222,8 +260,8 @@ pub struct LspState {
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
     /// Cached hover result to avoid redundant LSP requests
     pub hover_cache: Option<HoverCache>,
-    /// Pending LSP response that we're waiting for (non-blocking infrastructure)
-    pub pending_lsp_response: Option<PendingLspResponse>,
+    /// Pending LSP responses (each request type has its own slot)
+    pub pending_lsp_responses: PendingLspResponses,
     /// Pending completion request (non-blocking, high-frequency)
     pub pending_completion: Option<PendingCompletionRequest>,
     /// Monotonic completion request sequence to ignore stale responses
@@ -262,7 +300,7 @@ impl LspState {
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             hover_cache: None,
-            pending_lsp_response: None,
+            pending_lsp_responses: PendingLspResponses::default(),
             pending_completion: None,
             completion_request_seq: 0,
             diagnostics_refresh_requested: false,

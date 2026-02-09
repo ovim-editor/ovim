@@ -48,6 +48,19 @@ impl LspManager {
             ));
         }
 
+        // Guard against double didOpen
+        {
+            let versions = self.document_versions.lock().await;
+            if versions.contains_key(&uri) {
+                lsp_debug!(
+                    "LSP-NOTIFY",
+                    "textDocument/didOpen: skipping duplicate open for {}",
+                    uri.as_str()
+                );
+                return Ok(());
+            }
+        }
+
         let server = self
             .servers
             .get(language_id)
@@ -202,6 +215,83 @@ impl LspManager {
                 .notify("textDocument/didChange", serde_json::to_value(params)?)
                 .await?;
         } // Lock released here, after send is queued
+
+        Ok(())
+    }
+
+    /// Like `send_did_change_immediate` but uses an explicit version instead of
+    /// auto-incrementing. Used by broadcast flush so all servers receive the same version.
+    async fn send_did_change_with_version(
+        &self,
+        uri: Uri,
+        server_id: &str,
+        text: String,
+        old_text: Option<String>,
+        version: i32,
+    ) -> Result<()> {
+        // Get server reference
+        let server = self
+            .servers
+            .get(server_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", server_id))?;
+
+        // Check if server supports incremental sync and we have old content
+        let supports_incremental = server.supports_incremental_sync().await;
+
+        let full_doc_size = text.len();
+        let content_changes = if supports_incremental && old_text.is_some() {
+            if let Some(old) = old_text {
+                if let Some((range, new_text)) = compute_simple_diff(&old, &text) {
+                    vec![TextDocumentContentChangeEvent {
+                        range: Some(range),
+                        range_length: None,
+                        text: new_text,
+                    }]
+                } else {
+                    // No changes detected
+                    return Ok(());
+                }
+            } else {
+                vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text,
+                }]
+            }
+        } else {
+            if std::env::var("OVIM_LSP_DEBUG").is_ok() {
+                let reason = if !supports_incremental {
+                    "server doesn't support incremental"
+                } else {
+                    "no old_text provided"
+                };
+                crate::lsp_debug!(
+                    "LSP-SYNC",
+                    "Full sync ({}): {} bytes | File: {}",
+                    reason,
+                    full_doc_size,
+                    uri.path()
+                );
+            }
+            vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text,
+            }]
+        };
+
+        let params = DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version,
+            },
+            content_changes,
+        };
+
+        crate::metrics::LSP_DIDCHANGE_TOTAL.inc();
+        server
+            .notify("textDocument/didChange", serde_json::to_value(params)?)
+            .await?;
 
         Ok(())
     }
@@ -448,16 +538,25 @@ impl LspManager {
             let uri = debouncer.uri.clone();
             drop(debouncer);
 
-            // Send to all servers for this language
+            // Increment version once for the broadcast (all servers get same version)
+            let version = {
+                let mut versions = self.document_versions.lock().await;
+                let v = versions.entry(uri.clone()).or_insert(0);
+                *v += 1;
+                *v
+            };
+
+            // Send to all servers for this language with the same version
             let server_ids = self.servers_for_language(language_id);
             for sid in &server_ids {
                 if let Err(e) = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
-                    self.send_did_change_immediate(
+                    self.send_did_change_with_version(
                         uri.clone(),
                         sid,
                         text.clone(),
                         old_text.clone(),
+                        version,
                     ),
                 )
                 .await
@@ -476,8 +575,9 @@ impl LspManager {
         language_id: &str,
         text: Option<String>,
     ) -> Result<()> {
-        // Flush pending changes first
-        self.flush_pending_changes(&uri).await?;
+        // Flush pending changes to ALL servers (not just primary)
+        self.flush_pending_changes_broadcast(&uri, language_id)
+            .await?;
 
         let server_ids = self.servers_for_language(language_id);
         for sid in &server_ids {
@@ -1050,7 +1150,7 @@ impl LspManager {
             let sid = server_id.clone();
             let dropped_counter = self.dropped_notifications.clone();
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 while let Some(msg) = server.receive().await {
                     // Handle both notifications (no id) and requests from server (has id)
                     if msg.is_notification() || msg.is_request() {
@@ -1067,10 +1167,16 @@ impl LspManager {
                             Ok(()) => {
                                 // Successfully sent
                             }
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                // Channel full - drop notification and track it
+                            Err(mpsc::error::TrySendError::Full(dropped)) => {
                                 let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
-                                if count.is_multiple_of(100) {
+                                // Always log when dropping server-initiated requests (they expect a response)
+                                if dropped.message.is_request() {
+                                    lsp_error!(
+                                        "Listener",
+                                        "Dropped server-initiated request (channel full): method={:?}",
+                                        dropped.message.method
+                                    );
+                                } else if count.is_multiple_of(100) {
                                     // Log every 100 dropped notifications to avoid spam
                                     lsp_error!(
                                         "Listener",
@@ -1091,6 +1197,9 @@ impl LspManager {
                     }
                 }
             });
+
+            // Store the handle so we can abort it on server stop
+            self.listener_handles.insert(server_id, handle);
         }
     }
 }
