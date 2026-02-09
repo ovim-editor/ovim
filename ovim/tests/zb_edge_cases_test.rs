@@ -123,14 +123,14 @@ fn test_zb_then_j_at_end() {
 
     let viewport = ViewportAssertion::new(&test.editor);
 
-    // After j, cursor moves to line 48
-    // Line 48 is still within viewport (lines 28-47 visible)
-    // So scroll should adjust to 48 - 19 = 29
+    // After j, cursor moves to line 48.
+    // Scrolloff (default 10, clamped to 9 for viewport=20) re-engages:
+    // ideal offset = 48 + 9 + 1 - 20 = 38, but max_scroll = 50 - 20 = 30, so clamped to 30.
     assert_eq!(viewport.cursor_line(), 48);
     assert_eq!(
         viewport.scroll_offset(),
-        29,
-        "Should scroll to keep cursor visible"
+        30,
+        "Should scroll with scrolloff re-engaged"
     );
 }
 

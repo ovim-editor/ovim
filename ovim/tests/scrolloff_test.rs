@@ -66,7 +66,7 @@ fn test_scrolloff_zero_allows_cursor_at_top() {
 }
 
 #[test]
-fn test_viewport_command_ignores_scrolloff() {
+fn test_viewport_command_scrolloff_reengages_on_movement() {
     let content = (1..=50)
         .map(|i| format!("Line {}", i))
         .collect::<Vec<_>>()
@@ -95,31 +95,18 @@ fn test_viewport_command_ignores_scrolloff() {
         viewport.scroll_offset()
     );
 
-    // Now move down one line
+    // Now move down one line — scrolloff re-engages (matches Vim behavior).
+    // Cursor at line 25, scrolloff=5, so scroll adjusts to keep 5 lines above cursor.
     test.keys("j");
 
     let viewport = ViewportAssertion::new(&test.editor);
     assert_eq!(viewport.cursor_line(), 25);
 
-    // After a viewport command, scrolloff is not enforced while the cursor stays visible.
+    // scrolloff=5: cursor needs 5 lines above it → scroll_offset = 25 - 5 = 20
     assert_eq!(
         viewport.scroll_offset(),
-        24,
-        "After zt+j, scroll stays at 24. Got {}",
-        viewport.scroll_offset()
-    );
-
-    // Move down 5 more lines to test scrolloff kicks in
-    test.keys("jjjjj");
-
-    let viewport = ViewportAssertion::new(&test.editor);
-    assert_eq!(viewport.cursor_line(), 30);
-
-    // Cursor still within viewport; scroll remains pinned.
-    assert_eq!(
-        viewport.scroll_offset(),
-        24,
-        "After moving down 6 lines total, scroll still at 24. Got {}",
+        20,
+        "After zt+j, scrolloff re-engages. Got {}",
         viewport.scroll_offset()
     );
 }

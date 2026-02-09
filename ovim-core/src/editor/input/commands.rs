@@ -1500,16 +1500,6 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     // Handle commands with arguments
-    if command.starts_with("e ") || command.starts_with("edit ") {
-        // :e <filename> or :edit <filename>
-        let parts: Vec<&str> = command.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let filename = parts[1..].join(" ");
-            editor.load_file(&filename)?;
-        }
-        return Ok(());
-    }
-
     if command.starts_with("w ") || command.starts_with("write ") {
         // :w <filename> or :write <filename> - save as
         let parts: Vec<&str> = command.split_whitespace().collect();

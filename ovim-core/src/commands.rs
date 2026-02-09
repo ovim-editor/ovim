@@ -1311,11 +1311,47 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         error: "No file to reload".to_string(),
                     })
                 }
+            // :e! <filename> - force-edit file (discard unsaved changes)
+            // Must be checked before :e <filename> since "e " prefix matches "e! "
+            } else if let Some(raw_filename) = command
+                .strip_prefix("e! ")
+                .or_else(|| command.strip_prefix("edit! "))
+            {
+                let filename = match expand_tilde(raw_filename) {
+                    Ok(path) => path.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return CommandResult::Error(ErrorResponse {
+                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
+                        });
+                    }
+                };
+                match editor.load_file(&filename) {
+                    Ok(_) => {
+                        let buf_name = editor
+                            .buffer()
+                            .file_path()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "[No Name]".to_string());
+                        CommandResult::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("Editing: {}", buf_name)),
+                            line_count: None,
+                        })
+                    }
+                    Err(e) => CommandResult::Error(ErrorResponse {
+                        error: format!("Failed to load file: {}", e),
+                    }),
+                }
             } else if let Some(raw_filename) = command
                 .strip_prefix("e ")
                 .or_else(|| command.strip_prefix("edit "))
             {
-                // :e <filename> - edit file (expand ~ to home directory)
+                // :e <filename> - edit file (check for unsaved changes first)
+                if editor.is_modified() {
+                    return CommandResult::Error(ErrorResponse {
+                        error: "No write since last change (add ! to override)".to_string(),
+                    });
+                }
                 let filename = match expand_tilde(raw_filename) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
