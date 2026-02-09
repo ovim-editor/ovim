@@ -600,10 +600,7 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
                     .cursor_mut()
                     .set_position(end_pos.0, end_pos.1 - 1);
             } else {
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(end_pos.0, 0);
+                editor.buffer_mut().cursor_mut().set_position(end_pos.0, 0);
             }
 
             if !edits.is_empty() {
@@ -919,37 +916,23 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
 }
 
 pub fn join_lines(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (result, edits) = editor.buffer_mut().record(|buf| buf.join_lines(count));
-    result?;
-
-    let cursor_after = editor.cursor_position();
-    editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    editor.set_repeat_action(RepeatAction::JoinLines {
-        count,
-        add_space: true,
-    });
-
-    Ok(())
+    editor.record_operation(
+        |buf| buf.join_lines(count),
+        Some(RepeatAction::JoinLines {
+            count,
+            add_space: true,
+        }),
+    )
 }
 
 pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (result, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.join_lines_no_space(count));
-    result?;
-
-    let cursor_after = editor.cursor_position();
-    editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    editor.set_repeat_action(RepeatAction::JoinLines {
-        count,
-        add_space: false,
-    });
-
-    Ok(())
+    editor.record_operation(
+        |buf| buf.join_lines_no_space(count),
+        Some(RepeatAction::JoinLines {
+            count,
+            add_space: false,
+        }),
+    )
 }
 
 pub fn indent_lines_with_tracking(

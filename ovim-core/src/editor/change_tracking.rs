@@ -5,6 +5,30 @@ use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 
 impl Editor {
+    /// Records a buffer mutation with undo tracking and optional dot-repeat.
+    ///
+    /// Captures cursor_before/after, records edits via `buffer.record()`,
+    /// pushes an undo entry, sets the repeat action, and marks the buffer
+    /// modified for LSP sync. Returns the closure's result so callers can
+    /// use it (e.g., deleted text for registers).
+    pub fn record_operation<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::buffer::Buffer) -> R,
+        repeat_action: Option<RepeatAction>,
+    ) -> R {
+        let cursor_before = self.cursor_position();
+        let (result, edits) = self.buffer_mut().record(f);
+        if !edits.is_empty() {
+            let cursor_after = self.cursor_position();
+            self.push_recorded_undo(edits, cursor_before, cursor_after);
+            if let Some(action) = repeat_action {
+                self.set_repeat_action(action);
+            }
+            self.mark_buffer_modified();
+        }
+        result
+    }
+
     /// Pops the last change from the undo stack (without undoing it)
     /// Used when replacing a change with a composite version
     pub fn pop_last_change(&mut self) -> Option<Change> {
@@ -16,6 +40,7 @@ impl Editor {
         self.buffer_mut().undo();
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
+        self.mark_dirty();
     }
 
     /// Redoes the next change
@@ -23,6 +48,7 @@ impl Editor {
         self.buffer_mut().redo();
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
+        self.mark_dirty();
     }
 
     /// Repeats the last change with proper cursor position tracking.

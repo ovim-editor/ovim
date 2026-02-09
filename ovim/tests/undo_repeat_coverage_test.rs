@@ -519,7 +519,11 @@ fn test_cc_dot_repeat() {
     let result = test.buffer_content();
     // Just verify the operation completed without panic and line count is stable
     assert_eq!(test.editor.buffer().line_count(), 3);
-    assert!(result.contains("XXX"), "Expected at least one XXX line, got: {}", result);
+    assert!(
+        result.contains("XXX"),
+        "Expected at least one XXX line, got: {}",
+        result
+    );
 }
 
 // ============================================================================
@@ -640,14 +644,14 @@ fn test_mixed_operations_undo_isolation() {
     // Verify that different operations create independent undo entries
     let mut test = EditorTest::new("hello world\nfoo bar");
 
-    test.keys("x");      // delete 'h'
-    test.keys("jdd");    // delete "foo bar"
+    test.keys("x"); // delete 'h'
+    test.keys("jdd"); // delete "foo bar"
     assert_eq!(test.buffer_content(), "ello world\n");
 
-    test.keys("u");      // undo dd
+    test.keys("u"); // undo dd
     assert_eq!(test.buffer_content(), "ello world\nfoo bar\n");
 
-    test.keys("u");      // undo x
+    test.keys("u"); // undo x
     assert_eq!(test.buffer_content(), "hello world\nfoo bar\n");
 }
 
@@ -655,10 +659,104 @@ fn test_mixed_operations_undo_isolation() {
 fn test_diw_then_dw_independent_undo() {
     let mut test = EditorTest::new("alpha bravo charlie");
 
-    test.keys("diw");    // delete "alpha"
-    test.keys("dw");     // delete " bravo" (or "bravo " depending on cursor)
+    test.keys("diw"); // delete "alpha"
+    test.keys("dw"); // delete " bravo" (or "bravo " depending on cursor)
 
     // Two undos should restore everything
     test.keys("uu");
     assert_eq!(test.buffer_content(), "alpha bravo charlie\n");
+}
+
+// ============================================================================
+// dG (delete to last line)
+// ============================================================================
+
+#[test]
+fn test_dG_undo_redo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+
+    test.keys("dG");
+    assert_eq!(test.buffer_content(), "\n");
+
+    // Single undo restores all lines
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+
+    // Redo re-applies
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "\n");
+}
+
+#[test]
+fn test_dG_from_middle_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+
+    test.keys("j"); // Move to line 2
+    test.keys("dG");
+    assert_eq!(test.buffer_content(), "line 1\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+}
+
+// ============================================================================
+// dgg (delete to first line)
+// ============================================================================
+
+#[test]
+fn test_dgg_undo_redo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+
+    test.keys("G"); // Go to last line
+    test.keys("dgg");
+    assert_eq!(test.buffer_content(), "\n");
+
+    // Single undo restores all lines
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+
+    // Redo re-applies
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "\n");
+}
+
+#[test]
+fn test_dgg_from_middle_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+
+    test.keys("jj"); // Move to line 3
+    test.keys("dgg");
+    assert_eq!(test.buffer_content(), "line 4\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+}
+
+#[test]
+fn test_dG_dot_repeat() {
+    let mut test = EditorTest::new("aaa\nbbb\nccc\nddd\neee");
+
+    test.keys("jj"); // Move to line 3 (ccc)
+    test.keys("dG"); // Delete lines 3-5
+    assert_eq!(test.buffer_content(), "aaa\nbbb\n");
+
+    // Dot-repeat at new position: cursor is on line 1 (bbb)
+    // dG from line 1 should delete lines 1-end
+    test.keys(".");
+    assert_eq!(test.buffer_content(), "aaa\n");
+}
+
+#[test]
+fn test_dgg_dot_repeat() {
+    let mut test = EditorTest::new("aaa\nbbb\nccc\nddd\neee");
+
+    test.keys("jj"); // Move to line 3 (ccc)
+    test.keys("dgg"); // Delete lines 1-3
+    assert_eq!(test.buffer_content(), "ddd\neee\n");
+
+    // Dot-repeat: cursor is on line 0 (ddd)
+    // dgg from line 0 targets line 0 (itself + lines above, so just line 0)
+    test.keys("j"); // Move to line 1 (eee)
+    test.keys("."); // dgg from line 1 deletes lines 0-1
+    assert_eq!(test.buffer_content(), "\n");
 }
