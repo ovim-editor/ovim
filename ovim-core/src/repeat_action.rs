@@ -53,6 +53,10 @@ pub enum RepeatAction {
     DeleteToLastLine { target_line: usize },
     /// dgg — delete to first line (or target line)
     DeleteToFirstLine { target_line: usize },
+    /// d% — delete to matching bracket
+    DeleteToMatchingBracket,
+    /// r — replace character(s) at cursor
+    ReplaceChar { ch: char, count: usize },
     /// p — paste after cursor
     PasteAfter,
     /// P — paste before cursor
@@ -145,6 +149,12 @@ impl RepeatAction {
             }
             Self::DeleteToFirstLine { target_line } => {
                 buffer.delete_to_first_line(*target_line);
+            }
+            Self::DeleteToMatchingBracket => {
+                buffer.delete_to_matching_bracket();
+            }
+            Self::ReplaceChar { ch, count } => {
+                buffer.replace_chars_at_cursor(*ch, *count);
             }
             Self::PasteAfter | Self::PasteBefore => {
                 // Intentional no-op: paste repeat is intercepted in repeat_last_change()
