@@ -29,6 +29,7 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         KeyCode::Up => {
             if editor.path_completion().is_visible() {
                 editor.path_completion_mut().select_previous();
+                accept_selected_into_command_line(editor);
             } else {
                 editor.history_prev();
             }
@@ -36,6 +37,7 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         KeyCode::Down => {
             if editor.path_completion().is_visible() {
                 editor.path_completion_mut().select_next();
+                accept_selected_into_command_line(editor);
             } else {
                 editor.history_next();
             }
@@ -139,6 +141,18 @@ fn handle_tab_completion(editor: &mut Editor, backward: bool) {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 editor.path_completion_mut().update(&new_path, &cwd);
             }
+        }
+    }
+}
+
+/// Accepts the currently selected path completion entry and updates the command line text.
+fn accept_selected_into_command_line(editor: &mut Editor) {
+    if let Some(new_path) = editor.path_completion().accept() {
+        let cmd = editor.command_line().to_string();
+        if let Some(path_portion) = extract_path_from_command(&cmd) {
+            let prefix_len = cmd.len() - path_portion.len();
+            let new_cmd = format!("{}{}", &cmd[..prefix_len], new_path);
+            editor.set_command_line(&new_cmd);
         }
     }
 }

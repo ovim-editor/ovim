@@ -183,22 +183,24 @@ fn percent_backward_with_content_after() {
 }
 
 // ============================================================================
-// Angle brackets (these are unique - also used as comparison ops)
+// Angle brackets: Vim's % does NOT match < and >
 // ============================================================================
 
 #[test]
-fn percent_backward_angles() {
+fn percent_no_match_on_angle_bracket_close() {
     let mut test = EditorTest::new("<hello>");
-    test.keys("$");
+    test.keys("$"); // On '>'
     test.press('%');
-    test.assert_cursor(0, 0);
+    // Vim: % doesn't match angle brackets, cursor stays
+    test.assert_cursor(0, 6);
 }
 
 #[test]
-fn percent_forward_angles() {
+fn percent_no_match_on_angle_bracket_open() {
     let mut test = EditorTest::new("<hello>");
     test.press('%');
-    test.assert_cursor(0, 6);
+    // Vim: % doesn't match angle brackets, cursor stays
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
