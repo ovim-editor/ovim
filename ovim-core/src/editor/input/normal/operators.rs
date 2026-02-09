@@ -1,9 +1,12 @@
 //! Operator + motion handling in normal mode.
 //!
 //! Handles pending operators combined with motions:
-//! - `dd`, `dw`, `d$`, `dj`, `dk`, `d{`, `d}`, `d%`, `dG`, `dgg`
-//! - `yy`, `yw`, `y$`, `yj`, `yk`, `y{`, `y}`, `yG`, `ygg`
-//! - `cc`, `cw`, `c$`, `cj`, `ck`, `c{`, `c}`, `cG`, `cgg`
+//! - `dd`, `dw`, `dW`, `de`, `dE`, `db`, `dB`, `d$`, `dh`, `dl`, `d0`, `d^`
+//!   `dj`, `dk`, `d{`, `d}`, `d%`, `dG`, `dgg`, `df`, `dt`, `dF`, `dT`
+//! - `yy`, `yw`, `yW`, `ye`, `yE`, `yb`, `yB`, `y$`, `yh`, `y0`, `y^`
+//!   `yj`, `yk`, `y{`, `y}`, `yG`, `ygg`, `yf`, `yt`, `yF`, `yT`
+//! - `cc`, `cw`, `cW`, `ce`, `cE`, `cb`, `cB`, `c$`, `ch`, `cl`, `c0`, `c^`
+//!   `cj`, `ck`, `c{`, `c}`, `cG`, `cgg`, `cf`, `ct`, `cF`, `cT`
 //! - `>>`, `>j`, `>k`, `>G`, `>gg`
 //! - `<<`, `<j`, `<k`, `<G`, `<gg`
 //! - `zf{motion}`
@@ -131,6 +134,38 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             handle_d_percent(editor)?;
             true
         }
+        (Operator::Delete, KeyCode::Char('b')) => {
+            handle_db(editor, count)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('e')) => {
+            handle_de(editor, count)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('B')) => {
+            handle_d_big_b(editor, count)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('E')) => {
+            handle_d_big_e(editor, count)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('h')) | (Operator::Delete, KeyCode::Left) => {
+            handle_dh(editor, count)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('0')) => {
+            handle_d0(editor)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('^')) => {
+            handle_d_caret(editor)?;
+            true
+        }
+        (Operator::Delete, KeyCode::Char('W')) => {
+            handle_d_big_w(editor, count)?;
+            true
+        }
 
         // =====================================================================
         // Yank operations
@@ -180,6 +215,38 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             handle_y_paragraph_backward(editor, count)?;
             true
         }
+        (Operator::Yank, KeyCode::Char('b')) => {
+            handle_yb(editor, count)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('e')) => {
+            handle_ye(editor, count)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('B')) => {
+            handle_y_big_b(editor, count)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('E')) => {
+            handle_y_big_e(editor, count)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('h')) | (Operator::Yank, KeyCode::Left) => {
+            handle_yh(editor, count)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('0')) => {
+            handle_y0(editor)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('^')) => {
+            handle_y_caret(editor)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('W')) => {
+            handle_y_big_w(editor, count)?;
+            true
+        }
 
         // =====================================================================
         // Change operations
@@ -214,6 +281,38 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Change, KeyCode::Char('{')) => {
             handle_c_paragraph_backward(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('b')) => {
+            handle_cb(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('e')) => {
+            handle_ce(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('B')) => {
+            handle_c_big_b(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('E')) => {
+            handle_c_big_e(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('h')) | (Operator::Change, KeyCode::Left) => {
+            handle_ch(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('0')) => {
+            handle_c0(editor)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('^')) => {
+            handle_c_caret(editor)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('W')) => {
+            handle_c_big_w(editor, count)?;
             true
         }
 
@@ -252,6 +351,27 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         (Operator::ToggleCase, KeyCode::Char('w')) => {
             case::change_case_motion(editor, count, case::CaseChange::Toggle, |buf, cnt| {
                 Motions::word_forward(buf, cnt);
+            })?;
+            editor.clear_count();
+            true
+        }
+        (Operator::Lowercase, KeyCode::Char('e')) => {
+            case::change_case_motion(editor, count, case::CaseChange::Lowercase, |buf, cnt| {
+                Motions::word_end_forward(buf, cnt);
+            })?;
+            editor.clear_count();
+            true
+        }
+        (Operator::Uppercase, KeyCode::Char('e')) => {
+            case::change_case_motion(editor, count, case::CaseChange::Uppercase, |buf, cnt| {
+                Motions::word_end_forward(buf, cnt);
+            })?;
+            editor.clear_count();
+            true
+        }
+        (Operator::ToggleCase, KeyCode::Char('e')) => {
+            case::change_case_motion(editor, count, case::CaseChange::Toggle, |buf, cnt| {
+                Motions::word_end_forward(buf, cnt);
             })?;
             editor.clear_count();
             true
@@ -1354,5 +1474,497 @@ fn handle_zf_percent(editor: &mut Editor) -> Result<()> {
     }
 
     editor.clear_count();
+    Ok(())
+}
+
+// =====================================================================
+// Delete handlers for new motions (db, de, dB, dE, dh, d0, d^, dW)
+// =====================================================================
+
+fn handle_db(editor: &mut Editor, count: usize) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_word_backward(count),
+        Some(RepeatAction::DeleteWordBackward { count }),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_de(editor: &mut Editor, count: usize) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_word_end(count),
+        Some(RepeatAction::DeleteWordEnd { count }),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_d_big_b(editor: &mut Editor, count: usize) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_word_backward_big(count),
+        Some(RepeatAction::DeleteWordBackwardBig { count }),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_d_big_e(editor: &mut Editor, count: usize) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_word_end_big(count),
+        Some(RepeatAction::DeleteWordEndBig { count }),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_dh(editor: &mut Editor, count: usize) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_char_left(count),
+        Some(RepeatAction::DeleteCharLeft { count }),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_d0(editor: &mut Editor) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_to_start_of_line(),
+        Some(RepeatAction::DeleteToStartOfLine),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_d_caret(editor: &mut Editor) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_to_first_non_blank(),
+        Some(RepeatAction::DeleteToFirstNonBlank),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_d_big_w(editor: &mut Editor, count: usize) -> Result<()> {
+    let deleted = editor.record_operation(
+        |buf| buf.delete_word_forward_big(count),
+        Some(RepeatAction::DeleteWordForwardBig { count }),
+    );
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+    }
+    editor.clear_count();
+    Ok(())
+}
+
+// =====================================================================
+// Yank handlers for new motions (yb, ye, yB, yE, yh, y0, y^, yW)
+// =====================================================================
+
+fn handle_yb(editor: &mut Editor, count: usize) -> Result<()> {
+    let start_line = editor.buffer().cursor().line();
+    let start_col = editor.buffer().cursor().col();
+
+    Motions::word_backward(editor.buffer_mut(), count);
+
+    let end_line = editor.buffer().cursor().line();
+    let end_col = editor.buffer().cursor().col();
+
+    let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
+    editor.yank_to_register(yanked);
+    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_ye(editor: &mut Editor, count: usize) -> Result<()> {
+    let start_line = editor.buffer().cursor().line();
+    let start_col = editor.buffer().cursor().col();
+
+    Motions::word_end_forward(editor.buffer_mut(), count);
+
+    let end_line = editor.buffer().cursor().line();
+    let end_col = editor.buffer().cursor().col();
+
+    // Inclusive: include the char motion lands on
+    let yanked = yank_range(editor, start_line, start_col, end_line, end_col + 1);
+    editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_y_big_b(editor: &mut Editor, count: usize) -> Result<()> {
+    let start_line = editor.buffer().cursor().line();
+    let start_col = editor.buffer().cursor().col();
+
+    Motions::word_backward_big(editor.buffer_mut(), count);
+
+    let end_line = editor.buffer().cursor().line();
+    let end_col = editor.buffer().cursor().col();
+
+    let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
+    editor.yank_to_register(yanked);
+    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_y_big_e(editor: &mut Editor, count: usize) -> Result<()> {
+    let start_line = editor.buffer().cursor().line();
+    let start_col = editor.buffer().cursor().col();
+
+    Motions::word_end_forward_big(editor.buffer_mut(), count);
+
+    let end_line = editor.buffer().cursor().line();
+    let end_col = editor.buffer().cursor().col();
+
+    let yanked = yank_range(editor, start_line, start_col, end_line, end_col + 1);
+    editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_yh(editor: &mut Editor, count: usize) -> Result<()> {
+    let line_idx = editor.buffer().cursor().line();
+    let col = editor.buffer().cursor().col();
+    if col == 0 {
+        editor.clear_count();
+        return Ok(());
+    }
+    let start_col = col.saturating_sub(count);
+    let yanked = yank_range(editor, line_idx, start_col, line_idx, col);
+    editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(line_idx, start_col, line_idx, col.saturating_sub(1));
+    editor.buffer_mut().cursor_mut().set_position(line_idx, start_col);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_y0(editor: &mut Editor) -> Result<()> {
+    let line_idx = editor.buffer().cursor().line();
+    let col = editor.buffer().cursor().col();
+    if col == 0 {
+        editor.clear_count();
+        return Ok(());
+    }
+    let yanked = yank_range(editor, line_idx, 0, line_idx, col);
+    editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(line_idx, 0, line_idx, col.saturating_sub(1));
+    editor.buffer_mut().cursor_mut().set_position(line_idx, 0);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_y_caret(editor: &mut Editor) -> Result<()> {
+    let line_idx = editor.buffer().cursor().line();
+    let col = editor.buffer().cursor().col();
+    let fnb = editor.buffer().first_non_blank_col(line_idx);
+    if fnb == col {
+        editor.clear_count();
+        return Ok(());
+    }
+    let (start, end) = if fnb < col { (fnb, col) } else { (col, fnb) };
+    let yanked = yank_range(editor, line_idx, start, line_idx, end);
+    editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(line_idx, start, line_idx, end.saturating_sub(1));
+    editor.buffer_mut().cursor_mut().set_position(line_idx, start);
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_y_big_w(editor: &mut Editor, count: usize) -> Result<()> {
+    let start_line = editor.buffer().cursor().line();
+    let start_col = editor.buffer().cursor().col();
+
+    Motions::word_forward_big(editor.buffer_mut(), count);
+
+    let end_line = editor.buffer().cursor().line();
+    let end_col = editor.buffer().cursor().col();
+
+    let yanked = yank_range(editor, start_line, start_col, end_line, end_col);
+    editor.yank_to_register(yanked);
+    let flash_end_col = if end_col > 0 { end_col - 1 } else { 0 };
+    editor.set_yank_flash_range(start_line, start_col, end_line, flash_end_col);
+    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor.clear_count();
+    Ok(())
+}
+
+/// Helper to yank a range of text without modifying the buffer.
+fn yank_range(
+    editor: &Editor,
+    start_line: usize,
+    start_col: usize,
+    end_line: usize,
+    end_col: usize,
+) -> String {
+    let buf = editor.buffer();
+    let mut result = String::new();
+    for line_idx in start_line..=end_line {
+        if let Some(line) = buf.line(line_idx) {
+            let chars: Vec<char> = line.chars().collect();
+            let from = if line_idx == start_line { start_col } else { 0 };
+            let to = if line_idx == end_line {
+                end_col.min(chars.len())
+            } else {
+                chars.len()
+            };
+            if from < to {
+                result.extend(&chars[from..to]);
+            }
+        }
+    }
+    result
+}
+
+// =====================================================================
+// Change handlers for new motions (cb, ce, cB, cE, ch, c0, c^, cW)
+// =====================================================================
+
+fn handle_cb(editor: &mut Editor, count: usize) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_word_backward(count)
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteWordBackward { count },
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_ce(editor: &mut Editor, count: usize) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_word_end(count)
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteWordEnd { count },
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_c_big_b(editor: &mut Editor, count: usize) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_word_backward_big(count)
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteWordBackwardBig { count },
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_c_big_e(editor: &mut Editor, count: usize) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_word_end_big(count)
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteWordEndBig { count },
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_ch(editor: &mut Editor, count: usize) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_char_left(count)
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteCharLeft { count },
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_c0(editor: &mut Editor) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_to_start_of_line()
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteToStartOfLine,
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_c_caret(editor: &mut Editor) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_to_first_non_blank()
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteToFirstNonBlank,
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_c_big_w(editor: &mut Editor, count: usize) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_word_forward_big(count)
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteWordForwardBig { count },
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
     Ok(())
 }

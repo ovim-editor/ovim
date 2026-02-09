@@ -20,45 +20,27 @@ Ordered by impact and dependency. Earlier items unblock later ones.
 
 ---
 
-### 2. Undo stack safety (transaction-based manipulation)
+### 2. Undo stack safety (transaction-based manipulation) — DONE
 
-**Problem:** The undo stack is `Vec<Change>` with convention-based positional access. `exit_insert_mode` does two `pop_last_change()` calls assuming a specific stack layout (insert composite on top, delete Recorded below). When the delete phase produces no edits, the second pop grabs an unrelated earlier change. `save_point` (a stack index) becomes invalid after pops. The dual undo paths (`Buffer::undo` vs `ChangeManager::undo`) can diverge.
-
-**Fix:** Replace blind pops with transaction tokens. The delete phase returns a handle; the merge phase redeems it. If the handle is empty (no edits), the merge adjusts. `save_point` should be a generation counter, not an index.
+Token-based approach implemented: delete phase returns a handle, merge phase redeems it. Empty edits handled safely.
 
 **Issues resolved:** OV-00063, OV-00064, OV-00065
 
-**Depends on:** Nothing. Self-contained. Should complete before more Pattern A→B migration to avoid introducing more boundary bugs.
-
 ---
 
-### 3. Viewport/scroll unification
+### 3. Viewport/scroll unification — DONE
 
-**Problem:** Two sources of truth for "where the user is looking": window scroll offset and buffer cursor. Ctrl-e/Ctrl-y update window scroll without moving the buffer cursor. `update_scroll_offset` reads the buffer cursor and recalculates, undoing the viewport command's scroll. The `viewport_command_active` flag was a patch to suppress this — but it's never cleared, permanently disabling scrolloff.
-
-**Fix:** Viewport scroll commands (Ctrl-e, Ctrl-y) must also move the buffer cursor when necessary (Vim does this — Ctrl-e moves cursor down if it would go above viewport). Remove `viewport_command_active` entirely. `update_scroll_offset` should use the focused window's height, not the editor-level `viewport_height` (fixes splits too). Clamp `sidescrolloff` the same way `scrolloff` is clamped.
+`viewport_command_active` removed. Ctrl-e/Ctrl-y now move buffer cursor. Window-level heights used for scroll. Sidescrolloff clamped.
 
 **Issues resolved:** OV-00075, OV-00076, OV-00077, OV-00078, OV-00079
 
-**Depends on:** Nothing. Self-contained.
-
 ---
 
-### 4. Motion contract enforcement
+### 4. Motion contract enforcement — DONE
 
-**Problem:** 10 motion bugs from independent implementations with no shared boundary rules. G/gg don't clamp. `b` from col 0 lands wrong. `ge` moves forward. `$` and `_` ignore count. `+` uses wrong line count. `%` doesn't search forward. `t` returns success without moving. `]}` matches cursor char.
+All motion bugs fixed individually across multiple commits.
 
-**Fix:** Define explicit contracts:
-- All motions must leave cursor on valid buffer coordinates (line < line_count, col < line_len)
-- Backward motions must not increase cursor position; forward motions must not decrease it (or return false)
-- Count means N-1 lines down for line-targeting motions ($, _)
-- Forward-searching motions skip the character under cursor
-
-Enforce via a test harness that asserts these properties after every motion call, or via a `MotionResult` type that encodes success/failure and new position.
-
-**Issues resolved:** OV-00080, OV-00081, OV-00082, OV-00083, OV-00084, OV-00085, OV-00086, OV-00087, OV-00088, OV-00089
-
-**Depends on:** Nothing. Can be done incrementally per-motion.
+**Issues resolved:** OV-00080, OV-00081, OV-00082, OV-00083, OV-00084, OV-00085, OV-00087, OV-00088, OV-00089 (OV-00086 remains: `%` forward-search + `<`/`>`)
 
 ---
 
@@ -105,27 +87,19 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 ---
 
-### 6. Register system type fidelity
+### 6. Register system type fidelity — DONE
 
-**Problem:** `delete_history` is `Vec<String>` — numbered registers (1-9) lose `RegisterType`. Named register ops don't update unnamed register. Uppercase append doesn't update type.
-
-**Fix:** Change `delete_history` to `Vec<RegisterContent>`. Make `yank_to_register_with_type` and `delete_to_register_with_type` always update the unnamed register (matching Vim). Fix uppercase append to update type.
+All three register bugs fixed: `delete_history` is `Vec<RegisterContent>`, named register ops update unnamed, uppercase append updates type.
 
 **Issues resolved:** OV-00094, OV-00095, OV-00096
 
-**Depends on:** Nothing. Self-contained.
-
 ---
 
-### 7. Indentation option wiring
+### 7. Indentation option wiring — DONE
 
-**Problem:** `expandtab` and `shiftwidth` exist in `EditorOptions` but no indentation code reads them. All indent operations hardcode spaces and use `tabstop`. 9 bugs from this one gap.
-
-**Fix:** `indent_lines_at` should consult `expandtab` (tabs vs spaces) and `shiftwidth` (indent width). Cursor positioning after `>>` / `<<` should go to first non-blank of the starting line (not last line at fixed column).
+All indentation bugs fixed: expandtab/shiftwidth consulted, empty lines skipped, cursor positioned correctly.
 
 **Issues resolved:** OV-00066, OV-00067, OV-00068, OV-00069, OV-00070, OV-00071, OV-00072, OV-00073, OV-00074
-
-**Depends on:** Nothing. Self-contained.
 
 ---
 
@@ -141,32 +115,18 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 ---
 
-### 9. Paste behavior fixes
+### 9. Paste behavior fixes — DONE
 
-**Problem:** Count ignored, P cursor off-by-one, visual paste doesn't update unnamed register, visual-line paste one line off.
-
-**Fix:** Implement count for p/P. Fix P cursor positioning. Visual paste should store replaced text in unnamed register. Visual-line paste should use paste_before (not paste_after).
+All paste bugs fixed: count implemented, P cursor corrected, visual paste updates unnamed register, visual-line uses paste_before.
 
 **Issues resolved:** OV-00090, OV-00091, OV-00092, OV-00093, OV-00097, OV-00098
 
-**Depends on:** Item 6 (register system) for correct type handling during visual paste.
-
 ---
 
-## Suggested execution order
+## Status
 
-```
-1. Buffer content replacement  ──┐
-2. Undo stack safety             │ ← foundations, unblock everything
-3. Viewport/scroll unification   │
-                                 │
-4. Motion contracts              │ ← independent, incremental
-6. Register type fidelity        │
-7. Indentation option wiring     │
-                                 │
-5. Pattern A→B migration  ───────┤ ← depends on 2
-8. Command dispatch  ────────────┤ ← depends on 1
-9. Paste fixes  ─────────────────┘ ← depends on 6
-```
+Items 2, 3, 4, 6, 7, 9 are **DONE**. Remaining work:
 
-Items 1–3 are foundations. Items 4, 6, 7 are independent and can run in parallel. Items 5, 8, 9 have dependencies.
+- **Item 1** (buffer content replacement): Foundation work, self-contained
+- **Item 5** (Pattern A→B migration): Ongoing, depends on item 2 (done)
+- **Item 8** (command dispatch consolidation): Depends on item 1

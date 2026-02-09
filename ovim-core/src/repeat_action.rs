@@ -48,6 +48,22 @@ pub enum RepeatAction {
     DeleteToEndOfLine,
     /// dw — delete word forward
     DeleteWordForward { count: usize },
+    /// db — delete word backward
+    DeleteWordBackward { count: usize },
+    /// de — delete to end of word (inclusive)
+    DeleteWordEnd { count: usize },
+    /// dB — delete WORD backward
+    DeleteWordBackwardBig { count: usize },
+    /// dE — delete to end of WORD (inclusive)
+    DeleteWordEndBig { count: usize },
+    /// dh — delete character left
+    DeleteCharLeft { count: usize },
+    /// d0 — delete to start of line
+    DeleteToStartOfLine,
+    /// d^ — delete to first non-blank
+    DeleteToFirstNonBlank,
+    /// dW — delete WORD forward
+    DeleteWordForwardBig { count: usize },
     /// dj — delete current + count lines down
     DeleteLineDown { count: usize },
     /// dk — delete current + count lines up
@@ -144,6 +160,30 @@ impl RepeatAction {
             }
             Self::DeleteWordForward { count } => {
                 buffer.delete_word_forward(*count);
+            }
+            Self::DeleteWordBackward { count } => {
+                buffer.delete_word_backward(*count);
+            }
+            Self::DeleteWordEnd { count } => {
+                buffer.delete_word_end(*count);
+            }
+            Self::DeleteWordBackwardBig { count } => {
+                buffer.delete_word_backward_big(*count);
+            }
+            Self::DeleteWordEndBig { count } => {
+                buffer.delete_word_end_big(*count);
+            }
+            Self::DeleteCharLeft { count } => {
+                buffer.delete_char_left(*count);
+            }
+            Self::DeleteToStartOfLine => {
+                buffer.delete_to_start_of_line();
+            }
+            Self::DeleteToFirstNonBlank => {
+                buffer.delete_to_first_non_blank();
+            }
+            Self::DeleteWordForwardBig { count } => {
+                buffer.delete_word_forward_big(*count);
             }
             Self::DeleteLineDown { count } => {
                 buffer.delete_line_down(*count);

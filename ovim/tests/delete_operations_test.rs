@@ -326,10 +326,10 @@ fn test_d_dollar_empty_line() {
 fn test_d_zero_basic() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("w") // Move to "world"
-        .keys("d0"); // Delete to beginning
+    test.keys("w") // Move to "world" (col 6)
+        .keys("d0"); // Delete from col 0 to cursor → removes "hello "
 
-    assert_eq!(test.buffer_content(), "hello world\n");
+    assert_eq!(test.buffer_content(), "world\n");
     test.assert_cursor(0, 0);
 }
 

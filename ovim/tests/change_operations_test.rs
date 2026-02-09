@@ -198,24 +198,26 @@ fn test_c_dollar() {
 fn test_c_zero() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("w") // Move to "world"
-        .keys("c0")
+    test.keys("w") // Move to "world" (col 6)
+        .keys("c0") // Delete from col 0 to cursor, enter insert
         .type_text("start ")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "tart ello world\n");
-    test.assert_cursor(0, 4);
+    // c0 deletes "hello " (cols 0-5), types "start " → "start world"
+    assert_eq!(test.buffer_content(), "start world\n");
+    test.assert_cursor(0, 5);
 }
 
 #[test]
 fn test_c_zero_at_beginning() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("c0") // At beginning, should do nothing?
+    test.keys("c0") // At col 0, nothing to delete, enters insert mode
         .type_text("x")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "ello world\n");
+    // c0 at col 0 deletes nothing, enters insert, types "x" → "xhello world"
+    assert_eq!(test.buffer_content(), "xhello world\n");
     test.assert_cursor(0, 0);
 }
 
@@ -293,25 +295,27 @@ fn test_caw_last_word() {
 fn test_ce_change_to_end_of_word() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("ce") // Change to end of word
+    test.keys("ce") // Change to end of "hello" (inclusive), enter insert
         .type_text("i")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 3);
+    // ce deletes "hello" (cols 0-4), types "i" → "i world"
+    assert_eq!(test.buffer_content(), "i world\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
 fn test_cb_change_backward() {
     let mut test = EditorTest::new("hello world");
 
-    test.keys("$") // End of line
-        .keys("cb") // Change backward
+    test.keys("$") // End of line (col 10, on 'd')
+        .keys("cb") // Change backward word (delete "worl", cols 6-9)
         .type_text("earth")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello worldrth\n");
-    test.assert_cursor(0, 13);
+    // cb from 'd' deletes backward to start of "world" → "hello d", then "earth" → "hello earthd"
+    assert_eq!(test.buffer_content(), "hello earthd\n");
+    test.assert_cursor(0, 10);
 }
 
 #[test]
