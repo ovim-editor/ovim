@@ -1,8 +1,10 @@
 # CLI Restructure Plan
 
+**Status: Phases 1–5 complete. Phase 6 (dead code cleanup) and `:session start/stop` ex commands remain.**
+
 ## Motivation
 
-The current CLI has ~30 flat subcommands, ambiguous file-vs-subcommand parsing, session-centric design that doesn't match how agents actually work, and MCP complexity that could be replaced with simpler integration. This plan restructures the CLI to be cleaner, more discoverable, and agent-friendly.
+The current CLI had ~30 flat subcommands, ambiguous file-vs-subcommand parsing, session-centric design that doesn't match how agents actually work, and MCP complexity that could be replaced with simpler integration. This plan restructured the CLI to be cleaner, more discoverable, and agent-friendly.
 
 ## Design Principles
 
@@ -266,14 +268,12 @@ These are simple file operations. No ropey, no editor instance. Just `std::fs::r
 
 ## Execution Order
 
-The phases above are presented for understanding. Execution order to minimize breakage:
-
-1. **Phase 1 (CLI restructure)** — biggest diff, mostly mechanical. Nest subcommands, add file args. Everything still compiles, behavior unchanged except command syntax.
-2. **Phase 4 (file-addressed operations)** — implement direct file I/O for edit/insert/delete-lines/read-lines. Can coexist with session-addressed versions during transition.
-3. **Phase 2 (sessions opt-in)** — remove auto-registration. This is the behavioral change. Do it after the file operations work so agents have a migration path.
-4. **Phase 3 (`:session start/stop`)** — add ex commands. Depends on Phase 2's design.
-5. **Phase 5 (docs)** — update after behavior is settled.
-6. **Phase 6 (cleanup)** — remove dead code last.
+1. ~~**Phase 1 (CLI restructure)**~~ — **Done.** Nested LSP/Session subcommands, FileArg parsing, file positional args, `-s SESSION` required.
+2. ~~**Phase 4 (file-addressed operations)**~~ — **Done.** `edit`, `insert`, `delete-lines`, `read-lines` work directly on files.
+3. ~~**Phase 2 (sessions opt-in)**~~ — **Done.** TUI doesn't register a session. Headless requires `--session NAME`.
+4. **Phase 3 (`:session start/stop`)** — **Not started.** Ex commands for session management.
+5. ~~**Phase 5 (docs)**~~ — **Done.** CLAUDE.md and help text updated.
+6. **Phase 6 (cleanup)** — **Not started.** Remove dead auto-discovery code, stale OvimClient methods.
 
 ## What NOT to Do
 
