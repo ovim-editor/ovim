@@ -513,6 +513,37 @@ impl Buffer {
         self.modified = false;
     }
 
+    /// Resets all derived state after the rope has been replaced.
+    /// Call this after setting `self.rope` to new content.
+    /// Does NOT touch: file_path, rope, cursor, modified, line_ending,
+    /// encoding, file_mtime, read_only, recording.
+    pub(crate) fn reset_derived_state(&mut self, new_content: &str) {
+        // Syntax: reparse tree against new content
+        if let Some(ref mut syntax) = self.syntax {
+            syntax.parse(new_content);
+        }
+
+        // Highlight caches: all line/col references are stale
+        self.cached_highlights = None;
+        self.highlight_version = self.highlight_version.wrapping_add(1);
+        self.pending_rehighlight = true;
+        self.semantic_highlights = None;
+        self.code_block_cache = None;
+
+        // Structural state: fold line ranges are invalid
+        self.fold_manager.delete_all();
+
+        // Git state: line-based data is invalid
+        self.git_status = GitStatus::new();
+        self.git_blame = None;
+
+        // Undo/redo: position references are meaningless against new content
+        self.change_manager = ChangeManager::new();
+
+        // Version: bump so LSP caches know content changed
+        self.version += 1;
+    }
+
     /// Checks if a line is hidden by a fold
     pub fn is_line_folded(&self, line: usize) -> bool {
         self.fold_manager.is_line_hidden(line)

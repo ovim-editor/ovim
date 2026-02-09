@@ -94,19 +94,6 @@ const BOOL_OPTIONS: &[BoolOption] = &[
         get: |e| e.options.file_tree_reveal,
         set: |e, v| e.options.file_tree_reveal = v,
     },
-    BoolOption {
-        name: "blame",
-        alias: "",
-        get: |e| e.options.blame,
-        set: |e, v| {
-            e.options.blame = v;
-            if v {
-                e.buffer_mut().load_git_blame();
-            } else {
-                e.buffer_mut().clear_git_blame();
-            }
-        },
-    },
 ];
 
 fn ok(message: Option<String>) -> CommandResult {

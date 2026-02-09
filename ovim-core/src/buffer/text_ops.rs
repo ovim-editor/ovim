@@ -196,10 +196,8 @@ impl Buffer {
     pub fn replace_all(&mut self, content: &str) {
         self.rope = ropey::Rope::from_str(content);
         self.modified = true;
-        // Reset cursor to beginning
         self.cursor = super::Cursor::new(0, 0);
-        // Increment version for cache invalidation
-        self.version += 1;
+        self.reset_derived_state(content);
     }
 
     /// Joins the current line with the next line (J command)

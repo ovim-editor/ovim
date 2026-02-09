@@ -364,7 +364,7 @@ impl Buffer {
 
             self.rope = Rope::from_str(&content);
             self.modified = true; // Mark as modified so user knows to save
-            self.pending_rehighlight = true; // Trigger rehighlighting
+            self.reset_derived_state(&content);
 
             // Delete the swap file after successful recovery
             self.delete_swap_file()?;
@@ -451,15 +451,11 @@ impl Buffer {
             content
         };
 
-        // Update rope
+        // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
         self.modified = false;
-        self.pending_rehighlight = true;
-
-        // Full reparse of syntax tree so highlight cache queries fresh tree
-        if let Some(ref mut syntax) = self.syntax {
-            syntax.parse(&content);
-        }
+        self.reset_derived_state(&content);
+        self.validate_cursor_position();
 
         Ok(true)
     }
@@ -512,27 +508,15 @@ impl Buffer {
             content
         };
 
-        // Update rope
+        // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
         self.modified = false;
-        self.pending_rehighlight = true;
+        self.reset_derived_state(&content);
 
-        // Full reparse of syntax tree so highlight cache queries fresh tree
-        if let Some(ref mut syntax) = self.syntax {
-            syntax.parse(&content);
-        }
-
-        // Clamp cursor to new file bounds
-        let max_line = self.rope.len_lines().saturating_sub(1);
-        let line = old_line.min(max_line);
-        let line_len = self.rope.line(line).len_chars();
-        let max_col = if line_len > 0 {
-            line_len.saturating_sub(1)
-        } else {
-            0
-        };
-        let col = old_col.min(max_col);
-        self.cursor.set_position(line, col);
+        // Restore cursor, clamped to new bounds
+        let max_line = self.line_count().saturating_sub(1);
+        self.cursor.set_position(old_line.min(max_line), old_col);
+        self.validate_cursor_position();
 
         Ok(())
     }

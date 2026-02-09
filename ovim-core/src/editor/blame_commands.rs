@@ -102,7 +102,7 @@ impl Editor {
 
     /// Resolves the blame OID for a given line.
     ///
-    /// First checks if the buffer already has blame data loaded (from `:set blame`),
+    /// First checks if the buffer already has blame data loaded (from `:blame`),
     /// otherwise loads blame on demand and caches it on the buffer for future lookups.
     fn resolve_blame_oid(&mut self, _file_path: &str, line: usize) -> Option<String> {
         // Try cached blame first
