@@ -11,6 +11,7 @@
 
 use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
+use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -73,8 +74,48 @@ fn exit_insert_mode(editor: &mut Editor) {
 
     editor.finalize_change_building();
 
+    // Check for pending change repeat (cc, C, s, S, cj, ck, etc.)
+    // Must be checked BEFORE PendingSemanticChange — they are mutually exclusive.
+    if let Some(pending) = editor.take_pending_change_repeat() {
+        // Extract typed text from the just-finalized composite
+        let inserted_text = editor
+            .last_change()
+            .map(|c| c.get_inserted_text())
+            .unwrap_or_default();
+
+        // Pop insert composite (from ChangeBuilder)
+        let insert_undo = editor.pop_last_change();
+        // Pop delete undo (Change::Recorded from record())
+        let delete_undo = editor.pop_last_change();
+
+        // Merge into single undo unit
+        let cursor_before = delete_undo
+            .as_ref()
+            .map(|c| c.cursor_before())
+            .unwrap_or_else(|| editor.cursor_position());
+        let cursor_after = editor.cursor_position();
+
+        let mut merged = vec![];
+        if let Some(d) = delete_undo {
+            merged.push(d);
+        }
+        if let Some(i) = insert_undo {
+            merged.push(i);
+        }
+        if !merged.is_empty() {
+            editor.add_change(Change::composite(merged, cursor_before, cursor_after));
+        }
+
+        // Set semantic repeat action
+        editor.set_repeat_action(RepeatAction::Change {
+            delete: Box::new(pending.delete_action),
+            inserted_text,
+            linewise: pending.linewise,
+        });
+    }
+
     // Check for pending semantic change operation (ci", cw, etc.)
-    if let Some(pending) = editor.take_pending_semantic_change() {
+    else if let Some(pending) = editor.take_pending_semantic_change() {
         // Get the inserted text from the last change
         let inserted_text = if let Some(last_change) = editor.last_change() {
             last_change.get_inserted_text()

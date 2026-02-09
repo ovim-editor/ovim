@@ -61,6 +61,12 @@ pub enum RepeatAction {
     PasteAfter,
     /// P — paste before cursor
     PasteBefore,
+    /// Change operator — semantic delete + insert text (cc, C, s, S, cj, ck, etc.)
+    Change {
+        delete: Box<RepeatAction>,
+        inserted_text: String,
+        linewise: bool,
+    },
 }
 
 impl RepeatAction {
@@ -159,6 +165,60 @@ impl RepeatAction {
             Self::PasteAfter | Self::PasteBefore => {
                 // Intentional no-op: paste repeat is intercepted in repeat_last_change()
                 // before execute() is called, because it needs Editor-level register access.
+            }
+            Self::Change {
+                delete,
+                inserted_text,
+                linewise,
+            } => {
+                // Save cursor position before delete (inline changes insert at original pos)
+                let pre_delete_line = buffer.cursor().line();
+                let pre_delete_col = buffer.cursor().col();
+
+                // Phase 1: Execute the semantic delete at current cursor position
+                delete.execute(buffer);
+
+                if *linewise {
+                    // Open a new line for the insertion (like cc after delete)
+                    let line = buffer.cursor().line();
+                    let insert_at = line.min(buffer.line_count());
+                    buffer.insert_text_at(insert_at, 0, "\n");
+                    buffer.cursor_mut().set_position(insert_at, 0);
+                } else {
+                    // Inline change: restore cursor to pre-delete column
+                    // (delete methods may clamp cursor to normal-mode bounds)
+                    buffer
+                        .cursor_mut()
+                        .set_position(pre_delete_line, pre_delete_col);
+                }
+
+                // Phase 2: Insert the captured text
+                if !inserted_text.is_empty() {
+                    let line = buffer.cursor().line();
+                    let col = buffer.cursor().col();
+                    buffer.insert_text_at(line, col, inserted_text);
+
+                    // Position cursor at end of inserted text - 1 (Vim Esc behavior)
+                    let text_chars: usize = inserted_text.chars().count();
+                    if text_chars > 0 {
+                        // Calculate final position by walking through inserted text
+                        let mut final_line = line;
+                        let mut final_col = col;
+                        for ch in inserted_text.chars() {
+                            if ch == '\n' {
+                                final_line += 1;
+                                final_col = 0;
+                            } else {
+                                final_col += 1;
+                            }
+                        }
+                        // Back up one (Vim positions cursor on last inserted char)
+                        if final_col > 0 {
+                            final_col -= 1;
+                        }
+                        buffer.cursor_mut().set_position(final_line, final_col);
+                    }
+                }
             }
         }
     }

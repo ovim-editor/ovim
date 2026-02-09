@@ -74,12 +74,13 @@ fn test_cc_basic() {
 
 #[test]
 fn test_cc_indented_line() {
+    // Vim preserves the original line's indentation on cc
     let mut test = EditorTest::new("    indented line\nother");
 
     test.keys("cc").type_text("new line").press_esc();
 
-    assert_eq!(test.buffer_content(), "new line\nother\n");
-    test.assert_cursor(0, 7);
+    assert_eq!(test.buffer_content(), "    new line\nother\n");
+    test.assert_cursor(0, 11);
 }
 
 #[test]

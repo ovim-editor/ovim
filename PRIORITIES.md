@@ -17,6 +17,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] dG, dgg (delete to first/last line)
 - [x] d% (delete to matching bracket)
 - [x] r (replace character)
+- [x] Change operators: cc, C/c$, s, S, cj, ck, c}, c{, cG, cgg (`RepeatAction::Change` with `PendingChangeRepeat`)
 
 ### Next up
 
@@ -34,30 +35,9 @@ RepeatAction::VisualDelete {
 
 `execute()` computes the deletion range from stored dimensions at current cursor. No interaction with the change-building system.
 
-#### 2. Change operators — semantic dot-repeat (medium effort, high value)
+#### 2. Undo/redo for LSP rename and code actions
 
-**Key insight: undo already works.** The ChangeBuilder accumulates all changes (delete + insert-mode typing) into one `Change::Composite`. Single undo is correct today. The problem is only dot-repeat — it replays raw position-dependent changes instead of re-evaluating semantically.
-
-**What already works:** `cw`, `ci"`, `cgn` have semantic repeat via `PendingSemanticChange`. On Esc, `exit_insert_mode()` pops the composite, extracts inserted text, creates a semantic `Change` variant (`ChangeWord`, `ChangeTextObject`, `ChangeSearchMatch`).
-
-**What doesn't:** `cc`, `C`, `cj`, `ck`, `c}`, `c{`, `s`, `S` don't set `PendingSemanticChange`. They rely on raw composite replay.
-
-**Approach — `RepeatAction::Change`:**
-
-```rust
-RepeatAction::Change {
-    delete: Box<RepeatAction>,  // reuses existing variants (DeleteLines, DeleteWordForward, etc.)
-    inserted_text: String,       // captured on Esc
-}
-```
-
-The flow:
-1. Change operator sets a `PendingChangeRepeat(RepeatAction)` before entering insert mode (e.g., `cc` stores `DeleteLines { count }`)
-2. Undo path unchanged — ChangeBuilder composite stays on the undo stack
-3. On Esc, `exit_insert_mode()` reads the pending repeat, captures inserted text, creates `RepeatAction::Change { delete, inserted_text }`
-4. On `.`: execute the delete (semantic, re-evaluated at cursor), insert the captured text, wrap in `record_operation()` for atomic undo. No insert mode entry during replay.
-
-This decouples undo (ChangeBuilder, untouched) from repeat (RepeatAction, new). About a dozen callsites to wire up, but the infrastructure is a small `RepeatAction` variant + a field on the editor.
+LSP rename (`ui_features.rs`) and code actions apply edits via `add_change` but may not integrate well with the undo system. Investigate whether multi-file edits, workspace edits, and code action changes produce correct undo behavior. If not, wrap them in `record()` for atomic undo.
 
 #### 3. Ex commands — leave alone
 
@@ -67,13 +47,13 @@ This decouples undo (ChangeBuilder, untouched) from repeat (RepeatAction, new). 
 
 | Area | Count | Notes |
 |------|-------|-------|
-| `operators.rs` (change ops: cc, cw, c$, cj, ck, c}, c{, cG, cgg) | 9 | Phase 2: wire up PendingChangeRepeat |
-| `helpers.rs` (visual delete, indent/dedent tracking, s/S/C, o/O) | 14 | Phase 1 (visual) + Phase 2 (s/S/C/o/O) |
-| `commands.rs` (ex commands: :d, :sort, :g, :s, :r, :t, :m) | 7 | Phase 3: leave alone |
+| `operators.rs` (change ops: cc, c$, cj, ck, c}, c{, cG, cgg) | 9 | ✅ Done — migrated to PendingChangeRepeat |
+| `editing_commands.rs` (C, s, S) | 3 | ✅ Done — migrated to PendingChangeRepeat |
+| `helpers.rs` (visual delete, indent/dedent tracking, o/O) | 14 | Visual delete next; o/O needs RepeatAction::OpenLine |
+| `commands.rs` (ex commands: :d, :sort, :g, :s, :r, :t, :m) | 7 | Leave alone (Vim uses `@:`) |
 | `text_objects.rs` (change text objects: ci", ca(, etc.) | 2 | Already have semantic repeat |
-| `char_motion.rs` (cf, ct with change operator) | 1 | Phase 2: wire up PendingChangeRepeat |
+| `char_motion.rs` (cf, ct with change operator) | 1 | Wire up PendingChangeRepeat |
 | `insert_mode.rs` (insert-mode change tracking) | 4 | Core infrastructure, stays |
-| `editing_commands.rs` (s, S line substitute) | 2 | Phase 2: wire up PendingChangeRepeat |
-| `replace_mode.rs` (R replace mode) | 1 | Phase 2: evaluate separately |
-| `ui_features.rs` (LSP rename, code actions) | 3 | Leave alone (LSP-driven) |
+| `replace_mode.rs` (R replace mode) | 1 | Evaluate separately |
+| `ui_features.rs` (LSP rename, code actions) | 3 | Investigate undo behavior |
 | `mod.rs` (undo/redo internals, add_change definition) | 3 | Infrastructure, stays |
