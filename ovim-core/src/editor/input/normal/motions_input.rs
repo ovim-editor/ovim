@@ -56,12 +56,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         KeyCode::Char('$') => {
+            let count = editor.effective_count();
             let line_idx = editor.buffer().cursor().line();
-            if let Some(line) = editor.buffer().line(line_idx) {
+            let max_line = editor.buffer().line_count().saturating_sub(1);
+            let target_line = (line_idx + count - 1).min(max_line);
+            if let Some(line) = editor.buffer().line(target_line) {
                 let line_len = line.trim_end_matches('\n').chars().count();
                 let col = if line_len > 0 { line_len - 1 } else { 0 };
                 let cursor = editor.buffer_mut().cursor_mut();
-                cursor.set_col(col);
+                cursor.set_position(target_line, col);
                 cursor.update_desired_col(usize::MAX);
             }
             editor.clear_count();
@@ -73,7 +76,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         KeyCode::Char('_') => {
-            Motions::first_non_blank_underscore(editor.buffer_mut());
+            let count = editor.effective_count();
+            if count > 1 {
+                let line_idx = editor.buffer().cursor().line();
+                let max_line = editor.buffer().line_count().saturating_sub(1);
+                let target_line = (line_idx + count - 1).min(max_line);
+                editor.buffer_mut().cursor_mut().set_line(target_line);
+            }
+            Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
             Ok(true)
         }
@@ -139,10 +149,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
         // File motions
         KeyCode::Char('G') => {
+            let max_line = editor.buffer().line_count().saturating_sub(1);
             let target_line = if let Some(count) = editor.count() {
-                count.saturating_sub(1)
+                count.saturating_sub(1).min(max_line)
             } else {
-                editor.buffer().line_count().saturating_sub(1)
+                max_line
             };
             editor.add_jump();
             editor

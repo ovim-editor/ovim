@@ -685,5 +685,6 @@ fn test_cut_and_paste_move_word() {
         .keys("P"); // Paste before "test"
 
     assert_eq!(test.buffer_content(), "world hello test\n");
-    test.assert_cursor(0, 12);
+    // P places cursor on last char of pasted text ("hello " ends at col 11)
+    test.assert_cursor(0, 11);
 }

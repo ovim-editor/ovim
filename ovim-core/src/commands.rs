@@ -804,13 +804,16 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Check if file has been modified externally and reload if so
             match editor.buffer().check_external_modification() {
                 Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
-                    Ok(true) => CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(
-                            "File reloaded from disk (external changes detected)".to_string(),
-                        ),
-                        line_count: None,
-                    }),
+                    Ok(true) => {
+                        editor.mark_buffer_modified_force_send();
+                        CommandResult::Success(SuccessResponse {
+                            success: true,
+                            message: Some(
+                                "File reloaded from disk (external changes detected)".to_string(),
+                            ),
+                            line_count: None,
+                        })
+                    }
                     Ok(false) => CommandResult::Success(SuccessResponse {
                         success: true,
                         message: Some("No external changes detected".to_string()),
@@ -1278,6 +1281,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 match editor.buffer_mut().reload_from_disk() {
                     Ok(_) => {
                         editor.mark_saved();
+                        editor.mark_buffer_modified_force_send();
                         let line_count = editor.buffer().rope().len_lines();
                         CommandResult::Success(SuccessResponse {
                             success: true,
@@ -1295,6 +1299,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     match editor.buffer_mut().reload_from_disk() {
                         Ok(_) => {
                             editor.mark_saved();
+                            editor.mark_buffer_modified_force_send();
                             let line_count = editor.buffer().rope().len_lines();
                             CommandResult::Success(SuccessResponse {
                                 success: true,

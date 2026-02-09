@@ -15,9 +15,16 @@ pub enum RepeatAction {
     /// J / gJ — join lines
     JoinLines { count: usize, add_space: bool },
     /// >> — indent lines
-    IndentLines { line_count: usize, tab_width: usize },
+    IndentLines {
+        line_count: usize,
+        shift_width: usize,
+        expand_tab: bool,
+    },
     /// << — dedent lines
-    DedentLines { line_count: usize, tab_width: usize },
+    DedentLines {
+        line_count: usize,
+        shift_width: usize,
+    },
     /// ~ — toggle case at cursor
     ToggleCase { count: usize },
     /// Ctrl-A / Ctrl-X — increment/decrement number
@@ -58,9 +65,9 @@ pub enum RepeatAction {
     /// r — replace character(s) at cursor
     ReplaceChar { ch: char, count: usize },
     /// p — paste after cursor
-    PasteAfter,
+    PasteAfter { count: usize },
     /// P — paste before cursor
-    PasteBefore,
+    PasteBefore { count: usize },
     /// Change operator — semantic delete + insert text (cc, C, s, S, cj, ck, etc.)
     Change {
         delete: Box<RepeatAction>,
@@ -83,24 +90,24 @@ impl RepeatAction {
             }
             Self::IndentLines {
                 line_count,
-                tab_width,
+                shift_width,
+                expand_tab,
             } => {
                 let start = buffer.cursor().line();
                 let end = start + line_count;
-                buffer.indent_lines_at(start, end, *tab_width);
-                // Position cursor at first indented line, col = tab_width
-                if start < end.min(buffer.line_count()) {
-                    buffer.cursor_mut().set_position(start, *tab_width);
-                }
+                buffer.indent_lines_at(start, end, *shift_width, *expand_tab);
+                let first_nb = buffer.first_non_blank_col(start);
+                buffer.cursor_mut().set_position(start, first_nb);
             }
             Self::DedentLines {
                 line_count,
-                tab_width,
+                shift_width,
             } => {
                 let start = buffer.cursor().line();
                 let end = start + line_count;
-                buffer.dedent_lines_at(start, end, *tab_width);
-                buffer.clamp_cursor_col();
+                buffer.dedent_lines_at(start, end, *shift_width);
+                let first_nb = buffer.first_non_blank_col(start);
+                buffer.cursor_mut().set_position(start, first_nb);
             }
             Self::ToggleCase { count } => {
                 for _ in 0..*count {
@@ -162,7 +169,7 @@ impl RepeatAction {
             Self::ReplaceChar { ch, count } => {
                 buffer.replace_chars_at_cursor(*ch, *count);
             }
-            Self::PasteAfter | Self::PasteBefore => {
+            Self::PasteAfter { .. } | Self::PasteBefore { .. } => {
                 // Intentional no-op: paste repeat is intercepted in repeat_last_change()
                 // before execute() is called, because it needs Editor-level register access.
             }

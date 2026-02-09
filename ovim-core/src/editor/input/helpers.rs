@@ -332,20 +332,26 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let line_idx = cursor.line();
     let col = cursor.col();
 
-    // Get tab width from config or use default
-    let tab_width = editor.options.tab_width;
+    // Use shift_width and expand_tab from options
+    let shift_width = editor.options.shift_width;
+    let expand_tab = editor.options.expand_tab;
 
     // Insert indent at beginning of line
     editor
         .buffer_mut()
-        .indent_lines_at(line_idx, line_idx + 1, tab_width);
+        .indent_lines_at(line_idx, line_idx + 1, shift_width, expand_tab);
 
-    // Update cursor position - move column right by tab_width
-    let new_col = col + tab_width;
+    // Update cursor position - move column right by indent width
+    let indent_width = if expand_tab { shift_width } else { 1 };
+    let new_col = col + indent_width;
     editor.buffer_mut().cursor_mut().set_col(new_col);
 
     // Create change for undo (Pattern A — composes with insert-mode undo group)
-    let indent_str = " ".repeat(tab_width);
+    let indent_str = if expand_tab {
+        " ".repeat(shift_width)
+    } else {
+        "\t".to_string()
+    };
     let change = Change::insert((line_idx, 0), indent_str, cursor_before);
     editor.add_change(change);
 
@@ -358,8 +364,8 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     let line_idx = cursor.line();
     let col = cursor.col();
 
-    // Get tab width from config or use default
-    let tab_width = editor.options.tab_width;
+    // Use shift_width from options
+    let shift_width = editor.options.shift_width;
 
     // Get current line
     let line = match editor.buffer().line(line_idx) {
@@ -368,11 +374,11 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     };
     let line_text = line.trim_end_matches('\n');
 
-    // Count leading whitespace to remove (up to tab_width)
+    // Count leading whitespace to remove (up to shift_width)
     let chars: Vec<char> = line_text.chars().collect();
     let mut chars_to_remove = 0;
 
-    for &ch in chars.iter().take(tab_width) {
+    for &ch in chars.iter().take(shift_width) {
         if ch == ' ' {
             chars_to_remove += 1;
         } else if ch == '\t' {
@@ -470,11 +476,18 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
-pub fn paste_after(editor: &mut Editor) -> Result<()> {
+pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
     let (text, reg_type) = editor.get_from_register_with_type();
     if text.is_empty() {
         return Ok(());
     }
+
+    // Multiply paste text by count
+    let text = if count > 1 {
+        text.repeat(count)
+    } else {
+        text
+    };
 
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
@@ -533,47 +546,90 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteAfter);
+                editor.set_repeat_action(RepeatAction::PasteAfter { count });
             }
         }
         RegisterType::Line => {
-            // Line paste - insert after current line
-            let rope_line = editor.buffer().rope().line(line_idx);
-            let line_char_len = rope_line.len_chars();
-            let has_trailing_newline =
-                line_char_len > 0 && rope_line.char(line_char_len - 1) == '\n';
+            // Normalize: ensure linewise text ends with newline
+            let text = if !text.ends_with('\n') {
+                format!("{}\n", text)
+            } else {
+                text
+            };
 
-            let ((), edits) = editor.buffer_mut().record(|buf| {
-                if has_trailing_newline {
-                    buf.insert_text_at(line_idx, line_char_len, &text);
-                } else if line_char_len == 0 {
-                    buf.insert_text_at(line_idx, 0, &text);
-                } else {
-                    let insert_text = format!("\n{}", text.trim_end_matches('\n'));
-                    buf.insert_text_at(line_idx, line_char_len, &insert_text);
-                };
-            });
+            // Detect empty buffer (single empty line, e.g. after dd)
+            let is_empty_buffer = editor.buffer().line_count() == 1
+                && editor
+                    .buffer()
+                    .line(0)
+                    .map(|l| l.trim_end_matches('\n').is_empty())
+                    .unwrap_or(true);
 
-            // Vim: cursor on first non-blank of the new line
-            let new_line = line_idx + 1;
-            let first_non_blank = editor
-                .buffer()
-                .line(new_line)
-                .map(|l| {
-                    l.chars()
-                        .take_while(|ch| ch.is_whitespace() && *ch != '\n')
-                        .count()
-                })
-                .unwrap_or(0);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(new_line, first_non_blank);
+            if is_empty_buffer {
+                // Insert at (0, 0), cursor on first non-blank of line 0
+                let text_clone = text.clone();
+                let ((), edits) = editor.buffer_mut().record(|buf| {
+                    buf.insert_text_at(0, 0, &text_clone);
+                });
 
-            if !edits.is_empty() {
-                let cursor_after = editor.cursor_position();
-                editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteAfter);
+                let first_non_blank = editor
+                    .buffer()
+                    .line(0)
+                    .map(|l| {
+                        l.chars()
+                            .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+                            .count()
+                    })
+                    .unwrap_or(0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(0, first_non_blank);
+
+                if !edits.is_empty() {
+                    let cursor_after = editor.cursor_position();
+                    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                    editor.set_repeat_action(RepeatAction::PasteAfter { count });
+                }
+            } else {
+                // Line paste - insert after current line
+                let rope_line = editor.buffer().rope().line(line_idx);
+                let line_char_len = rope_line.len_chars();
+                let has_trailing_newline =
+                    line_char_len > 0 && rope_line.char(line_char_len - 1) == '\n';
+
+                let text_clone = text.clone();
+                let ((), edits) = editor.buffer_mut().record(|buf| {
+                    if has_trailing_newline {
+                        buf.insert_text_at(line_idx, line_char_len, &text_clone);
+                    } else {
+                        // No trailing newline on current line — prepend \n
+                        let insert_text = format!("\n{}", text_clone.trim_end_matches('\n'));
+                        buf.insert_text_at(line_idx, line_char_len, &insert_text);
+                    }
+                });
+
+                // Vim: cursor on first non-blank of the new line
+                let new_line = line_idx + 1;
+                let first_non_blank = editor
+                    .buffer()
+                    .line(new_line)
+                    .map(|l| {
+                        l.chars()
+                            .take_while(|ch| ch.is_whitespace() && *ch != '\n')
+                            .count()
+                    })
+                    .unwrap_or(0);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(new_line, first_non_blank);
+
+                if !edits.is_empty() {
+                    let cursor_after = editor.cursor_position();
+                    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                    editor.set_repeat_action(RepeatAction::PasteAfter { count });
+                }
             }
         }
         RegisterType::Character => {
@@ -606,7 +662,7 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteAfter);
+                editor.set_repeat_action(RepeatAction::PasteAfter { count });
             }
         }
     }
@@ -614,11 +670,18 @@ pub fn paste_after(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
-pub fn paste_before(editor: &mut Editor) -> Result<()> {
+pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
     let (text, reg_type) = editor.get_from_register_with_type();
     if text.is_empty() {
         return Ok(());
     }
+
+    // Multiply paste text by count
+    let text = if count > 1 {
+        text.repeat(count)
+    } else {
+        text
+    };
 
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
@@ -675,7 +738,7 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteBefore);
+                editor.set_repeat_action(RepeatAction::PasteBefore { count });
             }
         }
         RegisterType::Line => {
@@ -709,7 +772,7 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteBefore);
+                editor.set_repeat_action(RepeatAction::PasteBefore { count });
             }
         }
         RegisterType::Character => {
@@ -719,17 +782,21 @@ pub fn paste_before(editor: &mut Editor) -> Result<()> {
                 buf.insert_text_at(line_idx, col, &text_clone);
             });
 
-            // Position cursor at end of pasted text (same as old Change::insert().apply())
+            // Position cursor on last char of pasted text (match paste_after behavior)
             let end_pos = calculate_end_position((line_idx, col), &text);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(end_pos.0, end_pos.1);
+            if end_pos.1 > 0 {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(end_pos.0, end_pos.1 - 1);
+            } else {
+                editor.buffer_mut().cursor_mut().set_position(end_pos.0, 0);
+            }
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteBefore);
+                editor.set_repeat_action(RepeatAction::PasteBefore { count });
             }
         }
     }
@@ -939,32 +1006,30 @@ pub fn indent_lines_with_tracking(
     editor: &mut Editor,
     start_line: usize,
     end_line: usize,
-    tab_width: usize,
+    _tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
+    let shift_width = editor.options.shift_width;
+    let expand_tab = editor.options.expand_tab;
     let actual_end = end_line.min(editor.buffer().line_count());
-    let last_line = if actual_end > start_line {
-        actual_end - 1
-    } else {
-        start_line
-    };
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
-        buf.indent_lines_at(start_line, actual_end, tab_width);
+        buf.indent_lines_at(start_line, actual_end, shift_width, expand_tab);
     });
     if !edits.is_empty() {
-        // Position cursor on last indented line at col = tab_width
-        // (matches old behavior where Change::InsertText::apply moved cursor)
+        // Position cursor on start line at first non-blank (Vim behavior)
+        let first_nb = editor.buffer().first_non_blank_col(start_line);
         editor
             .buffer_mut()
             .cursor_mut()
-            .set_position(last_line, tab_width);
+            .set_position(start_line, first_nb);
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         let line_count = actual_end - start_line;
         editor.set_repeat_action(RepeatAction::IndentLines {
             line_count,
-            tab_width,
+            shift_width,
+            expand_tab,
         });
         editor.mark_buffer_modified();
     }
@@ -975,22 +1040,27 @@ pub fn dedent_lines_with_tracking(
     editor: &mut Editor,
     start_line: usize,
     end_line: usize,
-    tab_width: usize,
+    _tab_width: usize,
     cursor_before: (usize, usize),
 ) -> Result<()> {
+    let shift_width = editor.options.shift_width;
     let ((), edits) = editor.buffer_mut().record(|buf| {
         let actual_end = end_line.min(buf.line_count());
-        buf.dedent_lines_at(start_line, actual_end, tab_width);
+        buf.dedent_lines_at(start_line, actual_end, shift_width);
     });
     if !edits.is_empty() {
-        // Clamp cursor to new line length after dedent
-        clamp_cursor_to_buffer(editor);
+        // Position cursor on start line at first non-blank (Vim behavior)
+        let first_nb = editor.buffer().first_non_blank_col(start_line);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(start_line, first_nb);
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         let line_count = end_line.min(editor.buffer().line_count()) - start_line;
         editor.set_repeat_action(RepeatAction::DedentLines {
             line_count,
-            tab_width,
+            shift_width,
         });
         editor.mark_buffer_modified();
     }
@@ -1494,8 +1564,8 @@ pub fn auto_indent_lines(
 
             // Apply new indentation if different
             if current_spaces != current_indent && !trimmed.is_empty() {
-                // Remove existing indent
-                let leading_len = line_text.len() - trimmed.len();
+                // Remove existing indent (use char count, not byte length)
+                let leading_len = line_text.chars().count() - trimmed.chars().count();
                 if leading_len > 0 {
                     buffer.delete_range(line_idx, 0, line_idx, leading_len);
                 }

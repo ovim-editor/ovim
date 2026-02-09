@@ -400,15 +400,17 @@ fn test_tilde_dot_repeat_at_end_of_short_line() {
 
 #[test]
 fn test_indent_dot_repeat_on_empty_line() {
-    let mut test = EditorTest::new("\nfoo");
+    let mut test = EditorTest::new("bar\n\nfoo");
 
-    test.keys(">>"); // Indent empty line (adds spaces to empty line)
-    test.keys("j");
-    test.press('.'); // Indent "foo"
+    test.keys(">>"); // Indent "bar" (sets repeat action)
+    test.keys("jj"); // Move past empty line to "foo"
+    test.press('.'); // Repeat indent on "foo"
 
     let content = test.buffer_content();
     let lines: Vec<&str> = content.trim_end().split('\n').collect();
-    assert_eq!(lines[1], "    foo");
+    assert_eq!(lines[0], "    bar");
+    assert_eq!(lines[1], ""); // Empty line untouched
+    assert_eq!(lines[2], "    foo");
 }
 
 #[test]

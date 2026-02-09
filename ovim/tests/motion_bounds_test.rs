@@ -592,11 +592,12 @@ fn test_open_paren_at_beginning() {
 fn test_G_beyond_buffer() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("999G"); // Try to go to line 999
+    test.keys("999G"); // Try to go to line 999 — clamped to last line
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
 
-    test.assert_cursor(998, 0);
+    // Clamped to last line (line 2, 0-indexed)
+    test.assert_cursor(2, 0);
 }
 
 #[test]

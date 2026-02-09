@@ -190,7 +190,7 @@ fn test_V_indent() {
         .press('>'); // Indent (if implemented)
 
     assert_eq!(test.buffer_content(), "    line 1\n    line 2\nline 3\n");
-    test.assert_cursor(1, 4);
+    test.assert_cursor(0, 4);
 }
 
 #[test]

@@ -152,7 +152,9 @@ impl Buffer {
     }
 
     /// Saves the buffer to a specific file path (async version)
-    /// Uses atomic write pattern: write to temp file, sync, then rename
+    /// Overwrites file in place (open, truncate, write, fsync) to preserve
+    /// permissions, ownership, ACLs, hard links, and extended attributes.
+    /// This is the same strategy Vim and VS Code use for user-edited files.
     pub async fn save_as_async<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
@@ -193,41 +195,24 @@ impl Buffer {
             self.encoding
         ))?;
 
-        // Create temp file in same directory (ensures atomic rename on same filesystem)
-        let temp_path = if let Some(parent) = path_ref.parent() {
-            parent.join(format!(
-                ".{}.tmp",
-                path_ref
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("buffer")
-            ))
-        } else {
-            PathBuf::from(format!("{}.tmp", path_str))
-        };
-
-        // Write to temp file
-        let mut file = tokio::fs::File::create(&temp_path).await.context(format!(
-            "Failed to create temp file: {}",
-            temp_path.display()
-        ))?;
+        // Overwrite in place: open existing file (or create new), truncate, write.
+        // Preserves inode → permissions, ownership, ACLs, hard links, xattrs survive.
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path_ref)
+            .await
+            .context(format!("Failed to open file for writing: {}", path_str))?;
 
         file.write_all(&bytes)
             .await
             .context("Failed to write file content")?;
 
-        // CRITICAL: Ensure data reaches disk before rename
+        // Ensure data reaches disk
         file.sync_all()
             .await
             .context("Failed to sync file to disk")?;
-
-        // Close file before rename
-        drop(file);
-
-        // Atomic rename (overwrites destination if exists)
-        tokio::fs::rename(&temp_path, path_ref)
-            .await
-            .context(format!("Failed to rename temp file to {}", path_str))?;
 
         // CRITICAL: Only update file_path if it changed (Save As scenario)
         // Preserves URI stability for LSP tracking

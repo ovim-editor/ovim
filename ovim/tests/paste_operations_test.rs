@@ -149,8 +149,8 @@ fn test_P_characterwise_beginning() {
 
     // P inserts before cursor position (col 0), so "world" is inserted at start
     assert_eq!(test.buffer_content(), "worldworld\n");
-    // Cursor ends after pasted text (position 5)
-    test.assert_cursor(0, 5);
+    // Cursor on last char of pasted text (position 4)
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -164,8 +164,8 @@ fn test_P_characterwise_middle() {
 
     // P inserts "hello" before 't' in "test"
     assert_eq!(test.buffer_content(), "hello world hellotest\n");
-    // Cursor after pasted "hello" (position 17)
-    test.assert_cursor(0, 17);
+    // Cursor on last char of pasted "hello" (position 16)
+    test.assert_cursor(0, 16);
 }
 
 #[test]
@@ -243,7 +243,10 @@ fn test_p_with_count_linewise() {
     test.keys("yy") // Yank line 1
         .keys("3p"); // Paste 3 times
 
-    assert_eq!(test.buffer_content(), "line 1\nline 1\nline 2\n");
+    assert_eq!(
+        test.buffer_content(),
+        "line 1\nline 1\nline 1\nline 1\nline 2\n"
+    );
     test.assert_cursor(1, 0);
 }
 
@@ -255,10 +258,9 @@ fn test_p_with_count_characterwise() {
         .keys("$") // Move to end
         .keys("3p"); // Paste 3 times
 
-    // TODO: Count prefix for paste not implemented, only pastes once
-    assert_eq!(test.buffer_content(), "hello worldhello\n");
+    assert_eq!(test.buffer_content(), "hello worldhellohellohello\n");
     // Vim: cursor on last character of pasted text
-    test.assert_cursor(0, 15);
+    test.assert_cursor(0, 25);
 }
 
 // ============================================================================
@@ -287,8 +289,8 @@ fn test_paste_empty_buffer() {
         .keys("p"); // Paste linewise
 
     assert_eq!(test.buffer_content(), "hello\n");
-    // Linewise paste, cursor on pasted line
-    test.assert_cursor(1, 0);
+    // Linewise paste on empty buffer, cursor on line 0
+    test.assert_cursor(0, 0);
 }
 
 #[test]

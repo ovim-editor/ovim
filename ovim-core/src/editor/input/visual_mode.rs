@@ -8,7 +8,7 @@
 //! - Visual mode commands (o to swap cursor, gv to reselect)
 //! - Visual mode search (/ and ?)
 
-use crate::editor::{Editor, Motions, TextObjectRange, TextObjects};
+use crate::editor::{Editor, Motions, RegisterType, TextObjectRange, TextObjects};
 use crate::mode::Mode;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -666,25 +666,40 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Paste in visual mode (replace selection)
         KeyCode::Char('p') | KeyCode::Char('P') => {
-            // Get the text to paste BEFORE deleting (since delete will overwrite register)
+            let is_visual_line = editor.mode() == Mode::VisualLine;
+
+            // 1. Save paste text + type from register
             let (paste_text, paste_type) = editor.get_from_register_with_type();
 
-            // Delete the visual selection (saves to numbered register "1)
+            // 2. Delete the visual selection (saves to numbered registers + unnamed)
             helpers::delete_visual_selection(editor)?;
 
-            // Restore the paste text to unnamed register
-            editor.registers.set_with_type(None, paste_text, paste_type);
+            // 3. Save deleted text from unnamed register
+            let (deleted_text, deleted_type) = editor.get_from_register_with_type();
 
-            // Move cursor back one position so paste_after puts text at the right place
-            // After delete_visual_selection, cursor is at the start of the deleted text
-            // We want to paste_after the character before that position
-            let cursor_col = editor.buffer().cursor().col();
-            if cursor_col > 0 {
-                editor.buffer_mut().cursor_mut().set_col(cursor_col - 1);
+            // 4. Write paste text to unnamed register
+            editor
+                .registers
+                .set_with_type(None, paste_text, paste_type);
+
+            // 5. Branch on paste type
+            if is_visual_line || paste_type == RegisterType::Line {
+                // Linewise: use paste_before to insert at current line
+                helpers::paste_before(editor, 1)?;
+            } else {
+                // Character: adjust cursor and paste_after
+                let cursor_col = editor.buffer().cursor().col();
+                if cursor_col > 0 {
+                    editor.buffer_mut().cursor_mut().set_col(cursor_col - 1);
+                }
+                helpers::paste_after(editor, 1)?;
             }
 
-            // Paste from the unnamed register
-            helpers::paste_after(editor)?;
+            // 6. Set unnamed register to deleted text (so next p pastes the replaced text)
+            editor
+                .registers
+                .set_with_type(None, deleted_text, deleted_type);
+
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Uppercase in visual mode
@@ -747,12 +762,16 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('=') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let tab_width = editor.options.tab_width;
-                helpers::auto_indent_lines(
-                    editor.buffer_mut(),
-                    start_line,
-                    end_line + 1,
-                    tab_width,
-                )?;
+                let cursor_before = editor.cursor_position();
+                let ((), edits) = editor.buffer_mut().record(|buf| {
+                    let _ =
+                        helpers::auto_indent_lines(buf, start_line, end_line + 1, tab_width);
+                });
+                if !edits.is_empty() {
+                    let cursor_after = editor.cursor_position();
+                    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                    editor.mark_buffer_modified();
+                }
             }
             helpers::exit_visual_mode_to_normal(editor);
         }

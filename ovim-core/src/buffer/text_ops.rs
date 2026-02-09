@@ -273,15 +273,15 @@ impl Buffer {
         Ok(())
     }
 
-    /// Remove up to tab_width leading whitespace chars from lines [start, end).
-    pub fn dedent_lines_at(&mut self, start: usize, end: usize, tab_width: usize) {
+    /// Remove up to shift_width leading whitespace chars from lines [start, end).
+    pub fn dedent_lines_at(&mut self, start: usize, end: usize, shift_width: usize) {
         let actual_end = end.min(self.line_count());
         for line_idx in start..actual_end {
             if let Some(line) = self.line(line_idx) {
                 let line_text = line.trim_end_matches('\n');
                 let chars: Vec<char> = line_text.chars().collect();
                 let mut remove = 0;
-                for &ch in chars.iter().take(tab_width) {
+                for &ch in chars.iter().take(shift_width) {
                     if ch == ' ' {
                         remove += 1;
                     } else if ch == '\t' {
@@ -311,11 +311,29 @@ impl Buffer {
         }
     }
 
-    /// Indent lines [start, end) by inserting tab_width spaces at column 0.
-    pub fn indent_lines_at(&mut self, start: usize, end: usize, tab_width: usize) {
+    /// Indent lines [start, end) by inserting shift_width spaces (or a tab) at column 0.
+    /// Skips empty/whitespace-only lines.
+    pub fn indent_lines_at(
+        &mut self,
+        start: usize,
+        end: usize,
+        shift_width: usize,
+        expand_tab: bool,
+    ) {
         let actual_end = end.min(self.line_count());
-        let indent_str = " ".repeat(tab_width);
+        let indent_str = if expand_tab {
+            " ".repeat(shift_width)
+        } else {
+            "\t".to_string()
+        };
         for line_idx in start..actual_end {
+            // Skip empty/whitespace-only lines
+            if let Some(line) = self.line(line_idx) {
+                let trimmed = line.trim_end_matches('\n');
+                if trimmed.trim().is_empty() {
+                    continue;
+                }
+            }
             self.insert_text_at(line_idx, 0, &indent_str);
         }
     }

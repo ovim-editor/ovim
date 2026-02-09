@@ -49,13 +49,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // p - paste after cursor
         KeyCode::Char('p') => {
-            helpers::paste_after(editor)?;
+            let count = editor.effective_count();
+            helpers::paste_after(editor, count)?;
             editor.clear_count();
             Ok(true)
         }
         // P - paste before cursor
         KeyCode::Char('P') => {
-            helpers::paste_before(editor)?;
+            let count = editor.effective_count();
+            helpers::paste_before(editor, count)?;
             editor.clear_count();
             Ok(true)
         }

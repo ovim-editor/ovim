@@ -35,7 +35,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         ('g', KeyCode::Char('g')) => {
             editor.add_jump();
-            let target_line = editor.count().unwrap_or(1).saturating_sub(1);
+            let max_line = editor.buffer().line_count().saturating_sub(1);
+            let target_line = editor.count().unwrap_or(1).saturating_sub(1).min(max_line);
             editor
                 .buffer_mut()
                 .cursor_mut()
