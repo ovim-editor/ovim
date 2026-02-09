@@ -1092,6 +1092,12 @@ impl ChangeBuilder {
     }
 }
 
+/// Token returned by `push_change_returning_token`.
+/// Stores the undo stack index at push time so `pop_by_token` can verify
+/// that the expected change is still at the top of the stack.
+#[derive(Debug, Clone, Copy)]
+pub struct ChangeToken(usize);
+
 /// Manages undo/redo history and change tracking
 #[derive(Debug)]
 pub struct ChangeManager {
@@ -1217,6 +1223,23 @@ impl ChangeManager {
     /// Used when replacing a change with a composite version
     pub fn pop_last_change(&mut self) -> Option<Change> {
         self.undo_stack.pop()
+    }
+
+    /// Pushes a change and returns a token that can be used with `pop_by_token`.
+    pub fn push_change_returning_token(&mut self, change: Change) -> ChangeToken {
+        let index = self.undo_stack.len();
+        self.push_change(change);
+        ChangeToken(index)
+    }
+
+    /// Pops a change only if the token matches the current stack top.
+    /// Returns None if the token is stale (the expected change wasn't there).
+    pub fn pop_by_token(&mut self, token: ChangeToken) -> Option<Change> {
+        if !self.undo_stack.is_empty() && token.0 == self.undo_stack.len() - 1 {
+            self.undo_stack.pop()
+        } else {
+            None
+        }
     }
 }
 

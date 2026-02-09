@@ -85,8 +85,10 @@ fn exit_insert_mode(editor: &mut Editor) {
 
         // Pop insert composite (from ChangeBuilder)
         let insert_undo = editor.pop_last_change();
-        // Pop delete undo (Change::Recorded from record())
-        let delete_undo = editor.pop_last_change();
+        // Pop delete undo only if the delete phase actually produced edits
+        let delete_undo = pending
+            .delete_token
+            .and_then(|token| editor.pop_by_token(token));
 
         // Merge into single undo unit
         let cursor_before = delete_undo

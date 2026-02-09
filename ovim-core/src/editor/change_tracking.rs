@@ -1,6 +1,7 @@
 //! Change tracking and undo/redo operations
 
 use super::{Change, Editor, Position};
+use crate::change::ChangeToken;
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 
@@ -130,6 +131,26 @@ impl Editor {
         cm.last_edit_position = Some(cursor_before);
         cm.undo_stack.push(change);
         cm.redo_stack.clear();
+    }
+
+    /// Like `push_recorded_undo` but returns a `ChangeToken` that can later
+    /// be redeemed with `pop_by_token` to safely retrieve this exact entry.
+    pub fn push_recorded_undo_returning_token(
+        &mut self,
+        edits: Vec<Edit>,
+        cursor_before: Position,
+        cursor_after: Position,
+    ) -> ChangeToken {
+        let change = Change::recorded(edits, cursor_before, cursor_after);
+        self.buffer_mut()
+            .change_manager_mut()
+            .push_change_returning_token(change)
+    }
+
+    /// Pops a change only if the token matches the current stack top.
+    /// Returns None if the token is stale.
+    pub fn pop_by_token(&mut self, token: ChangeToken) -> Option<Change> {
+        self.buffer_mut().change_manager_mut().pop_by_token(token)
     }
 
     /// Sets a semantic repeat action for dot-repeat (mutually exclusive with last_change).

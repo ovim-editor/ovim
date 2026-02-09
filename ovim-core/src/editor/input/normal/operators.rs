@@ -634,16 +634,19 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
                 buf.cursor_mut().set_position(insert_at, indent.len());
                 deleted
             });
-            if !edits.is_empty() {
+            let delete_token = if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
-                editor.push_recorded_undo(edits, cursor_before, cursor_after);
-            }
+                Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+            } else {
+                None
+            };
             editor.delete_to_register_with_type(deleted, RegisterType::Line);
             editor.mark_buffer_modified();
 
             editor.set_pending_change_repeat(PendingChangeRepeat {
                 delete_action: RepeatAction::DeleteToLastLine { target_line },
                 linewise: true,
+                delete_token,
             });
             editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
@@ -747,16 +750,19 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                 buf.cursor_mut().set_position(insert_at, indent.len());
                 deleted
             });
-            if !edits.is_empty() {
+            let delete_token = if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
-                editor.push_recorded_undo(edits, cursor_before, cursor_after);
-            }
+                Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+            } else {
+                None
+            };
             editor.delete_to_register_with_type(deleted, RegisterType::Line);
             editor.mark_buffer_modified();
 
             editor.set_pending_change_repeat(PendingChangeRepeat {
                 delete_action: RepeatAction::DeleteToFirstLine { target_line },
                 linewise: true,
+                delete_token,
             });
             editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
@@ -1005,10 +1011,12 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
         buf.cursor_mut().set_position(insert_at, indent.len());
         deleted
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    }
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.mark_buffer_modified();
 
@@ -1016,6 +1024,7 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteLines { count },
         linewise: true,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -1091,16 +1100,20 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
             String::new()
         }
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
-    }
+        Some(token)
+    } else {
+        None
+    };
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteToEndOfLine,
         linewise: false,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -1170,16 +1183,19 @@ fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
         buf.cursor_mut().set_position(insert_at, indent.len());
         deleted
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    }
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.mark_buffer_modified();
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteLineDown { count },
         linewise: true,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -1209,16 +1225,19 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
         buf.cursor_mut().set_position(insert_at, indent.len());
         deleted
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    }
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.mark_buffer_modified();
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteLineUp { count },
         linewise: true,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -1232,16 +1251,19 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         buf.delete_paragraph_forward(count)
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    }
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.mark_buffer_modified();
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteParagraphForward { count },
         linewise: false,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -1255,16 +1277,19 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         buf.delete_paragraph_backward(count)
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    }
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.mark_buffer_modified();
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteParagraphBackward { count },
         linewise: false,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();

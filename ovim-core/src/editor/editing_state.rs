@@ -1,4 +1,5 @@
 use super::{PendingSemanticChange, ReplaceModeState};
+use crate::change::ChangeToken;
 use crate::repeat_action::RepeatAction;
 
 /// Describes the delete phase of a change operator for dot-repeat.
@@ -9,6 +10,9 @@ use crate::repeat_action::RepeatAction;
 pub struct PendingChangeRepeat {
     pub delete_action: RepeatAction,
     pub linewise: bool,
+    /// Token for the delete-phase undo entry. None if the delete phase
+    /// produced no edits (e.g., `C` at end of line, `s` on empty line).
+    pub delete_token: Option<ChangeToken>,
 }
 
 /// State for active editing operations (insert, replace, substitute, rename).
