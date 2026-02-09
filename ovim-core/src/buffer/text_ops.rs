@@ -268,7 +268,7 @@ impl Buffer {
 
             // Fix: Position cursor at the junction point (end of original first line)
             // This is where the separator (space) was inserted
-            let junction_col = current_line_text.len();
+            let junction_col = current_line_text.chars().count();
             self.cursor.set_position(start_line, junction_col);
         }
 
@@ -433,7 +433,7 @@ impl Buffer {
         self.delete_range(line_idx, start_col, line_idx, end_col);
         self.insert_text_at(line_idx, start_col, &new_number_str);
 
-        let new_end_col = start_col + new_number_str.len() - 1;
+        let new_end_col = start_col + new_number_str.chars().count() - 1;
         self.cursor_mut().set_position(line_idx, new_end_col);
     }
 
@@ -648,7 +648,9 @@ impl Buffer {
                 self.clamp_cursor_col();
                 return deleted;
             }
-        } else if end_line == start_line && end_col == start_col && end_line + 1 >= self.line_count()
+        } else if end_line == start_line
+            && end_col == start_col
+            && end_line + 1 >= self.line_count()
         {
             // Motion didn't move — last word on last line. Delete to end of line.
             if let Some(line) = self.line(end_line) {

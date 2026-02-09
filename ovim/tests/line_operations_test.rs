@@ -23,6 +23,18 @@ fn test_j_join_with_count() {
     assert!(test.buffer_content().contains("a b c"));
 }
 
+/// Test J with non-ASCII first line positions cursor at char boundary, not byte offset
+#[test]
+fn test_j_join_non_ascii_cursor_position() {
+    let mut test = EditorTest::new("café\nnext\n");
+
+    test.keys("J");
+
+    assert_eq!(test.buffer_content(), "café next\n");
+    // Cursor should be at col 4 (char count of "café"), not byte offset 5
+    test.assert_cursor(0, 4);
+}
+
 /// Test gJ (join without space)
 #[test]
 fn test_gj_join_no_space() {

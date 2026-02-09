@@ -493,6 +493,10 @@ impl Buffer {
     where
         F: FnOnce(&mut Self) -> R,
     {
+        debug_assert!(
+            !self.is_recording(),
+            "Nested record() calls are not supported"
+        );
         self.recording = Some(Vec::new());
         let result = f(self);
         let edits = self.recording.take().unwrap_or_default();
