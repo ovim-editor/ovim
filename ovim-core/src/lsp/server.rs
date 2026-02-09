@@ -458,51 +458,66 @@ impl LanguageServer {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             loop {
-                // Read Content-Length header
-                let mut header = String::new();
-                if let Err(e) = reader.read_line(&mut header).await {
-                    // CRITICAL ERROR: LSP server reader task failed
-                    crate::lsp_error!(
-                        &inner_clone.log_prefix(),
-                        "CRITICAL: Reader task failed while reading header: {}",
-                        e
-                    );
+                // Read headers (LSP spec allows multiple: Content-Length, Content-Type, etc.)
+                // Headers end with an empty line (\r\n)
+                let mut content_length: Option<usize> = None;
+                let mut got_eof = false;
+                let mut got_error = false;
 
-                    // Mark server as failed (error reading from LSP server)
-                    let mut state = state_clone.lock().await;
-                    *state = ServerState::Failed {
-                        error: format!("Reader task failed: {}", e),
-                        at: Instant::now(),
-                    };
+                loop {
+                    let mut header = String::new();
+                    match reader.read_line(&mut header).await {
+                        Err(e) => {
+                            crate::lsp_error!(
+                                &inner_clone.log_prefix(),
+                                "CRITICAL: Reader task failed while reading header: {}",
+                                e
+                            );
+                            let mut state = state_clone.lock().await;
+                            *state = ServerState::Failed {
+                                error: format!("Reader task failed: {}", e),
+                                at: Instant::now(),
+                            };
+                            got_error = true;
+                            break;
+                        }
+                        Ok(0) => {
+                            // EOF
+                            crate::lsp_error!(
+                                &inner_clone.log_prefix(),
+                                "Reader EOF: LSP server closed output (process likely exited)"
+                            );
+                            let mut state = state_clone.lock().await;
+                            *state = ServerState::Failed {
+                                error: "LSP server process exited".to_string(),
+                                at: Instant::now(),
+                            };
+                            got_eof = true;
+                            break;
+                        }
+                        Ok(_) => {}
+                    }
+
+                    let trimmed = header.trim();
+                    if trimmed.is_empty() {
+                        // Empty line = end of headers
+                        break;
+                    }
+
+                    if let Some(len_str) = trimmed.strip_prefix("Content-Length:") {
+                        content_length = len_str.trim().parse().ok();
+                    }
+                    // Skip other headers (Content-Type, etc.)
+                }
+
+                if got_eof || got_error {
                     break;
                 }
 
-                if header.is_empty() {
-                    // EOF reached - LSP server process exited or closed stdout
-                    crate::lsp_error!(
-                        &inner_clone.log_prefix(),
-                        "Reader EOF: LSP server closed output (process likely exited)"
-                    );
-                    let mut state = state_clone.lock().await;
-                    *state = ServerState::Failed {
-                        error: "LSP server process exited".to_string(),
-                        at: Instant::now(),
-                    };
-                    break;
-                }
-
-                if !header.starts_with("Content-Length:") {
-                    continue;
-                }
-
-                let content_length: usize = match header
-                    .trim()
-                    .strip_prefix("Content-Length:")
-                    .and_then(|s| s.trim().parse().ok())
-                {
+                let content_length = match content_length {
                     Some(len) => len,
                     None => {
-                        // Invalid Content-Length header, skip this message
+                        // No Content-Length found in headers, skip
                         continue;
                     }
                 };
@@ -516,12 +531,6 @@ impl LanguageServer {
                         MAX_MESSAGE_SIZE / (1024 * 1024)
                     );
                     continue;
-                }
-
-                // Read empty line
-                let mut empty = String::new();
-                if reader.read_line(&mut empty).await.is_err() {
-                    break;
                 }
 
                 // Read content

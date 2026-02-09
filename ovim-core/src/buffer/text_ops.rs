@@ -844,6 +844,173 @@ impl Buffer {
         deleted
     }
 
+    /// Deletes from cursor backward by word motion (db command).
+    /// Returns the deleted text.
+    pub fn delete_word_backward(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::word_backward(self, count);
+
+        let end_line = self.cursor().line();
+        let end_col = self.cursor().col();
+
+        // Backward motion: new position is before start
+        let deleted = self.delete_range(end_line, end_col, start_line, start_col);
+        self.cursor_mut().set_position(end_line, end_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to end of word (de command).
+    /// Returns the deleted text. Inclusive (includes the last char of word).
+    pub fn delete_word_end(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::word_end_forward(self, count);
+
+        let end_line = self.cursor().line();
+        let end_col = self.cursor().col();
+
+        // Inclusive: delete through the character the motion lands on
+        let delete_end_col = end_col + 1;
+        let deleted = self.delete_range(start_line, start_col, end_line, delete_end_col);
+        self.cursor_mut().set_position(start_line, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor backward by WORD motion (dB command).
+    /// Returns the deleted text.
+    pub fn delete_word_backward_big(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::word_backward_big(self, count);
+
+        let end_line = self.cursor().line();
+        let end_col = self.cursor().col();
+
+        let deleted = self.delete_range(end_line, end_col, start_line, start_col);
+        self.cursor_mut().set_position(end_line, end_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to end of WORD (dE command).
+    /// Returns the deleted text. Inclusive.
+    pub fn delete_word_end_big(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::word_end_forward_big(self, count);
+
+        let end_line = self.cursor().line();
+        let end_col = self.cursor().col();
+
+        let delete_end_col = end_col + 1;
+        let deleted = self.delete_range(start_line, start_col, end_line, delete_end_col);
+        self.cursor_mut().set_position(start_line, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes one character to the left of cursor (dh command).
+    /// Returns the deleted text. Stops at start of line.
+    pub fn delete_char_left(&mut self, count: usize) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        if col == 0 {
+            return String::new();
+        }
+        let start_col = col.saturating_sub(count);
+        let deleted = self.delete_range(line_idx, start_col, line_idx, col);
+        self.cursor_mut().set_position(line_idx, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to start of line (d0 command).
+    /// Returns the deleted text.
+    pub fn delete_to_start_of_line(&mut self) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        if col == 0 {
+            return String::new();
+        }
+        let deleted = self.delete_range(line_idx, 0, line_idx, col);
+        self.cursor_mut().set_position(line_idx, 0);
+        deleted
+    }
+
+    /// Deletes from cursor to first non-blank character (d^ command).
+    /// Returns the deleted text.
+    pub fn delete_to_first_non_blank(&mut self) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+        let fnb = self.first_non_blank_col(line_idx);
+        if fnb == col {
+            return String::new();
+        }
+        let (start, end) = if fnb < col {
+            (fnb, col)
+        } else {
+            (col, fnb)
+        };
+        let deleted = self.delete_range(line_idx, start, line_idx, end);
+        self.cursor_mut().set_position(line_idx, start);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor to next WORD boundary (dW command).
+    /// Returns the deleted text.
+    pub fn delete_word_forward_big(&mut self, count: usize) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        Motions::word_forward_big(self, count);
+
+        let end_line = self.cursor().line();
+        let mut end_col = self.cursor().col();
+
+        // dW should stop at end of line, not cross newlines (same as dw)
+        if end_line > start_line {
+            if let Some(line) = self.line(start_line) {
+                let line_len = line.trim_end_matches('\n').chars().count();
+                self.cursor_mut().set_position(start_line, start_col);
+                let deleted = self.delete_range(start_line, start_col, start_line, line_len);
+                self.cursor_mut().set_position(start_line, start_col);
+                self.clamp_cursor_col();
+                return deleted;
+            }
+        } else if end_line == start_line
+            && end_col == start_col
+            && end_line + 1 >= self.line_count()
+        {
+            // Motion didn't move — last WORD on last line. Delete to end of line.
+            if let Some(line) = self.line(end_line) {
+                end_col = line.trim_end_matches('\n').chars().count();
+            }
+        }
+
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
+        self.cursor_mut().set_position(start_line, start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
     /// Deletes from cursor line to target_line (inclusive, line-wise). (dgg command)
     /// Positions cursor at first non-blank of remaining line.
     /// Returns the deleted text.
