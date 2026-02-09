@@ -799,7 +799,7 @@ impl Motions {
         }
 
         fn is_bracket(c: char) -> bool {
-            matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>')
+            matches!(c, '(' | ')' | '[' | ']' | '{' | '}')
         }
 
         // Determine bracket position: on cursor, or search forward on current line
@@ -830,8 +830,6 @@ impl Motions {
             ']' => (false, '['),
             '{' => (true, '}'),
             '}' => (false, '{'),
-            '<' => (true, '>'),
-            '>' => (false, '<'),
             _ => return false,
         };
 

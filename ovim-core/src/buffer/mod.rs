@@ -238,7 +238,7 @@ impl Buffer {
         if let Some(line_content) = self.line(current_line) {
             // Use grapheme clusters for proper multi-codepoint emoji handling
             let line_len = crate::unicode::grapheme_count(line_content.trim_end_matches('\n'));
-            if col >= line_len {
+            if col > 0 && col >= line_len {
                 let new_col = if line_len > 0 { line_len - 1 } else { 0 };
                 self.cursor.set_col(new_col);
             }

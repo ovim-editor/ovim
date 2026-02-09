@@ -713,14 +713,16 @@ impl Editor {
         match needs_action {
             Some(true) => {
                 // Incremental: only invalidate cursor line
-                let map = self.viewport.wrap_map.as_mut().unwrap();
-                map.invalidate_line(cursor_line, make_line_text);
-                map.set_buffer_version(buf_version);
+                if let Some(map) = self.viewport.wrap_map.as_mut() {
+                    map.invalidate_line(cursor_line, make_line_text);
+                    map.set_buffer_version(buf_version);
+                }
             }
             Some(false) => {
                 // Full rebuild (width or line count changed)
-                let map = self.viewport.wrap_map.as_mut().unwrap();
-                map.rebuild(line_count, width, tab_width, buf_version, make_line_text);
+                if let Some(map) = self.viewport.wrap_map.as_mut() {
+                    map.rebuild(line_count, width, tab_width, buf_version, make_line_text);
+                }
             }
             None => {
                 // Build from scratch

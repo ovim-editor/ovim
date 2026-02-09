@@ -6,10 +6,10 @@ Comprehensive tracking of the bug fix sprint that started with 27 LSP issues (OV
 
 | Phase | Description | Issues | Status |
 |-------|-------------|--------|--------|
-| LSP Sprint | LSP client bugs (OV-00111–OV-00137) | 23 fixed, 2 won't-fix, 1 blocked, 1 remaining | **Done** |
+| LSP Sprint | LSP client bugs (OV-00111–OV-00137) | 23 fixed, 2 won't-fix, 1 blocked, 0 remaining | **Done** |
 | Housekeeping | Mark silently-fixed issues as Done | ~35 issues | **Done** |
 | Phase 1 | Operator motion gap + LSP reader | OV-00058, OV-00114 | **Done** |
-| Phase 2 | Stability fixes | OV-00056, OV-00057, OV-00086, OV-00025 | Planned |
+| Phase 2 | Stability fixes | OV-00056, OV-00057, OV-00086, OV-00025 | **Done** |
 | Phase 3 | Wrapping/cursor investigation | OV-00019, OV-00015 | Planned |
 | Phase 4 | Architecture cleanup | OV-00046, OV-00055, OV-00062 | Planned |
 | Phase 5 | Triage investigation | OV-00054, OV-00006, OV-00007 | Planned |
@@ -19,7 +19,7 @@ Comprehensive tracking of the bug fix sprint that started with 27 LSP issues (OV
 
 ## LSP Sprint (Complete)
 
-27 issues filed from systematic LSP bug hunt. 23 fixed, 2 won't-fix, 1 blocked on dependency, 1 remaining.
+27 issues filed from systematic LSP bug hunt. 23 fixed, 2 won't-fix, 1 blocked on dependency, 0 remaining.
 
 ### Fixed (23)
 
@@ -62,11 +62,9 @@ Comprehensive tracking of the bug fix sprint that started with 27 LSP issues (OV
 |----|--------|
 | OV-00132 | type_hierarchy capability: blocked on lsp-types upgrade |
 
-### Remaining (1)
+### Remaining (0)
 
-| ID | Description |
-|----|-------------|
-| OV-00114 | Reader task multi-header parsing (Phase 1) |
+All LSP sprint issues resolved. OV-00114 was fixed in Phase 1 (commit 286e1a6).
 
 ---
 
@@ -132,14 +130,14 @@ These issues were fixed through incremental improvements but never marked Done i
 | OV-00058 | HIGH | ~~Operator/motion gap~~ — All 8 motions wired with d/c/y operators + RepeatAction |
 | OV-00114 | HIGH | ~~LSP reader single header~~ — Multi-header loop per LSP spec |
 
-### Phase 2: Stability Fixes
+### Phase 2: Stability Fixes (Done)
 
 | ID | Priority | Description |
 |----|----------|-------------|
-| OV-00056 | MEDIUM | wrap_map unwrap panics → `if let Some(map)` |
-| OV-00057 | MEDIUM | Cursor clamping inconsistency → add `col > 0` guard |
-| OV-00086 | MEDIUM | % matches `<`/`>` and doesn't forward-search |
-| OV-00025 | MEDIUM | Path completion arrows don't update command line text |
+| OV-00056 | MEDIUM | ~~wrap_map unwrap panics~~ → `if let Some(map)` |
+| OV-00057 | MEDIUM | ~~Cursor clamping inconsistency~~ → add `col > 0` guard |
+| OV-00086 | MEDIUM | ~~% matches `<`/`>`~~ — removed angle brackets from `is_bracket()` |
+| OV-00025 | MEDIUM | ~~Path completion arrows don't update command line text~~ — accept + set_command_line after select |
 
 ### Phase 3: Wrapping/Cursor Investigation
 
@@ -190,11 +188,11 @@ These issues were fixed through incremental improvements but never marked Done i
 ## Statistics
 
 - **Total issues filed**: 101 (OV-00003 through OV-00137, with gaps)
-- **Done**: ~70 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping)
+- **Done**: ~76 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2)
 - **Won't Fix**: 2
 - **Blocked**: 1
-- **Genuinely remaining**: ~21
-  - HIGH: 4 (OV-00019, OV-00046, OV-00058, OV-00114)
-  - MEDIUM: 7
+- **Genuinely remaining**: ~15
+  - HIGH: 2 (OV-00019, OV-00046)
+  - MEDIUM: 3
   - LOW: 7
   - TRIAGE: 3
