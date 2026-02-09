@@ -90,9 +90,7 @@ impl Editor {
         );
 
         // Cancel any existing pending definition request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::Definition(old)) =
-            self.lsp_state.pending_lsp_response.take()
-        {
+        if let Some((_, old)) = self.lsp_state.pending_lsp_responses.definition.take() {
             crate::lsp_debug!(
                 "LSP-DEFINITION",
                 "Aborting previous pending definition request"
@@ -131,11 +129,7 @@ impl Editor {
             receiver: rx,
             started: std::time::Instant::now(),
         };
-        self.lsp_state.pending_lsp_response = Some(if new_tab {
-            crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending)
-        } else {
-            crate::editor::lsp_state::PendingLspResponse::Definition(pending)
-        });
+        self.lsp_state.pending_lsp_responses.definition = Some((new_tab, pending));
 
         // Show loading status
         self.set_lsp_status("Jumping to definition...".to_string());
@@ -195,9 +189,7 @@ impl Editor {
         };
 
         // Cancel any existing pending implementation request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::Implementation(old)) =
-            self.lsp_state.pending_lsp_response.take()
-        {
+        if let Some((_, old)) = self.lsp_state.pending_lsp_responses.implementation.take() {
             crate::lsp_debug!(
                 "LSP-IMPLEMENTATION",
                 "Aborting previous pending implementation request"
@@ -224,11 +216,7 @@ impl Editor {
             receiver: rx,
             started: std::time::Instant::now(),
         };
-        self.lsp_state.pending_lsp_response = Some(if new_tab {
-            crate::editor::lsp_state::PendingLspResponse::ImplementationNewTab(pending)
-        } else {
-            crate::editor::lsp_state::PendingLspResponse::Implementation(pending)
-        });
+        self.lsp_state.pending_lsp_responses.implementation = Some((new_tab, pending));
 
         // Show loading status
         self.set_lsp_status("Jumping to implementation...".to_string());
@@ -288,9 +276,7 @@ impl Editor {
         };
 
         // Cancel any existing pending type definition request by aborting the task
-        if let Some(crate::editor::lsp_state::PendingLspResponse::TypeDefinition(old)) =
-            self.lsp_state.pending_lsp_response.take()
-        {
+        if let Some(old) = self.lsp_state.pending_lsp_responses.type_definition.take() {
             crate::lsp_debug!(
                 "LSP-TYPE",
                 "Aborting previous pending type definition request"
@@ -314,15 +300,12 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_response = Some(
-            crate::editor::lsp_state::PendingLspResponse::TypeDefinition(
-                crate::editor::lsp_state::PendingLspRequest {
-                    task,
-                    receiver: rx,
-                    started: std::time::Instant::now(),
-                },
-            ),
-        );
+        self.lsp_state.pending_lsp_responses.type_definition =
+            Some(crate::editor::lsp_state::PendingLspRequest {
+                task,
+                receiver: rx,
+                started: std::time::Instant::now(),
+            });
 
         // Show loading status
         self.set_lsp_status("Jumping to type definition...".to_string());

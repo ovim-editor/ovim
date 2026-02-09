@@ -134,7 +134,7 @@ impl Editor {
 
     /// Returns true if there's a pending LSP response being waited for
     pub fn has_pending_lsp_response(&self) -> bool {
-        self.lsp_state.pending_lsp_response.is_some()
+        self.lsp_state.pending_lsp_responses.any_pending()
     }
 
     pub fn has_pending_completion_response(&self) -> bool {
@@ -143,102 +143,241 @@ impl Editor {
 
     /// Polls pending LSP responses (non-blocking)
     /// Returns true if a response was processed and UI should redraw
+    ///
+    /// Each response type is polled independently so that e.g. a hover request
+    /// doesn't block or clobber a goto-definition request.
     pub fn poll_pending_lsp_responses(&mut self) -> bool {
-        let Some(pending) = self.lsp_state.pending_lsp_response.take() else {
-            return false; // No pending request
+        let mut changed = false;
+
+        // --- Poll hover ---
+        if self.lsp_state.pending_lsp_responses.hover.is_some() {
+            changed |= self.poll_hover_slot();
+        }
+
+        // --- Poll definition ---
+        if self.lsp_state.pending_lsp_responses.definition.is_some() {
+            changed |= self.poll_definition_slot();
+        }
+
+        // --- Poll implementation ---
+        if self.lsp_state.pending_lsp_responses.implementation.is_some() {
+            changed |= self.poll_implementation_slot();
+        }
+
+        // --- Poll type_definition ---
+        if self.lsp_state.pending_lsp_responses.type_definition.is_some() {
+            changed |= self.poll_type_definition_slot();
+        }
+
+        changed
+    }
+
+    /// Poll the hover response slot.
+    fn poll_hover_slot(&mut self) -> bool {
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let Some(ref mut pending) = self.lsp_state.pending_lsp_responses.hover else {
+            return false;
         };
 
-        match pending {
-            crate::editor::lsp_state::PendingLspResponse::Hover(mut pending) => {
-                use tokio::sync::oneshot::error::TryRecvError;
-                match pending.receiver.try_recv() {
-                    Ok(Ok(Some(hover_text))) => {
-                        // Success! Set hover info and cache
-                        crate::lsp_debug!("LSP-HOVER", "Received hover response");
+        match pending.receiver.try_recv() {
+            Ok(Ok(Some(hover_text))) => {
+                // Take ownership now that we know we have a result
+                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
 
-                        // Get current position and buffer version for caching
-                        let cursor = self.buffer().cursor();
-                        let buffer_version = self.buffer().version();
-                        let cursor_line = cursor.line();
-                        let cursor_col = cursor.col();
-                        let file_path = self.buffer().file_path().unwrap_or("").to_string();
+                crate::lsp_debug!("LSP-HOVER", "Received hover response");
 
-                        // Cache the hover result
-                        self.lsp_state.hover_cache =
-                            Some(crate::editor::lsp_state::HoverCache::new(
-                                file_path,
-                                cursor_line,
-                                cursor_col,
-                                buffer_version,
-                                hover_text.clone(),
-                            ));
+                let cursor = self.buffer().cursor();
+                let buffer_version = self.buffer().version();
+                let cursor_line = cursor.line();
+                let cursor_col = cursor.col();
+                let file_path = self.buffer().file_path().unwrap_or("").to_string();
 
-                        self.lsp_state.hover_info = Some(hover_text);
-                        self.lsp_state.hover_scroll = 0;
-                        self.lsp_state.hover_position = Some((cursor_line, cursor_col));
-                        self.lsp_state.hover_content_type =
-                            crate::editor::lsp_state::HoverContentType::LspHover;
-                        self.mode = crate::mode::Mode::HoverPreview;
-                        self.mark_dirty();
-                        self.set_lsp_status(String::new());
-                        true // UI should redraw
-                    }
-                    Ok(Ok(None)) => {
-                        // No hover info available
-                        crate::lsp_debug!("LSP-HOVER", "No hover info available");
-                        self.set_lsp_status("No hover info available".to_string());
-                        false
-                    }
-                    Ok(Err(e)) => {
-                        // LSP error
-                        crate::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
-                        self.set_lsp_status(format!("Hover failed: {}", e));
-                        false
-                    }
-                    Err(TryRecvError::Empty) => {
-                        // Check for timeout
-                        if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                            crate::lsp_debug!(
-                                "LSP-HOVER",
-                                "Hover request timed out, aborting task"
-                            );
-                            pending.task.abort();
-                            self.set_lsp_status("Hover request timed out".to_string());
-                            return false;
-                        }
+                self.lsp_state.hover_cache =
+                    Some(crate::editor::lsp_state::HoverCache::new(
+                        file_path,
+                        cursor_line,
+                        cursor_col,
+                        buffer_version,
+                        hover_text.clone(),
+                    ));
 
-                        // Still waiting - put it back
-                        self.lsp_state.pending_lsp_response =
-                            Some(crate::editor::lsp_state::PendingLspResponse::Hover(pending));
-                        false
-                    }
-                    Err(TryRecvError::Closed) => {
-                        // Sender dropped (shouldn't happen)
-                        crate::lsp_debug!("LSP-HOVER", "Hover request cancelled (sender dropped)");
-                        self.set_lsp_status("Hover request cancelled".to_string());
-                        false
-                    }
+                self.lsp_state.hover_info = Some(hover_text);
+                self.lsp_state.hover_scroll = 0;
+                self.lsp_state.hover_position = Some((cursor_line, cursor_col));
+                self.lsp_state.hover_content_type =
+                    crate::editor::lsp_state::HoverContentType::LspHover;
+                self.mode = crate::mode::Mode::HoverPreview;
+                self.mark_dirty();
+                self.set_lsp_status(String::new());
+                true
+            }
+            Ok(Ok(None)) => {
+                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                crate::lsp_debug!("LSP-HOVER", "No hover info available");
+                self.set_lsp_status("No hover info available".to_string());
+                false
+            }
+            Ok(Err(e)) => {
+                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                crate::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
+                self.set_lsp_status(format!("Hover failed: {}", e));
+                false
+            }
+            Err(TryRecvError::Empty) => {
+                // Check for timeout (re-borrow since we still hold the slot)
+                let timed_out = self
+                    .lsp_state
+                    .pending_lsp_responses
+                    .hover
+                    .as_ref()
+                    .is_some_and(|p| p.started.elapsed() > std::time::Duration::from_secs(10));
+                if timed_out {
+                    let pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                    crate::lsp_debug!(
+                        "LSP-HOVER",
+                        "Hover request timed out, aborting task"
+                    );
+                    pending.task.abort();
+                    self.set_lsp_status("Hover request timed out".to_string());
                 }
+                // Otherwise: still waiting, leave the slot in place
+                false
             }
-
-            crate::editor::lsp_state::PendingLspResponse::Definition(pending) => {
-                self.poll_location_response(pending, "Definition", "LSP-DEFINITION", false)
+            Err(TryRecvError::Closed) => {
+                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                crate::lsp_debug!("LSP-HOVER", "Hover request cancelled (sender dropped)");
+                self.set_lsp_status("Hover request cancelled".to_string());
+                false
             }
+        }
+    }
 
-            crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending) => {
-                self.poll_location_response(pending, "Definition", "LSP-DEFINITION", true)
+    /// Poll the definition response slot.
+    fn poll_definition_slot(&mut self) -> bool {
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let Some((_, ref mut req)) = self.lsp_state.pending_lsp_responses.definition else {
+            return false;
+        };
+
+        match req.receiver.try_recv() {
+            Ok(result) => {
+                let (new_tab, pending) =
+                    self.lsp_state.pending_lsp_responses.definition.take().unwrap();
+                self.handle_location_result(result, pending, "Definition", "LSP-DEFINITION", new_tab)
             }
-
-            crate::editor::lsp_state::PendingLspResponse::Implementation(pending) => {
-                self.poll_location_response(pending, "Implementation", "LSP-IMPLEMENTATION", false)
+            Err(TryRecvError::Empty) => {
+                let timed_out = self
+                    .lsp_state
+                    .pending_lsp_responses
+                    .definition
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.started.elapsed() > std::time::Duration::from_secs(10));
+                if timed_out {
+                    let (_, pending) =
+                        self.lsp_state.pending_lsp_responses.definition.take().unwrap();
+                    crate::lsp_debug!("LSP-DEFINITION", "Definition request timed out, aborting task");
+                    pending.task.abort();
+                    self.set_lsp_status("Definition request timed out".to_string());
+                }
+                false
             }
-
-            crate::editor::lsp_state::PendingLspResponse::ImplementationNewTab(pending) => {
-                self.poll_location_response(pending, "Implementation", "LSP-IMPLEMENTATION", true)
+            Err(TryRecvError::Closed) => {
+                let _pending = self.lsp_state.pending_lsp_responses.definition.take();
+                crate::lsp_debug!("LSP-DEFINITION", "Definition request cancelled (sender dropped)");
+                self.set_lsp_status("Definition request cancelled".to_string());
+                false
             }
+        }
+    }
 
-            crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending) => {
-                self.poll_location_response(pending, "Type", "LSP-TYPE", false)
+    /// Poll the implementation response slot.
+    fn poll_implementation_slot(&mut self) -> bool {
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let Some((_, ref mut req)) = self.lsp_state.pending_lsp_responses.implementation else {
+            return false;
+        };
+
+        match req.receiver.try_recv() {
+            Ok(result) => {
+                let (new_tab, pending) =
+                    self.lsp_state.pending_lsp_responses.implementation.take().unwrap();
+                self.handle_location_result(
+                    result,
+                    pending,
+                    "Implementation",
+                    "LSP-IMPLEMENTATION",
+                    new_tab,
+                )
+            }
+            Err(TryRecvError::Empty) => {
+                let timed_out = self
+                    .lsp_state
+                    .pending_lsp_responses
+                    .implementation
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.started.elapsed() > std::time::Duration::from_secs(10));
+                if timed_out {
+                    let (_, pending) =
+                        self.lsp_state.pending_lsp_responses.implementation.take().unwrap();
+                    crate::lsp_debug!(
+                        "LSP-IMPLEMENTATION",
+                        "Implementation request timed out, aborting task"
+                    );
+                    pending.task.abort();
+                    self.set_lsp_status("Implementation request timed out".to_string());
+                }
+                false
+            }
+            Err(TryRecvError::Closed) => {
+                let _pending = self.lsp_state.pending_lsp_responses.implementation.take();
+                crate::lsp_debug!(
+                    "LSP-IMPLEMENTATION",
+                    "Implementation request cancelled (sender dropped)"
+                );
+                self.set_lsp_status("Implementation request cancelled".to_string());
+                false
+            }
+        }
+    }
+
+    /// Poll the type_definition response slot.
+    fn poll_type_definition_slot(&mut self) -> bool {
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let Some(ref mut req) = self.lsp_state.pending_lsp_responses.type_definition else {
+            return false;
+        };
+
+        match req.receiver.try_recv() {
+            Ok(result) => {
+                let pending =
+                    self.lsp_state.pending_lsp_responses.type_definition.take().unwrap();
+                self.handle_location_result(result, pending, "Type", "LSP-TYPE", false)
+            }
+            Err(TryRecvError::Empty) => {
+                let timed_out = self
+                    .lsp_state
+                    .pending_lsp_responses
+                    .type_definition
+                    .as_ref()
+                    .is_some_and(|p| p.started.elapsed() > std::time::Duration::from_secs(10));
+                if timed_out {
+                    let pending =
+                        self.lsp_state.pending_lsp_responses.type_definition.take().unwrap();
+                    crate::lsp_debug!("LSP-TYPE", "Type definition request timed out, aborting task");
+                    pending.task.abort();
+                    self.set_lsp_status("Type request timed out".to_string());
+                }
+                false
+            }
+            Err(TryRecvError::Closed) => {
+                let _pending = self.lsp_state.pending_lsp_responses.type_definition.take();
+                crate::lsp_debug!("LSP-TYPE", "Type definition request cancelled (sender dropped)");
+                self.set_lsp_status("Type request cancelled".to_string());
+                false
             }
         }
     }
@@ -318,18 +457,18 @@ impl Editor {
         }
     }
 
-    /// Shared handler for location-based pending LSP responses (definition, implementation, type).
-    fn poll_location_response(
+    /// Shared handler for a completed location-based LSP result.
+    /// Called after try_recv() returned Ok(result) and the slot has been taken.
+    fn handle_location_result(
         &mut self,
-        mut pending: crate::editor::lsp_state::PendingLspRequest<Option<Location>>,
+        result: anyhow::Result<Option<Location>>,
+        _pending: crate::editor::lsp_state::PendingLspRequest<Option<Location>>,
         label: &str,
         log_tag: &str,
         new_tab: bool,
     ) -> bool {
-        use tokio::sync::oneshot::error::TryRecvError;
-
-        match pending.receiver.try_recv() {
-            Ok(Ok(Some(location))) => {
+        match result {
+            Ok(Some(location)) => {
                 crate::lsp_debug!(log_tag, "Received {} response", label.to_lowercase());
 
                 let Some(path) = crate::lsp::uri_to_file_path(&location.uri) else {
@@ -380,41 +519,14 @@ impl Editor {
                 self.mark_dirty();
                 true
             }
-            Ok(Ok(None)) => {
+            Ok(None) => {
                 crate::lsp_debug!(log_tag, "No {} found", label.to_lowercase());
                 self.set_lsp_status(format!("No {} found", label.to_lowercase()));
                 false
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 crate::lsp_debug!(log_tag, "{} request failed: {:?}", label, e);
                 self.set_lsp_status(format!("{} failed: {}", label, e));
-                false
-            }
-            Err(TryRecvError::Empty) => {
-                if pending.started.elapsed() > std::time::Duration::from_secs(10) {
-                    crate::lsp_debug!(log_tag, "{} request timed out, aborting task", label);
-                    pending.task.abort();
-                    self.set_lsp_status(format!("{} request timed out", label));
-                    return false;
-                }
-                // Still waiting - reconstruct the appropriate variant and put it back
-                let variant = if new_tab && label == "Definition" {
-                    crate::editor::lsp_state::PendingLspResponse::DefinitionNewTab(pending)
-                } else if label == "Definition" {
-                    crate::editor::lsp_state::PendingLspResponse::Definition(pending)
-                } else if new_tab && label == "Implementation" {
-                    crate::editor::lsp_state::PendingLspResponse::ImplementationNewTab(pending)
-                } else if label == "Implementation" {
-                    crate::editor::lsp_state::PendingLspResponse::Implementation(pending)
-                } else {
-                    crate::editor::lsp_state::PendingLspResponse::TypeDefinition(pending)
-                };
-                self.lsp_state.pending_lsp_response = Some(variant);
-                false
-            }
-            Err(TryRecvError::Closed) => {
-                crate::lsp_debug!(log_tag, "{} request cancelled (sender dropped)", label);
-                self.set_lsp_status(format!("{} request cancelled", label));
                 false
             }
         }
@@ -436,13 +548,16 @@ impl Editor {
         }
     }
 
-    /// Clear all LSP state (hover, code actions, completions, pending action)
+    /// Clear all LSP state (hover, code actions, completions, pending action, pending responses)
     pub(crate) fn clear_lsp_state(&mut self) {
         self.lsp_state.hover_info = None;
         self.lsp_state.hover_scroll = 0;
         self.lsp_state.available_code_actions.clear();
         self.lsp_state.available_completions.clear();
         self.lsp_state.pending_lsp_action = None;
+        // Abort all pending LSP responses
+        self.lsp_state.pending_lsp_responses.abort_all();
+        self.lsp_state.hover_cache = None;
     }
 
     /// Get active LSP servers map
@@ -636,6 +751,9 @@ impl Editor {
 
         // Check if we should send changes (debouncing logic)
         if let Some(state) = self.lsp_state.document_sync.get(&state_key) {
+            if !state.did_open_sent {
+                return; // Don't send didChange before didOpen
+            }
             if state.is_modified() && state.should_send_change() {
                 should_send = true;
             }
