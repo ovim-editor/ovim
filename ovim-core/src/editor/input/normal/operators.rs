@@ -548,10 +548,11 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
     let cursor_line = cursor.line();
+    let max_line = editor.buffer().line_count().saturating_sub(1);
     let target_line = if editor.count().is_some() {
-        count.saturating_sub(1)
+        count.saturating_sub(1).min(max_line)
     } else {
-        editor.buffer().line_count().saturating_sub(1)
+        max_line
     };
 
     // Normalize so start_line <= end_line
@@ -665,8 +666,9 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
 
     let cursor_line = editor.buffer().cursor().line();
     let cursor_before = (cursor_line, editor.buffer().cursor().col());
+    let max_line = editor.buffer().line_count().saturating_sub(1);
     let target_line = if editor.count().is_some() {
-        count.saturating_sub(1)
+        count.saturating_sub(1).min(max_line)
     } else {
         0
     };

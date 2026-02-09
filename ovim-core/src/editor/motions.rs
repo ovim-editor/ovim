@@ -4,7 +4,7 @@ use crate::unicode::grapheme_count;
 /// Character classification for word motions.
 /// CJK ideographs are treated as individual words (each char = one word),
 /// matching Vim's behavior.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum CharClass {
     Word,        // ASCII alphanumeric + underscore
     Cjk,         // CJK ideographs, Hiragana, Katakana, Hangul, Bopomofo
@@ -210,41 +210,46 @@ impl Motions {
     fn word_backward_once(buffer: &mut Buffer, big_word: bool) {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
+        let mut line_idx = cursor.line();
+        let mut col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return;
         }
 
+        if col == 0 {
+            // At start of line, move to end of previous line and continue
+            if line_idx > 0 {
+                line_idx -= 1;
+                let prev_line = rope.line(line_idx).to_string();
+                let prev_line_trimmed = prev_line.trim_end_matches('\n');
+                col = grapheme_count(prev_line_trimmed);
+                // If previous line is empty, just land at col 0
+                if col == 0 {
+                    buffer.cursor_mut().set_position(line_idx, 0);
+                    return;
+                }
+                // col is now one past the last char; fall through to word-backward logic
+            } else {
+                return;
+            }
+        }
+
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
-
-        if col == 0 {
-            // At start of line, move to previous line
-            if line_idx > 0 {
-                let prev_line = rope.line(line_idx - 1).to_string();
-                let prev_line = prev_line.trim_end_matches('\n');
-                let prev_len = grapheme_count(prev_line);
-                buffer
-                    .cursor_mut()
-                    .set_position(line_idx - 1, prev_len.saturating_sub(1).max(0));
-            }
-            return;
-        }
-
         let mut new_col = col;
 
         // Skip backward over whitespace first
-        if new_col > 0 && new_col < chars.len() && Self::is_whitespace(chars[new_col - 1]) {
+        if new_col > 0 && new_col <= chars.len() {
+            // When new_col == chars.len(), we're past the end; check chars[new_col - 1]
             while new_col > 0 && Self::is_whitespace(chars[new_col - 1]) {
                 new_col -= 1;
             }
         }
 
         if new_col == 0 {
-            buffer.cursor_mut().set_col(0);
+            buffer.cursor_mut().set_position(line_idx, 0);
             return;
         }
 
@@ -275,7 +280,7 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_col(new_col);
+        buffer.cursor_mut().set_position(line_idx, new_col);
     }
 
     /// Moves cursor forward to the end of the current/next word
@@ -468,108 +473,168 @@ impl Motions {
     }
 
     fn word_end_backward_once(buffer: &mut Buffer, big_word: bool) {
+        // ge/gE: move backward to the end of the previous word/WORD.
+        // Algorithm:
+        //   1. Move back one position (crossing lines)
+        //   2. Skip whitespace backward (crossing lines)
+        //   3. Now we're on a non-ws char. Check: did we cross a word class boundary
+        //      relative to the original cursor position? If not, we're still inside
+        //      the same word, so skip to start of this word class, then skip whitespace
+        //      again. The char we land on is the end of the previous word.
+        //   4. If we DID cross a boundary (or whitespace), we're already at the end of
+        //      the previous word. Done.
+
         let rope = buffer.rope();
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col();
+        let orig_line = buffer.cursor().line();
+        let orig_col = buffer.cursor().col();
 
-        if line_idx >= rope.len_lines() {
+        if orig_line >= rope.len_lines() {
             return;
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
-        let chars: Vec<char> = line.chars().collect();
+        // Helper to get line chars
+        let get_chars = |l: usize| -> Vec<char> {
+            rope.line(l)
+                .to_string()
+                .trim_end_matches('\n')
+                .chars()
+                .collect()
+        };
 
-        if col == 0 {
-            // At start of line, move to previous line
-            if line_idx > 0 {
-                let prev_line = rope.line(line_idx - 1).to_string();
-                let prev_line = prev_line.trim_end_matches('\n');
-                let prev_chars: Vec<char> = prev_line.chars().collect();
-
-                // Find the end of the last word on previous line
-                let mut new_col = prev_chars.len();
-
-                // Skip trailing whitespace
-                while new_col > 0 && Self::is_whitespace(prev_chars[new_col - 1]) {
-                    new_col -= 1;
-                }
-
-                if new_col > 0 {
-                    buffer.cursor_mut().set_position(line_idx - 1, new_col - 1);
+        let orig_chars = get_chars(orig_line);
+        let orig_class = if orig_col < orig_chars.len() {
+            Some(if big_word {
+                // For WORD: any non-ws is the same "class"
+                if Self::is_whitespace(orig_chars[orig_col]) {
+                    CharClass::Whitespace
                 } else {
-                    buffer.cursor_mut().set_position(line_idx - 1, 0);
+                    CharClass::Word // treat all non-ws as Word for big_word
                 }
-            }
-            return;
-        }
-
-        let mut new_col = col;
-
-        // Move back at least one position
-        new_col = new_col.saturating_sub(1);
-
-        // Skip backward over whitespace
-        while new_col > 0 && Self::is_whitespace(chars[new_col]) {
-            new_col -= 1;
-        }
-
-        // If we're at position 0 and it's whitespace, stay there
-        if new_col == 0 && Self::is_whitespace(chars[0]) {
-            buffer.cursor_mut().set_col(0);
-            return;
-        }
-
-        // Now we're on a non-whitespace character - find the start of this word
-        let target_char = chars[new_col];
-
-        if big_word {
-            // Move back through WORD (any non-whitespace)
-            while new_col > 0 && !Self::is_whitespace(chars[new_col - 1]) {
-                new_col -= 1;
-            }
-            // Now find the end of this WORD
-            while new_col < chars.len() && !Self::is_whitespace(chars[new_col]) {
-                new_col += 1;
-            }
-            new_col = new_col.saturating_sub(1);
+            } else {
+                char_class(orig_chars[orig_col])
+            })
         } else {
-            let class = char_class(target_char);
-            match class {
-                CharClass::Cjk => {
-                    // Each CJK char is its own word — already on it, stay
-                    // (new_col is already pointing at the CJK char)
-                }
-                CharClass::Word => {
-                    // Move back through word characters
-                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Word {
-                        new_col -= 1;
-                    }
-                    // Now find the end of this word
-                    while new_col < chars.len() && char_class(chars[new_col]) == CharClass::Word {
-                        new_col += 1;
-                    }
-                    new_col = new_col.saturating_sub(1);
-                }
-                CharClass::Punctuation => {
-                    // Move back through punctuation
-                    while new_col > 0 && char_class(chars[new_col - 1]) == CharClass::Punctuation {
-                        new_col -= 1;
-                    }
-                    // Now find the end of this punctuation sequence
-                    while new_col < chars.len()
-                        && char_class(chars[new_col]) == CharClass::Punctuation
-                    {
-                        new_col += 1;
-                    }
-                    new_col = new_col.saturating_sub(1);
-                }
-                CharClass::Whitespace => {}
+            None
+        };
+
+        let mut line_idx = orig_line;
+        let mut col = orig_col;
+
+        // Step 1: Move back one position
+        if col == 0 {
+            if line_idx == 0 {
+                return;
+            }
+            line_idx -= 1;
+            let chars = get_chars(line_idx);
+            col = if chars.is_empty() { 0 } else { chars.len() - 1 };
+        } else {
+            col -= 1;
+        }
+
+        // Step 2: Skip whitespace backward (crossing lines), landing on a non-ws char
+        let (ws_line, ws_col) = Self::skip_whitespace_backward(line_idx, col, &get_chars);
+        line_idx = ws_line;
+        col = ws_col;
+
+        let chars = get_chars(line_idx);
+        if chars.is_empty() {
+            buffer.cursor_mut().set_position(line_idx, 0);
+            return;
+        }
+
+        // Step 3: Check if we crossed a word boundary
+        let current_class = if big_word {
+            CharClass::Word // all non-ws treated as same for WORD
+        } else {
+            char_class(chars[col])
+        };
+
+        // If we're on a different line, or crossed whitespace, or different word class,
+        // then we already crossed a word boundary — this IS the end of the previous word.
+        let crossed_boundary = line_idx != orig_line
+            || orig_class != Some(current_class)
+            || col < orig_col.saturating_sub(1); // whitespace was skipped
+
+        if crossed_boundary {
+            buffer.cursor_mut().set_position(line_idx, col);
+            return;
+        }
+
+        // Still in same word — skip to start of this word class, then find end of previous word
+        if big_word {
+            while col > 0 && !Self::is_whitespace(chars[col - 1]) {
+                col -= 1;
+            }
+        } else {
+            while col > 0 && char_class(chars[col - 1]) == current_class {
+                col -= 1;
             }
         }
 
-        buffer.cursor_mut().set_col(new_col);
+        // Move back one more — if we can't, there's no previous word; don't move
+        if col == 0 {
+            if line_idx == 0 {
+                return; // No previous word — leave cursor unchanged
+            }
+            line_idx -= 1;
+            let prev_chars = get_chars(line_idx);
+            col = if prev_chars.is_empty() {
+                0
+            } else {
+                prev_chars.len() - 1
+            };
+        } else {
+            col -= 1;
+        }
+
+        // Skip whitespace backward again
+        let (final_line, final_col) =
+            Self::skip_whitespace_backward(line_idx, col, &get_chars);
+        buffer.cursor_mut().set_position(final_line, final_col);
+    }
+
+    /// Skip whitespace backward (crossing lines), returning the position of
+    /// the first non-whitespace character found.
+    fn skip_whitespace_backward(
+        mut line_idx: usize,
+        mut col: usize,
+        get_chars: &dyn Fn(usize) -> Vec<char>,
+    ) -> (usize, usize) {
+        loop {
+            let chars = get_chars(line_idx);
+            if chars.is_empty() {
+                if line_idx == 0 {
+                    return (0, 0);
+                }
+                line_idx -= 1;
+                let prev = get_chars(line_idx);
+                col = if prev.is_empty() { 0 } else { prev.len() - 1 };
+                continue;
+            }
+
+            // Clamp col
+            if col >= chars.len() {
+                col = chars.len() - 1;
+            }
+
+            // Skip whitespace on this line
+            while col > 0 && Self::is_whitespace(chars[col]) {
+                col -= 1;
+            }
+
+            if !Self::is_whitespace(chars[col]) {
+                return (line_idx, col);
+            }
+
+            // col == 0 and it's whitespace
+            if line_idx == 0 {
+                return (0, 0);
+            }
+            line_idx -= 1;
+            let prev = get_chars(line_idx);
+            col = if prev.is_empty() { 0 } else { prev.len() - 1 };
+        }
     }
 
     /// Finds next occurrence of character on current line (f motion)
@@ -656,10 +721,12 @@ impl Motions {
                 found_count += 1;
                 if found_count == count {
                     // Position cursor one before the character
-                    if i > 0 {
+                    // Only succeed if there's actual movement (i - 1 > col)
+                    if i > 0 && i - 1 > col {
                         buffer.cursor_mut().set_col(i - 1);
                         return true;
                     }
+                    return false;
                 }
             }
         }
@@ -731,7 +798,29 @@ impl Motions {
             return false;
         }
 
-        let current_char = chars[abs_pos];
+        fn is_bracket(c: char) -> bool {
+            matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>')
+        }
+
+        // Determine bracket position: on cursor, or search forward on current line
+        let (bracket_pos, current_char) = if is_bracket(chars[abs_pos]) {
+            (abs_pos, chars[abs_pos])
+        } else {
+            // Search forward on current line for nearest bracket
+            let line_text = rope.line(line_idx).to_string();
+            let line_chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
+            let mut found = None;
+            for search_col in (col + 1)..line_chars.len() {
+                if is_bracket(line_chars[search_col]) {
+                    found = Some((abs_pos + (search_col - col), line_chars[search_col]));
+                    break;
+                }
+            }
+            match found {
+                Some(f) => f,
+                None => return false,
+            }
+        };
 
         // Determine if we're on a bracket and its type
         let (is_opening, matching_char) = match current_char {
@@ -743,14 +832,14 @@ impl Motions {
             '}' => (false, '{'),
             '<' => (true, '>'),
             '>' => (false, '<'),
-            _ => return false, // Not on a bracket
+            _ => return false,
         };
 
         // Search for matching bracket
         let match_pos = if is_opening {
-            Self::find_matching_bracket_forward(&chars, abs_pos, current_char, matching_char)
+            Self::find_matching_bracket_forward(&chars, bracket_pos, current_char, matching_char)
         } else {
-            Self::find_matching_bracket_backward(&chars, abs_pos, matching_char, current_char)
+            Self::find_matching_bracket_backward(&chars, bracket_pos, matching_char, current_char)
         };
 
         if let Some(pos) = match_pos {
@@ -837,10 +926,9 @@ impl Motions {
 
     /// Move to first non-blank of next line (+ motion)
     pub fn plus_motion(buffer: &mut Buffer, count: usize) {
-        let rope = buffer.rope();
         let cursor = buffer.cursor();
         let current_line = cursor.line();
-        let target_line = (current_line + count).min(rope.len_lines().saturating_sub(1));
+        let target_line = (current_line + count).min(buffer.line_count().saturating_sub(1));
 
         buffer.cursor_mut().set_position(target_line, 0);
         Self::first_non_blank(buffer);
@@ -1572,9 +1660,9 @@ impl Motions {
             return false;
         }
 
-        // Search forward for unmatched `}`
+        // Search forward for unmatched `}` — skip cursor character
         let mut depth = 0;
-        let mut search_pos = abs_pos;
+        let mut search_pos = abs_pos + 1;
 
         while search_pos < chars.len() {
             match chars[search_pos] {
@@ -1692,9 +1780,9 @@ impl Motions {
                 return true;
             }
         } else {
-            // Search forward for unmatched closer
+            // Search forward for unmatched closer — skip cursor character
             let mut depth = 0;
-            let mut search_pos = abs_pos;
+            let mut search_pos = abs_pos + 1;
 
             while search_pos < chars.len() {
                 match chars[search_pos] {

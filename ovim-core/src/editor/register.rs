@@ -91,7 +91,7 @@ pub struct RegisterManager {
     /// The yank register (0)
     yank: RegisterContent,
     /// Delete registers (1-9) - circular buffer of recent deletes
-    delete_history: Vec<String>,
+    delete_history: Vec<RegisterContent>,
     /// Special registers
     current_file: String, // % - current file name
     alternate_file: String, // # - alternate file name
@@ -153,7 +153,10 @@ impl RegisterManager {
                 let lowercase = c.to_ascii_lowercase();
                 self.registers
                     .entry(lowercase)
-                    .and_modify(|v| v.text.push_str(&value))
+                    .and_modify(|v| {
+                        v.text.push_str(&value);
+                        v.reg_type = reg_type;
+                    })
                     .or_insert(content);
             }
             _ => {}
@@ -175,7 +178,7 @@ impl RegisterManager {
             Some(c) if c.is_ascii_digit() => {
                 let idx = c.to_digit(10).unwrap() as usize;
                 if idx > 0 && idx <= self.delete_history.len() {
-                    self.delete_history[idx - 1].clone()
+                    self.delete_history[idx - 1].text.clone()
                 } else {
                     String::new()
                 }
@@ -210,7 +213,15 @@ impl RegisterManager {
             Some('/') => (self.last_search.clone(), RegisterType::Character),
             Some('+') | Some('*') => (self.clipboard.read(), RegisterType::Character),
             Some('_') => (String::new(), RegisterType::Character),
-            Some(c) if c.is_ascii_digit() => (self.get(Some(c)), RegisterType::Character),
+            Some(c) if c.is_ascii_digit() => {
+                let idx = c.to_digit(10).unwrap() as usize;
+                if idx > 0 && idx <= self.delete_history.len() {
+                    let entry = &self.delete_history[idx - 1];
+                    (entry.text.clone(), entry.reg_type)
+                } else {
+                    (String::new(), RegisterType::Character)
+                }
+            }
             Some(c) if c.is_ascii_lowercase() => self
                 .registers
                 .get(&c)
@@ -249,7 +260,8 @@ impl RegisterManager {
         self.unnamed = RegisterContent::new(text.clone(), reg_type);
 
         // Add to delete history (1-9)
-        self.delete_history.insert(0, text);
+        self.delete_history
+            .insert(0, RegisterContent::new(text, reg_type));
         if self.delete_history.len() > 9 {
             self.delete_history.truncate(9);
         }
@@ -351,9 +363,9 @@ impl RegisterManager {
         }
 
         // Delete registers (1-9)
-        for (i, text) in self.delete_history.iter().enumerate() {
-            if !text.is_empty() {
-                result.push((format!("\"{}", i + 1), truncate(text, 50)));
+        for (i, entry) in self.delete_history.iter().enumerate() {
+            if !entry.text.is_empty() {
+                result.push((format!("\"{}", i + 1), truncate(&entry.text, 50)));
             }
         }
 

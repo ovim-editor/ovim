@@ -574,11 +574,12 @@ fn test_line_number_jump() {
 fn test_line_number_exceeds_buffer() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("999G"); // Try to go to line 999
+    test.keys("999G"); // Try to go to line 999 — clamped to last line
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
 
-    test.assert_cursor(998, 0);
+    // Clamped to last line (line 2, 0-indexed)
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -612,23 +613,23 @@ fn test_closing_paren_motion_no_match() {
 fn test_closing_paren_nested() {
     let mut test = EditorTest::new("outer(inner(deep))");
 
-    test.press('%'); // Should match outer parens
+    test.press('%'); // Searches forward for bracket, finds '(' at col 5, jumps to matching ')' at col 17
 
     assert_eq!(test.buffer_content(), "outer(inner(deep))\n");
 
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 17);
 }
 
 #[test]
 fn test_closing_paren_from_middle() {
     let mut test = EditorTest::new("func(arg1, arg2)");
 
-    test.keys("f,") // Move to comma
-        .press('%'); // Should find closing paren
+    test.keys("f,") // Move to comma (col 9)
+        .press('%'); // Searches forward, finds ')' at col 15, jumps to matching '(' at col 4
 
     assert_eq!(test.buffer_content(), "func(arg1, arg2)\n");
 
-    test.assert_cursor(0, 9);
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================

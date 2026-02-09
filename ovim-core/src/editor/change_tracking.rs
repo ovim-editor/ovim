@@ -63,12 +63,13 @@ impl Editor {
         if let Some(action) = self.buffer().change_manager().last_repeat_action.clone() {
             // Paste repeat needs Editor-level access (registers), handle specially
             match &action {
-                RepeatAction::PasteAfter | RepeatAction::PasteBefore => {
-                    let is_after = matches!(action, RepeatAction::PasteAfter);
+                RepeatAction::PasteAfter { count } | RepeatAction::PasteBefore { count } => {
+                    let count = *count;
+                    let is_after = matches!(action, RepeatAction::PasteAfter { .. });
                     let _ = if is_after {
-                        crate::editor::input::helpers::paste_after(self)
+                        crate::editor::input::helpers::paste_after(self, count)
                     } else {
-                        crate::editor::input::helpers::paste_before(self)
+                        crate::editor::input::helpers::paste_before(self, count)
                     };
                     return;
                 }

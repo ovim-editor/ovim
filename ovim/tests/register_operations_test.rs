@@ -382,15 +382,16 @@ fn test_slash_register_search_pattern() {
 fn test_expression_register() {
     let mut test = EditorTest::new("test");
 
-    test.keys("\"=") // Expression register
+    test.keys("\"=") // Expression register (not implemented, falls through)
         .type_text("2+2")
         .press_enter()
         .press('p'); // Paste result after 't'
 
     // TODO: = register (expression) not implemented - input goes as regular text
-    // The "= sequence doesn't trigger expression mode, just inserts the chars
+    // The "= sequence doesn't trigger expression mode.
+    // '2' sets count, '+' runs plus_motion (clamped to last line), '2' sets count, Enter no-op, 'p' pastes empty
     assert_eq!(test.buffer_content(), "test\n");
-    test.assert_cursor(1, 0);
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -578,10 +579,10 @@ fn test_register_paste_with_count() {
         .keys("$") // End of line (cursor on 'd')
         .keys("3\"ap"); // Paste 3 times from 'a'
 
-    // TODO: Count prefix for paste not fully implemented, only pastes once
-    // yiw yanks "word" (no trailing space)
-    assert_eq!(test.buffer_content(), "wordword\n");
-    test.assert_cursor(0, 7);
+    // yiw yanks "word" (no trailing space), 3p pastes 3 copies
+    assert_eq!(test.buffer_content(), "wordwordwordword\n");
+    // Cursor on last char of pasted text
+    test.assert_cursor(0, 15);
 }
 
 // ============================================================================

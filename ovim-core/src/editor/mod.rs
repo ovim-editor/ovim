@@ -1436,6 +1436,8 @@ impl Editor {
                 _ => {
                     self.registers
                         .set_with_type(Some(reg), text.clone(), reg_type);
+                    // Also update unnamed + yank register (Vim behavior)
+                    self.registers.yank_with_type(text.clone(), reg_type);
                 }
             }
         } else {
@@ -1466,6 +1468,8 @@ impl Editor {
                 _ => {
                     self.registers
                         .set_with_type(Some(reg), text.clone(), reg_type);
+                    // Also update unnamed + delete history (Vim behavior)
+                    self.registers.delete_with_type(text.clone(), reg_type);
                 }
             }
         } else {
