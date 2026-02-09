@@ -36,7 +36,7 @@ impl Edit {
             }
             Edit::Delete { offset, text } => {
                 let pos = (*offset).min(buffer.rope().len_chars());
-                let end = (pos + text.len()).min(buffer.rope().len_chars());
+                let end = (pos + text.chars().count()).min(buffer.rope().len_chars());
                 if pos < end {
                     buffer.rope_mut().remove(pos..end);
                 }
@@ -364,6 +364,49 @@ mod tests {
         // Redo should re-apply
         entry.redo(&mut buffer);
         assert_eq!(buffer.rope().to_string(), "line1 line2\nline3\n");
+    }
+
+    #[test]
+    fn test_edit_delete_multibyte_chars() {
+        // "café\n" — 'é' is 2 bytes but 1 char
+        let mut buffer = Buffer::new_from_str("café\n");
+        let edit = Edit::Delete {
+            offset: 3,
+            text: "é".to_string(),
+        };
+        edit.apply(&mut buffer);
+        assert_eq!(buffer.rope().to_string(), "caf\n");
+    }
+
+    #[test]
+    fn test_edit_delete_emoji() {
+        // "hi🦀bye\n" — '🦀' is 4 bytes but 1 char
+        let mut buffer = Buffer::new_from_str("hi🦀bye\n");
+        let edit = Edit::Delete {
+            offset: 2,
+            text: "🦀".to_string(),
+        };
+        edit.apply(&mut buffer);
+        assert_eq!(buffer.rope().to_string(), "hibye\n");
+    }
+
+    #[test]
+    fn test_edit_delete_umlaut_undo_redo_roundtrip() {
+        let mut buffer = Buffer::new_from_str("über\n");
+        let edit = Edit::Delete {
+            offset: 0,
+            text: "ü".to_string(),
+        };
+        edit.apply(&mut buffer);
+        assert_eq!(buffer.rope().to_string(), "ber\n");
+
+        // Undo (inverse = insert)
+        edit.inverse().apply(&mut buffer);
+        assert_eq!(buffer.rope().to_string(), "über\n");
+
+        // Redo (apply again)
+        edit.apply(&mut buffer);
+        assert_eq!(buffer.rope().to_string(), "ber\n");
     }
 
     #[test]
