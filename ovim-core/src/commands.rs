@@ -717,6 +717,25 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 })
             }
         }
+        "blame" => {
+            let new_val = !editor.options.blame;
+            editor.options.blame = new_val;
+            if new_val {
+                editor.buffer_mut().load_git_blame();
+                CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some("blame on".to_string()),
+                    line_count: None,
+                })
+            } else {
+                editor.buffer_mut().clear_git_blame();
+                CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some("blame off".to_string()),
+                    line_count: None,
+                })
+            }
+        }
         "noh" | "nohlsearch" => {
             // Clear search highlighting
             editor.clear_search_highlight();
