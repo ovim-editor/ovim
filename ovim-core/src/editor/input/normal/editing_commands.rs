@@ -159,16 +159,20 @@ fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
             String::new()
         }
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
-    }
+        Some(token)
+    } else {
+        None
+    };
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteToEndOfLine,
         linewise: false,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -184,16 +188,20 @@ fn substitute_chars(editor: &mut Editor) -> Result<()> {
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         buf.delete_chars_forward(count)
     });
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
-    }
+        Some(token)
+    } else {
+        None
+    };
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteCharForward { count },
         linewise: false,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();
@@ -260,14 +268,17 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
         .cursor_mut()
         .set_position(start_line, indent_len);
 
-    if !edits.is_empty() {
+    let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-    }
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteLines { count },
         linewise: true,
+        delete_token,
     });
     editor.start_change_building(editor.cursor_position());
     editor.clear_count();

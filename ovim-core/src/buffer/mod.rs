@@ -636,6 +636,7 @@ impl Buffer {
             change.undo(self);
             // Push to redo stack
             self.change_manager.redo_stack.push(change);
+            self.validate_cursor_position();
             true
         } else {
             false
