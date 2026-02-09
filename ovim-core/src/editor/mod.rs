@@ -752,7 +752,15 @@ impl Editor {
         }
 
         let cursor_line = self.buffer().cursor().line();
-        let visible_lines = self.viewport.viewport_height.max(1);
+        let visible_lines = if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                (window.height() as usize).max(1)
+            } else {
+                self.viewport.viewport_height.max(1)
+            }
+        } else {
+            self.viewport.viewport_height.max(1)
+        };
         let current_offset = self.scroll_offset();
         let max_line = self.buffer().line_count().saturating_sub(1);
 
@@ -788,29 +796,6 @@ impl Editor {
         } else {
             max_line.saturating_sub(visible_lines.saturating_sub(1))
         };
-
-        // After a viewport command (zt/zz/zb), mimic Vim's behavior: keep the cursor visible
-        // without enforcing scrolloff until it would leave the viewport.
-        if self.viewport.viewport_command_active {
-            let viewport_end = current_offset + visible_lines.saturating_sub(1);
-            let mut new_offset = current_offset;
-
-            if cursor_line < current_offset {
-                new_offset = cursor_line;
-            } else if cursor_line > viewport_end {
-                new_offset = cursor_line + 1 - visible_lines;
-            }
-
-            let new_offset = new_offset.min(max_scroll);
-            self.viewport.scroll_offset = new_offset;
-
-            if let Some(wm) = &mut self.window_manager {
-                if let Some(window) = wm.focused_window_mut() {
-                    window.set_scroll_offset(new_offset);
-                }
-            }
-            return;
-        }
 
         // Clamp scrolloff so top and bottom margins don't overlap.
         // When scrolloff >= ceil(visible_lines/2), both margins would claim

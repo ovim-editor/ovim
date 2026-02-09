@@ -137,6 +137,9 @@ impl Window {
         let h_off = self.horizontal_offset.as_usize();
         let old_offset = h_off;
 
+        // Clamp sidescrolloff so left and right margins don't overlap
+        let sidescrolloff = sidescrolloff.min(visible_width.saturating_sub(1) / 2);
+
         // Calculate bounds with sidescrolloff
         let left_bound = h_off + sidescrolloff;
         let right_bound = h_off + visible_width.saturating_sub(sidescrolloff + 1);

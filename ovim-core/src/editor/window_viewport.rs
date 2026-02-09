@@ -189,22 +189,52 @@ impl Editor {
 
     // === Viewport Scrolling ===
 
-    /// Scrolls viewport down N lines
+    /// Scrolls viewport down N lines (Ctrl-e).
+    /// When the window cursor is adjusted to stay visible, sync it back to the buffer cursor.
+    /// This prevents `update_scroll_offset()` from undoing the scroll.
     pub fn scroll_viewport_down(&mut self, lines: usize) {
         let buffer_line_count = self.buffer().line_count();
-        if let Some(wm) = &mut self.window_manager {
+        let new_cursor = if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
-                window.scroll_down(lines, buffer_line_count);
+                let adjusted = window.scroll_down(lines, buffer_line_count);
+                if adjusted {
+                    Some((window.cursor().line(), window.cursor().col()))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        if let Some((line, col)) = new_cursor {
+            self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 
-    /// Scrolls viewport up N lines
+    /// Scrolls viewport up N lines (Ctrl-y).
+    /// When the window cursor is adjusted to stay visible, sync it back to the buffer cursor.
+    /// This prevents `update_scroll_offset()` from undoing the scroll.
     pub fn scroll_viewport_up(&mut self, lines: usize) {
-        if let Some(wm) = &mut self.window_manager {
+        let new_cursor = if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
-                window.scroll_up(lines);
+                let adjusted = window.scroll_up(lines);
+                if adjusted {
+                    Some((window.cursor().line(), window.cursor().col()))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        if let Some((line, col)) = new_cursor {
+            self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 
@@ -231,7 +261,6 @@ impl Editor {
 
         // Skip automatic scroll update - we explicitly set the scroll position
         self.viewport.skip_scroll_update = true;
-        self.viewport.viewport_command_active = true;
     }
 
     /// Moves cursor line to top of viewport
@@ -258,7 +287,6 @@ impl Editor {
 
         // Skip automatic scroll update - we explicitly set the scroll position
         self.viewport.skip_scroll_update = true;
-        self.viewport.viewport_command_active = true;
     }
 
     /// Moves cursor line to bottom of viewport
@@ -285,7 +313,6 @@ impl Editor {
 
         // Skip automatic scroll update - we explicitly set the scroll position
         self.viewport.skip_scroll_update = true;
-        self.viewport.viewport_command_active = true;
     }
 
     /// Scrolls down half a page (both viewport and cursor)

@@ -11,9 +11,6 @@ pub struct ViewportState {
     pub scroll_offset: usize,
     /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
     pub skip_scroll_update: bool,
-    /// Viewport command active - tracks if a viewport command was recently used
-    /// When true, scrolloff is only applied if cursor moves outside current viewport
-    pub viewport_command_active: bool,
     /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
     pub wrap_map: Option<WrapMap>,
 }
@@ -24,7 +21,6 @@ impl Default for ViewportState {
             viewport_height: 24,
             scroll_offset: 0,
             skip_scroll_update: false,
-            viewport_command_active: false,
             wrap_map: None,
         }
     }
