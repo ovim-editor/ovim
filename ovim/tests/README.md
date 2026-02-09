@@ -174,34 +174,21 @@ fn test_example() {
 - `.mode()` - Get current mode
 - `.cursor()` - Get cursor position as (line, col)
 
-## Test Coverage Goals
+## Test Coverage
 
-Our test suite aims to cover:
+~90 test files covering:
 
-### ✅ Completed
-
-- [x] Insert operations (i, I, a, A, o, O)
-- [x] Paste operations (p, P)
-- [x] Delete operations (x, X, dd, dw, d$, etc.)
-- [x] Boundary conditions (empty lines, last line, first line)
-- [x] Operations with/without trailing newlines
-- [x] Indentation preservation
-- [x] Undo/redo interactions
-- [x] Count prefixes (e.g., 3dd, 5p)
-- [x] LSP keybindings (gd for goto definition, K for hover)
-
-### 🔄 To Add
-
-- [ ] Visual mode operations (v, V, Ctrl-V)
-- [ ] Change operations (c, C, ciw, caw, etc.)
-- [ ] Search and replace (/, ?, n, N, :%s)
-- [ ] Macros (q, @)
-- [ ] Marks (m, `)
-- [ ] Text objects (aw, iw, ap, ip, a", i", etc.)
-- [ ] Complex motion combinations
-- [ ] Multi-line operations
-- [ ] Edge cases with empty buffer
-- [ ] Unicode and multi-byte characters
+- Insert/delete/change/paste operations
+- Visual mode (char, line, block)
+- Motions (word, paragraph, find/till, percent, gg/G)
+- Text objects (word, bracket, quote)
+- Undo/redo, dot-repeat, RepeatAction coverage
+- Registers, marks, macros
+- Search (incremental, repeat)
+- LSP (hover, goto-def, references, completion, diagnostics, sync)
+- Viewport (scrolloff, viewport persistence, idempotence)
+- Unicode/emoji edge cases
+- Command mode, replace mode, window management
 
 ## Snapshot File Organization
 
