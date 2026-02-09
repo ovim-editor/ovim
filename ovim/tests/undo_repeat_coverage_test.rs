@@ -851,3 +851,266 @@ fn test_r_dot_repeat() {
     test.keys("w."); // Move to 'w', repeat
     assert_eq!(test.buffer_content(), "xello xorld\n");
 }
+
+// ============================================================================
+// Change operators — RepeatAction::Change (semantic dot-repeat)
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// cc (change line)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_cc_undo() {
+    let mut test = EditorTest::new("hello world\nsecond line");
+    test.keys("cc").type_text("NEW").press_esc();
+    assert_eq!(test.buffer_content(), "NEW\nsecond line\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello world\nsecond line\n");
+}
+
+#[test]
+fn test_cc_semantic_dot_repeat() {
+    let mut test = EditorTest::new("line one\nline two\nline three");
+    test.keys("cc").type_text("changed").press_esc();
+    assert_eq!(test.buffer_content(), "changed\nline two\nline three\n");
+
+    test.keys("j."); // Move to line two, repeat
+    assert_eq!(test.buffer_content(), "changed\nchanged\nline three\n");
+}
+
+#[test]
+fn test_cc_semantic_dot_repeat_undo() {
+    let mut test = EditorTest::new("aaa\nbbb\nccc");
+    test.keys("cc").type_text("X").press_esc();
+    test.keys("j.");
+    assert_eq!(test.buffer_content(), "X\nX\nccc\n");
+
+    // Single undo reverts the repeat
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "X\nbbb\nccc\n");
+
+    // Second undo reverts the original
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aaa\nbbb\nccc\n");
+}
+
+#[test]
+fn test_3cc_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
+    test.keys("3cc").type_text("merged").press_esc();
+    assert_eq!(test.buffer_content(), "merged\nline 4\n");
+
+    // Single undo restores all 3 lines
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 4\n");
+}
+
+#[test]
+fn test_cc_preserves_indent() {
+    let mut test = EditorTest::new("    indented\nnot indented");
+    test.keys("cc").type_text("new").press_esc();
+    assert_eq!(test.buffer_content(), "    new\nnot indented\n");
+}
+
+// ----------------------------------------------------------------------------
+// C (change to end of line)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_C_undo() {
+    let mut test = EditorTest::new("hello world");
+    test.keys("w").press('C').type_text("NEW").press_esc();
+    assert_eq!(test.buffer_content(), "hello NEW\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello world\n");
+}
+
+#[test]
+fn test_C_dot_repeat() {
+    let mut test = EditorTest::new("aaa bbb\nccc ddd");
+    test.keys("w").press('C').type_text("END").press_esc();
+    assert_eq!(test.buffer_content(), "aaa END\nccc ddd\n");
+
+    test.keys("j0w."); // Move to second line, word motion, repeat
+    assert_eq!(test.buffer_content(), "aaa END\nccc END\n");
+}
+
+// ----------------------------------------------------------------------------
+// c$ (change to end of line via operator+motion)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_c_dollar_undo() {
+    let mut test = EditorTest::new("hello world");
+    test.keys("wc$").type_text("NEW").press_esc();
+    assert_eq!(test.buffer_content(), "hello NEW\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello world\n");
+}
+
+#[test]
+fn test_c_dollar_dot_repeat() {
+    let mut test = EditorTest::new("aaa bbb\nccc ddd");
+    test.keys("wc$").type_text("END").press_esc();
+    assert_eq!(test.buffer_content(), "aaa END\nccc ddd\n");
+
+    // Move to second line, word motion, then repeat
+    test.keys("j0w.");
+    assert_eq!(test.buffer_content(), "aaa END\nccc END\n");
+}
+
+// ----------------------------------------------------------------------------
+// s (substitute character)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_s_undo() {
+    let mut test = EditorTest::new("hello");
+    test.press('s').type_text("H").press_esc();
+    assert_eq!(test.buffer_content(), "Hello\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello\n");
+}
+
+#[test]
+fn test_s_dot_repeat() {
+    let mut test = EditorTest::new("abc");
+    test.press('s').type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "Xbc\n");
+
+    test.keys("l.");
+    assert_eq!(test.buffer_content(), "XXc\n");
+}
+
+// ----------------------------------------------------------------------------
+// S (substitute line)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_S_undo() {
+    let mut test = EditorTest::new("hello world\nsecond");
+    test.press('S').type_text("NEW").press_esc();
+    assert_eq!(test.buffer_content(), "NEW\nsecond\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello world\nsecond\n");
+}
+
+#[test]
+fn test_S_dot_repeat() {
+    let mut test = EditorTest::new("line one\nline two\nline three");
+    test.press('S').type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "X\nline two\nline three\n");
+
+    test.keys("j.");
+    assert_eq!(test.buffer_content(), "X\nX\nline three\n");
+}
+
+// ----------------------------------------------------------------------------
+// cj (change line + below)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_cj_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+    test.keys("cj").type_text("merged").press_esc();
+    assert_eq!(test.buffer_content(), "merged\nline 3\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+}
+
+#[test]
+fn test_cj_dot_repeat() {
+    let mut test = EditorTest::new("a\nb\nc\nd\ne");
+    test.keys("cj").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "X\nc\nd\ne\n");
+
+    test.keys("j.");
+    assert_eq!(test.buffer_content(), "X\nX\ne\n");
+}
+
+// ----------------------------------------------------------------------------
+// ck (change line + above)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_ck_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+    test.keys("jck").type_text("merged").press_esc();
+    assert_eq!(test.buffer_content(), "merged\nline 3\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+}
+
+// ----------------------------------------------------------------------------
+// cG (change to last line)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_cG_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+    test.keys("jcG").type_text("rest").press_esc();
+    assert_eq!(test.buffer_content(), "line 1\nrest\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+}
+
+// ----------------------------------------------------------------------------
+// cgg (change to first line)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_cgg_undo() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+    test.keys("Gcgg").type_text("all").press_esc();
+    assert_eq!(test.buffer_content(), "all\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
+}
+
+// ----------------------------------------------------------------------------
+// c} (change to paragraph forward)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_c_brace_forward_undo() {
+    let mut test = EditorTest::new("aaa\nbbb\n\nccc");
+    test.keys("c}").type_text("X").press_esc();
+
+    // Verify the change, then undo
+    let after_change = test.buffer_content();
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aaa\nbbb\n\nccc\n");
+
+    // Redo should restore the changed state
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), after_change);
+}
+
+// ----------------------------------------------------------------------------
+// c{ (change to paragraph backward)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_c_brace_backward_undo() {
+    let mut test = EditorTest::new("aaa\n\nbbb\nccc");
+    test.keys("Gc{").type_text("X").press_esc();
+
+    // Verify the change, then undo
+    let after_change = test.buffer_content();
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aaa\n\nbbb\nccc\n");
+
+    // Redo should restore
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), after_change);
+}

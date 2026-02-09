@@ -11,8 +11,8 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Change, CharMotion, Editor, InputState, Motions, Operator, PendingSemanticChange, Range,
-    RegisterType,
+    Change, CharMotion, Editor, InputState, Motions, Operator, PendingChangeRepeat,
+    PendingSemanticChange, Range, RegisterType,
 };
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
@@ -611,25 +611,42 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
                 .create_fold(start_line, end_line);
         }
         Operator::Change => {
-            let start_pos = (start_line, 0);
-            let end_pos = (end_line + 1, 0);
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(start_line, 0, end_line + 1, 0);
-            let range = Range::new(start_pos, end_pos);
-            let change = Change::delete(range, deleted.clone(), cursor_before);
-            editor.add_change(change);
-            editor.mark_buffer_modified();
-            editor.delete_to_register_with_type(deleted, RegisterType::Line);
-            helpers::clamp_cursor_to_buffer(editor);
+            // Get indent from the cursor's line (top of the range we're changing)
+            let indent = editor
+                .buffer()
+                .line(start_line)
+                .map(|l| {
+                    l.chars()
+                        .take_while(|c| c.is_whitespace() && *c != '\n')
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
 
-            let insert_cursor = (
-                editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
-            );
-            editor.start_change_building(insert_cursor);
+            let (deleted, edits) = editor.buffer_mut().record(|buf| {
+                let cur = buf.cursor().line();
+                let tgt = target_line;
+                let del_start = cur.min(tgt);
+                let del_end = (cur.max(tgt) + 1).min(buf.line_count());
+                let deleted = buf.delete_range(del_start, 0, del_end, 0);
+                // Insert a blank line at where the deletion started
+                let insert_at = del_start.min(buf.line_count());
+                buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
+                buf.cursor_mut().set_position(insert_at, indent.len());
+                deleted
+            });
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
+            editor.delete_to_register_with_type(deleted, RegisterType::Line);
+            editor.mark_buffer_modified();
+
+            editor.set_pending_change_repeat(PendingChangeRepeat {
+                delete_action: RepeatAction::DeleteToLastLine { target_line },
+                linewise: true,
+            });
+            editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
-            helpers::insert_line_below(editor)?;
         }
         _ => {}
     }
@@ -708,53 +725,40 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                 .create_fold(start_line, end_line);
         }
         Operator::Change => {
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(start_line, 0, end_line + 1, 0);
-            let range = Range::new((start_line, 0), (end_line + 1, 0));
-            let change = Change::delete(range, deleted.clone(), cursor_before);
+            let indent = editor
+                .buffer()
+                .line(start_line)
+                .map(|l| {
+                    l.chars()
+                        .take_while(|c| c.is_whitespace() && *c != '\n')
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
 
+            let (deleted, edits) = editor.buffer_mut().record(|buf| {
+                let cur = buf.cursor().line();
+                let tgt = target_line;
+                let del_start = cur.min(tgt);
+                let del_end = (cur.max(tgt) + 1).min(buf.line_count());
+                let deleted = buf.delete_range(del_start, 0, del_end, 0);
+                // Insert a blank line at where the deletion started
+                let insert_at = del_start.min(buf.line_count());
+                buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
+                buf.cursor_mut().set_position(insert_at, indent.len());
+                deleted
+            });
+            if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
             editor.delete_to_register_with_type(deleted, RegisterType::Line);
-            editor.add_change(change);
             editor.mark_buffer_modified();
 
-            // After deletion, we need to insert a blank line where start_line was
-            // Don't clamp cursor yet - we need to insert at the exact position
-            let actual_line = start_line.min(editor.buffer().line_count());
-
-            // Insert blank line at the correct position
-            if actual_line >= editor.buffer().line_count() {
-                // Need to add a line at the end
-                let last_line = editor.buffer().line_count().saturating_sub(1);
-                if let Some(last_line_text) = editor.buffer().line(last_line) {
-                    if !last_line_text.ends_with('\n') {
-                        // Add newline to last line first
-                        let line_len = last_line_text.chars().count();
-                        editor
-                            .buffer_mut()
-                            .insert_text_at(last_line, line_len, "\n");
-                    }
-                }
-                // Now insert the blank line
-                editor.buffer_mut().insert_text_at(actual_line, 0, "\n");
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(actual_line, 0);
-            } else {
-                // Insert at existing line position
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(actual_line, 0);
-                helpers::insert_line_above(editor)?;
-            }
-
-            let insert_cursor = (
-                editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
-            );
-            editor.start_change_building(insert_cursor);
+            editor.set_pending_change_repeat(PendingChangeRepeat {
+                delete_action: RepeatAction::DeleteToFirstLine { target_line },
+                linewise: true,
+            });
+            editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
         }
         _ => {}
@@ -978,26 +982,44 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 }
 
 fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
+    let cursor_before = editor.cursor_position();
+    let start_line = editor.buffer().cursor().line();
     let end_line = (start_line + count).min(editor.buffer().line_count());
 
-    editor.start_change_building(cursor_before);
+    // Capture indentation BEFORE deleting
+    let indent = editor
+        .buffer()
+        .line(start_line)
+        .map(|l| {
+            l.chars()
+                .take_while(|c| c.is_whitespace() && *c != '\n')
+                .collect::<String>()
+        })
+        .unwrap_or_default();
 
-    let start_pos = (start_line, 0);
-    let end_pos = (end_line, 0);
-
-    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
-    let range = Range::new(start_pos, end_pos);
-    let change = Change::delete(range, deleted.clone(), cursor_before);
-
-    editor.delete_to_register(deleted);
-    editor.add_change(change);
+    // Phase 1: Delete lines + open blank line with indent (recorded for undo)
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        let deleted = buf.delete_range(start_line, 0, end_line, 0);
+        let insert_at = start_line.min(buf.line_count());
+        buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
+        buf.cursor_mut().set_position(insert_at, indent.len());
+        deleted
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
+    editor.delete_to_register_with_type(deleted, RegisterType::Line);
     editor.mark_buffer_modified();
+
+    // Phase 2: Set up for insert mode
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteLines { count },
+        linewise: true,
+    });
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
     editor.set_mode(Mode::Insert);
-    helpers::insert_line_above(editor)?;
     Ok(())
 }
 
@@ -1052,45 +1074,36 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
+    let cursor_before = editor.cursor_position();
+    let line_idx = cursor_before.0;
+    let col = cursor_before.1;
 
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
-        let line_len = line_text.chars().count();
-
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        let line_len = buf
+            .line(line_idx)
+            .map(|l| l.trim_end_matches('\n').chars().count())
+            .unwrap_or(0);
         if col < line_len {
-            let start_pos = (line_idx, col);
-            let end_pos = (line_idx, line_len);
-
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, col, line_idx, line_len);
-            let range = Range::new(start_pos, end_pos);
-            let change = Change::delete(range, deleted.clone(), cursor_before);
-
-            editor.delete_to_register(deleted);
-            editor.add_change(change);
-            editor.mark_buffer_modified();
-
-            editor.clear_count();
-            let insert_cursor = (
-                editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
-            );
-            editor.start_change_building(insert_cursor);
-            editor.set_mode(Mode::Insert);
-            return Ok(());
+            let deleted = buf.delete_range(line_idx, col, line_idx, line_len);
+            buf.cursor_mut().set_position(line_idx, col);
+            deleted
+        } else {
+            String::new()
         }
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
     }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteToEndOfLine,
+        linewise: false,
+    });
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
-    let cursor_before = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
-    editor.start_change_building(cursor_before);
     editor.set_mode(Mode::Insert);
     Ok(())
 }
@@ -1136,109 +1149,126 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
+    let cursor_before = editor.cursor_position();
+    let start_line = editor.buffer().cursor().line();
     let end_line = (start_line + count + 1).min(editor.buffer().line_count());
 
-    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
-    let range = Range::new((start_line, 0), (end_line, 0));
-    let change = Change::delete(range, deleted.clone(), cursor_before);
+    let indent = editor
+        .buffer()
+        .line(start_line)
+        .map(|l| {
+            l.chars()
+                .take_while(|c| c.is_whitespace() && *c != '\n')
+                .collect::<String>()
+        })
+        .unwrap_or_default();
 
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        let deleted = buf.delete_range(start_line, 0, end_line, 0);
+        let insert_at = start_line.min(buf.line_count());
+        buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
+        buf.cursor_mut().set_position(insert_at, indent.len());
+        deleted
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
-    editor.add_change(change);
     editor.mark_buffer_modified();
 
-    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-    helpers::clamp_cursor_to_buffer(editor);
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteLineDown { count },
+        linewise: true,
+    });
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
-
-    let insert_cursor = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
-    editor.start_change_building(insert_cursor);
     editor.set_mode(Mode::Insert);
-    helpers::insert_line_above(editor)?;
     Ok(())
 }
 
 fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let end_line = cursor.line() + 1;
-    let start_line = cursor.line().saturating_sub(count);
+    let cursor_before = editor.cursor_position();
+    let end_line = editor.buffer().cursor().line() + 1;
+    let start_line = editor.buffer().cursor().line().saturating_sub(count);
 
-    let deleted = editor.buffer_mut().delete_range(start_line, 0, end_line, 0);
-    let range = Range::new((start_line, 0), (end_line, 0));
-    let change = Change::delete(range, deleted.clone(), cursor_before);
+    let indent = editor
+        .buffer()
+        .line(start_line)
+        .map(|l| {
+            l.chars()
+                .take_while(|c| c.is_whitespace() && *c != '\n')
+                .collect::<String>()
+        })
+        .unwrap_or_default();
 
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        let deleted = buf.delete_range(start_line, 0, end_line, 0);
+        let insert_at = start_line.min(buf.line_count());
+        buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
+        buf.cursor_mut().set_position(insert_at, indent.len());
+        deleted
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
-    editor.add_change(change);
     editor.mark_buffer_modified();
 
-    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-    helpers::clamp_cursor_to_buffer(editor);
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteLineUp { count },
+        linewise: true,
+    });
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
-
-    let insert_cursor = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
-    editor.start_change_building(insert_cursor);
     editor.set_mode(Mode::Insert);
-    helpers::insert_line_above(editor)?;
     Ok(())
 }
 
 fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
-    let start_col = cursor.col();
+    let cursor_before = editor.cursor_position();
 
-    Motions::paragraph_forward(editor.buffer_mut(), count);
-    let end_line = editor.buffer().cursor().line();
-    let end_col = 0;
-
-    let deleted = editor
-        .buffer_mut()
-        .delete_range(start_line, start_col, end_line, end_col);
-    let range = Range::new((start_line, start_col), (end_line, end_col));
-    let change = Change::delete(range, deleted.clone(), cursor_before);
-
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(start_line, start_col);
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_paragraph_forward(count)
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
-    editor.add_change(change);
     editor.mark_buffer_modified();
-    editor.set_mode(Mode::Insert);
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteParagraphForward { count },
+        linewise: false,
+    });
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
+    editor.set_mode(Mode::Insert);
     Ok(())
 }
 
 fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
-    let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
-    let cursor_before = (end_line, end_col);
+    let cursor_before = editor.cursor_position();
 
-    Motions::paragraph_backward(editor.buffer_mut(), count);
-    let start_line = editor.buffer().cursor().line();
-    let start_col = 0;
-
-    let deleted = editor
-        .buffer_mut()
-        .delete_range(start_line, start_col, end_line, end_col);
-    let range = Range::new((start_line, start_col), (end_line, end_col));
-    let change = Change::delete(range, deleted.clone(), cursor_before);
-
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_paragraph_backward(count)
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
     editor.delete_to_register_with_type(deleted, RegisterType::Line);
-    editor.add_change(change);
     editor.mark_buffer_modified();
-    editor.set_mode(Mode::Insert);
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteParagraphBackward { count },
+        linewise: false,
+    });
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
+    editor.set_mode(Mode::Insert);
     Ok(())
 }
 

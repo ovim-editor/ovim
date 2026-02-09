@@ -59,7 +59,7 @@ pub use crate::change::{
 };
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
-pub use editing_state::EditingState;
+pub use editing_state::{EditingState, PendingChangeRepeat};
 pub use filetree::{FileTree, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::mouse::handle_mouse_event;
@@ -1622,6 +1622,16 @@ impl Editor {
     /// Takes and clears the pending semantic change operation
     pub fn take_pending_semantic_change(&mut self) -> Option<PendingSemanticChange> {
         self.editing.pending_semantic_change.take()
+    }
+
+    /// Sets a pending change repeat (for cc, C, s, cj, etc. dot-repeat)
+    pub fn set_pending_change_repeat(&mut self, pending: PendingChangeRepeat) {
+        self.editing.pending_change_repeat = Some(pending);
+    }
+
+    /// Takes and clears the pending change repeat
+    pub fn take_pending_change_repeat(&mut self) -> Option<PendingChangeRepeat> {
+        self.editing.pending_change_repeat.take()
     }
 
     /// Gets the leader key (default: space)

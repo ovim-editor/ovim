@@ -85,14 +85,14 @@ fn test_dot_repeat_change_word() {
 fn test_dot_repeat_substitute() {
     let mut test = EditorTest::new("hello world");
 
-    test.press('s') // Substitute 'h'
+    test.press('s') // Substitute 'h' → delete 'h', type 'H'
         .type_text("H")
         .press_esc()
         .keys("w") // Move to 'w'
-        .press('.'); // Repeat substitute
+        .press('.'); // Repeat: delete 'w', type 'H' → "Hello Horld"
 
-    assert_eq!(test.buffer_content(), "Hello Hworld\n");
-    test.assert_cursor(0, 7);
+    assert_eq!(test.buffer_content(), "Hello Horld\n");
+    test.assert_cursor(0, 6);
 }
 
 // ============================================================================
@@ -178,13 +178,14 @@ fn test_dot_repeat_d_dollar() {
 fn test_dot_repeat_c_dollar() {
     let mut test = EditorTest::new("hello world\ntest case");
 
-    test.keys("c$") // Change to end
+    test.keys("c$") // Change to end (delete "hello world", type "NEW")
         .type_text("NEW")
         .press_esc()
         .press('j')
-        .press('.'); // Repeat
+        .press('.'); // Repeat: delete from cursor to end, type "NEW"
 
-    assert_eq!(test.buffer_content(), "NEW\nteNEWst case\n");
+    // After c$+NEW+Esc: "NEW\n...", cursor at (0,2). j → (1,2). Dot: delete "st case", type "NEW"
+    assert_eq!(test.buffer_content(), "NEW\nteNEW\n");
     test.assert_cursor(1, 4);
 }
 
