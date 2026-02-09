@@ -1477,8 +1477,7 @@ impl Motions {
     /// Section navigation: jump to next section start (`{` at column 0)
     /// `]]` motion in Vim
     pub fn section_forward(buffer: &mut Buffer, count: usize) {
-        let rope = buffer.rope();
-        let total_lines = rope.len_lines();
+        let total_lines = buffer.line_count();
         let mut current_line = buffer.cursor().line();
 
         for _ in 0..count {
@@ -1534,8 +1533,7 @@ impl Motions {
     /// Section navigation: jump to next section end (`}` at column 0)
     /// `][` motion in Vim
     pub fn section_end_forward(buffer: &mut Buffer, count: usize) {
-        let rope = buffer.rope();
-        let total_lines = rope.len_lines();
+        let total_lines = buffer.line_count();
         let mut current_line = buffer.cursor().line();
 
         for _ in 0..count {

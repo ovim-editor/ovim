@@ -1592,6 +1592,7 @@ fn handle_yb(editor: &mut Editor, count: usize) -> Result<()> {
 
     let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
     editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(end_line, end_col, start_line, start_col.saturating_sub(1));
     editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
     editor.clear_count();
     Ok(())
@@ -1626,6 +1627,7 @@ fn handle_y_big_b(editor: &mut Editor, count: usize) -> Result<()> {
 
     let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
     editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(end_line, end_col, start_line, start_col.saturating_sub(1));
     editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
     editor.clear_count();
     Ok(())

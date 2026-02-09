@@ -187,12 +187,12 @@ These issues were fixed through incremental improvements but never marked Done i
 
 ## Statistics
 
-- **Total issues filed**: 103 (OV-00003 through OV-00139, with gaps)
-- **Done**: ~76 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2)
+- **Total issues filed**: 104 (OV-00003 through OV-00140, with gaps)
+- **Done**: ~78 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2 + 2 investigation)
 - **Won't Fix**: 2
 - **Blocked**: 1
-- **Genuinely remaining**: ~17
+- **Genuinely remaining**: ~15
   - HIGH: 2 (OV-00019, OV-00046)
   - MEDIUM: 4 (includes OV-00138 grapheme/char inconsistency)
-  - LOW: 8 (includes OV-00139 section motion line count)
+  - LOW: 6
   - TRIAGE: 3
