@@ -865,77 +865,13 @@ fn handle_d_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 }
 
 fn handle_d_percent(editor: &mut Editor) -> Result<()> {
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let start_line = cursor.line();
-    let start_col = cursor.col();
-
-    let rope = editor.buffer().rope();
-    let text = rope.to_string();
-    let chars: Vec<char> = text.chars().collect();
-
-    let mut abs_start = 0;
-    for i in 0..start_line {
-        if i < rope.len_lines() {
-            abs_start += rope.line(i).len_chars();
-        }
-    }
-    abs_start += start_col;
-
-    if abs_start >= chars.len() {
-        editor.clear_count();
-        return Ok(());
-    }
-
-    let current_char = chars[abs_start];
-
-    let (is_opening, matching_char) = match current_char {
-        '(' => (true, ')'),
-        ')' => (false, '('),
-        '[' => (true, ']'),
-        ']' => (false, '['),
-        '{' => (true, '}'),
-        '}' => (false, '{'),
-        '<' => (true, '>'),
-        '>' => (false, '<'),
-        _ => {
-            editor.clear_count();
-            return Ok(());
-        }
-    };
-
-    let match_abs_pos = if is_opening {
-        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
-    } else {
-        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
-    };
-
-    if let Some(abs_end) = match_abs_pos {
-        let (delete_start, delete_end) = if abs_start < abs_end {
-            (abs_start, abs_end + 1)
-        } else {
-            (abs_end, abs_start + 1)
-        };
-
-        let (start_line, start_col) = Motions::abs_pos_to_line_col(rope, delete_start);
-        let (end_line, end_col) = Motions::abs_pos_to_line_col(rope, delete_end);
-
-        let deleted = editor
-            .buffer_mut()
-            .delete_range(start_line, start_col, end_line, end_col);
-        let range = Range::new((start_line, start_col), (end_line, end_col));
-        let change = Change::delete(range, deleted.clone(), cursor_before);
-
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(start_line, start_col);
+    let deleted = editor.record_operation(
+        |buf| buf.delete_to_matching_bracket(),
+        Some(RepeatAction::DeleteToMatchingBracket),
+    );
+    if !deleted.is_empty() {
         editor.delete_to_register(deleted);
-        editor.add_change(change);
-        editor.mark_buffer_modified();
-        helpers::clamp_cursor_to_buffer(editor);
     }
-
     editor.clear_count();
     Ok(())
 }

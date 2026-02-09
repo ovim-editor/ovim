@@ -474,9 +474,9 @@ fn test_3r_dot_repeat() {
 
     // First 3rX replaces "abc" -> "XXX", cursor stays at 0
     // . repeats 3rX at position 0, replacing "XXX" with "XXX" (no visible change)
-    // But cursor ends up at position 2 (last replaced char)
+    // Cursor stays at start position (Vim behavior)
     assert_eq!(test.buffer_content(), "XXXdefgh\n");
-    test.assert_cursor(0, 2);
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

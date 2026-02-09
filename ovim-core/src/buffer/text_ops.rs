@@ -735,6 +735,99 @@ impl Buffer {
         deleted
     }
 
+    /// Deletes from cursor to matching bracket (d% command).
+    /// Returns the deleted text, or empty string if no bracket at cursor.
+    pub fn delete_to_matching_bracket(&mut self) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor().col();
+
+        let rope = &self.rope;
+        let text = rope.to_string();
+        let chars: Vec<char> = text.chars().collect();
+
+        // Compute absolute position from line/col
+        let mut abs_start = 0;
+        for i in 0..start_line {
+            if i < rope.len_lines() {
+                abs_start += rope.line(i).len_chars();
+            }
+        }
+        abs_start += start_col;
+
+        if abs_start >= chars.len() {
+            return String::new();
+        }
+
+        let current_char = chars[abs_start];
+
+        let (is_opening, matching_char) = match current_char {
+            '(' => (true, ')'),
+            ')' => (false, '('),
+            '[' => (true, ']'),
+            ']' => (false, '['),
+            '{' => (true, '}'),
+            '}' => (false, '{'),
+            '<' => (true, '>'),
+            '>' => (false, '<'),
+            _ => return String::new(),
+        };
+
+        let match_abs_pos = if is_opening {
+            Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
+        } else {
+            Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
+        };
+
+        let Some(abs_end) = match_abs_pos else {
+            return String::new();
+        };
+
+        let (delete_start, delete_end) = if abs_start < abs_end {
+            (abs_start, abs_end + 1)
+        } else {
+            (abs_end, abs_start + 1)
+        };
+
+        let (del_start_line, del_start_col) = Motions::abs_pos_to_line_col(&self.rope, delete_start);
+        let (del_end_line, del_end_col) = Motions::abs_pos_to_line_col(&self.rope, delete_end);
+
+        let deleted = self.delete_range(del_start_line, del_start_col, del_end_line, del_end_col);
+        self.cursor_mut().set_position(del_start_line, del_start_col);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Replaces count characters at cursor with ch (r command).
+    /// Returns the replaced (old) text, or empty string if at EOL.
+    pub fn replace_chars_at_cursor(&mut self, ch: char, count: usize) -> String {
+        let line_idx = self.cursor().line();
+        let col = self.cursor().col();
+
+        let Some(line) = self.line(line_idx) else {
+            return String::new();
+        };
+        let line_text = line.trim_end_matches('\n');
+        let chars_count = line_text.chars().count();
+
+        if col >= chars_count {
+            return String::new();
+        }
+
+        let replace_count = count.min(chars_count - col);
+        let end_col = col + replace_count;
+
+        let deleted = self.delete_range(line_idx, col, line_idx, end_col);
+        let replacement = ch.to_string().repeat(replace_count);
+        self.insert_text_at(line_idx, col, &replacement);
+
+        // Cursor stays at original position (Vim behavior for r)
+        self.cursor_mut().set_position(line_idx, col);
+
+        deleted
+    }
+
     /// Deletes from cursor line to target_line (inclusive, line-wise). (dgg command)
     /// Positions cursor at first non-blank of remaining line.
     /// Returns the deleted text.

@@ -683,49 +683,13 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
 
 /// Handle r{char} - replace character under cursor
 fn handle_replace_char(editor: &mut Editor, ch: char) -> Result<()> {
-    use crate::editor::{Change, Range};
+    use crate::repeat_action::RepeatAction;
 
     let count = editor.effective_count();
-    let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
-    let line_idx = cursor.line();
-    let col = cursor.col();
-
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
-        let chars_count = line_text.chars().count();
-
-        if col < chars_count {
-            let replace_count = count.min(chars_count - col);
-            let end_col = col + replace_count;
-
-            // Delete the characters
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, col, line_idx, end_col);
-
-            // Insert the replacement character(s)
-            let replacement = ch.to_string().repeat(replace_count);
-            editor
-                .buffer_mut()
-                .insert_text_at(line_idx, col, &replacement);
-
-            // Create composite change for undo/redo
-            let start_pos = (line_idx, col);
-            let end_pos = (line_idx, end_col);
-            let range = Range::new(start_pos, end_pos);
-
-            let delete_change = Change::delete(range, deleted, cursor_before);
-            let insert_change = Change::insert((line_idx, col), replacement, cursor_before);
-            let change = Change::composite(
-                vec![delete_change, insert_change],
-                cursor_before,
-                cursor_before,
-            );
-
-            editor.add_change(change);
-        }
-    }
+    editor.record_operation(
+        |buf| buf.replace_chars_at_cursor(ch, count),
+        Some(RepeatAction::ReplaceChar { ch, count }),
+    );
     editor.clear_count();
     Ok(())
 }

@@ -760,3 +760,94 @@ fn test_dgg_dot_repeat() {
     test.keys("."); // dgg from line 1 deletes lines 0-1
     assert_eq!(test.buffer_content(), "\n");
 }
+
+// ============================================================================
+// d% (delete to matching bracket)
+// ============================================================================
+
+#[test]
+fn test_d_percent_undo_redo() {
+    let mut test = EditorTest::new("(hello)");
+    test.keys("d%");
+    assert_eq!(test.buffer_content(), "\n");
+
+    // Single undo restores
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "(hello)\n");
+
+    // Redo re-applies
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "\n");
+}
+
+#[test]
+fn test_d_percent_from_closing_bracket() {
+    let mut test = EditorTest::new("(hello) world");
+    test.keys("f)"); // Move to closing paren
+    test.keys("d%");
+    assert_eq!(test.buffer_content(), " world\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "(hello) world\n");
+}
+
+#[test]
+fn test_d_percent_dot_repeat() {
+    let mut test = EditorTest::new("[abc] [xyz]");
+    test.keys("d%"); // Delete [abc]
+    assert_eq!(test.buffer_content(), " [xyz]\n");
+
+    test.keys("l."); // Move to [ and repeat
+    assert_eq!(test.buffer_content(), " \n");
+}
+
+#[test]
+fn test_d_percent_no_bracket() {
+    let mut test = EditorTest::new("hello");
+    test.keys("d%");
+    // No bracket at cursor — no-op
+    assert_eq!(test.buffer_content(), "hello\n");
+}
+
+// ============================================================================
+// r (replace character)
+// ============================================================================
+
+#[test]
+fn test_r_undo_redo() {
+    let mut test = EditorTest::new("hello");
+    test.keys("ra");
+    assert_eq!(test.buffer_content(), "aello\n");
+
+    // Single undo restores
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello\n");
+
+    // Redo re-applies
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "aello\n");
+}
+
+#[test]
+fn test_3r_undo_redo() {
+    let mut test = EditorTest::new("hello");
+    test.keys("3ra");
+    assert_eq!(test.buffer_content(), "aaalo\n");
+
+    // Single undo restores all 3 chars
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "aaalo\n");
+}
+
+#[test]
+fn test_r_dot_repeat() {
+    let mut test = EditorTest::new("hello world");
+    test.keys("rx"); // Replace 'h' with 'x'
+    assert_eq!(test.buffer_content(), "xello world\n");
+
+    test.keys("w."); // Move to 'w', repeat
+    assert_eq!(test.buffer_content(), "xello xorld\n");
+}
