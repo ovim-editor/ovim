@@ -73,17 +73,9 @@ pub fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> 
 
 /// Modifies (increments or decrements) the number under/after the cursor
 pub fn modify_number(editor: &mut Editor, delta: i64) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let ((), edits) = editor.buffer_mut().record(|buf| {
-        buf.modify_number_at_cursor(delta);
-    });
-
-    let cursor_after = editor.cursor_position();
-    if !edits.is_empty() {
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.set_repeat_action(RepeatAction::NumberOperation { delta });
-    }
-
+    editor.record_operation(
+        |buf| buf.modify_number_at_cursor(delta),
+        Some(RepeatAction::NumberOperation { delta }),
+    );
     Ok(())
 }

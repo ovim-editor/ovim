@@ -101,17 +101,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 /// x - delete character(s) under cursor
 fn delete_char_forward(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_chars_forward(count)
-    });
-
-    if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
+    let deleted = editor.record_operation(
+        |buf| buf.delete_chars_forward(count),
+        Some(RepeatAction::DeleteCharForward { count }),
+    );
+    if !deleted.is_empty() {
         editor.delete_to_register(deleted);
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.set_repeat_action(RepeatAction::DeleteCharForward { count });
     }
     editor.clear_count();
     Ok(())
@@ -120,17 +115,12 @@ fn delete_char_forward(editor: &mut Editor) -> Result<()> {
 /// X - delete character(s) before cursor
 fn delete_char_backward(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_chars_backward(count)
-    });
-
-    if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
+    let deleted = editor.record_operation(
+        |buf| buf.delete_chars_backward(count),
+        Some(RepeatAction::DeleteCharBackward { count }),
+    );
+    if !deleted.is_empty() {
         editor.delete_to_register(deleted);
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.set_repeat_action(RepeatAction::DeleteCharBackward { count });
     }
     editor.clear_count();
     Ok(())
@@ -138,17 +128,12 @@ fn delete_char_backward(editor: &mut Editor) -> Result<()> {
 
 /// D - delete to end of line
 fn delete_to_end_of_line(editor: &mut Editor) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_to_end_of_line()
-    });
-
-    if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
+    let deleted = editor.record_operation(
+        |buf| buf.delete_to_end_of_line(),
+        Some(RepeatAction::DeleteToEndOfLine),
+    );
+    if !deleted.is_empty() {
         editor.delete_to_register(deleted);
-        editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.set_repeat_action(RepeatAction::DeleteToEndOfLine);
     }
     editor.clear_count();
     Ok(())

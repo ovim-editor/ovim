@@ -49,8 +49,10 @@ pub enum RepeatAction {
     DeleteParagraphForward { count: usize },
     /// d{ — delete to paragraph backward
     DeleteParagraphBackward { count: usize },
-    /// dl — delete character(s) at cursor (same as x but from dl)
-    DeleteRight { count: usize },
+    /// dG — delete to last line (or target line)
+    DeleteToLastLine { target_line: usize },
+    /// dgg — delete to first line (or target line)
+    DeleteToFirstLine { target_line: usize },
     /// p — paste after cursor
     PasteAfter,
     /// P — paste before cursor
@@ -138,12 +140,15 @@ impl RepeatAction {
             Self::DeleteParagraphBackward { count } => {
                 buffer.delete_paragraph_backward(*count);
             }
-            Self::DeleteRight { count } => {
-                buffer.delete_chars_forward(*count);
+            Self::DeleteToLastLine { target_line } => {
+                buffer.delete_to_last_line(*target_line);
+            }
+            Self::DeleteToFirstLine { target_line } => {
+                buffer.delete_to_first_line(*target_line);
             }
             Self::PasteAfter | Self::PasteBefore => {
-                // Paste repeat is handled at the Editor level (needs register access)
-                // This should not be called directly on buffer
+                // Intentional no-op: paste repeat is intercepted in repeat_last_change()
+                // before execute() is called, because it needs Editor-level register access.
             }
         }
     }

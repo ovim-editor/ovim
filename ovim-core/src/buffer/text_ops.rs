@@ -721,4 +721,34 @@ impl Buffer {
         self.clamp_cursor_col();
         deleted
     }
+
+    /// Deletes from cursor line to target_line (inclusive, line-wise). (dG command)
+    /// Returns the deleted text.
+    pub fn delete_to_last_line(&mut self, target_line: usize) -> String {
+        let cursor_line = self.cursor().line();
+        let start_line = cursor_line.min(target_line);
+        let end_line = (cursor_line.max(target_line) + 1).min(self.line_count());
+        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let new_line = start_line.min(self.line_count().saturating_sub(1));
+        self.cursor_mut().set_position(new_line, 0);
+        self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Deletes from cursor line to target_line (inclusive, line-wise). (dgg command)
+    /// Positions cursor at first non-blank of remaining line.
+    /// Returns the deleted text.
+    pub fn delete_to_first_line(&mut self, target_line: usize) -> String {
+        let cursor_line = self.cursor().line();
+        let start_line = cursor_line.min(target_line);
+        let end_line = (cursor_line.max(target_line) + 1).min(self.line_count());
+        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let new_line = start_line.min(self.line_count().saturating_sub(1));
+        self.cursor_mut().set_position(new_line, 0);
+        self.clamp_cursor_col();
+        // Move to first non-blank character
+        let fnb = self.first_non_blank_col(new_line);
+        self.cursor_mut().set_position(new_line, fnb);
+        deleted
+    }
 }
