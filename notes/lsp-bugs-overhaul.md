@@ -158,7 +158,7 @@ These issues were fixed through incremental improvements but never marked Done i
 
 | ID | Priority | Description |
 |----|----------|-------------|
-| OV-00054 | TRIAGE | TypeScript diagnostics not appearing |
+| OV-00054 | TRIAGE | ~~TypeScript diagnostics not appearing~~ — missing `publish_diagnostics` client capability |
 | OV-00006 | TRIAGE | hover returns null on valid positions |
 | OV-00007 | TRIAGE | find-references returns empty |
 
@@ -188,11 +188,11 @@ These issues were fixed through incremental improvements but never marked Done i
 ## Statistics
 
 - **Total issues filed**: 104 (OV-00003 through OV-00140, with gaps)
-- **Done**: ~78 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2 + 2 investigation)
+- **Done**: ~79 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2 + 3 investigation)
 - **Won't Fix**: 2
 - **Blocked**: 1
-- **Genuinely remaining**: ~15
+- **Genuinely remaining**: ~14
   - HIGH: 2 (OV-00019, OV-00046)
   - MEDIUM: 4 (includes OV-00138 grapheme/char inconsistency)
   - LOW: 6
-  - TRIAGE: 3
+  - TRIAGE: 2
