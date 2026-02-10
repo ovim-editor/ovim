@@ -769,8 +769,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 });
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
+                    // push_recorded_undo() calls mark_buffer_modified() internally
                     editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                    editor.mark_buffer_modified();
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);

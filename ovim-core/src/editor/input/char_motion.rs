@@ -262,6 +262,7 @@ fn apply_operator_to_range(
                 if !deleted.is_empty() {
                     editor.delete_to_register_with_type(deleted, RegisterType::Character);
                 }
+                // push_recorded_undo() calls mark_buffer_modified() internally
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
                 editor.set_repeat_action(RepeatAction::DeleteCharMotion {
                     target,
@@ -269,7 +270,6 @@ fn apply_operator_to_range(
                     till,
                     count,
                 });
-                editor.mark_buffer_modified();
             }
         }
         Operator::Change => {

@@ -175,7 +175,6 @@ fn exit_insert_mode(editor: &mut Editor) {
 
     // Update the . register with the last inserted text
     editor.update_last_inserted_register();
-    editor.mark_buffer_modified(); // Mark for LSP didChange notification
 
     // If we were in visual block insert/append mode, replay the changes on all other lines
     let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
@@ -259,6 +258,10 @@ fn exit_insert_mode(editor: &mut Editor) {
     } else {
         None
     };
+
+    // Mark buffer modified for LSP didChange — placed after visual block replay
+    // so the server sees ALL changes (first line + replayed lines).
+    editor.mark_buffer_modified();
 
     editor.set_mode(Mode::Normal);
 

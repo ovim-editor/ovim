@@ -102,6 +102,7 @@ impl Editor {
 
             let cursor_after = (cursor_line, new_col);
             self.add_change(Change::composite(changes, cursor_before, cursor_after));
+            self.mark_buffer_modified();
         }
 
         // Hide the completion menu
@@ -369,6 +370,7 @@ impl Editor {
 
             self.add_change(delete_change);
             self.add_change(insert_change);
+            self.mark_buffer_modified();
 
             self.editing.substitute_match_index += 1;
             if self.editing.substitute_match_index >= self.editing.substitute_matches.len() {
