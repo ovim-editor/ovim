@@ -714,6 +714,13 @@ impl Editor {
         self.lsp_state.diagnostics_refresh_requested = true;
     }
 
+    /// Clear cached diagnostics and request a fresh pull from the LSP server.
+    pub fn clear_and_refresh_diagnostics(&mut self) {
+        self.lsp_state.current_file_diagnostics.clear();
+        self.lsp_state.diagnostic_count = (0, 0, 0, 0);
+        self.lsp_state.diagnostics_refresh_requested = true;
+    }
+
     pub fn take_diagnostics_refresh_request(&mut self) -> bool {
         std::mem::take(&mut self.lsp_state.diagnostics_refresh_requested)
     }
