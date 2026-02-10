@@ -482,7 +482,11 @@ impl Editor {
                 self.push_tag();
 
                 if new_tab {
-                    self.new_tab(Some(path.to_string_lossy().to_string()));
+                    let tab_title = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "[No Name]".to_string());
+                    self.new_tab(Some(tab_title));
                     match crate::buffer::Buffer::load_file(&path) {
                         Ok(buffer) => {
                             self.buffers[self.current_buffer_index] = buffer;
@@ -1027,7 +1031,7 @@ impl Editor {
     ///
     /// LSP spec requires character positions in UTF-16 code units, not byte offsets.
     /// This is critical for correct positioning with rust-analyzer and other LSP servers.
-    fn col_to_utf16(&self, line: usize, col: usize) -> u32 {
+    pub(crate) fn col_to_utf16(&self, line: usize, col: usize) -> u32 {
         let rope = self.buffer().rope();
         if line >= rope.len_lines() {
             return 0;
@@ -1055,7 +1059,7 @@ impl Editor {
     ///
     /// LSP responses provide positions in UTF-16 code units. This converts them
     /// back to character positions for rope operations.
-    fn utf16_to_col(&self, line: usize, utf16_col: u32) -> usize {
+    pub(crate) fn utf16_to_col(&self, line: usize, utf16_col: u32) -> usize {
         let rope = self.buffer().rope();
         if line >= rope.len_lines() {
             return 0;
