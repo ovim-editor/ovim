@@ -1997,6 +1997,7 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "git2",
+ "grep-matcher",
  "grep-regex",
  "grep-searcher",
  "ignore",

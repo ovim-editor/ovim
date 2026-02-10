@@ -504,6 +504,8 @@ impl Editor {
                     return Ok(());
                 }
                 self.buffer_mut().cursor_mut().set_position(line, col);
+                self.buffer_mut().validate_cursor_position();
+                self.center_cursor_in_viewport();
             }
             PickerAction::OpenFileWithTag { path, line, col } => {
                 self.push_tag();
