@@ -758,6 +758,17 @@ impl LanguageServer {
                 rename: Some(Default::default()),
                 formatting: Some(Default::default()),
                 range_formatting: Some(Default::default()),
+                publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
+                    related_information: Some(true),
+                    tag_support: Some(lsp_types::TagSupport {
+                        value_set: vec![
+                            lsp_types::DiagnosticTag::UNNECESSARY,
+                            lsp_types::DiagnosticTag::DEPRECATED,
+                        ],
+                    }),
+                    version_support: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
 
