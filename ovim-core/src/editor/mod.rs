@@ -880,10 +880,15 @@ impl Editor {
             );
         };
 
-        // Clamp scroll offset so we don't scroll past EOF leaving large blank regions.
-        // This matches typical Vim behavior and keeps the viewport "filled" with buffer lines
-        // when possible.
-        let new_offset = new_offset.min(max_scroll);
+        // Clamp to max_scroll only when the viewport actually needs to move for
+        // cursor visibility.  When the cursor is already visible the scroll paths
+        // return `current_offset` unchanged — clamping that would snap away the
+        // deliberate positioning set by viewport commands (zt/zz/zb) near EOF.
+        let new_offset = if new_offset != current_offset {
+            new_offset.min(max_scroll)
+        } else {
+            new_offset
+        };
 
         // Update both editor-level and window-level scroll offsets
         self.viewport.scroll_offset = new_offset;
@@ -1682,46 +1687,54 @@ impl Editor {
     /// Jump to next diagnostic (]d)
     pub fn goto_next_diagnostic(&mut self) {
         let current_line = self.buffer().cursor().line();
+        let current_col = self.buffer().cursor().col();
+        let current_col_utf16 = self.col_to_utf16(current_line, current_col);
         let diagnostics = &self.lsp_state.current_file_diagnostics;
 
-        // Find first diagnostic after current position
+        // Find first diagnostic after current position (compare line, then column)
         let next = diagnostics
             .iter()
-            .map(|d| d.range.start.line as usize)
-            .filter(|&line| line > current_line)
-            .min();
+            .filter(|d| {
+                let dl = d.range.start.line as usize;
+                dl > current_line
+                    || (dl == current_line && d.range.start.character > current_col_utf16)
+            })
+            .min_by_key(|d| (d.range.start.line, d.range.start.character));
 
-        if let Some(line) = next {
-            self.buffer_mut().cursor_mut().set_position(line, 0);
-        } else {
-            // Wrap to first diagnostic
-            if let Some(first) = diagnostics.first() {
-                let line = first.range.start.line as usize;
-                self.buffer_mut().cursor_mut().set_position(line, 0);
-            }
+        let target = next
+            .or_else(|| diagnostics.first())
+            .map(|d| (d.range.start.line as usize, d.range.start.character));
+
+        if let Some((line, character)) = target {
+            let col = self.utf16_to_col(line, character);
+            self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 
     /// Jump to previous diagnostic ([d)
     pub fn goto_prev_diagnostic(&mut self) {
         let current_line = self.buffer().cursor().line();
+        let current_col = self.buffer().cursor().col();
+        let current_col_utf16 = self.col_to_utf16(current_line, current_col);
         let diagnostics = &self.lsp_state.current_file_diagnostics;
 
-        // Find last diagnostic before current position
+        // Find last diagnostic before current position (compare line, then column)
         let prev = diagnostics
             .iter()
-            .map(|d| d.range.start.line as usize)
-            .filter(|&line| line < current_line)
-            .max();
+            .filter(|d| {
+                let dl = d.range.start.line as usize;
+                dl < current_line
+                    || (dl == current_line && d.range.start.character < current_col_utf16)
+            })
+            .max_by_key(|d| (d.range.start.line, d.range.start.character));
 
-        if let Some(line) = prev {
-            self.buffer_mut().cursor_mut().set_position(line, 0);
-        } else {
-            // Wrap to last diagnostic
-            if let Some(last) = diagnostics.last() {
-                let line = last.range.start.line as usize;
-                self.buffer_mut().cursor_mut().set_position(line, 0);
-            }
+        let target = prev
+            .or_else(|| diagnostics.last())
+            .map(|d| (d.range.start.line as usize, d.range.start.character));
+
+        if let Some((line, character)) = target {
+            let col = self.utf16_to_col(line, character);
+            self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 }
@@ -1729,6 +1742,13 @@ impl Editor {
 impl Default for Editor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Editor {
+    /// Inject diagnostics for testing diagnostic navigation
+    pub fn set_test_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
+        self.lsp_state.current_file_diagnostics = diagnostics;
     }
 }
 
