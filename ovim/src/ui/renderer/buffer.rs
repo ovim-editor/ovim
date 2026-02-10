@@ -1,5 +1,5 @@
 use crate::editor::Editor;
-use crate::syntax::Theme;
+use crate::syntax::{Theme, UiGroup};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -470,6 +470,7 @@ fn compute_blame_brackets(
 fn build_gutter_line(
     editor: &Editor,
     buffer: &crate::buffer::Buffer,
+    theme: &Theme,
     line_idx: usize,
     line_num_width: usize,
     cursor_line: usize,
@@ -546,7 +547,7 @@ fn build_gutter_line(
         let git_status = buffer.git_status().get_line_status(line_idx);
         get_git_sign_style(git_status)
     };
-    let line_num_style = get_line_number_style(line_idx == cursor_line);
+    let line_num_style = get_line_number_style(line_idx == cursor_line, theme);
 
     let sign_span = Span::styled(
         sign_text,
@@ -868,6 +869,7 @@ pub fn render_buffer(
                                 gutter_lines.push(build_gutter_line(
                                     editor,
                                     buffer,
+                                    theme,
                                     line_idx,
                                     line_num_width,
                                     cursor_line_idx,
@@ -898,6 +900,7 @@ pub fn render_buffer(
                             gutter_lines.push(build_gutter_line(
                                 editor,
                                 buffer,
+                                theme,
                                 line_idx,
                                 line_num_width,
                                 cursor_line_idx,
@@ -1191,6 +1194,7 @@ pub fn render_buffer(
                             gutter_lines.push(build_gutter_line(
                                 editor,
                                 buffer,
+                                theme,
                                 line_idx,
                                 line_num_width,
                                 cursor_line_idx,
@@ -1220,6 +1224,7 @@ pub fn render_buffer(
                         gutter_lines.push(build_gutter_line(
                             editor,
                             buffer,
+                            theme,
                             line_idx,
                             line_num_width,
                             cursor_line_idx,
@@ -1256,6 +1261,7 @@ pub fn render_buffer(
                             gutter_lines.push(build_gutter_line(
                                 editor,
                                 buffer,
+                                theme,
                                 line_idx,
                                 line_num_width,
                                 cursor_line_idx,
@@ -1278,6 +1284,7 @@ pub fn render_buffer(
                                 gutter_lines.push(build_gutter_line(
                                     editor,
                                     buffer,
+                                    theme,
                                     line_idx,
                                     line_num_width,
                                     cursor_line_idx,
@@ -1306,6 +1313,7 @@ pub fn render_buffer(
                         gutter_lines.push(build_gutter_line(
                             editor,
                             buffer,
+                            theme,
                             line_idx,
                             line_num_width,
                             cursor_line_idx,
@@ -1647,9 +1655,17 @@ pub fn render_line_with_highlights(
 
         // Apply styling based on priority: visual selection > search match > control char > syntax > normal
         let mut style = if is_selected {
-            Style::default().bg(Color::Blue).fg(Color::White)
+            Style::default()
+                .bg(crate::key_convert::convert_core_color(
+                    theme.get_ui_color(UiGroup::Visual),
+                ))
+                .fg(Color::White)
         } else if is_search_match {
-            Style::default().bg(Color::Yellow).fg(Color::Black)
+            Style::default()
+                .bg(crate::key_convert::convert_core_color(
+                    theme.get_ui_color(UiGroup::Search),
+                ))
+                .fg(Color::Black)
         } else if is_control {
             let color =
                 crate::key_convert::convert_core_color(theme.get_color(HighlightGroup::SpecialKey));

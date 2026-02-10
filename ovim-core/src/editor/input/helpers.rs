@@ -423,6 +423,20 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<()> {
         .take_while(|c| c.is_whitespace() && *c != '\n')
         .collect();
 
+    // Add extra indent after opening brackets
+    let trimmed = line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
+    let extra_indent =
+        if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+            if editor.options.expand_tab {
+                " ".repeat(editor.options.shift_width)
+            } else {
+                "\t".to_string()
+            }
+        } else {
+            String::new()
+        };
+    let indent = format!("{}{}", indent, extra_indent);
+
     // Determine insert position and text
     let (insert_position, text_to_insert) = if line_text.ends_with('\n') {
         // Line ends with newline, insert at start of next line

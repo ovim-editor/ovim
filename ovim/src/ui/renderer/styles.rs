@@ -1,4 +1,4 @@
-use crate::syntax::{HighlightGroup, Theme};
+use crate::syntax::{HighlightGroup, Theme, UiGroup};
 use ratatui::style::{Color, Modifier, Style};
 use std::ops::Range;
 
@@ -50,13 +50,17 @@ pub fn get_char_style(
 }
 
 /// Returns the style for line numbers in the gutter
-pub fn get_line_number_style(is_current_line: bool) -> Style {
+pub fn get_line_number_style(is_current_line: bool, theme: &Theme) -> Style {
     if is_current_line {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(crate::key_convert::convert_core_color(
+                theme.get_ui_color(UiGroup::LineNumberCurrent),
+            ))
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(crate::key_convert::convert_core_color(
+            theme.get_ui_color(UiGroup::LineNumber),
+        ))
     }
 }
 
