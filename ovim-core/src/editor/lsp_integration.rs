@@ -686,9 +686,17 @@ impl Editor {
     }
 
     /// Mark buffer as modified (for LSP didChange tracking)
+    /// Also clears stale cached diagnostics — their line positions are now invalid.
+    /// Fresh diagnostics will arrive when the server processes the didChange.
     pub fn mark_buffer_modified(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
             state.mark_modified();
+        }
+        // Clear stale diagnostics so wrong-line markers aren't rendered
+        // between the edit and the server's publishDiagnostics response.
+        if !self.lsp_state.current_file_diagnostics.is_empty() {
+            self.lsp_state.current_file_diagnostics.clear();
+            self.lsp_state.diagnostic_count = (0, 0, 0, 0);
         }
     }
 

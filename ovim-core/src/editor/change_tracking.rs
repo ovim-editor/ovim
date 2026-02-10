@@ -132,6 +132,9 @@ impl Editor {
         cm.last_edit_position = Some(cursor_before);
         cm.undo_stack.push(change);
         cm.redo_stack.clear();
+        // Ensure LSP is notified of buffer changes — callers that use record()
+        // directly instead of record_operation() were previously missing this.
+        self.mark_buffer_modified();
     }
 
     /// Like `push_recorded_undo` but returns a `ChangeToken` that can later
@@ -143,9 +146,12 @@ impl Editor {
         cursor_after: Position,
     ) -> ChangeToken {
         let change = Change::recorded(edits, cursor_before, cursor_after);
-        self.buffer_mut()
+        let token = self
+            .buffer_mut()
             .change_manager_mut()
-            .push_change_returning_token(change)
+            .push_change_returning_token(change);
+        self.mark_buffer_modified();
+        token
     }
 
     /// Pops a change only if the token matches the current stack top.
