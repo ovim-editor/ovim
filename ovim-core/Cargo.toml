@@ -69,6 +69,7 @@ mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional 
 ignore = "0.4"
 arboard = "3.4"
 nucleo = "0.5"
+grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 

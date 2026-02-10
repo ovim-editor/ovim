@@ -4,6 +4,7 @@
 //! for better performance (no process spawn overhead) and no external binary dependency.
 
 use super::picker::PickerResult;
+use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
@@ -128,11 +129,22 @@ pub fn spawn_grep_search(
                         let content = line_content.trim_end().to_string();
                         let line = line_num as usize;
 
+                        // Find match position within the line for column positioning
+                        let col = matcher
+                            .find(line_content.as_bytes())
+                            .ok()
+                            .flatten()
+                            .map(|m| {
+                                // Convert byte offset to char offset
+                                line_content[..m.start()].chars().count()
+                            })
+                            .unwrap_or(0);
+
                         let result = PickerResult {
-                            display: format!("{}:{}", rel_path, line),
+                            display: format!("{}:{}:{}", rel_path, line, col + 1),
                             location: abs_path.to_string(),
                             line: line.saturating_sub(1), // 0-indexed
-                            col: 0,
+                            col,
                             match_positions: Vec::new(),
                             content: Some(content),
                         };
