@@ -312,15 +312,13 @@ fn test_arrows_do_not_crash_when_popup_hidden() {
 }
 
 // ============================================================================
-// Bug: Up/Down don't update command line text
+// Up/Down arrow keys update command line text (OV-00025 fix)
 // ============================================================================
 
 #[test]
-fn test_arrow_selection_does_not_update_command_line() {
-    // Documents current behavior: Up/Down change visual selection
-    // but do NOT update the command line text. This means Enter after
-    // arrow navigation executes the Tab-selected entry, not the
-    // arrow-selected one.
+fn test_arrow_selection_updates_command_line() {
+    // After OV-00025 fix: Up/Down arrow keys now update the command line
+    // text to match the selected completion entry.
     let tmp = setup_test_dir();
     let mut t = EditorTest::new("hello");
     // Use a dir with multiple files
@@ -329,13 +327,13 @@ fn test_arrow_selection_does_not_update_command_line() {
 
     let cmd_after_tab = t.editor.command_line().to_string();
 
-    // Down arrow changes visual selection but NOT command line
+    // Down arrow updates command line to next completion entry
     t.press_key(KeyCode::Down);
     let cmd_after_down = t.editor.command_line().to_string();
 
-    assert_eq!(
+    assert_ne!(
         cmd_after_tab, cmd_after_down,
-        "Current behavior: Down arrow does not update command line text"
+        "Down arrow should update command line text to match selection"
     );
 }
 
