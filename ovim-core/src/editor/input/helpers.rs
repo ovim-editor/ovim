@@ -1609,25 +1609,21 @@ pub fn auto_indent_lines_with_tracking(
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
 
-    // Determine base indent from the line before start_line (or 0 if first line)
-    let mut current_indent = if start_line > 0 {
-        if let Some(prev_line) = editor.buffer().line(start_line - 1) {
-            let prev_text = prev_line.trim_end_matches('\n');
-            count_leading_spaces(prev_text, tab_width)
-                + if prev_text.trim_end().ends_with('{')
-                    || prev_text.trim_end().ends_with('(')
-                    || prev_text.trim_end().ends_with('[')
-                {
-                    tab_width
-                } else {
-                    0
+    // Compute bracket nesting depth by scanning all lines before start_line.
+    // This gives us the correct indent context regardless of how surrounding
+    // lines are currently indented.
+    let mut depth: isize = 0;
+    for line_idx in 0..start_line {
+        if let Some(line) = editor.buffer().line(line_idx) {
+            for ch in line.chars() {
+                match ch {
+                    '{' | '(' | '[' => depth += 1,
+                    '}' | ')' | ']' => depth -= 1,
+                    _ => {}
                 }
-        } else {
-            0
+            }
         }
-    } else {
-        0
-    };
+    }
 
     let mut changes = Vec::new();
     let mut lines_indented = 0usize;
@@ -1640,17 +1636,28 @@ pub fn auto_indent_lines_with_tracking(
         let line_text = line.trim_end_matches('\n');
         let trimmed = line_text.trim_start();
 
-        // Decrease indent if line starts with closing bracket
-        if trimmed.starts_with('}') || trimmed.starts_with(')') || trimmed.starts_with(']') {
-            current_indent = current_indent.saturating_sub(tab_width);
-        }
+        // Count leading close brackets — they reduce this line's indent
+        let leading_closers = trimmed
+            .chars()
+            .take_while(|c| matches!(c, '}' | ')' | ']'))
+            .count() as isize;
 
-        // Desired indentation for *this* line (before any opening-bracket bump)
+        // This line's indent: depth minus leading closers
+        let effective_depth = (depth - leading_closers).max(0) as usize;
         let line_indent = if trimmed.is_empty() {
             0
         } else {
-            current_indent
+            effective_depth * tab_width
         };
+
+        // Update depth for next line: count all brackets in this line
+        for ch in trimmed.chars() {
+            match ch {
+                '{' | '(' | '[' => depth += 1,
+                '}' | ')' | ']' => depth -= 1,
+                _ => {}
+            }
+        }
 
         // Calculate current leading spaces
         let current_spaces = count_leading_spaces(line_text, tab_width);
@@ -1686,12 +1693,6 @@ pub fn auto_indent_lines_with_tracking(
         }
 
         last_cursor_after = (line_idx, line_indent);
-
-        // Increase indent if line ends with opening bracket (ignore trailing whitespace)
-        let trimmed_end = trimmed.trim_end();
-        if trimmed_end.ends_with('{') || trimmed_end.ends_with('(') || trimmed_end.ends_with('[') {
-            current_indent += tab_width;
-        }
     }
 
     editor
