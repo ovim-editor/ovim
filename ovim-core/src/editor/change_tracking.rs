@@ -21,11 +21,11 @@ impl Editor {
         let (result, edits) = self.buffer_mut().record(f);
         if !edits.is_empty() {
             let cursor_after = self.cursor_position();
+            // push_recorded_undo() calls mark_buffer_modified() internally
             self.push_recorded_undo(edits, cursor_before, cursor_after);
             if let Some(action) = repeat_action {
                 self.set_repeat_action(action);
             }
-            self.mark_buffer_modified();
         }
         result
     }
@@ -87,6 +87,7 @@ impl Editor {
                 buf.change_manager_mut().undo_stack.push(undo_change);
                 buf.change_manager_mut().redo_stack.clear();
             }
+            self.mark_buffer_modified();
             return;
         }
 
@@ -116,6 +117,7 @@ impl Editor {
             repeated.set_cursor_after(after);
             buf.change_manager_mut().last_change = Some(repeated);
         }
+        self.mark_buffer_modified();
     }
 
     /// Pushes a recorded undo entry without setting the repeat register.

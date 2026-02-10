@@ -187,12 +187,12 @@ These issues were fixed through incremental improvements but never marked Done i
 
 ## Statistics
 
-- **Total issues filed**: 104 (OV-00003 through OV-00140, with gaps)
-- **Done**: ~79 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2 + 3 investigation)
+- **Total issues filed**: 109 (OV-00003 through OV-00145, with gaps)
+- **Done**: ~85 (23 LSP sprint + 12 buffer/edit + ~35 housekeeping + 2 Phase 1 + 4 Phase 2 + 9 LSP notification fixes)
 - **Won't Fix**: 2
 - **Blocked**: 1
-- **Genuinely remaining**: ~14
-  - HIGH: 2 (OV-00019, OV-00046)
+- **Genuinely remaining**: ~13
+  - HIGH: 1 (OV-00046 — commands.rs monolith; OV-00019 wrap cursor still open)
   - MEDIUM: 4 (includes OV-00138 grapheme/char inconsistency)
   - LOW: 6
   - TRIAGE: 2
