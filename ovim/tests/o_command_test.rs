@@ -400,3 +400,84 @@ fn test_count_not_leaked_through_o() {
         "j after o should move 1 line, not 5 (count leaked)"
     );
 }
+
+// ============================================================================
+// Smart indent after opening brackets
+// ============================================================================
+
+#[test]
+fn test_o_after_opening_brace_adds_indent() {
+    let mut editor = Editor::with_content("fn main() {\n}");
+
+    // Cursor on line 0: "fn main() {"
+    press_char(&mut editor, 'o');
+
+    // Should add shiftwidth (4 spaces) indent
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+}
+
+#[test]
+fn test_o_after_opening_paren_adds_indent() {
+    let mut editor = Editor::with_content("foo(\n)");
+
+    press_char(&mut editor, 'o');
+
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+}
+
+#[test]
+fn test_o_after_opening_bracket_adds_indent() {
+    let mut editor = Editor::with_content("let x = [\n]");
+
+    press_char(&mut editor, 'o');
+
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+}
+
+#[test]
+fn test_o_after_brace_with_trailing_spaces() {
+    // Trailing spaces after { should still trigger extra indent
+    let mut editor = Editor::with_content("fn main() {  \n}");
+
+    press_char(&mut editor, 'o');
+
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+}
+
+#[test]
+fn test_o_no_extra_indent_on_normal_line() {
+    let mut editor = Editor::with_content("    let x = 1;\n");
+
+    press_char(&mut editor, 'o');
+
+    // Should copy indent (4 spaces) but not add extra
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+}
+
+#[test]
+fn test_big_o_on_line_after_brace_no_extra_indent() {
+    // O on "    body" should copy its indent, not add extra
+    let mut editor = Editor::with_content("fn main() {\n    body\n}");
+
+    // Move to line 1 ("    body")
+    press_char(&mut editor, 'j');
+    assert_eq!(editor.buffer().cursor().line(), 1);
+
+    // Press O (shift+o = capital O)
+    press_char(&mut editor, 'O');
+
+    // Should copy indent from "    body" (4 spaces), no extra
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+}

@@ -894,19 +894,30 @@ impl Editor {
 
         if needs_did_open {
             // Send didOpen notification to all servers for this language
-            let _ = lsp
+            match lsp
                 .did_open_broadcast(uri.clone(), language_id, 1, content.clone())
-                .await;
-
-            // Mark didOpen as sent
-            let state = self
-                .lsp_state
-                .document_sync
-                .entry(state_key.clone())
-                .or_default();
-            state.did_open_sent = true;
-            state.mark_change_sent(content.clone());
-            return true; // We sent didOpen (includes content flush)
+                .await
+            {
+                Ok(_) => {
+                    // Mark didOpen as sent only on success
+                    let state = self
+                        .lsp_state
+                        .document_sync
+                        .entry(state_key.clone())
+                        .or_default();
+                    state.did_open_sent = true;
+                    state.mark_change_sent(content.clone());
+                }
+                Err(e) => {
+                    crate::lsp_warn!(
+                        "LSP",
+                        "didOpen failed for {}: {} (will retry)",
+                        state_key,
+                        e
+                    );
+                }
+            }
+            return true; // We attempted didOpen (caller should proceed regardless)
         }
 
         // Check if we have pending changes

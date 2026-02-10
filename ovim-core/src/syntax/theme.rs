@@ -76,6 +76,16 @@ pub enum UiGroup {
     MenuSelected,
     /// Border color
     Border,
+    /// Active tab background
+    TabActiveBg,
+    /// Active tab foreground
+    TabActiveFg,
+    /// Inactive tab background
+    TabInactiveBg,
+    /// Inactive tab foreground
+    TabInactiveFg,
+    /// Tab bar fill (empty space)
+    TabFill,
 }
 
 /// Color scheme definition
@@ -167,6 +177,11 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(30, 30, 30));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(60, 60, 80));
         scheme.set_ui(UiGroup::Border, Color::Gray);
+        scheme.set_ui(UiGroup::TabActiveBg, Color::Cyan);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Black);
+        scheme.set_ui(UiGroup::TabInactiveBg, Color::DarkGray);
+        scheme.set_ui(UiGroup::TabInactiveFg, Color::White);
+        scheme.set_ui(UiGroup::TabFill, Color::Black);
 
         scheme
     }
@@ -231,6 +246,11 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(50, 48, 47));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(80, 73, 69));
         scheme.set_ui(UiGroup::Border, gray);
+        scheme.set_ui(UiGroup::TabActiveBg, yellow);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Rgb(40, 40, 40));
+        scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(60, 56, 54));
+        scheme.set_ui(UiGroup::TabInactiveFg, fg);
+        scheme.set_ui(UiGroup::TabFill, bg0);
 
         scheme
     }
@@ -295,6 +315,11 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(235, 219, 178));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(213, 196, 161));
         scheme.set_ui(UiGroup::Border, gray);
+        scheme.set_ui(UiGroup::TabActiveBg, orange);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Rgb(251, 241, 199));
+        scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(213, 196, 161));
+        scheme.set_ui(UiGroup::TabInactiveFg, fg);
+        scheme.set_ui(UiGroup::TabFill, bg0);
 
         scheme
     }
@@ -361,6 +386,11 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, base02);
         scheme.set_ui(UiGroup::MenuSelected, base01);
         scheme.set_ui(UiGroup::Border, base01);
+        scheme.set_ui(UiGroup::TabActiveBg, blue);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Rgb(0, 43, 54));
+        scheme.set_ui(UiGroup::TabInactiveBg, base02);
+        scheme.set_ui(UiGroup::TabInactiveFg, base0);
+        scheme.set_ui(UiGroup::TabFill, base03);
 
         scheme
     }
@@ -427,6 +457,11 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, base2);
         scheme.set_ui(UiGroup::MenuSelected, base1);
         scheme.set_ui(UiGroup::Border, base1);
+        scheme.set_ui(UiGroup::TabActiveBg, blue);
+        scheme.set_ui(UiGroup::TabActiveFg, base3);
+        scheme.set_ui(UiGroup::TabInactiveBg, base2);
+        scheme.set_ui(UiGroup::TabInactiveFg, base00);
+        scheme.set_ui(UiGroup::TabFill, base3);
 
         scheme
     }
@@ -490,6 +525,11 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, Color::Rgb(49, 50, 44));
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(73, 72, 62));
         scheme.set_ui(UiGroup::Border, gray);
+        scheme.set_ui(UiGroup::TabActiveBg, green);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Rgb(39, 40, 34));
+        scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(49, 50, 44));
+        scheme.set_ui(UiGroup::TabInactiveFg, fg);
+        scheme.set_ui(UiGroup::TabFill, bg);
 
         scheme
     }
@@ -555,53 +595,58 @@ impl ColorScheme {
         scheme.set_ui(UiGroup::MenuBackground, selection);
         scheme.set_ui(UiGroup::MenuSelected, Color::Rgb(80, 82, 100));
         scheme.set_ui(UiGroup::Border, comment);
+        scheme.set_ui(UiGroup::TabActiveBg, purple);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Rgb(40, 42, 54));
+        scheme.set_ui(UiGroup::TabInactiveBg, selection);
+        scheme.set_ui(UiGroup::TabInactiveFg, fg);
+        scheme.set_ui(UiGroup::TabFill, bg);
 
         scheme
     }
 
-    /// Tokyonight theme (most popular Neovim colorscheme)
+    /// Tokyonight theme (most popular Neovim colorscheme) — high-contrast variant
     pub fn tokyonight() -> Self {
         let mut scheme = Self::new("tokyonight");
 
-        // Tokyonight night palette
+        // Tokyonight storm palette — higher contrast variant
         let bg = Color::Rgb(26, 27, 38); // #1a1b26
-        let bg_dark = Color::Rgb(22, 22, 30); // #16161e
+        let bg_dark = Color::Rgb(16, 16, 24); // #101018  darker for status/tabs
         let bg_highlight = Color::Rgb(41, 46, 66); // #292e42
-        let fg = Color::Rgb(192, 202, 245); // #c0caf5
-        let _fg_dark = Color::Rgb(169, 177, 214); // #a9b1d6
-        let comment = Color::Rgb(86, 95, 137); // #565f89
+        let fg = Color::Rgb(200, 211, 245); // #c8d3f5  slightly brighter
+        let fg_dim = Color::Rgb(145, 155, 195); // #919bc3  dimmed for inactive
+        let comment = Color::Rgb(96, 105, 147); // #606993  slightly brighter comments
 
-        // Accent colors
-        let blue = Color::Rgb(122, 162, 247); // #7aa2f7
-        let cyan = Color::Rgb(42, 195, 222); // #2ac3de
-        let green = Color::Rgb(158, 206, 106); // #9ece6a
-        let yellow = Color::Rgb(224, 175, 104); // #e0af68
-        let orange = Color::Rgb(255, 158, 100); // #ff9e64
-        let red = Color::Rgb(247, 118, 142); // #f7768e
-        let purple = Color::Rgb(187, 154, 247); // #bb9af7
-        let magenta = Color::Rgb(187, 154, 247); // #bb9af7
-        let teal = Color::Rgb(26, 188, 156); // #1abc9c
+        // Accent colors — boosted saturation
+        let blue = Color::Rgb(130, 170, 255); // #82aaff  brighter blue
+        let cyan = Color::Rgb(50, 210, 235); // #32d2eb  brighter cyan
+        let green = Color::Rgb(168, 220, 110); // #a8dc6e  brighter green
+        let yellow = Color::Rgb(235, 185, 100); // #ebb964  warmer yellow
+        let orange = Color::Rgb(255, 160, 90); // #ffa05a  vivid orange
+        let red = Color::Rgb(255, 110, 135); // #ff6e87  vivid red
+        let purple = Color::Rgb(195, 160, 255); // #c3a0ff  brighter purple
+        let magenta = Color::Rgb(200, 145, 255); // #c891ff
+        let teal = Color::Rgb(40, 205, 170); // #28cdaa  brighter teal
 
-        // Syntax colors - following Tokyonight's style
+        // Syntax colors — higher contrast, more distinct
         scheme.set_syntax(HighlightGroup::Keyword, purple);
         scheme.set_syntax(HighlightGroup::Function, blue);
         scheme.set_syntax(HighlightGroup::Type, cyan);
-        scheme.set_syntax(HighlightGroup::TypeBuiltin, blue); // Built-in types like string, number
+        scheme.set_syntax(HighlightGroup::TypeBuiltin, Color::Rgb(90, 200, 245)); // brighter type builtin
         scheme.set_syntax(HighlightGroup::String, green);
         scheme.set_syntax(HighlightGroup::Number, orange);
         scheme.set_syntax(HighlightGroup::Comment, comment);
-        scheme.set_syntax(HighlightGroup::Operator, fg); // Dim operators to reduce noise
+        scheme.set_syntax(HighlightGroup::Operator, Color::Rgb(155, 170, 220)); // visible operators
         scheme.set_syntax(HighlightGroup::Variable, fg);
-        scheme.set_syntax(HighlightGroup::VariableBuiltin, red); // this, console, process
+        scheme.set_syntax(HighlightGroup::VariableBuiltin, red);
         scheme.set_syntax(HighlightGroup::Macro, magenta);
         scheme.set_syntax(HighlightGroup::Constant, orange);
         scheme.set_syntax(HighlightGroup::Property, teal);
         scheme.set_syntax(HighlightGroup::Parameter, yellow);
         scheme.set_syntax(HighlightGroup::Label, blue);
-        scheme.set_syntax(HighlightGroup::Punctuation, fg); // Dim punctuation
-        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, comment); // Subtle delimiters
-        scheme.set_syntax(HighlightGroup::Tag, red); // JSX component tags
-        scheme.set_syntax(HighlightGroup::Constructor, red); // new Foo(), <Component />
+        scheme.set_syntax(HighlightGroup::Punctuation, Color::Rgb(170, 180, 215)); // slightly dimmed
+        scheme.set_syntax(HighlightGroup::PunctuationDelimiter, comment);
+        scheme.set_syntax(HighlightGroup::Tag, red);
+        scheme.set_syntax(HighlightGroup::Constructor, red);
         scheme.set_syntax(HighlightGroup::MarkupItalic, cyan);
         scheme.set_syntax(HighlightGroup::MarkupBold, orange);
         scheme.set_syntax(HighlightGroup::MarkupHeading, blue);
@@ -609,23 +654,30 @@ impl ColorScheme {
         scheme.set_syntax(HighlightGroup::SpecialKey, comment);
         scheme.set_syntax(HighlightGroup::Other, fg);
 
-        // UI colors
+        // UI colors — higher contrast separations
         scheme.set_ui(UiGroup::Background, bg);
         scheme.set_ui(UiGroup::Foreground, fg);
         scheme.set_ui(UiGroup::StatusLineBackground, bg_dark);
         scheme.set_ui(UiGroup::StatusLineForeground, fg);
         scheme.set_ui(UiGroup::CursorLine, bg_highlight);
-        scheme.set_ui(UiGroup::Visual, bg_highlight);
-        scheme.set_ui(UiGroup::LineNumber, comment);
-        scheme.set_ui(UiGroup::LineNumberCurrent, blue);
-        scheme.set_ui(UiGroup::Search, Color::Rgb(86, 95, 137));
+        scheme.set_ui(UiGroup::Visual, Color::Rgb(55, 60, 90)); // #373c5a  more visible selection
+        scheme.set_ui(UiGroup::LineNumber, Color::Rgb(70, 78, 110)); // #464e6e  dimmer gutter
+        scheme.set_ui(UiGroup::LineNumberCurrent, Color::Rgb(220, 220, 255)); // bright white-blue
+        scheme.set_ui(UiGroup::Search, Color::Rgb(180, 140, 50)); // warm amber search bg
         scheme.set_ui(UiGroup::IncSearch, orange);
         scheme.set_ui(UiGroup::Error, red);
         scheme.set_ui(UiGroup::Warning, yellow);
         scheme.set_ui(UiGroup::Info, cyan);
         scheme.set_ui(UiGroup::MenuBackground, bg_dark);
         scheme.set_ui(UiGroup::MenuSelected, bg_highlight);
-        scheme.set_ui(UiGroup::Border, Color::Rgb(41, 46, 66));
+        scheme.set_ui(UiGroup::Border, Color::Rgb(58, 65, 95)); // #3a415f  more visible borders
+
+        // Tab bar
+        scheme.set_ui(UiGroup::TabActiveBg, blue);
+        scheme.set_ui(UiGroup::TabActiveFg, Color::Rgb(16, 16, 24)); // near-black on bright
+        scheme.set_ui(UiGroup::TabInactiveBg, Color::Rgb(35, 38, 55)); // #232637
+        scheme.set_ui(UiGroup::TabInactiveFg, fg_dim);
+        scheme.set_ui(UiGroup::TabFill, bg_dark);
 
         scheme
     }

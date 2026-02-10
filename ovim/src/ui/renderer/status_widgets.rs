@@ -1,4 +1,5 @@
 use crate::editor::Editor;
+use crate::syntax::{Theme, UiGroup};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -7,6 +8,11 @@ use ratatui::{
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
+
+/// Convert a core color to a ratatui color (convenience wrapper)
+fn ui_color(theme: &Theme, group: UiGroup) -> Color {
+    crate::key_convert::convert_core_color(theme.get_ui_color(group))
+}
 
 /// Renders the LSP progress line (just above status line)
 pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
@@ -27,17 +33,22 @@ pub fn render_progress_line(frame: &mut Frame, progress_msg: &str, area: Rect) {
 }
 
 /// Renders the tab bar with overflow handling
-pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
+pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) {
     let tabs = editor.tab_page_manager().tabs();
     let current_index = editor.current_tab_index();
 
+    let tab_fill = ui_color(theme, UiGroup::TabFill);
+    let tab_active_bg = ui_color(theme, UiGroup::TabActiveBg);
+    let tab_active_fg = ui_color(theme, UiGroup::TabActiveFg);
+    let tab_inactive_bg = ui_color(theme, UiGroup::TabInactiveBg);
+    let tab_inactive_fg = ui_color(theme, UiGroup::TabInactiveFg);
+
     if tabs.is_empty() {
-        // No tabs to render
         let tab_line = Line::from(Span::styled(
             " ".repeat(area.width as usize),
-            Style::default().bg(Color::Black),
+            Style::default().bg(tab_fill),
         ));
-        let paragraph = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
+        let paragraph = Paragraph::new(tab_line).style(Style::default().bg(tab_fill));
         frame.render_widget(paragraph, area);
         return;
     }
@@ -45,12 +56,10 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     let mut spans = Vec::new();
     let available_width = area.width as usize;
 
-    // Calculate tab widths
-    const MIN_TAB_WIDTH: usize = 10; // Minimum width per tab: " 1 file "
-    const SEPARATOR_WIDTH: usize = 1; // Space between tabs
-    const OVERFLOW_INDICATOR_WIDTH: usize = 12; // Width for " +N more"
+    const MIN_TAB_WIDTH: usize = 10;
+    const SEPARATOR_WIDTH: usize = 1;
+    const OVERFLOW_INDICATOR_WIDTH: usize = 12;
 
-    // Calculate how much space each tab would need
     let mut tab_widths: Vec<usize> = Vec::new();
     let mut total_width = 0;
 
@@ -61,22 +70,28 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
         tab_widths.push(tab_width);
         total_width += tab_width;
         if i < tabs.len() - 1 {
-            total_width += SEPARATOR_WIDTH; // Account for separators
+            total_width += SEPARATOR_WIDTH;
         }
     }
 
-    // Check if we need to handle overflow
+    let active_style = Style::default()
+        .fg(tab_active_fg)
+        .bg(tab_active_bg)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(tab_inactive_fg).bg(tab_inactive_bg);
+    let separator_style = Style::default().bg(tab_fill);
+    let overflow_style = Style::default()
+        .fg(ui_color(theme, UiGroup::Warning))
+        .bg(tab_inactive_bg)
+        .add_modifier(Modifier::ITALIC);
+
     if total_width > available_width {
-        // Too many tabs - need to show subset
-        // Always show the current tab, then fill in surrounding tabs
         let mut visible_tabs = Vec::new();
 
-        // Start with current tab
         let current_tab_width = tab_widths[current_index].max(MIN_TAB_WIDTH);
         visible_tabs.push(current_index);
         let mut used_width = current_tab_width + OVERFLOW_INDICATOR_WIDTH;
 
-        // Try to add tabs before and after current tab alternately
         let mut before_idx = current_index.saturating_sub(1);
         let mut after_idx = current_index + 1;
         let mut add_before = current_index > 0;
@@ -117,100 +132,75 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
             }
         }
 
-        // Show overflow indicator at the beginning if needed
         let hidden_before = visible_tabs.first().copied().unwrap_or(0);
         if hidden_before > 0 {
             let overflow_text = format!(" +{} ", hidden_before);
-            spans.push(Span::styled(
-                overflow_text,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ));
-            spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
+            spans.push(Span::styled(overflow_text, overflow_style));
+            spans.push(Span::styled(" ", separator_style));
         }
 
-        // Render visible tabs
         for (idx, &tab_idx) in visible_tabs.iter().enumerate() {
             let is_current = tab_idx == current_index;
             let title = editor.get_tab_title(tab_idx);
             let tab_text = format!(" {} {} ", tab_idx + 1, title);
 
             let style = if is_current {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                active_style
             } else {
-                Style::default().fg(Color::White).bg(Color::DarkGray)
+                inactive_style
             };
 
             spans.push(Span::styled(tab_text, style));
 
-            // Add separator between tabs
             if idx < visible_tabs.len() - 1 {
-                spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
+                spans.push(Span::styled(" ", separator_style));
             }
         }
 
-        // Show overflow indicator at the end if needed
         let hidden_after = tabs
             .len()
             .saturating_sub(visible_tabs.last().copied().unwrap_or(0) + 1);
         if hidden_after > 0 {
-            spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
+            spans.push(Span::styled(" ", separator_style));
             let overflow_text = format!(" +{} ", hidden_after);
-            spans.push(Span::styled(
-                overflow_text,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ));
+            spans.push(Span::styled(overflow_text, overflow_style));
         }
     } else {
-        // All tabs fit - render normally
         for (i, _tab) in tabs.iter().enumerate() {
             let is_current = i == current_index;
             let title = editor.get_tab_title(i);
             let tab_text = format!(" {} {} ", i + 1, title);
 
             let style = if is_current {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                active_style
             } else {
-                Style::default().fg(Color::White).bg(Color::DarkGray)
+                inactive_style
             };
 
             spans.push(Span::styled(tab_text, style));
 
-            // Add separator between tabs
             if i < tabs.len() - 1 {
-                spans.push(Span::styled(" ", Style::default().bg(Color::Black)));
+                spans.push(Span::styled(" ", separator_style));
             }
         }
     }
 
-    // Fill rest of line with background color
     let content_width: usize = spans.iter().map(|s| s.content.len()).sum();
     let remaining = (area.width as usize).saturating_sub(content_width);
     if remaining > 0 {
         spans.push(Span::styled(
             " ".repeat(remaining),
-            Style::default().bg(Color::Black),
+            Style::default().bg(tab_fill),
         ));
     }
 
     let tab_line = Line::from(spans);
-    let paragraph = Paragraph::new(tab_line).style(Style::default().bg(Color::Black));
+    let paragraph = Paragraph::new(tab_line).style(Style::default().bg(tab_fill));
     frame.render_widget(paragraph, area);
 }
 
 /// Renders the status line
-pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
+pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) {
     let mode = editor.mode();
     let buffer = editor.buffer();
     let cursor = buffer.cursor();
@@ -263,11 +253,17 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
         .saturating_sub(lsp_status.len())
         .saturating_sub(position.len());
 
+    let status_bg = ui_color(theme, UiGroup::StatusLineBackground);
+    let status_fg = ui_color(theme, UiGroup::StatusLineForeground);
+    let accent_bg = ui_color(theme, UiGroup::TabActiveBg);
+    let accent_fg = ui_color(theme, UiGroup::TabActiveFg);
+    let error_color = ui_color(theme, UiGroup::Error);
+
     let mut spans = vec![Span::styled(
         &mode_indicator,
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
+            .fg(accent_fg)
+            .bg(accent_bg)
             .add_modifier(Modifier::BOLD),
     )];
 
@@ -278,15 +274,15 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
             &recording_indicator,
             Style::default()
                 .fg(Color::White)
-                .bg(Color::Red)
+                .bg(error_color)
                 .add_modifier(Modifier::BOLD),
         ));
     } else {
         spans.push(Span::raw(" "));
     }
 
-    spans.push(Span::raw(file));
-    spans.push(Span::raw(modified));
+    spans.push(Span::styled(file, Style::default().fg(status_fg)));
+    spans.push(Span::styled(modified, Style::default().fg(status_fg)));
     spans.push(Span::raw(" ".repeat(padding_len)));
 
     // Add diagnostics indicator if present
@@ -294,9 +290,9 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
         spans.push(Span::styled(
             &diagnostics,
             Style::default().fg(Color::Black).bg(if errors > 0 {
-                Color::Red
+                error_color
             } else {
-                Color::Yellow
+                ui_color(theme, UiGroup::Warning)
             }),
         ));
     }
@@ -305,11 +301,11 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     if !lsp_status.is_empty() {
         let lsp_color =
             if editor.lsp_status().contains("Failed") || editor.lsp_status().contains("Error") {
-                Color::Red
+                error_color
             } else if editor.lsp_status().contains("ready") {
                 Color::Green
             } else {
-                Color::Blue
+                ui_color(theme, UiGroup::Info)
             };
         spans.push(Span::styled(
             &lsp_status,
@@ -319,12 +315,15 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     spans.push(Span::styled(
         position,
-        Style::default().fg(Color::Black).bg(Color::Gray),
+        Style::default()
+            .fg(accent_fg)
+            .bg(accent_bg)
+            .add_modifier(Modifier::BOLD),
     ));
 
     let status_line = Line::from(spans);
 
-    let paragraph = Paragraph::new(status_line).style(Style::default().bg(Color::DarkGray));
+    let paragraph = Paragraph::new(status_line).style(Style::default().bg(status_bg).fg(status_fg));
     frame.render_widget(paragraph, area);
 }
 

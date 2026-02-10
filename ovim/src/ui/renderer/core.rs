@@ -281,7 +281,7 @@ fn render_buffer_area(
 }
 
 /// Phase 4: Render the status area (progress line + status line + command/message line).
-fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
+fn render_status_area(frame: &mut Frame, editor: &Editor, theme: &Theme, areas: &FrameAreas) {
     if let Some(progress_chunk) = areas.progress_chunk {
         if let Some(progress_msg) = editor.lsp_progress_message() {
             render_progress_line(frame, &progress_msg, progress_chunk);
@@ -289,7 +289,7 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, areas: &FrameAreas) {
     }
 
     // Status line is always visible (mode, filename, position, diagnostics, LSP)
-    render_status_line(frame, editor, areas.status_chunk);
+    render_status_line(frame, editor, theme, areas.status_chunk);
 
     // Command/message line below the status line
     if editor.mode() == crate::mode::Mode::Command {
@@ -712,7 +712,7 @@ impl Renderer {
 
         // Render chrome
         if let Some(tab_area) = areas.tab_area {
-            render_tab_bar(frame, editor, tab_area);
+            render_tab_bar(frame, editor, &theme, tab_area);
         }
         if let Some(tree_area) = areas.file_tree_area {
             render_file_tree(frame, editor, tree_area);
@@ -735,7 +735,7 @@ impl Renderer {
         }
 
         // Render status + overlays + cursor
-        render_status_area(frame, editor, &areas);
+        render_status_area(frame, editor, &theme, &areas);
         let ctx = OverlayContext {
             layout: &layout,
             viewport_start,
