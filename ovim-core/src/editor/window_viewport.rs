@@ -280,8 +280,7 @@ impl Editor {
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                // Vim's zt/zz/zb positioning ignores scrolloff; it explicitly places the cursor line.
-                window.move_cursor_to_top(0);
+                window.move_cursor_to_top(self.options.scrolloff);
             }
         }
 
@@ -306,8 +305,7 @@ impl Editor {
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                // Vim's zt/zz/zb positioning ignores scrolloff; it explicitly places the cursor line.
-                window.move_cursor_to_bottom(0);
+                window.move_cursor_to_bottom(self.options.scrolloff);
             }
         }
 

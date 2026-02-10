@@ -60,7 +60,7 @@ pub use crate::change::{
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use editing_state::{EditingState, PendingChangeRepeat};
-pub use filetree::{FileTree, TreeNode};
+pub use filetree::{FileTree, FileTreeAction, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::mouse::handle_mouse_event;
 pub use input::shell_expansion;

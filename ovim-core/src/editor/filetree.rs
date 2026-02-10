@@ -3,6 +3,23 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Pending file tree action requiring user input
+#[derive(Debug, Clone)]
+pub enum FileTreeAction {
+    /// No pending action
+    None,
+    /// Adding a new file — input is the filename
+    Add { input: String, cursor: usize },
+    /// Renaming a file — input is the new name, original_path is the file being renamed
+    Rename {
+        input: String,
+        cursor: usize,
+        original_path: PathBuf,
+    },
+    /// Confirming file deletion
+    DeleteConfirm { path: PathBuf, name: String },
+}
+
 /// Represents a node in the file tree
 #[derive(Debug, Clone)]
 pub struct TreeNode {
@@ -154,6 +171,8 @@ pub struct FileTree {
     scroll_offset: usize,
     /// Pending 'g' key for gg command
     pending_g: bool,
+    /// Pending file action (add/rename/delete confirmation)
+    pending_action: FileTreeAction,
 }
 
 impl FileTree {
@@ -166,6 +185,7 @@ impl FileTree {
             flattened: Vec::new(),
             scroll_offset: 0,
             pending_g: false,
+            pending_action: FileTreeAction::None,
         }
     }
 
@@ -448,6 +468,28 @@ impl FileTree {
                     return;
                 }
             }
+        }
+    }
+
+    /// Gets the pending action
+    pub fn pending_action(&self) -> &FileTreeAction {
+        &self.pending_action
+    }
+
+    /// Sets the pending action
+    pub fn set_pending_action(&mut self, action: FileTreeAction) {
+        self.pending_action = action;
+    }
+
+    /// Returns the directory that contains the currently selected node.
+    /// If the selected node is a directory, returns that directory.
+    /// If it's a file, returns its parent.
+    pub fn selected_parent_dir(&self) -> Option<PathBuf> {
+        let node = self.flattened.get(self.selected_index)?;
+        if node.is_dir() {
+            Some(node.path().to_path_buf())
+        } else {
+            node.path().parent().map(|p| p.to_path_buf())
         }
     }
 
