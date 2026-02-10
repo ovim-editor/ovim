@@ -27,19 +27,19 @@ impl Edit {
         }
     }
 
-    /// Applies this edit to a buffer using absolute char positions.
+    /// Applies this edit to a buffer, updating tree-sitter, highlights, and
+    /// version counters so derived state stays consistent with the rope.
     pub fn apply(&self, buffer: &mut Buffer) {
         match self {
             Edit::Insert { offset, text } => {
                 let pos = (*offset).min(buffer.rope().len_chars());
-                buffer.rope_mut().insert(pos, text);
+                let line = buffer.rope().char_to_line(pos);
+                let col = pos - buffer.rope().line_to_char(line);
+                buffer.insert_text_at(line, col, text);
             }
             Edit::Delete { offset, text } => {
-                let pos = (*offset).min(buffer.rope().len_chars());
-                let end = (pos + text.chars().count()).min(buffer.rope().len_chars());
-                if pos < end {
-                    buffer.rope_mut().remove(pos..end);
-                }
+                let end = offset + text.chars().count();
+                buffer.delete_char_range(*offset, end);
             }
         }
     }
