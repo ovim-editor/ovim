@@ -98,7 +98,7 @@ impl Buffer {
             content
         };
 
-        let buffer = Self {
+        let mut buffer = Self {
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, 0),
             modified: false,
@@ -125,8 +125,10 @@ impl Buffer {
         // This makes file loading instant even for large files
         // Syntax highlighting will be triggered later when the buffer is displayed
 
-        // Skip git status on load too - it can be loaded lazily
-        // buffer.refresh_git_status();
+        // Load git status eagerly so gutter signs appear on file open.
+        // This is fast (<1ms for typical files via git2) and runs inside
+        // block_in_place, so it won't block the async runtime.
+        buffer.refresh_git_status();
 
         Ok(buffer)
     }

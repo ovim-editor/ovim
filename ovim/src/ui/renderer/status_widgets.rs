@@ -219,6 +219,10 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     let position = format!(" {}:{} ", cursor.line() + 1, cursor.col() + 1);
     let modified = if editor.is_modified() { " [+] " } else { " " };
     let file = buffer.file_path().unwrap_or("[No Name]");
+    let branch_display = editor
+        .git_branch()
+        .map(|b| format!(" {}", b))
+        .unwrap_or_default();
 
     // Get diagnostic counts
     let (errors, warnings, _info, _hints) = editor.cached_diagnostic_count();
@@ -249,6 +253,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         .saturating_sub(recording_len)
         .saturating_sub(file.len())
         .saturating_sub(modified.len())
+        .saturating_sub(branch_display.len())
         .saturating_sub(diagnostics.len())
         .saturating_sub(lsp_status.len())
         .saturating_sub(position.len());
@@ -283,6 +288,14 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
 
     spans.push(Span::styled(file, Style::default().fg(status_fg)));
     spans.push(Span::styled(modified, Style::default().fg(status_fg)));
+    if !branch_display.is_empty() {
+        spans.push(Span::styled(
+            &branch_display,
+            Style::default()
+                .fg(status_fg)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
     spans.push(Span::raw(" ".repeat(padding_len)));
 
     // Add diagnostics indicator if present
@@ -539,4 +552,129 @@ pub fn render_diagnostic_badge(frame: &mut Frame, editor: &Editor, buffer_area: 
     ));
 
     frame.render_widget(badge, badge_area);
+}
+
+/// Renders contextual widgets in the left and right margins when textwidth centering
+/// creates extra space. Left margin shows git info, right margin shows diagnostics/LSP.
+pub fn render_margin_widgets(
+    frame: &mut Frame,
+    editor: &Editor,
+    theme: &Theme,
+    full_area: Rect,
+    buffer_area: Rect,
+) {
+    let dim_style = Style::default()
+        .fg(ui_color(theme, UiGroup::StatusLineForeground))
+        .add_modifier(Modifier::DIM);
+
+    // ── Left margin: git branch + change summary ──
+    let left_margin_width = buffer_area.x.saturating_sub(full_area.x) as usize;
+    if left_margin_width >= 12 {
+        let mut parts: Vec<Span> = Vec::new();
+
+        if let Some(branch) = editor.git_branch() {
+            // Truncate branch name to fit margin (leave room for change stats)
+            let max_branch = left_margin_width.saturating_sub(3); // 1 gap + some padding
+            let display = if branch.len() > max_branch {
+                format!("{}~", &branch[..max_branch.saturating_sub(1)])
+            } else {
+                branch.to_string()
+            };
+            parts.push(Span::styled(format!(" {}", display), dim_style));
+        }
+
+        // Change summary from git status
+        let (added, modified, removed) = editor.buffer().git_status().change_counts();
+        if added > 0 || modified > 0 || removed > 0 {
+            let mut summary = String::new();
+            if added > 0 {
+                summary.push_str(&format!(" +{}", added));
+            }
+            if modified > 0 {
+                summary.push_str(&format!(" ~{}", modified));
+            }
+            if removed > 0 {
+                summary.push_str(&format!(" -{}", removed));
+            }
+            parts.push(Span::styled(summary, dim_style));
+        }
+
+        if !parts.is_empty() {
+            // Right-align within the left margin, 1 col gap before buffer
+            let content_width: usize = parts.iter().map(|s| s.width()).sum();
+            let padding = left_margin_width.saturating_sub(content_width + 1);
+
+            let mut spans = vec![Span::raw(" ".repeat(padding))];
+            spans.extend(parts);
+
+            let line = Line::from(spans);
+            let area = Rect {
+                x: full_area.x,
+                y: full_area.y,
+                width: left_margin_width as u16,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(line), area);
+        }
+    }
+
+    // ── Right margin: diagnostic counts + LSP status ──
+    let right_margin_start = buffer_area.x + buffer_area.width;
+    let right_margin_width =
+        (full_area.x + full_area.width).saturating_sub(right_margin_start) as usize;
+    if right_margin_width >= 12 {
+        let mut spans: Vec<Span> = Vec::new();
+        spans.push(Span::raw(" ")); // 1 col gap after buffer
+
+        let (errors, warnings, _, _) = editor.cached_diagnostic_count();
+        if errors > 0 {
+            spans.push(Span::styled(
+                format!("E:{}", errors),
+                Style::default().fg(ui_color(theme, UiGroup::Error)),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        if warnings > 0 {
+            spans.push(Span::styled(
+                format!("W:{}", warnings),
+                Style::default().fg(ui_color(theme, UiGroup::Warning)),
+            ));
+            spans.push(Span::raw(" "));
+        }
+
+        // LSP status badge
+        if !editor.active_lsp_servers().is_empty() {
+            let status_text = if !editor.lsp_status().is_empty() {
+                editor.lsp_status().to_string()
+            } else {
+                "LSP ready".to_string()
+            };
+            let lsp_color = if status_text.contains("Failed") || status_text.contains("Error") {
+                ui_color(theme, UiGroup::Error)
+            } else if status_text.contains("ready") {
+                Color::Green
+            } else {
+                ui_color(theme, UiGroup::Info)
+            };
+            // Truncate if too long for margin
+            let max_len = right_margin_width.saturating_sub(
+                spans.iter().map(|s| s.width()).sum::<usize>() + 1,
+            );
+            let display = if status_text.len() > max_len {
+                format!("{}~", &status_text[..max_len.saturating_sub(1)])
+            } else {
+                status_text
+            };
+            spans.push(Span::styled(display, Style::default().fg(lsp_color)));
+        }
+
+        let line = Line::from(spans);
+        let area = Rect {
+            x: right_margin_start,
+            y: full_area.y,
+            width: right_margin_width as u16,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(line), area);
+    }
 }

@@ -35,6 +35,21 @@ impl GitStatus {
         self.line_status.get(&line).copied()
     }
 
+    /// Returns (added, modified, removed) line counts.
+    pub fn change_counts(&self) -> (usize, usize, usize) {
+        let mut added = 0;
+        let mut modified = 0;
+        let mut removed = 0;
+        for status in self.line_status.values() {
+            match status {
+                LineStatus::Added => added += 1,
+                LineStatus::Modified => modified += 1,
+                LineStatus::Removed => removed += 1,
+            }
+        }
+        (added, modified, removed)
+    }
+
     /// Computes git status for a file
     pub fn from_file<P: AsRef<Path>>(file_path: P) -> Result<Self> {
         let file_path = file_path.as_ref();
@@ -270,6 +285,21 @@ impl GitBlame {
             .map(|info| info.author.len())
             .max()
             .unwrap_or(0)
+    }
+}
+
+/// Returns the current git branch name for a file path.
+/// Returns `None` for non-git files. Uses short OID for detached HEAD.
+pub fn branch_name<P: AsRef<Path>>(file_path: P) -> Option<String> {
+    let repo = Repository::discover(file_path.as_ref()).ok()?;
+    let head = repo.head().ok()?;
+    if head.is_branch() {
+        head.shorthand().map(|s| s.to_string())
+    } else {
+        // Detached HEAD — show short OID
+        head.target()
+            .map(|oid| format!("{}", oid))
+            .map(|s| s[..7.min(s.len())].to_string())
     }
 }
 
