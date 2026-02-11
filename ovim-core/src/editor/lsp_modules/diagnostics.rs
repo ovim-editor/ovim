@@ -21,6 +21,10 @@ impl Editor {
         if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Some(uri) = uri_from_file_path(file_path) {
+                    // Snapshot buffer version BEFORE async fetch — if the buffer
+                    // changes during the fetch, the stamp won't match and the
+                    // display-side staleness check will hide them.
+                    let version_before = self.buffer().version();
                     let diagnostics = lsp.get_diagnostics(&uri).await;
                     // Compute count directly from fetched diagnostics (not from cached count)
                     let mut errors = 0;
@@ -40,7 +44,7 @@ impl Editor {
                     self.lsp_state.diagnostic_count = (errors, warnings, info, hints);
                     // Cache full diagnostic list
                     self.lsp_state.current_file_diagnostics = diagnostics;
-                    self.lsp_state.diagnostics_buffer_version = self.buffer().version();
+                    self.lsp_state.diagnostics_buffer_version = version_before;
                     return;
                 }
             }
@@ -56,6 +60,10 @@ impl Editor {
     /// Updates the cached diagnostic count (should be called when diagnostics change)
     pub async fn update_diagnostic_cache(&mut self) {
         let start = std::time::Instant::now();
+
+        // Snapshot buffer version BEFORE async fetches — if the buffer changes
+        // during the fetch, the stamp won't match and diagnostics are hidden.
+        let version_before = self.buffer().version();
 
         // Query diagnostic count from LSP manager
         let count = if let Some(lsp) = &self.lsp_state.lsp_manager {
@@ -118,7 +126,7 @@ impl Editor {
                 );
             }
             self.lsp_state.current_file_diagnostics = diagnostics;
-            self.lsp_state.diagnostics_buffer_version = self.buffer().version();
+            self.lsp_state.diagnostics_buffer_version = version_before;
         } else {
             crate::log_debug!(
                 "diagnostics",
