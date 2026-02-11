@@ -40,6 +40,7 @@ impl Editor {
                     self.lsp_state.diagnostic_count = (errors, warnings, info, hints);
                     // Cache full diagnostic list
                     self.lsp_state.current_file_diagnostics = diagnostics;
+                    self.lsp_state.diagnostics_buffer_version = self.buffer().version();
                     return;
                 }
             }
@@ -117,6 +118,7 @@ impl Editor {
                 );
             }
             self.lsp_state.current_file_diagnostics = diagnostics;
+            self.lsp_state.diagnostics_buffer_version = self.buffer().version();
         } else {
             crate::log_debug!(
                 "diagnostics",
@@ -132,6 +134,11 @@ impl Editor {
 
     /// Get diagnostics for a specific line from cached diagnostics
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
+        // Don't return diagnostics cached for a different buffer version —
+        // they may point to wrong line/column positions after edits.
+        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+            return Vec::new();
+        }
         let result: Vec<_> = self
             .lsp_state
             .current_file_diagnostics
@@ -157,6 +164,9 @@ impl Editor {
 
     /// Get the current diagnostic at the cursor position
     pub fn current_diagnostic(&self) -> Option<String> {
+        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+            return None;
+        }
         let line = self.buffer().cursor().line();
         let diagnostics = &self.lsp_state.current_file_diagnostics;
 
@@ -168,12 +178,18 @@ impl Editor {
 
     /// Get the total number of diagnostics
     pub fn diagnostic_count(&self) -> usize {
+        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+            return 0;
+        }
         let diagnostics = &self.lsp_state.current_file_diagnostics;
         diagnostics.len()
     }
 
     /// Get all diagnostics for the current file
     pub fn all_diagnostics(&self) -> &[lsp_types::Diagnostic] {
+        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+            return &[];
+        }
         &self.lsp_state.current_file_diagnostics
     }
 

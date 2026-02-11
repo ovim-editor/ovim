@@ -530,6 +530,25 @@ impl LspManager {
         );
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
 
+        // Reject diagnostics computed for a document version older than the current one.
+        // This prevents stale diagnostics from appearing at wrong positions after edits.
+        if let Some(diag_version) = version {
+            let versions = self.document_versions.lock().await;
+            if let Some(&current_version) = versions.get(&uri) {
+                if diag_version < current_version {
+                    crate::lsp_debug!(
+                        "DIAGNOSTICS",
+                        "Dropping stale diagnostics: server={} diag_version={} current_doc_version={}",
+                        server_id,
+                        diag_version,
+                        current_version
+                    );
+                    return;
+                }
+            }
+            // Lock released here before acquiring diagnostics lock
+        }
+
         let mut diags = self.diagnostics.lock().await;
         let entry = diags.entry(uri).or_default();
 

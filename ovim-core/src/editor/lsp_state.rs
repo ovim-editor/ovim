@@ -258,6 +258,8 @@ pub struct LspState {
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
+    /// Buffer version when diagnostics were last cached — used to detect staleness
+    pub diagnostics_buffer_version: usize,
     /// Cached hover result to avoid redundant LSP requests
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP responses (each request type has its own slot)
@@ -299,6 +301,7 @@ impl LspState {
             inlay_hints: Vec::new(),
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
+            diagnostics_buffer_version: 0,
             hover_cache: None,
             pending_lsp_responses: PendingLspResponses::default(),
             pending_completion: None,
