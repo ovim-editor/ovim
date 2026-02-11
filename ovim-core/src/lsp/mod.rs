@@ -142,6 +142,11 @@ pub struct LspManager {
     /// Outer key: URI, inner key: server_id, value: diagnostics from that server
     diagnostics: Mutex<HashMap<Uri, HashMap<String, StoredDiagnostics>>>,
 
+    /// Cached merged diagnostics per URI (OV-00151)
+    /// Invalidated when set_diagnostics() stores new data for a URI.
+    /// Avoids calling merge_diagnostics() 2-3x per tick under lock.
+    merged_diagnostics_cache: Mutex<HashMap<Uri, Vec<Diagnostic>>>,
+
     /// Document versions for change tracking
     document_versions: Mutex<HashMap<Uri, i32>>,
 
@@ -195,6 +200,7 @@ impl LspManager {
         Self {
             servers: DashMap::new(),
             diagnostics: Mutex::new(HashMap::new()),
+            merged_diagnostics_cache: Mutex::new(HashMap::new()),
             document_versions: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
@@ -423,6 +429,11 @@ impl LspManager {
                 server_map.remove(language);
             }
         }
+        // Invalidate entire merge cache since we removed a server's diagnostics
+        {
+            let mut cache = self.merged_diagnostics_cache.lock().await;
+            cache.clear();
+        }
         // Signal diagnostics changed so UI refreshes
         self.diagnostics_changed.store(true, Ordering::SeqCst);
 
@@ -452,63 +463,70 @@ impl LspManager {
         merged
     }
 
-    /// Gets diagnostics for a file (merged from all servers)
+    /// Gets diagnostics for a file (merged from all servers, cached)
     pub async fn get_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
-        let diagnostics = self.diagnostics.lock().await;
-        let result = diagnostics
-            .get(uri)
-            .map(Self::merge_diagnostics)
-            .unwrap_or_default();
-        crate::lsp_debug!(
-            "DIAGNOSTICS",
-            "get_diagnostics: uri={} found={} stored_uris={:?}",
-            uri.as_str(),
-            result.len(),
-            diagnostics.keys().map(|u| u.as_str()).collect::<Vec<_>>()
-        );
-        result
-    }
-
-    /// Gets diagnostics for a specific line in a file (merged from all servers)
-    pub async fn get_diagnostics_for_line(&self, uri: &Uri, line: u32) -> Vec<Diagnostic> {
-        let diagnostics = self.diagnostics.lock().await;
-        diagnostics
-            .get(uri)
-            .map(|server_map| {
-                let merged = Self::merge_diagnostics(server_map);
-                merged
-                    .into_iter()
-                    .filter(|d| d.range.start.line <= line && d.range.end.line >= line)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// Counts diagnostics by severity (merged from all servers)
-    pub async fn count_diagnostics(&self, uri: &Uri) -> (usize, usize, usize, usize) {
-        let diagnostics = self.diagnostics.lock().await;
-        if let Some(server_map) = diagnostics.get(uri) {
-            let merged = Self::merge_diagnostics(server_map);
-            let mut errors = 0;
-            let mut warnings = 0;
-            let mut info = 0;
-            let mut hints = 0;
-
-            for diag in &merged {
-                match diag.severity {
-                    Some(lsp_types::DiagnosticSeverity::ERROR) => errors += 1,
-                    Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
-                    Some(lsp_types::DiagnosticSeverity::INFORMATION) => info += 1,
-                    Some(lsp_types::DiagnosticSeverity::HINT) => hints += 1,
-                    None => warnings += 1, // Default to warning if no severity
-                    _ => {}
-                }
+        // Check cache first (OV-00151)
+        {
+            let cache = self.merged_diagnostics_cache.lock().await;
+            if let Some(cached) = cache.get(uri) {
+                return cached.clone();
             }
-
-            (errors, warnings, info, hints)
-        } else {
-            (0, 0, 0, 0)
         }
+
+        // Cache miss: merge and store
+        let merged = {
+            let diagnostics = self.diagnostics.lock().await;
+            let result = diagnostics
+                .get(uri)
+                .map(Self::merge_diagnostics)
+                .unwrap_or_default();
+            crate::lsp_debug!(
+                "DIAGNOSTICS",
+                "get_diagnostics: uri={} found={} stored_uris={:?}",
+                uri.as_str(),
+                result.len(),
+                diagnostics.keys().map(|u| u.as_str()).collect::<Vec<_>>()
+            );
+            result
+        };
+
+        {
+            let mut cache = self.merged_diagnostics_cache.lock().await;
+            cache.insert(uri.clone(), merged.clone());
+        }
+
+        merged
+    }
+
+    /// Gets diagnostics for a specific line in a file (merged from all servers, cached)
+    pub async fn get_diagnostics_for_line(&self, uri: &Uri, line: u32) -> Vec<Diagnostic> {
+        self.get_diagnostics(uri)
+            .await
+            .into_iter()
+            .filter(|d| d.range.start.line <= line && d.range.end.line >= line)
+            .collect()
+    }
+
+    /// Counts diagnostics by severity (merged from all servers, cached)
+    pub async fn count_diagnostics(&self, uri: &Uri) -> (usize, usize, usize, usize) {
+        let merged = self.get_diagnostics(uri).await;
+        let mut errors = 0;
+        let mut warnings = 0;
+        let mut info = 0;
+        let mut hints = 0;
+
+        for diag in &merged {
+            match diag.severity {
+                Some(lsp_types::DiagnosticSeverity::ERROR) => errors += 1,
+                Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
+                Some(lsp_types::DiagnosticSeverity::INFORMATION) => info += 1,
+                Some(lsp_types::DiagnosticSeverity::HINT) => hints += 1,
+                None => warnings += 1, // Default to warning if no severity
+                _ => {}
+            }
+        }
+
+        (errors, warnings, info, hints)
     }
 
     /// Sets diagnostics for a file from a specific server
@@ -550,6 +568,7 @@ impl LspManager {
         }
 
         let mut diags = self.diagnostics.lock().await;
+        let uri_for_cache = uri.clone();
         let entry = diags.entry(uri).or_default();
 
         if let Some(diag_version) = version {
@@ -574,6 +593,13 @@ impl LspManager {
                 diagnostics,
             },
         );
+        drop(diags); // Release diagnostics lock before acquiring cache lock
+
+        // Invalidate merged cache for this URI (OV-00151)
+        {
+            let mut cache = self.merged_diagnostics_cache.lock().await;
+            cache.remove(&uri_for_cache);
+        }
         self.diagnostics_changed.store(true, Ordering::SeqCst);
     }
 

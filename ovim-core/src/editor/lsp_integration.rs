@@ -562,6 +562,10 @@ impl Editor {
         // Abort all pending LSP responses
         self.lsp_state.pending_lsp_responses.abort_all();
         self.lsp_state.hover_cache = None;
+        // OV-00157: Abort pending completion request on buffer switch
+        if let Some(pending) = self.lsp_state.pending_completion.take() {
+            pending.request.task.abort();
+        }
     }
 
     /// Get active LSP servers map

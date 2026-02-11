@@ -189,32 +189,30 @@ impl LspManager {
             }]
         };
 
-        // BUG FIX #1: Hold version lock until AFTER sending to prevent race condition.
-        // Critical section: increment version and send notification atomically.
-        // This prevents concurrent changes from getting versions (1,2) but sending as (2,1).
-        // We must hold the lock across both version increment AND the send operation.
-        {
+        // OV-00150: Increment version and build params under lock, then release
+        // before sending to avoid blocking all document operations during I/O.
+        // Ordering is safe because this function is only called from
+        // flush_pending_changes() which processes URIs sequentially from the
+        // debounce channel — at most one pending flush per URI at a time.
+        let params = {
             let mut versions = self.document_versions.lock().await;
             let version = versions.entry(uri.clone()).or_insert(0);
             *version += 1;
             let current_version = *version;
 
-            // Build params while holding lock
-            let params = DidChangeTextDocumentParams {
+            DidChangeTextDocumentParams {
                 text_document: VersionedTextDocumentIdentifier {
                     uri: uri.clone(),
                     version: current_version,
                 },
                 content_changes,
-            };
+            }
+        }; // Lock released here, before I/O
 
-            // Send notification while still holding version lock
-            // This ensures version ordering matches send ordering
-            crate::metrics::LSP_DIDCHANGE_TOTAL.inc();
-            server
-                .notify("textDocument/didChange", serde_json::to_value(params)?)
-                .await?;
-        } // Lock released here, after send is queued
+        crate::metrics::LSP_DIDCHANGE_TOTAL.inc();
+        server
+            .notify("textDocument/didChange", serde_json::to_value(params)?)
+            .await?;
 
         Ok(())
     }
@@ -1108,13 +1106,41 @@ impl LspManager {
         if let Some(rx) = rx_opt.as_mut() {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
-                if let Err(e) = self.flush_pending_changes(&uri).await {
-                    lsp_error!(
-                        "Debounce",
-                        "Error flushing changes for {}: {}",
-                        uri.as_str(),
-                        e
-                    );
+                // Peek at language_id from the debouncer before flush removes it.
+                // If the debouncer still exists, use broadcast flush so companion
+                // servers also receive the pending changes (OV-00149).
+                let language_id = self
+                    .change_debouncers
+                    .get(&uri)
+                    .and_then(|entry| {
+                        // Quick blocking lock to read language_id — the debouncer
+                        // lock is only held briefly during did_change updates.
+                        if let Ok(debouncer) = entry.value().try_lock() {
+                            Some(debouncer.language_id.clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(lang_id) = language_id {
+                    if let Err(e) = self.flush_pending_changes_broadcast(&uri, &lang_id).await {
+                        lsp_error!(
+                            "Debounce",
+                            "Error flushing changes for {}: {}",
+                            uri.as_str(),
+                            e
+                        );
+                    }
+                } else {
+                    // Fallback: debouncer already removed (did_close) or locked — single flush
+                    if let Err(e) = self.flush_pending_changes(&uri).await {
+                        lsp_error!(
+                            "Debounce",
+                            "Error flushing changes for {}: {}",
+                            uri.as_str(),
+                            e
+                        );
+                    }
                 }
                 count += 1;
             }
