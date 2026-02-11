@@ -187,12 +187,25 @@ pub struct LspManager {
     /// Maintained by start_server/start_companion_server/stop_server.
     /// Avoids O(n) DashMap scan in servers_for_language().
     language_server_index: DashMap<String, Vec<String>>,
+
+    /// Maps server_id → root_path for root-based dedup
+    server_roots: DashMap<String, std::path::PathBuf>,
 }
 
 /// Builds a composite server ID for companion LSP servers.
 /// Primary servers use just `language_id`, companion servers use `language_id:companion_id`.
 pub fn companion_server_id(language_id: &str, companion_id: &str) -> String {
     format!("{}:{}", language_id, companion_id)
+}
+
+/// Builds a composite server ID for root-scoped LSP servers.
+/// First server for a language uses bare `language_id`; subsequent ones with different
+/// roots use `language_id@<8-char hash of root>`.
+fn root_server_id(language: &str, root_path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root_path.hash(&mut hasher);
+    format!("{}@{:08x}", language, hasher.finish() as u32)
 }
 
 impl LspManager {
@@ -220,6 +233,7 @@ impl LspManager {
             starting_servers: DashSet::new(),
             listener_handles: DashMap::new(),
             language_server_index: DashMap::new(),
+            server_roots: DashMap::new(),
         }
     }
 
@@ -248,38 +262,64 @@ impl LspManager {
         }
     }
 
-    /// Starts a language server for the given language
+    /// Starts a language server for the given language and root path.
+    /// Returns the server_id used (may be `language` or `language@<hash>` if
+    /// a server already exists for the same language with a different root).
     pub async fn start_server(
         &self,
         language: &str,
         command: &str,
         args: Vec<String>,
         root_path: &Path,
-    ) -> Result<()> {
+    ) -> Result<String> {
         lsp_debug!(
             "LspManager",
-            "start_server called for language={}",
-            language
+            "start_server called for language={} root={}",
+            language,
+            root_path.display()
         );
-        // Check if already running
-        if self.servers.contains_key(language) {
-            lsp_debug!("LspManager", "Server already running for {}", language);
-            return Ok(()); // Already running
+
+        // Check existing servers for this language — if any shares the same root, reuse it
+        let existing_ids = self.servers_for_language(language);
+        for sid in &existing_ids {
+            if let Some(existing_root) = self.server_roots.get(sid.as_str()) {
+                if existing_root.value() == root_path {
+                    lsp_debug!(
+                        "LspManager",
+                        "Server {} already running for root {}",
+                        sid,
+                        root_path.display()
+                    );
+                    return Ok(sid.clone());
+                }
+            }
+        }
+
+        // Determine server_id: bare language for the first server, composite for subsequent roots
+        let server_id = if existing_ids.is_empty() {
+            language.to_string()
+        } else {
+            root_server_id(language, root_path)
+        };
+
+        // Already running with this exact id (e.g., race between two buffers with same root)
+        if self.servers.contains_key(&server_id) {
+            lsp_debug!("LspManager", "Server already running: {}", server_id);
+            return Ok(server_id);
         }
 
         // Prevent concurrent duplicate starts
-        if !self.starting_servers.insert(language.to_string()) {
+        if !self.starting_servers.insert(server_id.clone()) {
             lsp_debug!(
                 "LspManager",
                 "Server start already in progress for {}",
-                language
+                server_id
             );
-            return Ok(());
+            return Ok(server_id);
         }
 
         let result = async {
             lsp_debug!("LspManager", "Spawning server: {} {:?}", command, args);
-            // Spawn and initialize without holding the lock (this can take 10-60 seconds)
             let mut server = LanguageServer::spawn(language, command, args).await?;
             lsp_debug!("LspManager", "Server spawned successfully");
 
@@ -292,32 +332,33 @@ impl LspManager {
             lsp_debug!("LspManager", "Initialize completed successfully");
 
             // Insert into servers map
-            // Double-check in case another task started the same server
-            if let Some(mut existing) = self.servers.insert(language.to_string(), server) {
-                // Another thread won the race - clean up the existing server
+            if let Some(mut existing) = self.servers.insert(server_id.clone(), server) {
                 if let Err(e) = existing.shutdown().await {
                     lsp_warn!(
                         "LspManager",
                         "Failed to shut down redundant server for {}: {}",
-                        language,
+                        server_id,
                         e
                     );
                 }
             }
 
+            // Track root path for this server
+            self.server_roots.insert(server_id.clone(), root_path.to_path_buf());
+
             // Update reverse index (deduplicate for restart safety)
             let mut ids = self.language_server_index
                 .entry(language.to_string())
                 .or_default();
-            if !ids.contains(&language.to_string()) {
-                ids.push(language.to_string());
+            if !ids.contains(&server_id) {
+                ids.push(server_id.clone());
             }
 
-            Ok(())
+            Ok(server_id.clone())
         }
         .await;
 
-        self.starting_servers.remove(language);
+        self.starting_servers.remove(&server_id);
         result
     }
 
@@ -383,6 +424,9 @@ impl LspManager {
                 }
             }
 
+            // Track root path for this companion server
+            self.server_roots.insert(server_id.to_string(), root_path.to_path_buf());
+
             // Update reverse index (deduplicate for restart safety)
             let mut ids = self.language_server_index
                 .entry(language.to_string())
@@ -437,8 +481,12 @@ impl LspManager {
             server.shutdown().await?;
         }
 
+        // Clean up root tracking
+        self.server_roots.remove(language);
+
         // Update reverse index: remove this server_id from its language entry
-        let language_id = language.split(':').next().unwrap_or(language);
+        // For root-scoped servers like "typescript@abcd1234", extract base language
+        let language_id = language.split([':', '@']).next().unwrap_or(language);
         if let Some(mut entry) = self.language_server_index.get_mut(language_id) {
             entry.retain(|s| s != language);
             if entry.is_empty() {
@@ -672,6 +720,11 @@ impl LspManager {
         self.servers
             .get(language)
             .map(|entry| entry.value().clone())
+    }
+
+    /// Gets the root path for a server (for debugging/introspection)
+    pub fn server_root(&self, server_id: &str) -> Option<std::path::PathBuf> {
+        self.server_roots.get(server_id).map(|r| r.clone())
     }
 }
 

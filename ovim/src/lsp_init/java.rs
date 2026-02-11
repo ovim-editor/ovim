@@ -116,22 +116,23 @@ pub async fn initialize_hyperion_lsp_background(
     let server_command = hyperion_bin.to_string_lossy().to_string();
     let server_args: Vec<String> = vec![];
 
-    match lsp_manager
+    let server_id = match lsp_manager
         .start_server("java", &server_command, server_args, project_root)
         .await
     {
-        Ok(()) => {
+        Ok(sid) => {
             send_java_status("Server started".to_string());
+            sid
         }
         Err(e) => {
             send_java_status(format!("Failed to start: {}", e));
             return;
         }
-    }
+    };
 
-    // Start notification listener
+    // Start notification listener (use returned server_id for multi-root support)
     lsp_manager
-        .start_notification_listener("java".to_string())
+        .start_notification_listener(server_id)
         .await;
 
     send_java_status("Ready".to_string());
@@ -161,11 +162,11 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
             .start_server("java", &server_command, vec![], project_root)
             .await
         {
-            Ok(_) => {
+            Ok(server_id) => {
                 editor.register_lsp_server("java".to_string(), "hyperion".to_string());
 
                 lsp_manager
-                    .start_notification_listener("java".to_string())
+                    .start_notification_listener(server_id)
                     .await;
 
                 // PRE-WARM: Send didOpen immediately for faster first request
