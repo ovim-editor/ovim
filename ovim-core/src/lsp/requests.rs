@@ -834,6 +834,11 @@ impl LspManager {
             return Ok(doc_symbols);
         }
 
+        // OV-00153: Log when both parse attempts fail
+        crate::lsp_warn!(
+            "LSP-PARSE",
+            "textDocument/documentSymbol: failed to parse as DocumentSymbol[] or SymbolInformation[]"
+        );
         Ok(Vec::new())
     }
 
@@ -950,6 +955,11 @@ impl LspManager {
             return Ok(symbol_infos);
         }
 
+        // OV-00153: Log when both parse attempts fail
+        crate::lsp_warn!(
+            "LSP-PARSE",
+            "workspace/symbol: failed to parse as SymbolInformation[] or WorkspaceSymbol[]"
+        );
         Ok(Vec::new())
     }
 
@@ -1282,7 +1292,8 @@ impl LspManager {
             .request("textDocument/inlayHint", serde_json::to_value(params)?)
             .await?;
 
-        let hints: Vec<lsp_types::InlayHint> = serde_json::from_value(result).unwrap_or_default();
+        let hints: Vec<lsp_types::InlayHint> =
+            parse_lsp_response(result, "textDocument/inlayHint").unwrap_or_default();
 
         Ok(hints)
     }

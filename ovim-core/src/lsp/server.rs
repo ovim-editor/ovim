@@ -1149,6 +1149,11 @@ impl LanguageServer {
                 ServerState::Terminated => {
                     return Err(anyhow!("LSP server terminated (method: {})", method));
                 }
+                // OV-00156: Reject requests during shutdown to avoid queuing work
+                // that will never be answered
+                ServerState::ShuttingDown => {
+                    return Err(anyhow!("LSP server shutting down (method: {})", method));
+                }
                 _ => {} // Ready or Initializing — proceed
             }
         }
@@ -1419,11 +1424,15 @@ impl LanguageServer {
             ServerState::ShuttingDown | ServerState::Terminated => Duration::from_secs(0),
         };
 
-        // Check if process is alive
+        // Check if process is alive (OV-00154: use try_wait for accurate check)
         let is_alive = {
-            let process = self.inner.process.lock().await;
-            if let Some(ref child) = *process {
-                child.id().is_some()
+            let mut process = self.inner.process.lock().await;
+            if let Some(ref mut child) = *process {
+                match child.try_wait() {
+                    Ok(None) => true,    // Still running
+                    Ok(Some(_)) => false, // Exited
+                    Err(_) => false,      // Error checking
+                }
             } else {
                 false
             }
