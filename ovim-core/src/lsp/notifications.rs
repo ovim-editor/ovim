@@ -547,7 +547,7 @@ impl LspManager {
             // Send to all servers for this language with the same version
             let server_ids = self.servers_for_language(language_id);
             for sid in &server_ids {
-                if let Err(e) = tokio::time::timeout(
+                match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     self.send_did_change_with_version(
                         uri.clone(),
@@ -559,7 +559,26 @@ impl LspManager {
                 )
                 .await
                 {
-                    lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {:?}", sid, e);
+                    Ok(Ok(())) => {
+                        // Success: change sent to server
+                    }
+                    Ok(Err(e)) => {
+                        // LSP send failed (server might be down)
+                        lsp_warn!(
+                            "LSP-BROADCAST",
+                            "Flush failed for server {}: {}",
+                            sid,
+                            e
+                        );
+                    }
+                    Err(_) => {
+                        // Timeout: server is hanging
+                        lsp_warn!(
+                            "LSP-BROADCAST",
+                            "Timeout flushing changes for server {} (5s)",
+                            sid
+                        );
+                    }
                 }
             }
         }
@@ -597,7 +616,8 @@ impl LspManager {
 
     /// Sends didClose to all servers serving a language
     pub async fn did_close_broadcast(&self, uri: Uri, language_id: &str) -> Result<()> {
-        self.flush_pending_changes(&uri).await?;
+        self.flush_pending_changes_broadcast(&uri, language_id)
+            .await?;
 
         let server_ids = self.servers_for_language(language_id);
         for sid in &server_ids {
@@ -1106,24 +1126,22 @@ impl LspManager {
         if let Some(rx) = rx_opt.as_mut() {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
-                // Peek at language_id from the debouncer before flush removes it.
-                // If the debouncer still exists, use broadcast flush so companion
-                // servers also receive the pending changes (OV-00149).
-                let language_id = self
+                // Clone the Arc out of the DashMap so we release the shard read-lock
+                // before awaiting the debouncer mutex. This avoids the old try_lock()
+                // fallback that silently degraded to single-server flush (OV-00149).
+                let debouncer_arc = self
                     .change_debouncers
                     .get(&uri)
-                    .and_then(|entry| {
-                        // Quick blocking lock to read language_id — the debouncer
-                        // lock is only held briefly during did_change updates.
-                        if let Ok(debouncer) = entry.value().try_lock() {
-                            Some(debouncer.language_id.clone())
-                        } else {
-                            None
-                        }
-                    });
+                    .map(|entry| entry.value().clone());
 
-                if let Some(lang_id) = language_id {
-                    if let Err(e) = self.flush_pending_changes_broadcast(&uri, &lang_id).await {
+                if let Some(debouncer_arc) = debouncer_arc {
+                    // DashMap shard released — safe to await
+                    let language_id = {
+                        let debouncer = debouncer_arc.lock().await;
+                        debouncer.language_id.clone()
+                    };
+                    if let Err(e) = self.flush_pending_changes_broadcast(&uri, &language_id).await
+                    {
                         lsp_error!(
                             "Debounce",
                             "Error flushing changes for {}: {}",
@@ -1132,7 +1150,7 @@ impl LspManager {
                         );
                     }
                 } else {
-                    // Fallback: debouncer already removed (did_close) or locked — single flush
+                    // Debouncer already removed (e.g., did_close raced) — single flush
                     if let Err(e) = self.flush_pending_changes(&uri).await {
                         lsp_error!(
                             "Debounce",
