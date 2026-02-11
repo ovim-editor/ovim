@@ -6,6 +6,7 @@
 use super::{server::ServerState, utils::marked_string_to_text, LspManager, LspServerInfo};
 use anyhow::Result;
 use lsp_types::{Diagnostic, Uri};
+use std::future::Future;
 
 /// Parse an LSP response, logging any parse failures instead of silently swallowing them.
 fn parse_lsp_response<T: serde::de::DeserializeOwned>(
@@ -1473,37 +1474,31 @@ impl LspManager {
     // Multi-server fan-out methods
     // =========================================================================
 
-    /// Hover from multiple servers, concatenating results with separator.
-    /// Queries all servers concurrently with a 3s per-server timeout.
-    pub async fn hover_multi(
-        &self,
-        uri: &Uri,
-        line: u32,
-        character: u32,
-        server_ids: &[String],
-    ) -> Result<Option<String>> {
+    /// Fan out a request to multiple servers concurrently with a 3s per-server timeout.
+    /// Returns collected results from all servers that responded successfully.
+    async fn fan_out<T, Fut, F>(&self, server_ids: &[String], per_server: F) -> Vec<T>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        F: Fn(super::LanguageServer) -> Fut,
+    {
         use std::time::Duration;
 
         let mut futures = Vec::new();
         for sid in server_ids {
             let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
             if let Some(server) = server {
-                let uri = uri.clone();
                 let sid = sid.clone();
+                let fut = per_server(server);
                 futures.push(tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(3),
-                        Self::hover_on_server(&server, &uri, line, character),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(text)) => text,
+                    match tokio::time::timeout(Duration::from_secs(3), fut).await {
+                        Ok(Ok(val)) => Some(val),
                         Ok(Err(e)) => {
-                            lsp_debug!("LSP-HOVER-MULTI", "Server {} failed: {}", sid, e);
+                            lsp_debug!("LSP-MULTI", "Server {} failed: {}", sid, e);
                             None
                         }
                         Err(_) => {
-                            lsp_debug!("LSP-HOVER-MULTI", "Server {} timed out", sid);
+                            lsp_debug!("LSP-MULTI", "Server {} timed out", sid);
                             None
                         }
                     }
@@ -1511,18 +1506,36 @@ impl LspManager {
             }
         }
 
-        let mut texts = Vec::new();
+        let mut results = Vec::new();
         for f in futures {
-            if let Ok(Some(text)) = f.await {
-                texts.push(text);
+            if let Ok(Some(val)) = f.await {
+                results.push(val);
             }
         }
+        results
+    }
 
-        if texts.is_empty() {
-            Ok(None)
+    /// Hover from multiple servers, concatenating results with separator.
+    pub async fn hover_multi(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        server_ids: &[String],
+    ) -> Result<Option<String>> {
+        let results: Vec<Option<String>> = self
+            .fan_out(server_ids, |server| {
+                let uri = uri.clone();
+                async move { Self::hover_on_server(&server, &uri, line, character).await }
+            })
+            .await;
+
+        let texts: Vec<String> = results.into_iter().flatten().collect();
+        Ok(if texts.is_empty() {
+            None
         } else {
-            Ok(Some(texts.join("\n\n---\n\n")))
-        }
+            Some(texts.join("\n\n---\n\n"))
+        })
     }
 
     /// Internal: hover on a single server (used by hover_multi)
@@ -1584,44 +1597,16 @@ impl LspManager {
         server_ids: &[String],
         trigger_char: Option<char>,
     ) -> Result<Vec<lsp_types::CompletionItem>> {
-        use std::time::Duration;
-
-        let mut futures = Vec::new();
-        for sid in server_ids {
-            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
-            if let Some(server) = server {
+        let results: Vec<Vec<lsp_types::CompletionItem>> = self
+            .fan_out(server_ids, |server| {
                 let uri = uri.clone();
-                let sid = sid.clone();
-                let trigger_char = trigger_char;
-                futures.push(tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(3),
-                        Self::completion_on_server(&server, &uri, line, character, trigger_char),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(items)) => items,
-                        Ok(Err(e)) => {
-                            lsp_debug!("LSP-COMPLETION-MULTI", "Server {} failed: {}", sid, e);
-                            Vec::new()
-                        }
-                        Err(_) => {
-                            lsp_debug!("LSP-COMPLETION-MULTI", "Server {} timed out", sid);
-                            Vec::new()
-                        }
-                    }
-                }));
-            }
-        }
+                async move {
+                    Self::completion_on_server(&server, &uri, line, character, trigger_char).await
+                }
+            })
+            .await;
 
-        let mut all_items = Vec::new();
-        for f in futures {
-            if let Ok(items) = f.await {
-                all_items.extend(items);
-            }
-        }
-
-        Ok(all_items)
+        Ok(results.into_iter().flatten().collect())
     }
 
     /// Internal: completion on a single server
@@ -1680,43 +1665,16 @@ impl LspManager {
         character: u32,
         server_ids: &[String],
     ) -> Result<Option<lsp_types::Location>> {
-        use std::time::Duration;
-
-        // Query all servers concurrently
-        let mut futures = Vec::new();
-        for sid in server_ids {
-            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
-            if let Some(server) = server {
+        let results: Vec<Option<lsp_types::Location>> = self
+            .fan_out(server_ids, |server| {
                 let uri = uri.clone();
-                let sid = sid.clone();
-                futures.push(tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(3),
-                        Self::goto_definition_on_server(&server, &uri, line, character),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(loc)) => loc,
-                        Ok(Err(e)) => {
-                            lsp_debug!("LSP-GOTO-MULTI", "Server {} failed: {}", sid, e);
-                            None
-                        }
-                        Err(_) => {
-                            lsp_debug!("LSP-GOTO-MULTI", "Server {} timed out", sid);
-                            None
-                        }
-                    }
-                }));
-            }
-        }
+                async move {
+                    Self::goto_definition_on_server(&server, &uri, line, character).await
+                }
+            })
+            .await;
 
-        // Return first non-empty result
-        for f in futures {
-            if let Ok(Some(loc)) = f.await {
-                return Ok(Some(loc));
-            }
-        }
-        Ok(None)
+        Ok(results.into_iter().flatten().next())
     }
 
     /// Internal: goto definition on a single server
@@ -1771,44 +1729,17 @@ impl LspManager {
         server_ids: &[String],
         diagnostics: Vec<Diagnostic>,
     ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
-        use std::time::Duration;
-
-        let mut futures = Vec::new();
-        for sid in server_ids {
-            let server = self.servers.get(sid.as_str()).map(|e| e.value().clone());
-            if let Some(server) = server {
+        let results: Vec<Vec<lsp_types::CodeActionOrCommand>> = self
+            .fan_out(server_ids, |server| {
                 let uri = uri.clone();
-                let sid = sid.clone();
                 let diags = diagnostics.clone();
-                futures.push(tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(3),
-                        Self::code_actions_on_server(&server, &uri, line, character, diags),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(actions)) => actions,
-                        Ok(Err(e)) => {
-                            lsp_debug!("LSP-ACTIONS-MULTI", "Server {} failed: {}", sid, e);
-                            Vec::new()
-                        }
-                        Err(_) => {
-                            lsp_debug!("LSP-ACTIONS-MULTI", "Server {} timed out", sid);
-                            Vec::new()
-                        }
-                    }
-                }));
-            }
-        }
+                async move {
+                    Self::code_actions_on_server(&server, &uri, line, character, diags).await
+                }
+            })
+            .await;
 
-        let mut all_actions = Vec::new();
-        for f in futures {
-            if let Ok(actions) = f.await {
-                all_actions.extend(actions);
-            }
-        }
-
-        Ok(all_actions)
+        Ok(results.into_iter().flatten().collect())
     }
 
     /// Internal: code actions on a single server
