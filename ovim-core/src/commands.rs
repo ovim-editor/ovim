@@ -422,18 +422,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             })
         }
         "LspLog" => {
-            // Show LSP log file in a new tab (like Neovim)
+            // Open the actual LSP log file in a new tab so % resolves correctly
             let log_path = crate::lsp::get_log_path();
-            match std::fs::read_to_string(&log_path) {
-                Ok(content) => {
-                    if content.is_empty() {
-                        editor.open_scratch_buffer_in_new_tab("LspLog", "LSP log is empty\n");
-                    } else {
-                        editor.open_scratch_buffer_in_new_tab("LspLog", &content);
-                        // Jump to end of log
-                        let line_count = editor.buffer().rope().len_lines().saturating_sub(1);
-                        editor.buffer_mut().cursor_mut().set_line(line_count);
-                    }
+            let log_path_str = log_path.to_string_lossy().to_string();
+            editor.new_tab(None);
+            match editor.load_file(&log_path_str) {
+                Ok(_) => {
+                    // Jump to end of log
+                    let line_count = editor.buffer().rope().len_lines().saturating_sub(1);
+                    editor.buffer_mut().cursor_mut().set_line(line_count);
                     CommandResult::Success(SuccessResponse {
                         success: true,
                         message: None,
@@ -441,12 +438,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     })
                 }
                 Err(e) => {
-                    let msg = format!("Failed to read LSP log at {:?}: {}\n", log_path, e);
-                    editor.open_scratch_buffer_in_new_tab("LspLog", &msg);
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: None,
-                        line_count: None,
+                    CommandResult::Error(ErrorResponse {
+                        error: format!("Failed to open LSP log at {}: {}", log_path_str, e),
                     })
                 }
             }
