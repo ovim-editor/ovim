@@ -22,9 +22,9 @@ use super::line_cache::LineRenderCache;
 use super::overlays::{render_completion_menu, render_hover_window};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
-    render_command_line, render_diagnostic_badge, render_message_line, render_path_completion,
-    render_progress_line, render_rename_input, render_search_line, render_status_line,
-    render_tab_bar,
+    render_command_line, render_diagnostic_badge, render_margin_widgets, render_message_line,
+    render_path_completion, render_progress_line, render_rename_input, render_search_line,
+    render_status_line, render_tab_bar,
 };
 
 // ---------------------------------------------------------------------------
@@ -275,6 +275,7 @@ fn render_buffer_area(
                 &single_layout,
                 full_area,
             );
+            render_margin_widgets(frame, editor, theme, full_area, buffer_area);
         }
         (viewport_start, single_layout)
     }

@@ -290,6 +290,8 @@ pub struct Editor {
     pub api_port: Option<u16>,
     /// Active session name (set by :session start, cleared by :session stop)
     pub active_session: Option<String>,
+    /// Git branch name for the current file (if in a git repo)
+    git_branch: Option<String>,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -412,6 +414,7 @@ impl Editor {
             lsp_ui: LspUi::default(),
             api_port: None,
             active_session: None,
+            git_branch: None,
         }
     }
 
@@ -455,6 +458,7 @@ impl Editor {
             lsp_ui: LspUi::default(),
             api_port: None,
             active_session: None,
+            git_branch: None,
         }
     }
 
@@ -1321,6 +1325,11 @@ impl Editor {
             self.apply_modeline(&modeline);
         }
 
+        // Load git branch name for the new file
+        self.git_branch = new_buffer
+            .file_path()
+            .and_then(|p| crate::git::branch_name(p));
+
         self.add_buffer(new_buffer);
 
         // Update current file register
@@ -1638,6 +1647,11 @@ impl Editor {
     /// Sets the leader key
     pub fn set_leader_key(&mut self, key: char) {
         self.input.leader_key = key;
+    }
+
+    /// Gets the git branch name for the current file
+    pub fn git_branch(&self) -> Option<&str> {
+        self.git_branch.as_deref()
     }
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
