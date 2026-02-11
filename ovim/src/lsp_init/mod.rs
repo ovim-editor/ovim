@@ -156,12 +156,13 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
             )
             .await
         {
-            Ok(_) => {
+            Ok(server_id) => {
                 editor.register_lsp_server(language_id.clone(), server_command.clone());
 
                 // Start notification listener to receive diagnostics
+                // Use server_id (may differ from language_id for multi-root)
                 lsp_manager
-                    .start_notification_listener(language_id.clone())
+                    .start_notification_listener(server_id)
                     .await;
 
                 // PRE-WARM: Send didOpen immediately to eliminate first-request latency
