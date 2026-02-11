@@ -182,6 +182,11 @@ pub struct LspManager {
 
     /// Handles to notification listener tasks (for cleanup on server stop)
     listener_handles: DashMap<String, tokio::task::JoinHandle<()>>,
+
+    /// Reverse index: language_id → server_ids serving that language.
+    /// Maintained by start_server/start_companion_server/stop_server.
+    /// Avoids O(n) DashMap scan in servers_for_language().
+    language_server_index: DashMap<String, Vec<String>>,
 }
 
 /// Builds a composite server ID for companion LSP servers.
@@ -214,6 +219,7 @@ impl LspManager {
             dropped_notifications: Arc::new(AtomicU64::new(0)),
             starting_servers: DashSet::new(),
             listener_handles: DashMap::new(),
+            language_server_index: DashMap::new(),
         }
     }
 
@@ -299,6 +305,14 @@ impl LspManager {
                 }
             }
 
+            // Update reverse index (deduplicate for restart safety)
+            let mut ids = self.language_server_index
+                .entry(language.to_string())
+                .or_default();
+            if !ids.contains(&language.to_string()) {
+                ids.push(language.to_string());
+            }
+
             Ok(())
         }
         .await;
@@ -369,6 +383,14 @@ impl LspManager {
                 }
             }
 
+            // Update reverse index (deduplicate for restart safety)
+            let mut ids = self.language_server_index
+                .entry(language.to_string())
+                .or_default();
+            if !ids.contains(&server_id.to_string()) {
+                ids.push(server_id.to_string());
+            }
+
             Ok(())
         }
         .await;
@@ -380,19 +402,12 @@ impl LspManager {
     /// Returns all server_ids that serve the given language_id.
     /// This includes the primary server (key == language_id) and any
     /// companion servers (key starts with "language_id:").
+    /// O(1) lookup via reverse index maintained by start/stop.
     pub fn servers_for_language(&self, language_id: &str) -> Vec<String> {
-        let prefix = format!("{}:", language_id);
-        self.servers
-            .iter()
-            .filter_map(|entry| {
-                let key = entry.key();
-                if key == language_id || key.starts_with(&prefix) {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.language_server_index
+            .get(language_id)
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     pub async fn completion_trigger_characters_for_servers(
@@ -420,6 +435,16 @@ impl LspManager {
 
         if let Some((_, mut server)) = self.servers.remove(language) {
             server.shutdown().await?;
+        }
+
+        // Update reverse index: remove this server_id from its language entry
+        let language_id = language.split(':').next().unwrap_or(language);
+        if let Some(mut entry) = self.language_server_index.get_mut(language_id) {
+            entry.retain(|s| s != language);
+            if entry.is_empty() {
+                drop(entry);
+                self.language_server_index.remove(language_id);
+            }
         }
 
         // Clean up diagnostics from this server
