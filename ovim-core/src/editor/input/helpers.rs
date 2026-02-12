@@ -123,8 +123,7 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
 
     // Create and apply the change
     let change = Change::insert(position, c.to_string(), cursor_before);
-    change.apply(editor.buffer_mut());
-    editor.add_change(change);
+    editor.apply_change_and_record(change);
 
     Ok(())
 }
@@ -164,17 +163,15 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     // Insert newline + indentation
     let text_to_insert = format!("\n{}", indent);
     let change = Change::insert(position, text_to_insert, cursor_before);
-    change.apply(editor.buffer_mut());
-    editor.add_change(change);
+    let inserted = editor.apply_change_and_record(change);
 
-    if needs_double_newline {
+    if needs_double_newline && inserted {
         let cursor_after_first = (
             editor.buffer().cursor().line(),
             editor.buffer().cursor().col(),
         );
         let change = Change::insert(cursor_after_first, "\n".to_string(), cursor_before);
-        change.apply(editor.buffer_mut());
-        editor.add_change(change);
+        editor.apply_change_and_record(change);
         editor
             .buffer_mut()
             .cursor_mut()
@@ -222,8 +219,7 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
 
     let range = Range::new(start_pos, end_pos);
     let change = Change::delete_backward(range, deleted_text, cursor_before);
-    change.apply(editor.buffer_mut());
-    editor.add_change(change);
+    editor.apply_change_and_record(change);
 
     Ok(())
 }
@@ -250,8 +246,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
         let end_pos = (line_idx, 0);
         let range = Range::new(start_pos, end_pos);
         let change = Change::delete(range, "\n".to_string(), cursor_before);
-        change.apply(editor.buffer_mut());
-        editor.add_change(change);
+        editor.apply_change_and_record(change);
         return Ok(());
     }
 
@@ -291,16 +286,19 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
 
     // Delete the range
     if start_col < col {
+        let version_before = editor.buffer().version();
         let deleted = editor
             .buffer_mut()
             .delete_range(line_idx, start_col, line_idx, col);
-        let range = Range::new((line_idx, start_col), (line_idx, col));
-        let change = Change::delete(range, deleted, cursor_before);
-        editor.add_change(change);
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line_idx, start_col);
+        if editor.buffer().version() != version_before {
+            let range = Range::new((line_idx, start_col), (line_idx, col));
+            let change = Change::delete(range, deleted, cursor_before);
+            editor.add_change(change);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(line_idx, start_col);
+        }
     }
 
     Ok(())
@@ -318,10 +316,13 @@ pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Delete from start of line to cursor
+    let version_before = editor.buffer().version();
     let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, col);
-    let range = Range::new((line_idx, 0), (line_idx, col));
-    let change = Change::delete(range, deleted, cursor_before);
-    editor.add_change(change);
+    if editor.buffer().version() != version_before {
+        let range = Range::new((line_idx, 0), (line_idx, col));
+        let change = Change::delete(range, deleted, cursor_before);
+        editor.add_change(change);
+    }
 
     Ok(())
 }
@@ -337,9 +338,13 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let expand_tab = editor.options.expand_tab;
 
     // Insert indent at beginning of line
+    let version_before = editor.buffer().version();
     editor
         .buffer_mut()
         .indent_lines_at(line_idx, line_idx + 1, shift_width, expand_tab);
+    if editor.buffer().version() == version_before {
+        return Ok(());
+    }
 
     // Update cursor position - move column right by indent width
     let indent_width = if expand_tab { shift_width } else { 1 };
@@ -395,9 +400,13 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Delete the leading whitespace
+    let version_before = editor.buffer().version();
     let deleted = editor
         .buffer_mut()
         .delete_range(line_idx, 0, line_idx, chars_to_remove);
+    if editor.buffer().version() == version_before {
+        return Ok(());
+    }
 
     // Update cursor position - move column left by chars_to_remove
     let new_col = col.saturating_sub(chars_to_remove);
@@ -449,12 +458,9 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
 
     // Create and apply the change (this records it for undo)
     let change = Change::insert(insert_position, text_to_insert, cursor_before);
-    let version_before = editor.buffer().version();
-    change.apply(editor.buffer_mut());
-    if editor.buffer().version() == version_before {
+    if !editor.apply_change_and_record(change) {
         return Ok(false);
     }
-    editor.add_change(change);
 
     // Position cursor at end of indentation on new line
     editor
@@ -482,12 +488,9 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
 
     // Create and apply the change (this records it for undo)
     let change = Change::insert(insert_position, text_to_insert, cursor_before);
-    let version_before = editor.buffer().version();
-    change.apply(editor.buffer_mut());
-    if editor.buffer().version() == version_before {
+    if !editor.apply_change_and_record(change) {
         return Ok(false);
     }
-    editor.add_change(change);
 
     // Position cursor at end of indentation on the new line (which is still at line_idx
     // because we inserted above, pushing everything down)
@@ -832,9 +835,13 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                 let start_pos = (start_line, 0);
                 let end_pos = (end_line + 1, 0);
 
+                let version_before = editor.buffer().version();
                 let deleted = editor
                     .buffer_mut()
                     .delete_range(start_line, 0, end_line + 1, 0);
+                if editor.buffer().version() == version_before {
+                    return Ok(());
+                }
 
                 let range = Range::new(start_pos, end_pos);
                 let change = Change::delete(range, deleted.clone(), cursor_before);
@@ -857,19 +864,23 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                         // Only delete if the line is long enough
                         if start_col < line_len {
                             let actual_end_col = (end_col + 1).min(line_len);
+                            let version_before = editor.buffer().version();
                             let deleted = editor.buffer_mut().delete_range(
                                 line_idx,
                                 start_col,
                                 line_idx,
                                 actual_end_col,
                             );
-
-                            // Create individual Change for each line deletion
-                            let range =
-                                Range::new((line_idx, start_col), (line_idx, actual_end_col));
-                            let change = Change::delete(range, deleted.clone(), cursor_before);
-                            changes.push(change);
-                            deleted_lines.push(deleted);
+                            if editor.buffer().version() != version_before {
+                                // Create individual Change for each line deletion
+                                let range =
+                                    Range::new((line_idx, start_col), (line_idx, actual_end_col));
+                                let change = Change::delete(range, deleted.clone(), cursor_before);
+                                changes.push(change);
+                                deleted_lines.push(deleted);
+                            } else {
+                                deleted_lines.push(String::new());
+                            }
                         } else {
                             deleted_lines.push(String::new());
                         }
@@ -881,10 +892,14 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                 changes.reverse();
                 let deleted = deleted_lines.join("\n");
 
-                // Record as composite change for proper undo
-                let composite = Change::composite(changes, cursor_before, cursor_before);
-                editor.add_change(composite);
-                editor.delete_to_register_with_type(deleted, RegisterType::Block);
+                if !changes.is_empty() {
+                    // Record as composite change for proper undo.
+                    let composite = Change::composite(changes, cursor_before, cursor_before);
+                    editor.add_change(composite);
+                    editor.delete_to_register_with_type(deleted, RegisterType::Block);
+                } else {
+                    return Ok(());
+                }
 
                 // Position cursor at start of block, clamped to line length
                 let line_len = if let Some(line) = editor.buffer().line(start_line) {
@@ -907,10 +922,14 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
                 let start_pos = (start_line, start_col);
                 let end_pos = (end_line, end_col + 1);
 
+                let version_before = editor.buffer().version();
                 let deleted =
                     editor
                         .buffer_mut()
                         .delete_range(start_line, start_col, end_line, end_col + 1);
+                if editor.buffer().version() == version_before {
+                    return Ok(());
+                }
 
                 let range = Range::new(start_pos, end_pos);
                 let change = Change::delete(range, deleted.clone(), cursor_before);
@@ -1142,9 +1161,15 @@ fn transform_visual_selection(
                     let transformed = transform(line_text);
                     let char_count = line_text.chars().count();
 
+                    let version_before = editor.buffer().version();
                     editor
                         .buffer_mut()
                         .delete_range(line_idx, 0, line_idx, char_count);
+                    if editor.buffer().version() == version_before {
+                        continue;
+                    }
+
+                    let version_before_insert = editor.buffer().version();
                     editor
                         .buffer_mut()
                         .insert_text_at(line_idx, 0, &transformed);
@@ -1154,7 +1179,9 @@ fn transform_visual_selection(
                         line_text.to_string(),
                         cursor_before,
                     ));
-                    all_changes.push(Change::insert((line_idx, 0), transformed, cursor_before));
+                    if editor.buffer().version() != version_before_insert {
+                        all_changes.push(Change::insert((line_idx, 0), transformed, cursor_before));
+                    }
                 }
             }
         }
@@ -1166,10 +1193,16 @@ fn transform_visual_selection(
                     let line_end = (end_col + 1).min(chars_len);
 
                     if line_start < line_end {
+                        let version_before = editor.buffer().version();
                         let deleted = editor
                             .buffer_mut()
                             .delete_range(line_idx, line_start, line_idx, line_end);
+                        if editor.buffer().version() == version_before {
+                            continue;
+                        }
+
                         let transformed = transform(&deleted);
+                        let version_before_insert = editor.buffer().version();
                         editor
                             .buffer_mut()
                             .insert_text_at(line_idx, line_start, &transformed);
@@ -1179,22 +1212,30 @@ fn transform_visual_selection(
                             deleted,
                             cursor_before,
                         ));
-                        all_changes.push(Change::insert(
-                            (line_idx, line_start),
-                            transformed,
-                            cursor_before,
-                        ));
+                        if editor.buffer().version() != version_before_insert {
+                            all_changes.push(Change::insert(
+                                (line_idx, line_start),
+                                transformed,
+                                cursor_before,
+                            ));
+                        }
                     }
                 }
             }
         }
         _ => {
             // Character-wise visual mode
+            let version_before = editor.buffer().version();
             let deleted =
                 editor
                     .buffer_mut()
                     .delete_range(start_line, start_col, end_line, end_col + 1);
+            if editor.buffer().version() == version_before {
+                return Ok(());
+            }
+
             let transformed = transform(&deleted);
+            let version_before_insert = editor.buffer().version();
             editor
                 .buffer_mut()
                 .insert_text_at(start_line, start_col, &transformed);
@@ -1204,11 +1245,13 @@ fn transform_visual_selection(
                 deleted,
                 cursor_before,
             ));
-            all_changes.push(Change::insert(
-                (start_line, start_col),
-                transformed,
-                cursor_before,
-            ));
+            if editor.buffer().version() != version_before_insert {
+                all_changes.push(Change::insert(
+                    (start_line, start_col),
+                    transformed,
+                    cursor_before,
+                ));
+            }
         }
     }
 
@@ -1684,23 +1727,29 @@ pub fn auto_indent_lines_with_tracking(
                 .take_while(|c| *c == ' ' || *c == '\t')
                 .count();
             if leading_chars > 0 {
+                let version_before = editor.buffer().version();
                 let deleted =
                     editor
                         .buffer_mut()
                         .delete_range(line_idx, 0, line_idx, leading_chars);
-                changes.push(Change::delete(
-                    Range::new((line_idx, 0), (line_idx, leading_chars)),
-                    deleted,
-                    cursor_before,
-                ));
+                if editor.buffer().version() != version_before {
+                    changes.push(Change::delete(
+                        Range::new((line_idx, 0), (line_idx, leading_chars)),
+                        deleted,
+                        cursor_before,
+                    ));
+                }
             }
 
             // Add new indent (spaces)
             if line_indent > 0 {
                 let indent_str = " ".repeat(line_indent);
                 let change = Change::insert((line_idx, 0), indent_str, cursor_before);
+                let version_before = editor.buffer().version();
                 change.apply(editor.buffer_mut());
-                changes.push(change);
+                if editor.buffer().version() != version_before {
+                    changes.push(change);
+                }
             }
 
             lines_indented += 1;

@@ -49,8 +49,9 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
 
             // Create and apply the delete change (records for undo)
             let change = Change::delete(range, deleted_text, cursor_before);
-            change.apply(editor.buffer_mut());
-            editor.add_change(change);
+            if !editor.apply_change_and_record(change) {
+                return false;
+            }
 
             // Move cursor to column 0 since we removed the whitespace
             editor
@@ -194,32 +195,38 @@ fn exit_insert_mode(editor: &mut Editor) {
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
                         let line_len = line_text.chars().count();
+                        let version_before = editor.buffer().version();
                         editor
                             .buffer_mut()
                             .insert_text_at(line_idx, line_len, &inserted_text);
-                        // Track this insertion as a change
-                        let change = Change::insert(
-                            (line_idx, line_len),
-                            inserted_text.clone(),
-                            cursor_before,
-                        );
-                        all_changes.push(change);
+                        if editor.buffer().version() != version_before {
+                            // Track this insertion as a change
+                            let change = Change::insert(
+                                (line_idx, line_len),
+                                inserted_text.clone(),
+                                cursor_before,
+                            );
+                            all_changes.push(change);
+                        }
                     }
                 } else {
                     // Insert mode: insert at column
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
                         let insert_col = col.min(line_text.chars().count());
+                        let version_before = editor.buffer().version();
                         editor
                             .buffer_mut()
                             .insert_text_at(line_idx, insert_col, &inserted_text);
-                        // Track this insertion as a change
-                        let change = Change::insert(
-                            (line_idx, insert_col),
-                            inserted_text.clone(),
-                            cursor_before,
-                        );
-                        all_changes.push(change);
+                        if editor.buffer().version() != version_before {
+                            // Track this insertion as a change
+                            let change = Change::insert(
+                                (line_idx, insert_col),
+                                inserted_text.clone(),
+                                cursor_before,
+                            );
+                            all_changes.push(change);
+                        }
                     }
                 }
             }

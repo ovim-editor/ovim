@@ -1260,9 +1260,14 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
 
             editor.start_change_building(cursor_before);
 
+            let version_before = editor.buffer().version();
             let deleted = editor
                 .buffer_mut()
                 .delete_range(line_idx, start_col, line_idx, end_col);
+            if editor.buffer().version() == version_before {
+                editor.clear_count();
+                return Ok(());
+            }
             let range = Range::new(start_pos, end_pos);
             let change = Change::delete(range, deleted.clone(), cursor_before);
 

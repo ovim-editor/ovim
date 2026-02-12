@@ -252,12 +252,16 @@ fn apply_change_operator(
         (range.end_line, range.end_col),
     );
 
+    let version_before = editor.buffer().version();
     editor.buffer_mut().delete_range(
         range.start_line,
         range.start_col,
         range.end_line,
         range.end_col,
     );
+    if editor.buffer().version() == version_before {
+        return Ok(());
+    }
     editor
         .buffer_mut()
         .cursor_mut()
@@ -319,12 +323,17 @@ fn apply_case_operator(editor: &mut Editor, range: TextObjectRange, case_op: Cas
     };
 
     if transformed != text {
+        let version_before = editor.buffer().version();
         let deleted = editor.buffer_mut().delete_range(
             range.start_line,
             range.start_col,
             range.end_line,
             range.end_col,
         );
+        if editor.buffer().version() == version_before {
+            return Ok(());
+        }
+
         let delete_range = Range::new(
             (range.start_line, range.start_col),
             (range.end_line, range.end_col),
@@ -336,17 +345,18 @@ fn apply_case_operator(editor: &mut Editor, range: TextObjectRange, case_op: Cas
             transformed,
             cursor_before,
         );
+        let version_before_insert = editor.buffer().version();
         insert_change.apply(editor.buffer_mut());
 
         let cursor_after = (
             editor.buffer().cursor().line(),
             editor.buffer().cursor().col(),
         );
-        let composite = Change::composite(
-            vec![delete_change, insert_change],
-            cursor_before,
-            cursor_after,
-        );
+        let mut changes = vec![delete_change];
+        if editor.buffer().version() != version_before_insert {
+            changes.push(insert_change);
+        }
+        let composite = Change::composite(changes, cursor_before, cursor_after);
         editor.add_change(composite);
     }
 
