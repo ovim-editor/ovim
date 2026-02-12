@@ -20,7 +20,10 @@ impl Editor {
 
     /// Inserts a character at the command-line cursor
     pub fn append_to_command_line(&mut self, ch: char) {
-        let cursor = self.command.command_cursor.min(self.command.command_line.len());
+        let cursor = self
+            .command
+            .command_cursor
+            .min(self.command.command_line.len());
         self.command.command_line.insert(cursor, ch);
         self.command.command_cursor = cursor + ch.len_utf8();
         self.command.command_history_index = None;
@@ -31,7 +34,10 @@ impl Editor {
         if text.is_empty() {
             return;
         }
-        let cursor = self.command.command_cursor.min(self.command.command_line.len());
+        let cursor = self
+            .command
+            .command_cursor
+            .min(self.command.command_line.len());
         self.command.command_line.insert_str(cursor, text);
         self.command.command_cursor = cursor + text.len();
         self.command.command_history_index = None;
@@ -39,7 +45,10 @@ impl Editor {
 
     /// Removes the character before the command-line cursor
     pub fn backspace_command_line(&mut self) {
-        let cursor = self.command.command_cursor.min(self.command.command_line.len());
+        let cursor = self
+            .command
+            .command_cursor
+            .min(self.command.command_line.len());
         if cursor == 0 {
             return;
         }
@@ -55,7 +64,10 @@ impl Editor {
 
     /// Removes the character at the command-line cursor
     pub fn delete_command_line_char(&mut self) {
-        let cursor = self.command.command_cursor.min(self.command.command_line.len());
+        let cursor = self
+            .command
+            .command_cursor
+            .min(self.command.command_line.len());
         if cursor >= self.command.command_line.len() {
             return;
         }
@@ -70,7 +82,10 @@ impl Editor {
 
     /// Moves command-line cursor one character left
     pub fn move_command_cursor_left(&mut self) {
-        let cursor = self.command.command_cursor.min(self.command.command_line.len());
+        let cursor = self
+            .command
+            .command_cursor
+            .min(self.command.command_line.len());
         if cursor == 0 {
             return;
         }
@@ -84,7 +99,10 @@ impl Editor {
 
     /// Moves command-line cursor one character right
     pub fn move_command_cursor_right(&mut self) {
-        let cursor = self.command.command_cursor.min(self.command.command_line.len());
+        let cursor = self
+            .command
+            .command_cursor
+            .min(self.command.command_line.len());
         if cursor >= self.command.command_line.len() {
             return;
         }

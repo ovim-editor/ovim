@@ -187,9 +187,9 @@ fn substitute_chars(editor: &mut Editor) -> Result<()> {
     let count = editor.effective_count();
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_chars_forward(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_chars_forward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);

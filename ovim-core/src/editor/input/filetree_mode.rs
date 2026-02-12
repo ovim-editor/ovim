@@ -194,10 +194,7 @@ fn handle_prompt_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                             if let Err(e) = std::fs::create_dir_all(&new_path) {
                                 editor.set_lsp_status(format!("Create dir failed: {e}"));
                             } else {
-                                editor.set_lsp_status(format!(
-                                    "Created: {}",
-                                    new_path.display()
-                                ));
+                                editor.set_lsp_status(format!("Created: {}", new_path.display()));
                                 editor.file_tree_mut().refresh();
                             }
                         } else {
@@ -208,10 +205,7 @@ fn handle_prompt_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                             if let Err(e) = std::fs::File::create(&new_path) {
                                 editor.set_lsp_status(format!("Create file failed: {e}"));
                             } else {
-                                editor.set_lsp_status(format!(
-                                    "Created: {}",
-                                    new_path.display()
-                                ));
+                                editor.set_lsp_status(format!("Created: {}", new_path.display()));
                                 editor.file_tree_mut().refresh();
                             }
                         }

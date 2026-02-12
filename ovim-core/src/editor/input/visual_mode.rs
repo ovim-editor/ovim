@@ -681,9 +681,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             let (deleted_text, deleted_type) = editor.get_from_register_with_type();
 
             // 4. Write paste text to unnamed register
-            editor
-                .registers
-                .set_with_type(None, paste_text, paste_type);
+            editor.registers.set_with_type(None, paste_text, paste_type);
 
             // 5. Branch on paste type
             if is_visual_line || paste_type == RegisterType::Line {
@@ -767,8 +765,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let tab_width = editor.options.tab_width;
                 let cursor_before = editor.cursor_position();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
-                    let _ =
-                        helpers::auto_indent_lines(buf, start_line, end_line + 1, tab_width);
+                    let _ = helpers::auto_indent_lines(buf, start_line, end_line + 1, tab_width);
                 });
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();

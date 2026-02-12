@@ -3,8 +3,8 @@ use lsp_types::{Position, Range, TextEdit, WorkspaceEdit};
 mod helpers;
 use helpers::EditorTest;
 
-#[tokio::test]
-async fn apply_workspace_edit_marks_buffer_modified_and_requests_diagnostics_refresh() {
+#[test]
+fn apply_workspace_edit_marks_buffer_modified_and_requests_diagnostics_refresh() {
     let tmp = "/tmp/ovim_lsp_edits_sync.rs";
     std::fs::write(tmp, "hello\n").unwrap();
     let tmp = std::fs::canonicalize(tmp).unwrap();
@@ -38,7 +38,7 @@ async fn apply_workspace_edit_marks_buffer_modified_and_requests_diagnostics_ref
         change_annotations: None,
     };
 
-    t.editor.apply_workspace_edit(we).await.unwrap();
+    t.editor.apply_workspace_edit(we).unwrap();
 
     assert_eq!(t.editor.buffer().line(0).unwrap(), "world\n");
     assert_eq!(
