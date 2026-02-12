@@ -21,6 +21,12 @@ impl Buffer {
 
         // Clamp to valid position
         let insert_pos = insert_pos.min(self.rope.len_chars());
+        if self.ai_insert_is_blocked(insert_pos) {
+            self.mark_ai_lock_blocked();
+            return;
+        }
+        let inserted_len = text.chars().count();
+        self.ai_adjust_locks_for_insert(insert_pos, inserted_len);
 
         // Create tree-sitter edit BEFORE modifying rope (needs old state)
         let ts_edit = self.create_ts_insert_edit(line, col, text);
@@ -99,6 +105,11 @@ impl Buffer {
         if start_pos >= end_pos {
             return String::new();
         }
+        if self.ai_delete_is_blocked(start_pos, end_pos) {
+            self.mark_ai_lock_blocked();
+            return String::new();
+        }
+        self.ai_adjust_locks_for_delete(start_pos, end_pos);
 
         let deleted = self.rope.slice(start_pos..end_pos).to_string();
 
@@ -157,6 +168,11 @@ impl Buffer {
         if start_pos >= end_pos {
             return;
         }
+        if self.ai_delete_is_blocked(start_pos, end_pos) {
+            self.mark_ai_lock_blocked();
+            return;
+        }
+        self.ai_adjust_locks_for_delete(start_pos, end_pos);
 
         let start_line = self.rope.char_to_line(start_pos);
         let start_col = start_pos - self.rope.line_to_char(start_line);

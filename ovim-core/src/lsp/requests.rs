@@ -1239,29 +1239,66 @@ impl LspManager {
     ) -> Result<Option<serde_json::Value>> {
         use lsp_types::ExecuteCommandParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
-
-        // Check if server supports execute command
-        if !server.supports_execute_command().await {
-            return Err(anyhow::anyhow!(
-                "Server does not support workspace/executeCommand"
-            ));
+        let server_ids = self.servers_for_language(language_id);
+        if server_ids.is_empty() {
+            return Err(anyhow::anyhow!("No server for language: {}", language_id));
         }
 
-        let params = ExecuteCommandParams {
-            command,
-            arguments: arguments.unwrap_or_default(),
-            work_done_progress_params: Default::default(),
-        };
+        let mut saw_capable_server = false;
+        let mut last_error: Option<String> = None;
 
-        let result = server
-            .request("workspace/executeCommand", serde_json::to_value(params)?)
-            .await?;
+        for server_id in server_ids {
+            let server = match self
+                .servers
+                .get(server_id.as_str())
+                .map(|e| e.value().clone())
+            {
+                Some(server) => server,
+                None => continue,
+            };
 
-        Ok(Some(result))
+            if !server.supports_execute_command().await {
+                continue;
+            }
+            saw_capable_server = true;
+
+            let params = ExecuteCommandParams {
+                command: command.clone(),
+                arguments: arguments.clone().unwrap_or_default(),
+                work_done_progress_params: Default::default(),
+            };
+
+            match server
+                .request("workspace/executeCommand", serde_json::to_value(params)?)
+                .await
+            {
+                Ok(result) => return Ok(Some(result)),
+                Err(e) => {
+                    crate::lsp_debug!(
+                        "LSP-EXEC-CMD",
+                        "Server {} failed executeCommand '{}': {}",
+                        server_id,
+                        command,
+                        e
+                    );
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+
+        if !saw_capable_server {
+            Err(anyhow::anyhow!(
+                "No server for language '{}' supports workspace/executeCommand",
+                language_id
+            ))
+        } else {
+            Err(anyhow::anyhow!(
+                "Failed to execute command '{}' on all servers for language '{}': {}",
+                command,
+                language_id,
+                last_error.unwrap_or_else(|| "unknown error".to_string())
+            ))
+        }
     }
 
     /// Requests inlay hints for a document range
@@ -1569,8 +1606,7 @@ impl LspManager {
             return Ok(None);
         }
 
-        let response: Option<lsp_types::Hover> =
-            parse_lsp_response(result, "textDocument/hover");
+        let response: Option<lsp_types::Hover> = parse_lsp_response(result, "textDocument/hover");
         Ok(response.and_then(|hover| match hover.contents {
             lsp_types::HoverContents::Scalar(content) => Some(marked_string_to_text(content)),
             lsp_types::HoverContents::Array(mut contents) => {
@@ -1668,9 +1704,7 @@ impl LspManager {
         let results: Vec<Option<lsp_types::Location>> = self
             .fan_out(server_ids, |server| {
                 let uri = uri.clone();
-                async move {
-                    Self::goto_definition_on_server(&server, &uri, line, character).await
-                }
+                async move { Self::goto_definition_on_server(&server, &uri, line, character).await }
             })
             .await;
 

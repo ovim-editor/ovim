@@ -34,6 +34,8 @@ pub enum Mode {
     LspManager,
     /// RenameInput mode - for entering a new name for LSP rename
     RenameInput,
+    /// AiPrompt mode - for entering prompt text for visual AI edit
+    AiPrompt,
 }
 
 impl Mode {
@@ -56,6 +58,7 @@ impl Mode {
             Mode::Dashboard => "DASHBOARD",
             Mode::LspManager => "LSP MANAGER",
             Mode::RenameInput => "RENAME",
+            Mode::AiPrompt => "AI",
         }
     }
 

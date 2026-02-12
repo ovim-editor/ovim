@@ -211,6 +211,9 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Esc => {
             helpers::exit_visual_mode_to_normal(editor);
         }
+        KeyCode::Char(' ') => {
+            editor.start_ai_prompt_from_visual()?;
+        }
         // Half-page scroll down (Ctrl-D) — must come before 'd' delete handler
         KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let half_page = editor.half_page_scroll();

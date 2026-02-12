@@ -51,6 +51,9 @@ mod lsp_manager_mode;
 /// Rename input mode handler
 mod rename_input_mode;
 
+/// AI prompt mode handler
+mod ai_prompt_mode;
+
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
@@ -121,6 +124,7 @@ impl InputHandler {
             Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
             Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
             Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
+            Mode::AiPrompt => ai_prompt_mode::handle_ai_prompt_mode(editor, key_event),
         };
 
         // Update scroll offset to keep cursor visible with scrolloff margin
@@ -128,6 +132,10 @@ impl InputHandler {
         // 1. Viewport commands (zz, zt, zb) explicitly set scroll position
         // 2. There's a pending viewport command (e.g., 'z' waiting for 't')
         //    This prevents scroll changes between multi-key sequences like 'zt'
+        if editor.buffer_mut().take_ai_lock_blocked() {
+            editor.set_lsp_status("AI lock active for selected region".to_string());
+        }
+
         let is_viewport_pending = matches!(editor.pending_command(), Some('z') | Some('Z'));
         if !editor.viewport.skip_scroll_update && !is_viewport_pending {
             editor.update_scroll_offset();

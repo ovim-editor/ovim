@@ -119,6 +119,9 @@ impl Buffer {
             version: 0,
             code_block_cache: None,
             recording: None,
+            ai_locks: Vec::new(),
+            ai_lock_blocked: false,
+            ai_lock_bypass_depth: 0,
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading

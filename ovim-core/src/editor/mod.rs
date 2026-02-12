@@ -1,3 +1,5 @@
+mod ai_integration;
+mod ai_state;
 mod blame_commands;
 mod buffer_manager;
 mod change_tracking;
@@ -57,6 +59,7 @@ pub use crate::textobjects;
 pub use crate::change::{
     Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType,
 };
+pub use ai_state::{AiJobStatus, AiLogBlock};
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use editing_state::{EditingState, PendingChangeRepeat};
@@ -286,6 +289,8 @@ pub struct Editor {
     pub ui_panels: UiPanels,
     /// LSP UI panel state (manager panel and install progress)
     pub lsp_ui: LspUi,
+    /// AI prompt, pending jobs, and in-buffer agent logs
+    pub ai_state: ai_state::AiState,
     /// API server port (set during startup, used by :session start/stop)
     pub api_port: Option<u16>,
     /// Active session name (set by :session start, cleared by :session stop)
@@ -412,6 +417,7 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
+            ai_state: ai_state::AiState::default(),
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -456,6 +462,7 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
+            ai_state: ai_state::AiState::default(),
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -478,6 +485,16 @@ impl Editor {
 
     pub fn set_rename_cursor(&mut self, pos: usize) {
         self.editing.rename_cursor = pos;
+    }
+
+    // ==================== AI Prompt ====================
+
+    pub fn ai_prompt_input(&self) -> &str {
+        &self.ai_state.prompt.input
+    }
+
+    pub fn ai_prompt_cursor(&self) -> usize {
+        self.ai_state.prompt.cursor
     }
 
     // ==================== Core Editor Methods ====================
