@@ -754,7 +754,40 @@ impl LanguageServer {
                 references: Some(Default::default()),
                 document_highlight: Some(Default::default()),
                 document_symbol: Some(Default::default()),
-                code_action: Some(Default::default()),
+                code_action: Some(lsp_types::CodeActionClientCapabilities {
+                    dynamic_registration: Some(true),
+                    code_action_literal_support: Some(lsp_types::CodeActionLiteralSupport {
+                        code_action_kind: lsp_types::CodeActionKindLiteralSupport {
+                            value_set: vec![
+                                lsp_types::CodeActionKind::QUICKFIX.as_str().to_string(),
+                                lsp_types::CodeActionKind::REFACTOR.as_str().to_string(),
+                                lsp_types::CodeActionKind::REFACTOR_EXTRACT
+                                    .as_str()
+                                    .to_string(),
+                                lsp_types::CodeActionKind::REFACTOR_INLINE
+                                    .as_str()
+                                    .to_string(),
+                                lsp_types::CodeActionKind::REFACTOR_REWRITE
+                                    .as_str()
+                                    .to_string(),
+                                lsp_types::CodeActionKind::SOURCE.as_str().to_string(),
+                                lsp_types::CodeActionKind::SOURCE_ORGANIZE_IMPORTS
+                                    .as_str()
+                                    .to_string(),
+                                lsp_types::CodeActionKind::SOURCE_FIX_ALL
+                                    .as_str()
+                                    .to_string(),
+                            ],
+                        },
+                    }),
+                    is_preferred_support: Some(true),
+                    disabled_support: Some(true),
+                    data_support: Some(true),
+                    resolve_support: Some(lsp_types::CodeActionCapabilityResolveSupport {
+                        properties: vec!["edit".to_string(), "command".to_string()],
+                    }),
+                    honors_change_annotations: Some(true),
+                }),
                 rename: Some(Default::default()),
                 formatting: Some(Default::default()),
                 range_formatting: Some(Default::default()),

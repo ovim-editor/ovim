@@ -518,7 +518,8 @@ impl LspManager {
         diagnostics: Vec<Diagnostic>,
     ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
         use lsp_types::{
-            CodeActionContext, CodeActionParams, Position, Range, TextDocumentIdentifier,
+            CodeActionContext, CodeActionParams, CodeActionTriggerKind, Position, Range,
+            TextDocumentIdentifier,
         };
 
         let server = self
@@ -543,7 +544,7 @@ impl LspManager {
             context: CodeActionContext {
                 diagnostics,
                 only: None,
-                trigger_kind: None,
+                trigger_kind: Some(CodeActionTriggerKind::INVOKED),
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -557,6 +558,44 @@ impl LspManager {
             parse_lsp_response(result, "textDocument/codeAction");
 
         Ok(response.unwrap_or_default())
+    }
+
+    /// Resolves a lazily-populated code action on a specific language server.
+    pub async fn resolve_code_action(
+        &self,
+        language_id: &str,
+        action: lsp_types::CodeAction,
+    ) -> Result<lsp_types::CodeAction> {
+        let server = self
+            .servers
+            .get(language_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        Self::resolve_code_action_on_server(&server, action).await
+    }
+
+    /// Resolves a lazily-populated code action on a specific server ID.
+    pub async fn resolve_code_action_on_server_id(
+        &self,
+        server_id: &str,
+        action: lsp_types::CodeAction,
+    ) -> Result<lsp_types::CodeAction> {
+        let server = self
+            .servers
+            .get(server_id)
+            .ok_or_else(|| anyhow::anyhow!("No server with id: {}", server_id))?;
+        Self::resolve_code_action_on_server(&server, action).await
+    }
+
+    async fn resolve_code_action_on_server(
+        server: &super::LanguageServer,
+        action: lsp_types::CodeAction,
+    ) -> Result<lsp_types::CodeAction> {
+        let fallback = action.clone();
+        let result = server
+            .request("codeAction/resolve", serde_json::to_value(action)?)
+            .await?;
+        let resolved: Option<lsp_types::CodeAction> = parse_lsp_response(result, "codeAction/resolve");
+        Ok(resolved.unwrap_or(fallback))
     }
 
     /// Requests find references for a symbol at a position
@@ -1763,17 +1802,62 @@ impl LspManager {
         server_ids: &[String],
         diagnostics: Vec<Diagnostic>,
     ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
-        let results: Vec<Vec<lsp_types::CodeActionOrCommand>> = self
-            .fan_out(server_ids, |server| {
+        let with_sources = self
+            .code_actions_multi_with_sources(uri, line, character, server_ids, diagnostics)
+            .await?;
+        Ok(with_sources
+            .into_iter()
+            .map(|(_, action)| action)
+            .collect())
+    }
+
+    /// Code actions from multiple servers with the source server_id retained.
+    pub async fn code_actions_multi_with_sources(
+        &self,
+        uri: &Uri,
+        line: u32,
+        character: u32,
+        server_ids: &[String],
+        diagnostics: Vec<Diagnostic>,
+    ) -> Result<Vec<(String, lsp_types::CodeActionOrCommand)>> {
+        use std::time::Duration;
+
+        let mut futures = Vec::new();
+        for sid in server_ids {
+            let server = self.servers.get(sid.as_str()).map(|entry| entry.value().clone());
+            if let Some(server) = server {
+                let sid = sid.clone();
                 let uri = uri.clone();
                 let diags = diagnostics.clone();
-                async move {
-                    Self::code_actions_on_server(&server, &uri, line, character, diags).await
-                }
-            })
-            .await;
+                futures.push(tokio::spawn(async move {
+                    let request = Self::code_actions_on_server(&server, &uri, line, character, diags);
+                    match tokio::time::timeout(Duration::from_secs(3), request).await {
+                        Ok(Ok(actions)) => Some(
+                            actions
+                                .into_iter()
+                                .map(|action| (sid.clone(), action))
+                                .collect::<Vec<_>>(),
+                        ),
+                        Ok(Err(e)) => {
+                            lsp_debug!("LSP-MULTI", "Server {} failed: {}", sid, e);
+                            None
+                        }
+                        Err(_) => {
+                            lsp_debug!("LSP-MULTI", "Server {} timed out", sid);
+                            None
+                        }
+                    }
+                }));
+            }
+        }
 
-        Ok(results.into_iter().flatten().collect())
+        let mut results = Vec::new();
+        for task in futures {
+            if let Ok(Some(mut actions)) = task.await {
+                results.append(&mut actions);
+            }
+        }
+        Ok(results)
     }
 
     /// Internal: code actions on a single server
@@ -1785,7 +1869,8 @@ impl LspManager {
         diagnostics: Vec<Diagnostic>,
     ) -> Result<Vec<lsp_types::CodeActionOrCommand>> {
         use lsp_types::{
-            CodeActionContext, CodeActionParams, Position, Range, TextDocumentIdentifier,
+            CodeActionContext, CodeActionParams, CodeActionTriggerKind, Position, Range,
+            TextDocumentIdentifier,
         };
 
         if !server.supports_code_actions().await {
@@ -1803,7 +1888,7 @@ impl LspManager {
             context: CodeActionContext {
                 diagnostics,
                 only: None,
-                trigger_kind: None,
+                trigger_kind: Some(CodeActionTriggerKind::INVOKED),
             },
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -1816,5 +1901,38 @@ impl LspManager {
         let response: Option<Vec<lsp_types::CodeActionOrCommand>> =
             parse_lsp_response(result, "textDocument/codeAction");
         Ok(response.unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LspManager;
+
+    #[tokio::test]
+    async fn execute_command_errors_when_no_server_for_language() {
+        let manager = LspManager::new();
+        let err = manager
+            .execute_command("dummy.command".to_string(), None, "rust")
+            .await
+            .expect_err("expected missing-server error");
+
+        assert!(err.to_string().contains("No server for language: rust"));
+    }
+
+    #[tokio::test]
+    async fn execute_command_errors_when_indexed_servers_are_not_available() {
+        let manager = LspManager::new();
+        manager
+            .language_server_index
+            .insert("rust".to_string(), vec!["rust".to_string()]);
+
+        let err = manager
+            .execute_command("dummy.command".to_string(), None, "rust")
+            .await
+            .expect_err("expected execute-command capability error");
+
+        assert!(err
+            .to_string()
+            .contains("No server for language 'rust' supports workspace/executeCommand"));
     }
 }

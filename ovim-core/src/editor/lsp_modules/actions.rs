@@ -8,9 +8,95 @@
 //! - Semantic tokens
 
 use super::super::Editor;
-use super::workspace_edits::extract_text_edits;
-use crate::lsp::uri_to_file_path;
+use crate::editor::lsp_state::AvailableCodeAction;
 use anyhow::Result;
+
+fn fallback_code_action_character(
+    current_character: u32,
+    diagnostics: &[lsp_types::Diagnostic],
+) -> Option<u32> {
+    let min_start = diagnostics.iter().map(|d| d.range.start.character).min()?;
+    if min_start == current_character {
+        None
+    } else {
+        Some(min_start)
+    }
+}
+
+fn is_organize_imports_action(action: &lsp_types::CodeActionOrCommand) -> bool {
+    match action {
+        lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
+            code_action
+                .edit
+                .as_ref()
+                .is_some_and(|edit| edit.changes.is_some() || edit.document_changes.is_some())
+                || code_action
+                    .command
+                    .as_ref()
+                    .is_some_and(|cmd| cmd.command.contains("organizeImports"))
+        }
+        lsp_types::CodeActionOrCommand::Command(cmd) => cmd.command.contains("organizeImports"),
+    }
+}
+
+fn code_action_title(action: &lsp_types::CodeActionOrCommand) -> String {
+    match action {
+        lsp_types::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+        lsp_types::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+    }
+}
+
+fn needs_code_action_resolve(action: &lsp_types::CodeActionOrCommand) -> bool {
+    match action {
+        lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
+            code_action.edit.is_none() && code_action.data.is_some()
+        }
+        lsp_types::CodeActionOrCommand::Command(_) => false,
+    }
+}
+
+fn build_available_code_action(
+    server_id: String,
+    action: lsp_types::CodeActionOrCommand,
+) -> AvailableCodeAction {
+    AvailableCodeAction {
+        server_id,
+        resolved: !needs_code_action_resolve(&action),
+        action,
+    }
+}
+
+async fn resolve_available_code_actions(
+    lsp: &crate::lsp::LspManager,
+    actions: Vec<AvailableCodeAction>,
+) -> Vec<AvailableCodeAction> {
+    let mut resolved_actions = Vec::with_capacity(actions.len());
+    for mut candidate in actions {
+        if !candidate.resolved {
+            if let lsp_types::CodeActionOrCommand::CodeAction(code_action) = &candidate.action {
+                match lsp
+                    .resolve_code_action_on_server_id(&candidate.server_id, code_action.clone())
+                    .await
+                {
+                    Ok(resolved) => {
+                        candidate.action = lsp_types::CodeActionOrCommand::CodeAction(resolved);
+                        candidate.resolved = true;
+                    }
+                    Err(e) => {
+                        crate::lsp_debug!(
+                            "LSP-ACTION",
+                            "codeAction/resolve failed on {}: {}",
+                            candidate.server_id,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        resolved_actions.push(candidate);
+    }
+    resolved_actions
+}
 
 impl Editor {
     pub(in crate::editor) async fn format_document_impl(&mut self) -> Result<bool> {
@@ -53,7 +139,7 @@ impl Editor {
         let diagnostics = ctx.lsp.get_diagnostics_for_line(&ctx.uri, ctx.line).await;
         let result = if ctx.server_ids.len() > 1 {
             ctx.lsp
-                .code_actions_multi(
+                .code_actions_multi_with_sources(
                     &ctx.uri,
                     ctx.line,
                     ctx.character,
@@ -71,21 +157,23 @@ impl Editor {
                     diagnostics.clone(),
                 )
                 .await
+                .map(|actions| {
+                    actions
+                        .into_iter()
+                        .map(|action| (ctx.language_id.clone(), action))
+                        .collect()
+                })
         };
         let result = match result {
             Ok(actions) if actions.is_empty() && !diagnostics.is_empty() => {
                 // Some servers only return quickfixes when the request position
                 // intersects the diagnostic span, not just the diagnostic line.
-                let fallback_character = diagnostics
-                    .iter()
-                    .map(|d| d.range.start.character)
-                    .min()
-                    .unwrap_or(ctx.character);
-
-                if fallback_character != ctx.character {
+                if let Some(fallback_character) =
+                    fallback_code_action_character(ctx.character, &diagnostics)
+                {
                     let retry = if ctx.server_ids.len() > 1 {
                         ctx.lsp
-                            .code_actions_multi(
+                            .code_actions_multi_with_sources(
                                 &ctx.uri,
                                 ctx.line,
                                 fallback_character,
@@ -103,6 +191,12 @@ impl Editor {
                                 diagnostics.clone(),
                             )
                             .await
+                            .map(|retry_actions| {
+                                retry_actions
+                                    .into_iter()
+                                    .map(|action| (ctx.language_id.clone(), action))
+                                    .collect()
+                            })
                     };
 
                     match retry {
@@ -126,15 +220,19 @@ impl Editor {
 
         match result {
             Ok(actions) if !actions.is_empty() => {
-                let titles: Vec<String> = actions
+                let available = actions
                     .iter()
-                    .map(|a| match a {
-                        lsp_types::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
-                        lsp_types::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
+                    .map(|(server_id, action)| {
+                        build_available_code_action(server_id.clone(), action.clone())
                     })
                     .collect();
+                let available = resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
+                let titles: Vec<String> = available
+                    .iter()
+                    .map(|a| code_action_title(&a.action))
+                    .collect();
 
-                self.lsp_state.available_code_actions = actions;
+                self.lsp_state.available_code_actions = available;
 
                 let base_dir =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -206,75 +304,20 @@ impl Editor {
             return;
         }
 
-        let action = self.lsp_state.available_code_actions[action_index].clone();
+        let available = self.lsp_state.available_code_actions[action_index].clone();
 
-        match action {
+        match available.action {
             lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
                 let mut applied_edit = false;
                 if let Some(workspace_edit) = code_action.edit {
-                    // Apply workspace edits: handle `changes`
-                    if let Some(changes) = &workspace_edit.changes {
-                        for (uri, edits) in changes {
-                            if let Some(path) = uri_to_file_path(uri) {
-                                let current_path = self.buffer().file_path().map(|s| s.to_string());
-
-                                if current_path.as_deref() == Some(path.to_string_lossy().as_ref())
-                                {
-                                    self.apply_lsp_edits(edits.clone());
-                                }
-                                // Silently skip edits for other files (not yet supported)
-                            }
+                    match self.apply_workspace_edit(workspace_edit) {
+                        Ok(applied) => {
+                            applied_edit = applied;
+                        }
+                        Err(e) => {
+                            self.set_lsp_status(format!("Failed to apply code action edit: {}", e));
                         }
                     }
-
-                    // Apply workspace edits: handle `document_changes`
-                    if let Some(document_changes) = &workspace_edit.document_changes {
-                        match document_changes {
-                            lsp_types::DocumentChanges::Edits(edits) => {
-                                for text_doc_edit in edits {
-                                    if let Some(path) =
-                                        uri_to_file_path(&text_doc_edit.text_document.uri)
-                                    {
-                                        let current_path =
-                                            self.buffer().file_path().map(|s| s.to_string());
-
-                                        if current_path.as_deref()
-                                            == Some(path.to_string_lossy().as_ref())
-                                        {
-                                            let text_edits =
-                                                extract_text_edits(&text_doc_edit.edits);
-                                            self.apply_lsp_edits(text_edits);
-                                        }
-                                    }
-                                }
-                            }
-                            lsp_types::DocumentChanges::Operations(ops) => {
-                                for op in ops {
-                                    if let lsp_types::DocumentChangeOperation::Edit(text_doc_edit) =
-                                        op
-                                    {
-                                        if let Some(path) =
-                                            uri_to_file_path(&text_doc_edit.text_document.uri)
-                                        {
-                                            let current_path =
-                                                self.buffer().file_path().map(|s| s.to_string());
-
-                                            if current_path.as_deref()
-                                                == Some(path.to_string_lossy().as_ref())
-                                            {
-                                                let text_edits =
-                                                    extract_text_edits(&text_doc_edit.edits);
-                                                self.apply_lsp_edits(text_edits);
-                                            }
-                                        }
-                                    }
-                                }
-                                // Silently skip resource operations
-                            }
-                        }
-                    }
-
-                    applied_edit = true;
                 }
 
                 let (had_command, executed_command) = match code_action.command {
@@ -288,6 +331,8 @@ impl Editor {
                     self.set_lsp_status("Code action applied".to_string());
                 } else if executed_command {
                     self.set_lsp_status("Executing code action command...".to_string());
+                } else if !had_command && !available.resolved {
+                    self.set_lsp_status("Code action unresolved and has no edit or command".to_string());
                 } else if !had_command {
                     self.set_lsp_status("Code action has no edit or command".to_string());
                 }
@@ -311,29 +356,30 @@ impl Editor {
         let diagnostics = Vec::new();
         let result = if ctx.server_ids.len() > 1 {
             ctx.lsp
-                .code_actions_multi(&ctx.uri, 0, 0, &ctx.server_ids, diagnostics)
+                .code_actions_multi_with_sources(&ctx.uri, 0, 0, &ctx.server_ids, diagnostics)
                 .await
         } else {
             ctx.lsp
                 .code_actions(&ctx.uri, 0, 0, &ctx.language_id, diagnostics)
                 .await
+                .map(|actions| {
+                    actions
+                        .into_iter()
+                        .map(|action| (ctx.language_id.clone(), action))
+                        .collect()
+                })
         };
 
         match result {
             Ok(actions) => {
-                let organize_action = actions.into_iter().find(|action| match action {
-                    lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
-                        code_action.edit.as_ref().is_some_and(|edit| {
-                            edit.changes.is_some() || edit.document_changes.is_some()
-                        }) || code_action
-                            .command
-                            .as_ref()
-                            .is_some_and(|cmd| cmd.command.contains("organizeImports"))
-                    }
-                    lsp_types::CodeActionOrCommand::Command(cmd) => {
-                        cmd.command.contains("organizeImports")
-                    }
-                });
+                let available = actions
+                    .into_iter()
+                    .map(|(server_id, action)| build_available_code_action(server_id, action))
+                    .collect();
+                let available = resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
+                let organize_action = available
+                    .into_iter()
+                    .find(|action| is_organize_imports_action(&action.action));
 
                 if let Some(action) = organize_action {
                     self.lsp_state.available_code_actions = vec![action];
@@ -370,7 +416,7 @@ impl Editor {
 
         match result {
             Ok(Some(workspace_edit)) => {
-                let applied = self.apply_workspace_edit(workspace_edit).await?;
+                let applied = self.apply_workspace_edit(workspace_edit)?;
                 if applied {
                     self.set_lsp_status("Rename completed".to_string());
                     Ok(true)
@@ -415,5 +461,121 @@ impl Editor {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fallback_code_action_character, is_organize_imports_action};
+    use crate::editor::lsp_state::AvailableCodeAction;
+    use crate::editor::Editor;
+    use lsp_types::{CodeAction, CodeActionOrCommand, Command, Diagnostic, Position, Range};
+
+    fn diagnostic(start_character: u32, end_character: u32) -> Diagnostic {
+        Diagnostic {
+            range: Range {
+                start: Position {
+                    line: 10,
+                    character: start_character,
+                },
+                end: Position {
+                    line: 10,
+                    character: end_character,
+                },
+            },
+            ..Default::default()
+        }
+    }
+
+    fn code_action_with_command(command: &str) -> CodeActionOrCommand {
+        CodeActionOrCommand::CodeAction(CodeAction {
+            title: "test".to_string(),
+            kind: None,
+            diagnostics: None,
+            edit: None,
+            command: Some(Command {
+                title: "test".to_string(),
+                command: command.to_string(),
+                arguments: None,
+            }),
+            is_preferred: None,
+            disabled: None,
+            data: None,
+        })
+    }
+
+    fn available(action: CodeActionOrCommand) -> AvailableCodeAction {
+        AvailableCodeAction {
+            server_id: "rust".to_string(),
+            action,
+            resolved: true,
+        }
+    }
+
+    #[test]
+    fn fallback_code_action_character_uses_min_diagnostic_start() {
+        let diags = vec![diagnostic(12, 16), diagnostic(4, 8), diagnostic(7, 9)];
+        assert_eq!(fallback_code_action_character(20, &diags), Some(4));
+    }
+
+    #[test]
+    fn fallback_code_action_character_none_when_cursor_already_at_min_start() {
+        let diags = vec![diagnostic(4, 8), diagnostic(10, 12)];
+        assert_eq!(fallback_code_action_character(4, &diags), None);
+    }
+
+    #[test]
+    fn fallback_code_action_character_none_with_no_diagnostics() {
+        assert_eq!(fallback_code_action_character(5, &[]), None);
+    }
+
+    #[test]
+    fn organize_imports_matches_command_variant() {
+        let action = CodeActionOrCommand::Command(Command {
+            title: "Organize Imports".to_string(),
+            command: "rust-analyzer.applySourceChange.organizeImports".to_string(),
+            arguments: None,
+        });
+        assert!(is_organize_imports_action(&action));
+    }
+
+    #[test]
+    fn organize_imports_matches_code_action_with_embedded_command() {
+        let action = code_action_with_command("typescript.organizeImports");
+        assert!(is_organize_imports_action(&action));
+    }
+
+    #[test]
+    fn apply_code_action_command_only_uses_command_path() {
+        let mut editor = Editor::new();
+        editor.lsp_state.available_code_actions =
+            vec![available(code_action_with_command("rust-analyzer.applySourceChange"))];
+
+        editor.apply_code_action(0);
+
+        assert_eq!(editor.lsp_status(), "LSP not available");
+        assert!(editor.lsp_state.available_code_actions.is_empty());
+    }
+
+    #[test]
+    fn apply_code_action_without_edit_or_command_reports_specific_status() {
+        let mut editor = Editor::new();
+        editor.lsp_state.available_code_actions = vec![available(CodeActionOrCommand::CodeAction(
+            CodeAction {
+                title: "Noop".to_string(),
+                kind: None,
+                diagnostics: None,
+                edit: None,
+                command: None,
+                is_preferred: None,
+                disabled: None,
+                data: None,
+            },
+        ))];
+
+        editor.apply_code_action(0);
+
+        assert_eq!(editor.lsp_status(), "Code action has no edit or command");
+        assert!(editor.lsp_state.available_code_actions.is_empty());
     }
 }
