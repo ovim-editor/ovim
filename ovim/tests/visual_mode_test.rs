@@ -363,6 +363,46 @@ fn test_v_with_zero() {
 }
 
 #[test]
+fn test_visual_find_repeat_semicolon_and_comma() {
+    editor_test! {
+        given Normal {
+            "ab_cd_ef", "^",
+        }
+        keys "vf_;"
+        expect Visual {
+            "ab_cd_ef", "-----^  ",
+        }
+        keys ","
+        expect Visual {
+            "ab_cd_ef", "--^     ",
+        }
+    }
+}
+
+#[test]
+fn test_visual_block_find_repeat_semicolon_and_comma() {
+    editor_test! {
+        given Normal {
+            "aa_bb_cc", "^",
+            "dd_ee_ff", "",
+            "gg_hh_ii", "",
+        }
+        keys "<C-v>jjf_;"
+        expect VisualBlock {
+            "aa_bb_cc", "------  ",
+            "dd_ee_ff", "------  ",
+            "gg_hh_ii", "-----^  ",
+        }
+        keys ","
+        expect VisualBlock {
+            "aa_bb_cc", "---     ",
+            "dd_ee_ff", "---     ",
+            "gg_hh_ii", "--^     ",
+        }
+    }
+}
+
+#[test]
 fn test_V_with_gg() {
     editor_test! {
         given Normal {
