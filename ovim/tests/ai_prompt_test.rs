@@ -168,6 +168,25 @@ fn test_blocked_ai_lock_insert_does_not_pollute_undo_history() {
     assert_eq!(test.buffer_content(), "hello world\n");
 }
 
+#[test]
+fn test_visual_block_delete_mixed_ai_lock_lines_keeps_undo_history() {
+    let mut test = EditorTest::new("aa_bb_cc\ndd_ee_ff\ngg_hh_ii\n");
+
+    // Lock "bb" on the first line. Visual-block delete should still delete
+    // unlocked rows and remain undoable as one operation.
+    let lock_start = test.editor.buffer().rope().line_to_char(0) + 3;
+    let lock_end = lock_start + 2;
+    test.editor.buffer_mut().add_ai_lock(14, lock_start, lock_end);
+
+    test.keys("3l<C-v>jjlx");
+
+    assert_eq!(test.buffer_content(), "aa_bb_cc\ndd__ff\ngg__ii\n");
+    assert_eq!(test.editor.lsp_status(), "AI lock active for selected region");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aa_bb_cc\ndd_ee_ff\ngg_hh_ii\n");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
     let mut test = EditorTest::new("hello world\n");
@@ -208,6 +227,52 @@ async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
             .reasoning_lines
             .iter()
             .any(|line| line.contains("waiting for model response"))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_ai_prompt_submit_applies_context_budget_trace() {
+    let mut test = EditorTest::new("line one\nline two\nline three\n");
+
+    test.editor.ai_state.active_profile = "budget".to_string();
+    test.editor.ai_state.config.profiles.clear();
+    let mut context_policy = ContextPolicy::default();
+    context_policy.context_budget_tokens = 1;
+    context_policy.retrieval_k = 6;
+    context_policy.max_iterations = 3;
+    context_policy.callgraph_hops = 2;
+    context_policy.enable_pruning = true;
+    test.editor.ai_state.config.profiles.insert(
+        "budget".to_string(),
+        AiProfileConfig {
+            name: "budget".to_string(),
+            provider: AiProviderKind::OpenAi,
+            model: "gpt-4o-mini".to_string(),
+            base_url: None,
+            api_key_env: Some("OVIM_TEST_AI_KEY_MISSING".to_string()),
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            extraction: ExtractionStrategy::Json,
+            context_policy,
+        },
+    );
+
+    test.keys("vll<Space>");
+    test.type_text("rewrite");
+    test.press_enter();
+
+    let trace = &test.editor.ai_state.regions[0].reasoning_lines;
+    assert!(trace.iter().any(|line| line.contains("policy:")));
+    assert!(
+        trace
+            .iter()
+            .any(|line| line.contains("context pruning applied"))
+    );
+    assert!(
+        trace
+            .iter()
+            .any(|line| line.contains("context estimate after pruning"))
     );
 }
 
