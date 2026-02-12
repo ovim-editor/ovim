@@ -20,6 +20,10 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                 update_path_completion(editor);
             }
         }
+        KeyCode::Delete => {
+            editor.delete_command_line_char();
+            update_path_completion(editor);
+        }
         KeyCode::Tab => {
             handle_tab_completion(editor, false);
         }
@@ -41,6 +45,18 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             } else {
                 editor.history_next();
             }
+        }
+        KeyCode::Left => {
+            editor.move_command_cursor_left();
+        }
+        KeyCode::Right => {
+            editor.move_command_cursor_right();
+        }
+        KeyCode::Home => {
+            editor.move_command_cursor_home();
+        }
+        KeyCode::End => {
+            editor.move_command_cursor_end();
         }
         KeyCode::Enter => {
             if editor.path_completion().is_visible() {
@@ -91,6 +107,15 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         _ => {}
     }
     Ok(())
+}
+
+fn expand_tilde_in_path(path: &str) -> std::path::PathBuf {
+    if path == "~" || path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(path.trim_start_matches("~/"));
+        }
+    }
+    std::path::PathBuf::from(path)
 }
 
 /// Updates the path completion popup based on current command line content.
@@ -1549,8 +1574,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     // Handle substitute command (:s, :%s, :'<,'>s)
-    // Check if it's a substitute command (contains 's/' pattern)
-    if command.ends_with("s/") || command.contains("s/") {
+    // Only treat as substitute when the command part starts with `s/`.
+    if cmd_part.starts_with("s/") {
         handle_substitute_command(editor, command)?;
         return Ok(());
     }
@@ -1579,7 +1604,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     handle_read_shell_command(editor, range_str, shell_cmd.trim())?;
                 } else {
                     // :r filename - read file contents
-                    match std::fs::read_to_string(target) {
+                    let expanded_target = expand_tilde_in_path(target);
+                    let display_target = expanded_target.to_string_lossy().to_string();
+                    match std::fs::read_to_string(&expanded_target) {
                         Ok(contents) => {
                             // Insert contents at current cursor position
                             let cursor = editor.buffer().cursor();
@@ -1589,7 +1616,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                             editor.set_lsp_status(format!(
                                 "Read {} lines from {}",
                                 contents.lines().count(),
-                                target
+                                display_target
                             ));
                         }
                         Err(e) => {

@@ -2,6 +2,8 @@
 pub struct CommandContext {
     /// Current command being typed
     pub command_line: String,
+    /// Cursor position in command line (byte index)
+    pub command_cursor: usize,
     /// History of executed commands
     pub command_history: Vec<String>,
     /// Current position in history during navigation
@@ -12,6 +14,7 @@ impl CommandContext {
     pub fn new() -> Self {
         Self {
             command_line: String::new(),
+            command_cursor: 0,
             command_history: Vec::new(),
             command_history_index: None,
         }

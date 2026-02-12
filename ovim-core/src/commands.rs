@@ -952,25 +952,37 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     }
                 }
             // Handle :w <filename>
-            } else if let Some(filename) = command
+            } else if let Some(raw_filename) = command
                 .strip_prefix("w ")
                 .or_else(|| command.strip_prefix("write "))
             {
-                editor.buffer_mut().set_file_path(filename.to_string());
-                match editor.buffer_mut().save_as(filename) {
+                let filename = match expand_tilde(raw_filename) {
+                    Ok(path) => path.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return CommandResult::Error(ErrorResponse {
+                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
+                        });
+                    }
+                };
+                match editor.buffer_mut().save_as(&filename) {
                     Ok(_) => {
                         if editor.options.blame {
                             editor.buffer_mut().load_git_blame();
                         }
                         editor.mark_saved();
                         editor.mark_buffer_saved(); // Mark for LSP didSave notification
+                        let saved_path = editor
+                            .buffer()
+                            .file_path()
+                            .map(|p| p.to_string())
+                            .unwrap_or(filename);
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
                         CommandResult::Success(SuccessResponse {
                             success: true,
                             message: Some(format!(
                                 "\"{}\" {}L, {}C written",
-                                filename, line_count, char_count
+                                saved_path, line_count, char_count
                             )),
                             line_count: None,
                         })
@@ -999,13 +1011,21 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     error: "Lua support not compiled in".to_string(),
                 })
             // Handle :luafile <path>
-            } else if let Some(_path) = command.strip_prefix("luafile ") {
+            } else if let Some(raw_path) = command.strip_prefix("luafile ") {
+                let _expanded_path = match expand_tilde(raw_path.trim()) {
+                    Ok(path) => path.to_string_lossy().to_string(),
+                    Err(e) => {
+                        return CommandResult::Error(ErrorResponse {
+                            error: format!("Failed to expand path '{}': {}", raw_path, e),
+                        });
+                    }
+                };
                 #[cfg(feature = "lua")]
                 {
-                    match editor.execute_lua_file(_path) {
+                    match editor.execute_lua_file(&_expanded_path) {
                         Ok(_) => CommandResult::Success(SuccessResponse {
                             success: true,
-                            message: Some(format!("Executed {}", _path)),
+                            message: Some(format!("Executed {}", _expanded_path)),
                             line_count: None,
                         }),
                         Err(e) => CommandResult::Error(ErrorResponse {
@@ -1112,10 +1132,18 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 .or_else(|| command.strip_prefix("so "))
             {
                 let file = file.trim();
+                let _expanded = match expand_tilde(file) {
+                    Ok(path) => path,
+                    Err(e) => {
+                        return CommandResult::Error(ErrorResponse {
+                            error: format!("Failed to expand path '{}': {}", file, e),
+                        });
+                    }
+                };
                 #[cfg(feature = "lua")]
                 {
                     if let Some(context) = editor.lua_context_mut() {
-                        let path = std::path::PathBuf::from(file);
+                        let path = _expanded;
                         match context.execute_file(&path) {
                             Ok(_) => {
                                 // Process any commands from the sourced file using the public API
@@ -1127,7 +1155,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                                 }
                                 CommandResult::Success(SuccessResponse {
                                     success: true,
-                                    message: Some(format!("Sourced: {}", file)),
+                                    message: Some(format!("Sourced: {}", path.display())),
                                     line_count: None,
                                 })
                             }

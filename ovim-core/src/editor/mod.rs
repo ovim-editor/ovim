@@ -1574,7 +1574,7 @@ impl Editor {
             }
             Mode::Command => {
                 // Insert text into command buffer
-                self.command.command_line.push_str(text);
+                self.insert_into_command_line(text);
             }
             Mode::Search => {
                 // Insert text into search buffer

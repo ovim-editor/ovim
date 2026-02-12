@@ -426,7 +426,7 @@ fn set_cursor_position(
         }
     } else if editor.mode() == crate::mode::Mode::Command {
         let cmd_cursor_x =
-            (editor.command_line().len() + 1).min(command_chunk.width.saturating_sub(1) as usize);
+            (editor.command_cursor() + 1).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + cmd_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::Search {
         let search_cursor_x = (editor.search.search_buffer.len() + 1)

@@ -405,6 +405,29 @@ fn test_typing_subpath() {
     );
 }
 
+#[test]
+fn test_typing_subpath_with_dot_segment() {
+    let tmp = setup_test_dir();
+    let mut t = EditorTest::new("hello");
+    // Ensure both '/' and '.' path characters are handled in completion paths.
+    enter_edit_with_abs_path(&mut t, &tmp, "src/./");
+
+    assert!(t.editor.path_completion().is_visible());
+    let entries = t.editor.path_completion().entries();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+    assert!(
+        names.contains(&"app.rs"),
+        "Typing 'src/./' should show src contents: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"buffer.rs"),
+        "Typing 'src/./' should show src contents: {:?}",
+        names
+    );
+}
+
 // ============================================================================
 // Supported commands
 // ============================================================================
