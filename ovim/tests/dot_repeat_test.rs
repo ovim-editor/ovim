@@ -575,6 +575,29 @@ fn test_dot_repeat_X_undo_restores_correctly() {
 }
 
 // ============================================================================
+// Dot with search + change-find (n. workflow)
+// ============================================================================
+
+#[test]
+fn test_dot_repeat_search_and_change_find() {
+    // Classic Vim idiom: /pattern<CR> then cfo to change through 'o', then n.n.
+    // Dot-repeat should replay the full cf{char} + inserted text, not just the insert.
+    editor_test! {
+        given {
+            "I say hello world"  "^"
+            "I say hello world"  ""
+            "I say hello world"  ""
+        }
+        keys "/hello<CR>cfohi<Esc>n.n."
+        expect Normal {
+            "I say hi world"  ""
+            "I say hi world"  ""
+            "I say hi world"  "       ^"
+        }
+    }
+}
+
+// ============================================================================
 // Dot with search motions
 // ============================================================================
 

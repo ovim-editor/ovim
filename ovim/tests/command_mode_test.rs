@@ -1,6 +1,39 @@
 mod helpers;
 
 use helpers::EditorTest;
+use ovim_core::KeyCode;
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn unique_test_id() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn tilde_workspace_path(file_name: &str) -> (String, std::path::PathBuf) {
+    let home = dirs::home_dir().expect("HOME should be available");
+    let cwd = std::env::current_dir().expect("cwd should be available");
+    let rel = cwd
+        .strip_prefix(&home)
+        .expect("workspace should be under HOME for tilde tests");
+
+    let test_dir = cwd.join("target").join("command_mode_tests");
+    fs::create_dir_all(&test_dir).expect("create test dir");
+
+    let rel_str = rel.to_string_lossy();
+    let tilde_prefix = if rel_str.is_empty() {
+        "~".to_string()
+    } else {
+        format!("~/{}", rel_str)
+    };
+
+    (
+        format!("{}/target/command_mode_tests/{}", tilde_prefix, file_name),
+        test_dir.join(file_name),
+    )
+}
 
 /// Test entering command mode with :
 #[test]
@@ -36,6 +69,37 @@ async fn test_command_write() {
     test.press_enter();
 
     test.assert_mode(ovim::mode::Mode::Normal);
+}
+
+/// Test :w ~/file expands tilde to home directory
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_command_write_expands_tilde_path() {
+    let file_name = format!("ovim_test_write_tilde_{}.txt", unique_test_id());
+    let (tilde_path, expanded_path) = tilde_workspace_path(&file_name);
+
+    let _ = fs::remove_file(&expanded_path);
+
+    let mut test = EditorTest::new("tilde-write\n");
+    test.press(':');
+    test.type_text(&format!("w {}", tilde_path));
+    test.press_enter();
+
+    assert!(
+        expanded_path.exists(),
+        "Expected file at expanded path: {}",
+        expanded_path.display()
+    );
+    let content = fs::read_to_string(&expanded_path).expect("read written file");
+    assert_eq!(content, "tilde-write\n");
+
+    let literal_path = std::path::Path::new(&tilde_path);
+    assert!(
+        !literal_path.exists(),
+        "Should not create a literal '~' path: {}",
+        literal_path.display()
+    );
+
+    fs::remove_file(&expanded_path).ok();
 }
 
 /// Test :wq command
@@ -84,6 +148,23 @@ async fn test_command_edit_file() {
 
     // Clean up
     std::fs::remove_file("/tmp/newfile.txt").ok();
+}
+
+/// Test :r ~/file expands tilde before reading
+#[test]
+fn test_command_read_expands_tilde_path() {
+    let file_name = format!("ovim_test_read_tilde_{}.txt", unique_test_id());
+    let (tilde_path, expanded_path) = tilde_workspace_path(&file_name);
+    fs::write(&expanded_path, "from-home\n").expect("write read source");
+
+    let mut test = EditorTest::new("start\n");
+    test.press(':');
+    test.type_text(&format!("r {}", tilde_path));
+    test.press_enter();
+
+    assert_eq!(test.buffer_content(), "start\nfrom-home\n");
+
+    fs::remove_file(&expanded_path).ok();
 }
 
 /// Test :s command (substitute)
@@ -190,6 +271,51 @@ fn test_backspace_in_command_mode() {
     test.press_enter();
 
     assert!(test.editor.should_quit());
+}
+
+/// Test command-line cursor movement/editing with arrow keys
+#[test]
+fn test_command_line_left_right_home_end_delete() {
+    let mut test = EditorTest::new("test\n");
+    test.press(':');
+    test.type_text("echo");
+    assert_eq!(test.editor.command_line(), "echo");
+    assert_eq!(test.editor.command_cursor(), 4);
+
+    // Move to middle and insert
+    test.press_key(KeyCode::Left);
+    test.press_key(KeyCode::Left);
+    test.press('X');
+    assert_eq!(test.editor.command_line(), "ecXho");
+    assert_eq!(test.editor.command_cursor(), 3);
+
+    // Home inserts at beginning
+    test.press_key(KeyCode::Home);
+    test.press('!');
+    assert_eq!(test.editor.command_line(), "!ecXho");
+    assert_eq!(test.editor.command_cursor(), 1);
+
+    // End + Left + Delete removes one char at cursor
+    test.press_key(KeyCode::End);
+    test.press_key(KeyCode::Left);
+    test.press_key(KeyCode::Delete);
+    assert_eq!(test.editor.command_line(), "!ecXh");
+}
+
+/// Test that '.' and '/' are inserted correctly while editing in command mode
+#[test]
+fn test_command_line_allows_dot_and_slash_while_editing() {
+    let mut test = EditorTest::new("test\n");
+    test.press(':');
+    test.type_text("e foo");
+
+    // Move before "oo" and insert "./"
+    test.press_key(KeyCode::Left);
+    test.press_key(KeyCode::Left);
+    test.press('.');
+    test.press('/');
+
+    assert_eq!(test.editor.command_line(), "e f./oo");
 }
 
 /// Test :! command (shell command)

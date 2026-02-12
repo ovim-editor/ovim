@@ -165,6 +165,11 @@ impl Editor {
         // Resolve all server_ids for this language (primary + companions)
         let server_ids = lsp.servers_for_language(language_id);
 
+        // No LSP servers for this language — nothing to complete.
+        if server_ids.is_empty() {
+            return Ok(false);
+        }
+
         let mut supported_triggers: HashSet<char> = lsp
             .completion_trigger_characters_for_servers(&server_ids)
             .await

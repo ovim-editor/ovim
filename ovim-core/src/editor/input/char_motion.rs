@@ -7,11 +7,12 @@
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
+use crate::editor::editing_state::PendingChangeRepeat;
 use crate::editor::input_state::CharMotion;
 use crate::editor::motions::Motions;
 use crate::editor::operators::Operator;
 use crate::editor::RegisterType;
-use crate::editor::{Change, Editor, FindDirection, FindType, Range};
+use crate::editor::{Editor, FindDirection, FindType};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 
@@ -273,25 +274,34 @@ fn apply_operator_to_range(
             }
         }
         Operator::Change => {
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(start_line, start_col, end_line, end_col);
+            let (deleted, edits) = editor.buffer_mut().record(|buf| {
+                let d = buf.delete_range(start_line, start_col, end_line, end_col);
+                buf.cursor_mut().set_position(start_line, start_col);
+                d
+            });
+            let delete_token = if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                let token =
+                    editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+                if !deleted.is_empty() {
+                    editor.delete_to_register_with_type(deleted, RegisterType::Character);
+                }
+                Some(token)
+            } else {
+                None
+            };
 
-            if !deleted.is_empty() {
-                let range = Range::new((start_line, start_col), (end_line, end_col));
-                let change = Change::delete(range, deleted.clone(), cursor_before);
-                editor.delete_to_register_with_type(deleted, RegisterType::Character);
-                editor.add_change(change);
-                editor.mark_buffer_modified();
-            }
-
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(start_line, start_col);
-
-            // Group subsequent insert-mode edits into a composite change.
-            editor.start_change_building(cursor_before);
+            editor.set_pending_change_repeat(PendingChangeRepeat {
+                delete_action: RepeatAction::DeleteCharMotion {
+                    target,
+                    forward,
+                    till,
+                    count,
+                },
+                linewise: false,
+                delete_token,
+            });
+            editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
         }
         Operator::Yank => {
