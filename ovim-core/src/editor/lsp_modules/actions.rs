@@ -58,7 +58,7 @@ impl Editor {
                     ctx.line,
                     ctx.character,
                     &ctx.server_ids,
-                    diagnostics,
+                    diagnostics.clone(),
                 )
                 .await
         } else {
@@ -68,9 +68,60 @@ impl Editor {
                     ctx.line,
                     ctx.character,
                     &ctx.language_id,
-                    diagnostics,
+                    diagnostics.clone(),
                 )
                 .await
+        };
+        let result = match result {
+            Ok(actions) if actions.is_empty() && !diagnostics.is_empty() => {
+                // Some servers only return quickfixes when the request position
+                // intersects the diagnostic span, not just the diagnostic line.
+                let fallback_character = diagnostics
+                    .iter()
+                    .map(|d| d.range.start.character)
+                    .min()
+                    .unwrap_or(ctx.character);
+
+                if fallback_character != ctx.character {
+                    let retry = if ctx.server_ids.len() > 1 {
+                        ctx.lsp
+                            .code_actions_multi(
+                                &ctx.uri,
+                                ctx.line,
+                                fallback_character,
+                                &ctx.server_ids,
+                                diagnostics.clone(),
+                            )
+                            .await
+                    } else {
+                        ctx.lsp
+                            .code_actions(
+                                &ctx.uri,
+                                ctx.line,
+                                fallback_character,
+                                &ctx.language_id,
+                                diagnostics.clone(),
+                            )
+                            .await
+                    };
+
+                    match retry {
+                        Ok(retry_actions) if !retry_actions.is_empty() => Ok(retry_actions),
+                        Ok(_) => Ok(actions),
+                        Err(e) => {
+                            crate::lsp_debug!(
+                                "LSP-ACTION",
+                                "Code action fallback retry failed: {}",
+                                e
+                            );
+                            Ok(actions)
+                        }
+                    }
+                } else {
+                    Ok(actions)
+                }
+            }
+            other => other,
         };
 
         match result {
@@ -105,6 +156,49 @@ impl Editor {
         }
     }
 
+    fn execute_code_action_command(&mut self, command: lsp_types::Command) -> bool {
+        let lsp = match &self.lsp_state.lsp_manager {
+            Some(lsp) => lsp.clone(),
+            None => {
+                self.set_lsp_status("LSP not available".to_string());
+                return false;
+            }
+        };
+
+        let language_id = match self.buffer().file_path() {
+            Some(path) => match crate::syntax::LanguageRegistry::get_lsp_language_id(path) {
+                Some(id) => id.to_string(),
+                None => {
+                    self.set_lsp_status("Language not supported for LSP".to_string());
+                    return false;
+                }
+            },
+            None => {
+                self.set_lsp_status("No file open for command execution".to_string());
+                return false;
+            }
+        };
+
+        let command_name = command.command.clone();
+        let command_args = command.arguments.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = lsp
+                .execute_command(command_name.clone(), command_args, &language_id)
+                .await
+            {
+                crate::lsp_warn!(
+                    "LSP-CODE-ACTION",
+                    "Failed to execute code action command '{}': {}",
+                    command_name,
+                    e
+                );
+            }
+        });
+
+        true
+    }
+
     /// Apply a code action by index from available code actions
     pub fn apply_code_action(&mut self, action_index: usize) {
         if action_index >= self.lsp_state.available_code_actions.len() {
@@ -116,52 +210,28 @@ impl Editor {
 
         match action {
             lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
-                let workspace_edit = match code_action.edit {
-                    Some(edit) => edit,
-                    None => {
-                        self.set_lsp_status("Code action has no edit".to_string());
-                        return;
-                    }
-                };
+                let mut applied_edit = false;
+                if let Some(workspace_edit) = code_action.edit {
+                    // Apply workspace edits: handle `changes`
+                    if let Some(changes) = &workspace_edit.changes {
+                        for (uri, edits) in changes {
+                            if let Some(path) = uri_to_file_path(uri) {
+                                let current_path = self.buffer().file_path().map(|s| s.to_string());
 
-                // Apply workspace edits: handle `changes`
-                if let Some(changes) = &workspace_edit.changes {
-                    for (uri, edits) in changes {
-                        if let Some(path) = uri_to_file_path(uri) {
-                            let current_path = self.buffer().file_path().map(|s| s.to_string());
-
-                            if current_path.as_deref() == Some(path.to_string_lossy().as_ref()) {
-                                self.apply_lsp_edits(edits.clone());
-                            }
-                            // Silently skip edits for other files (not yet supported)
-                        }
-                    }
-                }
-
-                // Apply workspace edits: handle `document_changes`
-                if let Some(document_changes) = &workspace_edit.document_changes {
-                    match document_changes {
-                        lsp_types::DocumentChanges::Edits(edits) => {
-                            for text_doc_edit in edits {
-                                if let Some(path) =
-                                    uri_to_file_path(&text_doc_edit.text_document.uri)
+                                if current_path.as_deref() == Some(path.to_string_lossy().as_ref())
                                 {
-                                    let current_path =
-                                        self.buffer().file_path().map(|s| s.to_string());
-
-                                    if current_path.as_deref()
-                                        == Some(path.to_string_lossy().as_ref())
-                                    {
-                                        let text_edits = extract_text_edits(&text_doc_edit.edits);
-                                        self.apply_lsp_edits(text_edits);
-                                    }
+                                    self.apply_lsp_edits(edits.clone());
                                 }
+                                // Silently skip edits for other files (not yet supported)
                             }
                         }
-                        lsp_types::DocumentChanges::Operations(ops) => {
-                            for op in ops {
-                                if let lsp_types::DocumentChangeOperation::Edit(text_doc_edit) = op
-                                {
+                    }
+
+                    // Apply workspace edits: handle `document_changes`
+                    if let Some(document_changes) = &workspace_edit.document_changes {
+                        match document_changes {
+                            lsp_types::DocumentChanges::Edits(edits) => {
+                                for text_doc_edit in edits {
                                     if let Some(path) =
                                         uri_to_file_path(&text_doc_edit.text_document.uri)
                                     {
@@ -177,48 +247,55 @@ impl Editor {
                                         }
                                     }
                                 }
+                            }
+                            lsp_types::DocumentChanges::Operations(ops) => {
+                                for op in ops {
+                                    if let lsp_types::DocumentChangeOperation::Edit(text_doc_edit) =
+                                        op
+                                    {
+                                        if let Some(path) =
+                                            uri_to_file_path(&text_doc_edit.text_document.uri)
+                                        {
+                                            let current_path =
+                                                self.buffer().file_path().map(|s| s.to_string());
+
+                                            if current_path.as_deref()
+                                                == Some(path.to_string_lossy().as_ref())
+                                            {
+                                                let text_edits =
+                                                    extract_text_edits(&text_doc_edit.edits);
+                                                self.apply_lsp_edits(text_edits);
+                                            }
+                                        }
+                                    }
+                                }
                                 // Silently skip resource operations
                             }
                         }
                     }
+
+                    applied_edit = true;
                 }
 
-                self.set_lsp_status("Code action applied".to_string());
+                let (had_command, executed_command) = match code_action.command {
+                    Some(command) => (true, self.execute_code_action_command(command)),
+                    None => (false, false),
+                };
+
+                if applied_edit && executed_command {
+                    self.set_lsp_status("Code action applied and command executed".to_string());
+                } else if applied_edit {
+                    self.set_lsp_status("Code action applied".to_string());
+                } else if executed_command {
+                    self.set_lsp_status("Executing code action command...".to_string());
+                } else if !had_command {
+                    self.set_lsp_status("Code action has no edit or command".to_string());
+                }
             }
             lsp_types::CodeActionOrCommand::Command(command) => {
-                let lsp = match &self.lsp_state.lsp_manager {
-                    Some(lsp) => lsp.clone(),
-                    None => {
-                        self.set_lsp_status("LSP not available".to_string());
-                        return;
-                    }
-                };
-
-                let language_id = match self.buffer().file_path() {
-                    Some(path) => {
-                        match crate::syntax::LanguageRegistry::get_lsp_language_id(path) {
-                            Some(id) => id,
-                            None => {
-                                self.set_lsp_status("Language not supported for LSP".to_string());
-                                return;
-                            }
-                        }
-                    }
-                    None => {
-                        self.set_lsp_status("No file open for command execution".to_string());
-                        return;
-                    }
-                };
-
-                let command_str = command.command.clone();
-                let command_args = command.arguments.clone();
-                tokio::spawn(async move {
-                    let _ = lsp
-                        .execute_command(command_str, command_args, language_id)
-                        .await;
-                });
-
-                self.set_lsp_status("Executing code action command...".to_string());
+                if self.execute_code_action_command(command) {
+                    self.set_lsp_status("Executing code action command...".to_string());
+                }
             }
         }
 
@@ -248,7 +325,10 @@ impl Editor {
                     lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
                         code_action.edit.as_ref().is_some_and(|edit| {
                             edit.changes.is_some() || edit.document_changes.is_some()
-                        })
+                        }) || code_action
+                            .command
+                            .as_ref()
+                            .is_some_and(|cmd| cmd.command.contains("organizeImports"))
                     }
                     lsp_types::CodeActionOrCommand::Command(cmd) => {
                         cmd.command.contains("organizeImports")

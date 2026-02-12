@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod buffer;
 pub mod change;
 pub mod cmd_set;

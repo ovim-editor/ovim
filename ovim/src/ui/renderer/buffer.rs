@@ -1,4 +1,4 @@
-use crate::editor::Editor;
+use crate::editor::{AiJobStatus, Editor};
 use crate::syntax::{Theme, UiGroup};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -637,6 +637,119 @@ fn append_diagnostic_virtual_text(
     }
 }
 
+fn ai_log_style(status: AiJobStatus) -> Style {
+    match status {
+        AiJobStatus::Running | AiJobStatus::Queued => Style::default().fg(Color::Cyan).bg(Color::Rgb(18, 30, 44)),
+        AiJobStatus::Succeeded => Style::default().fg(Color::Green).bg(Color::Rgb(18, 36, 24)),
+        AiJobStatus::Failed | AiJobStatus::Cancelled => {
+            Style::default().fg(Color::Red).bg(Color::Rgb(44, 18, 18))
+        }
+    }
+}
+
+fn split_and_style_row(text: &str, text_width: usize, style: Style) -> Vec<Line<'static>> {
+    let width = text_width.max(1);
+    let mut rows = split_line_into_rows(Line::from(Span::raw(text.to_string())), width);
+    for row in &mut rows {
+        for span in &mut row.spans {
+            span.style = span.style.patch(style);
+        }
+    }
+    rows
+}
+
+fn append_ai_logs_for_line(
+    editor: &Editor,
+    line_idx: usize,
+    text_width: usize,
+    gutter_width: usize,
+    lines: &mut Vec<Line<'static>>,
+    gutter_lines: &mut Vec<Line<'static>>,
+    visual_rows_used: &mut usize,
+    visible_lines: usize,
+) {
+    for log in editor
+        .ai_state
+        .logs
+        .iter()
+        .filter(|log| log.anchor_line == line_idx)
+    {
+        let base = ai_log_style(log.status);
+        let mut rendered_rows = split_and_style_row(
+            &format!(" AI {} {}", log.status, log.provider_label),
+            text_width,
+            base.add_modifier(Modifier::BOLD),
+        );
+
+        for message in &log.lines {
+            rendered_rows.extend(split_and_style_row(&format!("  {}", message), text_width, base));
+        }
+
+        for row in rendered_rows {
+            if *visual_rows_used >= visible_lines {
+                return;
+            }
+            if gutter_width > 0 {
+                gutter_lines.push(Line::from(" ".repeat(gutter_width)));
+            }
+            lines.push(row);
+            *visual_rows_used += 1;
+        }
+    }
+}
+
+fn lock_ranges_for_line(
+    buffer: &crate::buffer::Buffer,
+    line_idx: usize,
+    line_content_chars: usize,
+    char_mapping: &[usize],
+    expanded_text: &str,
+    line_text: &str,
+    wrap: bool,
+    h_offset: usize,
+    text_width: usize,
+    precedes: bool,
+) -> Vec<(usize, usize)> {
+    let line_start_char = buffer.rope().line_to_char(line_idx);
+    let line_end_char = line_start_char.saturating_add(line_content_chars);
+    let viewport_end = h_offset.saturating_add(text_width);
+    let mut ranges = Vec::new();
+
+    for lock in buffer.ai_locks() {
+        let start_abs = lock.start_char.max(line_start_char);
+        let end_abs = lock.end_char.min(line_end_char);
+        if end_abs <= start_abs {
+            continue;
+        }
+
+        let mut start_col = remap_char_col(start_abs - line_start_char, char_mapping);
+        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, char_mapping);
+
+        if !wrap {
+            let start_display = expanded_char_to_display_col(expanded_text, start_col);
+            let end_display = expanded_char_to_display_col(expanded_text, end_col_exclusive);
+            if end_display <= h_offset || start_display >= viewport_end {
+                continue;
+            }
+            let offset_adjustment = if precedes { 1 } else { 0 };
+            start_col = display_col_to_char_idx(
+                line_text,
+                start_display.saturating_sub(h_offset) + offset_adjustment,
+            );
+            end_col_exclusive = display_col_to_char_idx(
+                line_text,
+                end_display.saturating_sub(h_offset) + offset_adjustment,
+            );
+        }
+
+        if end_col_exclusive > start_col {
+            ranges.push((start_col, end_col_exclusive - 1));
+        }
+    }
+
+    ranges
+}
+
 /// Splits a rendered Line into multiple visual rows for soft wrapping.
 /// Each row fits within `width` display columns. Rows are padded to full width.
 /// Wide characters (CJK, emoji) that don't fit at a row boundary are pushed to
@@ -840,12 +953,26 @@ pub fn render_buffer(
             let has_bracket = bracket_positions
                 .map_or(false, |((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
             let has_search = current_search.is_some();
+            let line_start_char = rope.line_to_char(line_idx);
+            let mut line_end_char = if line_idx + 1 < rope.len_lines() {
+                rope.line_to_char(line_idx + 1)
+            } else {
+                rope.len_chars()
+            };
+            if line_end_char > line_start_char && rope.char(line_end_char - 1) == '\n' {
+                line_end_char = line_end_char.saturating_sub(1);
+            }
+            let has_ai_lock_on_line = buffer
+                .ai_locks()
+                .iter()
+                .any(|lock| lock.start_char < line_end_char && lock.end_char > line_start_char);
             let is_stable = !has_visual_on_line
                 && !is_cursor_line_early
                 && !has_yank_flash
                 && !has_bracket
                 && !has_search
-                && line_diagnostics_early.is_empty();
+                && line_diagnostics_early.is_empty()
+                && !has_ai_lock_on_line;
 
             if is_stable {
                 if let Some(cached_line) = line_cache.get(
@@ -915,6 +1042,16 @@ pub fn render_buffer(
                         lines.push(padded);
                         visual_rows_used += 1;
                     }
+                    append_ai_logs_for_line(
+                        editor,
+                        line_idx,
+                        text_width,
+                        layout.gutter_width,
+                        &mut lines,
+                        &mut gutter_lines,
+                        &mut visual_rows_used,
+                        visible_lines,
+                    );
                     line_idx += 1;
                     continue;
                 }
@@ -1095,6 +1232,18 @@ pub fn render_buffer(
                     }
                 })
                 .collect();
+            let ai_lock_ranges = lock_ranges_for_line(
+                buffer,
+                line_idx,
+                line_text_original.chars().count(),
+                &char_mapping,
+                &expanded_text,
+                &line_text,
+                wrap,
+                h_offset,
+                text_width,
+                precedes,
+            );
 
             // Check if this line is in a yank flash region
             let yank_flash = editor.yank_flash.as_ref().and_then(|flash| {
@@ -1112,7 +1261,8 @@ pub fn render_buffer(
                 || is_cursor_line
                 || bracket_col.is_some()
                 || has_diagnostics
-                || yank_flash.is_some();
+                || yank_flash.is_some()
+                || !ai_lock_ranges.is_empty();
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -1150,6 +1300,12 @@ pub fn render_buffer(
                             apply_bg_to_column_range(&mut line, start_col, end_col, flash_bg);
                         }
                     }
+                }
+
+                // Highlight active AI lock spans so users see protected regions.
+                let ai_lock_bg = Color::Rgb(26, 44, 62);
+                for (start_col, end_col) in &ai_lock_ranges {
+                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_lock_bg);
                 }
 
                 // Apply bracket highlighting
@@ -1340,6 +1496,16 @@ pub fn render_buffer(
             lines.push(Line::from(blank_line.clone()));
             visual_rows_used += 1;
         }
+        append_ai_logs_for_line(
+            editor,
+            line_idx,
+            text_width,
+            layout.gutter_width,
+            &mut lines,
+            &mut gutter_lines,
+            &mut visual_rows_used,
+            visible_lines,
+        );
         line_idx += 1;
     }
 
@@ -1875,5 +2041,67 @@ mod tests {
 
         let display_width: usize = rendered.chars().map(char_display_width).sum();
         assert_eq!(display_width, 30);
+    }
+
+    #[test]
+    fn test_lock_ranges_for_line_basic() {
+        let mut buffer = crate::buffer::Buffer::new_from_str("hello world\n");
+        buffer.add_ai_lock(1, 6, 11);
+
+        let line_text = "hello world";
+        let (expanded, _byte_mapping, _control_ranges, char_mapping) =
+            expand_tabs_with_mapping(line_text, 4);
+
+        let ranges = lock_ranges_for_line(
+            &buffer,
+            0,
+            line_text.chars().count(),
+            &char_mapping,
+            &expanded,
+            &expanded,
+            true,
+            0,
+            80,
+            false,
+        );
+        assert_eq!(ranges, vec![(6, 10)]);
+    }
+
+    #[test]
+    fn test_append_ai_logs_for_line_renders_styled_block() {
+        let mut editor = Editor::with_content("line\n");
+        editor.ai_state.logs.push(crate::editor::AiLogBlock {
+            lock_id: 7,
+            anchor_line: 0,
+            status: AiJobStatus::Running,
+            provider_label: "ollama/qwen2.5-coder:7b".to_string(),
+            lines: vec!["waiting for model response...".to_string()],
+            updated_at: std::time::Instant::now(),
+        });
+
+        let mut lines = Vec::new();
+        let mut gutter_lines = Vec::new();
+        let mut visual_rows_used = 0;
+
+        append_ai_logs_for_line(
+            &editor,
+            0,
+            40,
+            4,
+            &mut lines,
+            &mut gutter_lines,
+            &mut visual_rows_used,
+            10,
+        );
+
+        assert!(!lines.is_empty());
+        assert_eq!(lines.len(), gutter_lines.len());
+
+        let first_text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(first_text.contains("AI running"));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.bg.is_some()));
     }
 }

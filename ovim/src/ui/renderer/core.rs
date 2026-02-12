@@ -22,9 +22,9 @@ use super::line_cache::LineRenderCache;
 use super::overlays::{render_completion_menu, render_hover_window};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
-    render_command_line, render_diagnostic_badge, render_margin_widgets, render_message_line,
-    render_path_completion, render_progress_line, render_rename_input, render_search_line,
-    render_status_line, render_tab_bar,
+    render_ai_prompt_line, render_command_line, render_diagnostic_badge, render_margin_widgets,
+    render_message_line, render_path_completion, render_progress_line, render_rename_input,
+    render_search_line, render_status_line, render_tab_bar,
 };
 
 // ---------------------------------------------------------------------------
@@ -299,6 +299,8 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, theme: &Theme, areas: 
         render_search_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::RenameInput {
         render_rename_input(frame, editor, areas.command_chunk);
+    } else if editor.mode() == crate::mode::Mode::AiPrompt {
+        render_ai_prompt_line(frame, editor, areas.command_chunk);
     } else {
         render_message_line(frame, editor, areas.command_chunk);
     }
@@ -437,6 +439,11 @@ fn set_cursor_position(
         let rename_cursor_x =
             (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
+    } else if editor.mode() == crate::mode::Mode::AiPrompt {
+        let ai_prefix = format!("ai({}/{}): ", editor.ai_state.active_profile, editor.ai_state.extraction);
+        let ai_cursor_x = (ai_prefix.len() + editor.ai_prompt_cursor())
+            .min(command_chunk.width.saturating_sub(1) as usize);
+        frame.set_cursor_position((command_chunk.x + ai_cursor_x as u16, command_chunk.y));
     } else {
         let rope = editor.buffer().rope();
         let line_count = editor.buffer().line_count();
@@ -753,6 +760,7 @@ impl Renderer {
             crate::mode::Mode::Command => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::RenameInput => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::AiPrompt => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::HoverPreview | crate::mode::Mode::HoverNavigate => {
                 SetCursorStyle::SteadyBlock
             }

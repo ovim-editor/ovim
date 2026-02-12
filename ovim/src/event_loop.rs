@@ -89,6 +89,10 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
 
+    if editor.poll_pending_ai_jobs() {
+        editor.mark_dirty();
+    }
+
     // Only process new actions if not waiting for response
     if !editor.has_pending_lsp_response() {
         editor.process_pending_lsp_actions().await;
@@ -611,9 +615,10 @@ async fn handle_api_request(
                 "COMMAND" => Mode::Command,
                 "SEARCH" => Mode::Search,
                 "PICKER" => Mode::Picker,
+                "AI_PROMPT" => Mode::AiPrompt,
                 _ => {
                     let _ = tx.send(ApiResponse::Error(ErrorResponse {
-                        error: format!("Invalid mode: {}. Valid modes: NORMAL, INSERT, VISUAL, VISUAL_LINE, VISUAL_BLOCK, COMMAND, SEARCH, PICKER", mode_str),
+                        error: format!("Invalid mode: {}. Valid modes: NORMAL, INSERT, VISUAL, VISUAL_LINE, VISUAL_BLOCK, COMMAND, SEARCH, PICKER, AI_PROMPT", mode_str),
                     }));
                     return;
                 }

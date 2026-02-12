@@ -678,3 +678,21 @@ pub fn render_margin_widgets(
         frame.render_widget(Paragraph::new(line), area);
     }
 }
+
+/// Renders the AI prompt input line.
+pub fn render_ai_prompt_line(frame: &mut Frame, editor: &Editor, area: Rect) {
+    let text = format!(
+        "ai({}/{}): {}",
+        editor.ai_state.active_profile,
+        editor.ai_state.extraction,
+        editor.ai_prompt_input()
+    );
+
+    let line = Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(Color::Cyan).bg(Color::Black),
+    )]);
+
+    let paragraph = Paragraph::new(line).style(Style::default().bg(Color::Black));
+    frame.render_widget(paragraph, area);
+}
