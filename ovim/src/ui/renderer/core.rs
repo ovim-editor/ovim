@@ -22,9 +22,9 @@ use super::line_cache::LineRenderCache;
 use super::overlays::{render_completion_menu, render_hover_window};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
-    render_ai_prompt_line, render_command_line, render_diagnostic_badge, render_margin_widgets,
-    render_message_line, render_path_completion, render_progress_line, render_rename_input,
-    render_search_line, render_status_line, render_tab_bar,
+    ai_prompt_panel_height, render_ai_prompt_line, render_command_line, render_diagnostic_badge,
+    render_margin_widgets, render_message_line, render_path_completion, render_progress_line,
+    render_rename_input, render_search_line, render_status_line, render_tab_bar,
 };
 
 // ---------------------------------------------------------------------------
@@ -91,8 +91,17 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         (None, remaining_area)
     };
 
-    // Buffer + optional progress line + status line + command line
+    // Buffer + optional progress line + status line + command/prompt area
     let has_progress = editor.lsp_progress_message().is_some();
+    let command_height = if editor.mode() == crate::mode::Mode::AiPrompt {
+        let max_height = content_area
+            .height
+            .saturating_sub(if has_progress { 2 } else { 1 })
+            .max(1);
+        ai_prompt_panel_height(editor, content_area.width, max_height)
+    } else {
+        1
+    };
     let chunks = if has_progress {
         Layout::default()
             .direction(Direction::Vertical)
@@ -101,7 +110,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
                     Constraint::Min(1),
                     Constraint::Length(1), // progress line
                     Constraint::Length(1), // status line
-                    Constraint::Length(1), // command/message line
+                    Constraint::Length(command_height), // command/message line
                 ]
                 .as_ref(),
             )
@@ -113,7 +122,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
                 [
                     Constraint::Min(1),
                     Constraint::Length(1), // status line
-                    Constraint::Length(1), // command/message line
+                    Constraint::Length(command_height), // command/message line
                 ]
                 .as_ref(),
             )
@@ -282,7 +291,7 @@ fn render_buffer_area(
 }
 
 /// Phase 4: Render the status area (progress line + status line + command/message line).
-fn render_status_area(frame: &mut Frame, editor: &Editor, theme: &Theme, areas: &FrameAreas) {
+fn render_status_area(frame: &mut Frame, editor: &mut Editor, theme: &Theme, areas: &FrameAreas) {
     if let Some(progress_chunk) = areas.progress_chunk {
         if let Some(progress_msg) = editor.lsp_progress_message() {
             render_progress_line(frame, &progress_msg, progress_chunk);
@@ -293,6 +302,9 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, theme: &Theme, areas: 
     render_status_line(frame, editor, theme, areas.status_chunk);
 
     // Command/message line below the status line
+    editor.render_cache.ai_prompt_input_area = None;
+    editor.render_cache.ai_prompt_input_rows.clear();
+    editor.render_cache.ai_prompt_model_hitboxes.clear();
     if editor.mode() == crate::mode::Mode::Command {
         render_command_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::Search {
@@ -300,7 +312,10 @@ fn render_status_area(frame: &mut Frame, editor: &Editor, theme: &Theme, areas: 
     } else if editor.mode() == crate::mode::Mode::RenameInput {
         render_rename_input(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::AiPrompt {
-        render_ai_prompt_line(frame, editor, areas.command_chunk);
+        let layout = render_ai_prompt_line(frame, editor, areas.command_chunk);
+        editor.render_cache.ai_prompt_input_area = layout.input_area;
+        editor.render_cache.ai_prompt_input_rows = layout.input_rows;
+        editor.render_cache.ai_prompt_model_hitboxes = layout.model_hitboxes;
     } else {
         render_message_line(frame, editor, areas.command_chunk);
     }
@@ -440,10 +455,31 @@ fn set_cursor_position(
             (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::AiPrompt {
-        let ai_prefix = format!("ai({}/{}): ", editor.ai_state.active_profile, editor.ai_state.extraction);
-        let ai_cursor_x = (ai_prefix.len() + editor.ai_prompt_cursor())
-            .min(command_chunk.width.saturating_sub(1) as usize);
-        frame.set_cursor_position((command_chunk.x + ai_cursor_x as u16, command_chunk.y));
+        if !editor.render_cache.ai_prompt_input_rows.is_empty() {
+            let cursor_byte = editor.ai_prompt_cursor().min(editor.ai_prompt_input().len());
+            let mut row = *editor.render_cache.ai_prompt_input_rows.last().unwrap();
+            for candidate in &editor.render_cache.ai_prompt_input_rows {
+                if cursor_byte < candidate.2 {
+                    row = *candidate;
+                    break;
+                }
+            }
+            let row_start = row.1.min(editor.ai_prompt_input().len());
+            let row_end = row.2.min(editor.ai_prompt_input().len()).max(row_start);
+            let row_cursor = cursor_byte.clamp(row_start, row_end);
+            let cursor_display = editor.ai_prompt_input()[row_start..row_cursor]
+                .chars()
+                .map(crate::display::char_display_width)
+                .sum::<usize>();
+            let clamped_x = row.0.x.saturating_add(
+                cursor_display.min(row.0.width.saturating_sub(1) as usize) as u16,
+            );
+            frame.set_cursor_position((clamped_x, row.0.y));
+        } else if let Some(input_area) = editor.render_cache.ai_prompt_input_area {
+            frame.set_cursor_position((input_area.x, input_area.y));
+        } else {
+            frame.set_cursor_position((command_chunk.x, command_chunk.y));
+        }
     } else {
         let rope = editor.buffer().rope();
         let line_count = editor.buffer().line_count();

@@ -533,6 +533,17 @@ impl Buffer {
 
     /// Adds an AI lock over absolute char range [start_char, end_char).
     pub fn add_ai_lock(&mut self, id: u64, start_char: usize, end_char: usize) {
+        self.add_ai_lock_with_mode(id, start_char, end_char, true);
+    }
+
+    /// Adds an AI range with explicit blocking mode.
+    pub fn add_ai_lock_with_mode(
+        &mut self,
+        id: u64,
+        start_char: usize,
+        end_char: usize,
+        blocks_edits: bool,
+    ) {
         if end_char <= start_char {
             return;
         }
@@ -540,6 +551,7 @@ impl Buffer {
             id,
             start_char,
             end_char,
+            blocks_edits,
         });
     }
 
@@ -575,6 +587,7 @@ impl Buffer {
         }
         self.ai_locks
             .iter()
+            .filter(|lock| lock.blocks_edits)
             .any(|lock| position >= lock.start_char && position <= lock.end_char)
     }
 
@@ -582,10 +595,13 @@ impl Buffer {
         if self.ai_lock_bypass_depth > 0 {
             return false;
         }
-        self.ai_locks.iter().any(|lock| {
-            // Overlap between [start_char, end_char) and [lock.start_char, lock.end_char)
-            start_char < lock.end_char && end_char > lock.start_char
-        })
+        self.ai_locks
+            .iter()
+            .filter(|lock| lock.blocks_edits)
+            .any(|lock| {
+                // Overlap between [start_char, end_char) and [lock.start_char, lock.end_char)
+                start_char < lock.end_char && end_char > lock.start_char
+            })
     }
 
     pub(crate) fn mark_ai_lock_blocked(&mut self) {
