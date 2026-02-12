@@ -1,4 +1,4 @@
-use crate::editor::Editor;
+use crate::editor::{Editor, ToastLevel};
 use crate::syntax::{Theme, UiGroup};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Convert a core color to a ratatui color (convenience wrapper)
 fn ui_color(theme: &Theme, group: UiGroup) -> Color {
@@ -291,9 +291,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     if !branch_display.is_empty() {
         spans.push(Span::styled(
             &branch_display,
-            Style::default()
-                .fg(status_fg)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(status_fg).add_modifier(Modifier::DIM),
         ));
     }
     spans.push(Span::raw(" ".repeat(padding_len)));
@@ -491,67 +489,127 @@ pub fn render_rename_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// Renders a diagnostic badge overlay in the top-right corner of the buffer area.
+fn truncate_to_width(input: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    if input.width() <= max_width {
+        return input.to_string();
+    }
+
+    if max_width == 1 {
+        return "~".to_string();
+    }
+
+    let mut out = String::new();
+    let mut used = 0usize;
+
+    for ch in input.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w >= max_width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('~');
+    out
+}
+
+fn toast_colors(theme: &Theme, level: ToastLevel) -> (Color, Color) {
+    match level {
+        ToastLevel::Error => (Color::White, ui_color(theme, UiGroup::Error)),
+        ToastLevel::Warning => (Color::Black, ui_color(theme, UiGroup::Warning)),
+        ToastLevel::Success => (Color::Black, Color::Green),
+        ToastLevel::Info => (Color::Black, ui_color(theme, UiGroup::Info)),
+    }
+}
+
+/// Renders a top-right toast stack over the buffer area.
 ///
-/// Shows error/warning counts as a colored badge (red bg for errors, yellow for warnings only).
-/// Hidden when: counts are zero, badge is dismissed, or buffer is too narrow.
-pub fn render_diagnostic_badge(frame: &mut Frame, editor: &Editor, buffer_area: Rect) {
-    if editor.diagnostic_badge_dismissed() {
+/// Slot 0 is reserved for persistent diagnostics (when present), and additional rows
+/// show transient toasts from the editor's toast center.
+pub fn render_top_right_toasts(
+    frame: &mut Frame,
+    editor: &Editor,
+    theme: &Theme,
+    buffer_area: Rect,
+) {
+    let mut rows: Vec<(String, ToastLevel)> = Vec::new();
+
+    if !editor.diagnostic_badge_dismissed() {
+        let (errors, warnings, _, _) = editor.cached_diagnostic_count();
+        if errors > 0 || warnings > 0 {
+            let text = if errors > 0 && warnings > 0 {
+                format!(" E:{} W:{} ", errors, warnings)
+            } else if errors > 0 {
+                format!(" E:{} ", errors)
+            } else {
+                format!(" W:{} ", warnings)
+            };
+            rows.push((
+                text,
+                if errors > 0 {
+                    ToastLevel::Error
+                } else {
+                    ToastLevel::Warning
+                },
+            ));
+        }
+    }
+
+    for toast in editor.visible_toasts_newest_first(4) {
+        let mut text = format!(" [{}] ", toast.source.label());
+        if let Some(title) = &toast.title {
+            text.push_str(title);
+            text.push_str(": ");
+        }
+        text.push_str(&toast.message);
+        if toast.repeat > 1 {
+            text.push_str(&format!(" x{}", toast.repeat));
+        }
+        text.push(' ');
+        rows.push((text, toast.level));
+    }
+
+    if rows.is_empty() {
         return;
     }
 
-    let (errors, warnings, _, _) = editor.cached_diagnostic_count();
-    if errors == 0 && warnings == 0 {
-        return;
+    let max_rows = buffer_area.height.min(5) as usize;
+    for (index, (raw_text, level)) in rows.into_iter().take(max_rows).enumerate() {
+        let y = buffer_area.y.saturating_add(index as u16);
+        if y >= buffer_area.bottom() {
+            break;
+        }
+
+        let available = buffer_area.width.saturating_sub(2) as usize;
+        if available < 4 {
+            continue;
+        }
+
+        let text = truncate_to_width(&raw_text, available);
+        let width = text.width() as u16;
+        if width == 0 {
+            continue;
+        }
+
+        let x = buffer_area.right().saturating_sub(width + 1);
+        let area = Rect {
+            x,
+            y,
+            width,
+            height: 1,
+        };
+
+        let (fg, bg) = toast_colors(theme, level);
+        let badge = Paragraph::new(Span::styled(
+            text,
+            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(badge, area);
     }
-
-    // Build badge text
-    let badge_text = if errors > 0 && warnings > 0 {
-        format!(" E:{} W:{} ", errors, warnings)
-    } else if errors > 0 {
-        format!(" E:{} ", errors)
-    } else {
-        format!(" W:{} ", warnings)
-    };
-
-    let badge_width = badge_text.len() as u16;
-
-    // Guard: skip if buffer area is too narrow
-    if buffer_area.width < badge_width + 2 {
-        return;
-    }
-
-    // Position: top-right of buffer area, 1 cell from right edge
-    let badge_x = buffer_area.right().saturating_sub(badge_width + 1);
-    let badge_y = buffer_area.y;
-
-    let badge_area = Rect {
-        x: badge_x,
-        y: badge_y,
-        width: badge_width,
-        height: 1,
-    };
-
-    let bg_color = if errors > 0 {
-        Color::Red
-    } else {
-        Color::Yellow
-    };
-    let fg_color = if errors > 0 {
-        Color::White
-    } else {
-        Color::Black
-    };
-
-    let badge = Paragraph::new(Span::styled(
-        badge_text,
-        Style::default()
-            .fg(fg_color)
-            .bg(bg_color)
-            .add_modifier(Modifier::BOLD),
-    ));
-
-    frame.render_widget(badge, badge_area);
 }
 
 /// Renders contextual widgets in the left and right margins when textwidth centering
@@ -657,9 +715,8 @@ pub fn render_margin_widgets(
                 ui_color(theme, UiGroup::Info)
             };
             // Truncate if too long for margin
-            let max_len = right_margin_width.saturating_sub(
-                spans.iter().map(|s| s.width()).sum::<usize>() + 1,
-            );
+            let max_len = right_margin_width
+                .saturating_sub(spans.iter().map(|s| s.width()).sum::<usize>() + 1);
             let display = if status_text.len() > max_len {
                 format!("{}~", &status_text[..max_len.saturating_sub(1)])
             } else {
@@ -793,7 +850,11 @@ pub fn render_ai_prompt_line(
     let rows = if inner.height >= 3 {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
             .split(inner)
     } else {
         Layout::default()
@@ -937,9 +998,7 @@ pub fn render_ai_prompt_line(
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
 
         if input_rect.width > 0 {
-            layout
-                .input_rows
-                .push((input_rect, *start_byte, *end_byte));
+            layout.input_rows.push((input_rect, *start_byte, *end_byte));
             if layout.input_area.is_none() {
                 layout.input_area = Some(input_rect);
             }

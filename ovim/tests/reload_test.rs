@@ -25,7 +25,10 @@ fn test_reload_clears_undo_history() {
     test.editor.buffer_mut().reload_from_disk().unwrap();
 
     // Undo should return false — history was cleared
-    assert!(!test.editor.buffer_mut().undo(), "undo should return false after reload");
+    assert!(
+        !test.editor.buffer_mut().undo(),
+        "undo should return false after reload"
+    );
 
     // Content should match disk
     assert_eq!(test.buffer_content(), "original\n");

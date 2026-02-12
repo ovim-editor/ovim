@@ -14,7 +14,62 @@ use anyhow::{anyhow, Result};
 use lsp_types::Location;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+
+fn dedupe_key_for_status(status_lower: &str) -> String {
+    status_lower
+        .split(':')
+        .next()
+        .unwrap_or(status_lower)
+        .trim()
+        .to_string()
+}
+
+fn is_lsp_toast_candidate(status_lower: &str) -> bool {
+    status_lower.starts_with("lsp:")
+        || status_lower.starts_with("java:")
+        || status_lower.contains("completion")
+        || status_lower.contains("hover")
+        || status_lower.contains("definition")
+        || status_lower.contains("implementation")
+        || status_lower.contains("code action")
+        || status_lower.contains("semantic token")
+        || status_lower.contains("workspace edit")
+        || status_lower.contains("organize imports")
+        || status_lower.contains("rename")
+        || status_lower.contains("diagnostic")
+}
+
+fn classify_status_toast(status: &str) -> Option<(ToastLevel, Option<Duration>, bool, String)> {
+    if status.is_empty() {
+        return None;
+    }
+
+    let lower = status.to_ascii_lowercase();
+    if !is_lsp_toast_candidate(&lower) {
+        return None;
+    }
+
+    if lower.contains("failed") || lower.contains("error") {
+        return Some((ToastLevel::Error, None, true, dedupe_key_for_status(&lower)));
+    }
+
+    if lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("cancelled")
+        || lower.contains("canceled")
+    {
+        return Some((
+            ToastLevel::Warning,
+            Some(Duration::from_secs(6)),
+            false,
+            dedupe_key_for_status(&lower),
+        ));
+    }
+
+    None
+}
 
 /// Context for making an LSP request, encapsulating all the common setup.
 pub(in crate::editor) struct LspRequestContext {
@@ -117,7 +172,16 @@ impl Editor {
 
     /// Set LSP status message
     pub fn set_lsp_status(&mut self, status: String) {
-        self.lsp_state.lsp_status = status;
+        self.lsp_state.lsp_status = status.clone();
+
+        if let Some((level, ttl, sticky, dedupe_key)) = classify_status_toast(&status) {
+            let request = ToastRequest::new(ToastSource::Lsp, level, status)
+                .with_title("LSP")
+                .with_ttl(ttl)
+                .with_sticky(sticky)
+                .with_dedupe_key(format!("lsp:{dedupe_key}"));
+            self.push_toast(request);
+        }
     }
 
     /// Get current LSP status

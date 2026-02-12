@@ -18,13 +18,13 @@
 #[macro_use]
 pub mod logger;
 mod notifications;
+pub mod position;
 mod protocol;
 mod requests;
 mod server;
 mod supervisor;
 mod trigger_chars;
 mod types;
-pub mod position;
 mod utils;
 
 pub use logger::{get_log_path, init_lsp_logging};
@@ -344,10 +344,12 @@ impl LspManager {
             }
 
             // Track root path for this server
-            self.server_roots.insert(server_id.clone(), root_path.to_path_buf());
+            self.server_roots
+                .insert(server_id.clone(), root_path.to_path_buf());
 
             // Update reverse index (deduplicate for restart safety)
-            let mut ids = self.language_server_index
+            let mut ids = self
+                .language_server_index
                 .entry(language.to_string())
                 .or_default();
             if !ids.contains(&server_id) {
@@ -425,10 +427,12 @@ impl LspManager {
             }
 
             // Track root path for this companion server
-            self.server_roots.insert(server_id.to_string(), root_path.to_path_buf());
+            self.server_roots
+                .insert(server_id.to_string(), root_path.to_path_buf());
 
             // Update reverse index (deduplicate for restart safety)
-            let mut ids = self.language_server_index
+            let mut ids = self
+                .language_server_index
                 .entry(language.to_string())
                 .or_default();
             if !ids.contains(&server_id.to_string()) {

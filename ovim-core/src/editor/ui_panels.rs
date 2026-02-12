@@ -1,12 +1,13 @@
 use super::filetree::FileTree;
 use super::path_completion::PathCompletionState;
 use super::quickfix::{LocationList, QuickfixList};
+use super::toast::ToastCenter;
 use crate::dashboard::DashboardAnimation;
 
 /// UI panel and overlay state.
 ///
 /// Groups fields for file tree, quickfix/location lists,
-/// path completion, dashboard, cat animation, and diagnostic badge.
+/// path completion, dashboard, cat animation, diagnostics, and toast notifications.
 pub struct UiPanels {
     /// File tree explorer
     pub file_tree: FileTree,
@@ -30,6 +31,8 @@ pub struct UiPanels {
     pub diagnostic_badge_last_count: (usize, usize),
     /// Last time Escape was pressed in normal mode (for double-Escape detection)
     pub last_escape_time: Option<std::time::Instant>,
+    /// Top-right toast notifications (transient and sticky)
+    pub toast_center: ToastCenter,
 }
 
 impl Default for UiPanels {
@@ -46,6 +49,7 @@ impl Default for UiPanels {
             diagnostic_badge_dismissed: false,
             diagnostic_badge_last_count: (0, 0),
             last_escape_time: None,
+            toast_center: ToastCenter::default(),
         }
     }
 }

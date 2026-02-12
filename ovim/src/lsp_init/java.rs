@@ -131,9 +131,7 @@ pub async fn initialize_hyperion_lsp_background(
     };
 
     // Start notification listener (use returned server_id for multi-root support)
-    lsp_manager
-        .start_notification_listener(server_id)
-        .await;
+    lsp_manager.start_notification_listener(server_id).await;
 
     send_java_status("Ready".to_string());
 }
@@ -165,9 +163,7 @@ pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
             Ok(server_id) => {
                 editor.register_lsp_server("java".to_string(), "hyperion".to_string());
 
-                lsp_manager
-                    .start_notification_listener(server_id)
-                    .await;
+                lsp_manager.start_notification_listener(server_id).await;
 
                 // PRE-WARM: Send didOpen immediately for faster first request
                 if let Some(file_path_str) = editor.buffer().file_path().map(|s| s.to_string()) {

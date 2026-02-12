@@ -1,6 +1,6 @@
-mod ai_integration;
-mod ai_context;
 mod ai_agent;
+mod ai_context;
+mod ai_integration;
 mod ai_state;
 mod blame_commands;
 mod buffer_manager;
@@ -42,6 +42,7 @@ mod tab_manager;
 mod tabpage;
 mod theme;
 mod theme_state;
+mod toast;
 mod ui_features;
 mod ui_panels;
 mod undo;
@@ -93,6 +94,7 @@ pub use search_context::{SearchContext, VisualSearchState};
 pub use tabpage::{TabPage, TabPageManager};
 pub use textobjects::{TextObjectRange, TextObjects};
 pub use theme_state::ThemeState;
+pub use toast::{Toast, ToastCenter, ToastLevel, ToastRequest, ToastSource};
 pub use ui_panels::UiPanels;
 pub use undo::UndoManager;
 pub use viewport_state::ViewportState;
@@ -611,6 +613,11 @@ impl Editor {
             }
         }
         false
+    }
+
+    /// Tick transient toasts. Returns true if any expired toast was removed.
+    pub fn tick_toasts(&mut self) -> bool {
+        self.ui_panels.toast_center.prune_expired()
     }
 
     /// Tick the cat animation. Returns true if a frame advanced (needs redraw).
@@ -1739,6 +1746,55 @@ impl Editor {
             self.ui_panels.diagnostic_badge_last_count = new_count;
             self.ui_panels.diagnostic_badge_dismissed = false;
         }
+    }
+
+    /// Push a toast notification into the top-right toast center.
+    pub fn push_toast(&mut self, request: ToastRequest) -> u64 {
+        let id = self.ui_panels.toast_center.push(request);
+        self.mark_dirty();
+        id
+    }
+
+    /// Returns true if there is at least one visible toast.
+    pub fn has_visible_toasts(&self) -> bool {
+        self.ui_panels.toast_center.has_visible()
+    }
+
+    /// Returns visible toasts ordered newest-first.
+    pub fn visible_toasts_newest_first(&self, max: usize) -> Vec<Toast> {
+        self.ui_panels.toast_center.visible_toasts_newest_first(max)
+    }
+
+    /// Dismiss the newest visible toast, if any.
+    pub fn dismiss_latest_toast(&mut self) -> bool {
+        let dismissed = self.ui_panels.toast_center.dismiss_latest_visible();
+        if dismissed {
+            self.mark_dirty();
+        }
+        dismissed
+    }
+
+    /// Returns true if either diagnostics badge or toast overlay has visible content.
+    pub fn has_top_right_overlay(&self) -> bool {
+        let (errors, warnings, _, _) = self.cached_diagnostic_count();
+        let diagnostic_visible = !self.diagnostic_badge_dismissed() && (errors > 0 || warnings > 0);
+        diagnostic_visible || self.has_visible_toasts()
+    }
+
+    /// Dismiss one top-right overlay item (newest toast first, then diagnostic badge).
+    pub fn dismiss_top_right_overlay(&mut self) -> bool {
+        if self.dismiss_latest_toast() {
+            return true;
+        }
+
+        let (errors, warnings, _, _) = self.cached_diagnostic_count();
+        let diagnostic_visible = !self.diagnostic_badge_dismissed() && (errors > 0 || warnings > 0);
+        if diagnostic_visible {
+            self.dismiss_diagnostic_badge();
+            return true;
+        }
+
+        false
     }
 
     /// Get last escape time for double-Escape detection

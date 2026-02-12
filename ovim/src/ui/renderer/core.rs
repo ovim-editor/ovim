@@ -22,9 +22,9 @@ use super::line_cache::LineRenderCache;
 use super::overlays::{render_completion_menu, render_hover_window};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
-    ai_prompt_panel_height, render_ai_prompt_line, render_command_line, render_diagnostic_badge,
-    render_margin_widgets, render_message_line, render_path_completion, render_progress_line,
-    render_rename_input, render_search_line, render_status_line, render_tab_bar,
+    ai_prompt_panel_height, render_ai_prompt_line, render_command_line, render_margin_widgets,
+    render_message_line, render_path_completion, render_progress_line, render_rename_input,
+    render_search_line, render_status_line, render_tab_bar, render_top_right_toasts,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,8 +108,8 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
             .constraints(
                 [
                     Constraint::Min(1),
-                    Constraint::Length(1), // progress line
-                    Constraint::Length(1), // status line
+                    Constraint::Length(1),              // progress line
+                    Constraint::Length(1),              // status line
                     Constraint::Length(command_height), // command/message line
                 ]
                 .as_ref(),
@@ -121,7 +121,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
             .constraints(
                 [
                     Constraint::Min(1),
-                    Constraint::Length(1), // status line
+                    Constraint::Length(1),              // status line
                     Constraint::Length(command_height), // command/message line
                 ]
                 .as_ref(),
@@ -329,7 +329,7 @@ fn render_overlays(
     ctx: &OverlayContext,
     command_chunk: Rect,
 ) {
-    // Diagnostic badge (top-right of buffer area) — hidden during full-screen overlays
+    // Top-right toast overlays (diagnostics + transient notifications) — hidden during full-screen overlays
     let mode = editor.mode();
     if !matches!(
         mode,
@@ -338,7 +338,7 @@ fn render_overlays(
             | crate::mode::Mode::HoverPreview
             | crate::mode::Mode::HoverNavigate
     ) {
-        render_diagnostic_badge(frame, editor, ctx.layout.buffer_area);
+        render_top_right_toasts(frame, editor, theme, ctx.layout.buffer_area);
     }
 
     // LSP Manager overlay
@@ -456,7 +456,9 @@ fn set_cursor_position(
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::AiPrompt {
         if !editor.render_cache.ai_prompt_input_rows.is_empty() {
-            let cursor_byte = editor.ai_prompt_cursor().min(editor.ai_prompt_input().len());
+            let cursor_byte = editor
+                .ai_prompt_cursor()
+                .min(editor.ai_prompt_input().len());
             let mut row = *editor.render_cache.ai_prompt_input_rows.last().unwrap();
             for candidate in &editor.render_cache.ai_prompt_input_rows {
                 if cursor_byte < candidate.2 {
@@ -471,9 +473,10 @@ fn set_cursor_position(
                 .chars()
                 .map(crate::display::char_display_width)
                 .sum::<usize>();
-            let clamped_x = row.0.x.saturating_add(
-                cursor_display.min(row.0.width.saturating_sub(1) as usize) as u16,
-            );
+            let clamped_x = row
+                .0
+                .x
+                .saturating_add(cursor_display.min(row.0.width.saturating_sub(1) as usize) as u16);
             frame.set_cursor_position((clamped_x, row.0.y));
         } else if let Some(input_area) = editor.render_cache.ai_prompt_input_area {
             frame.set_cursor_position((input_area.x, input_area.y));

@@ -711,7 +711,10 @@ fn ai_region_ranges_for_line(
     for region in editor.ai_regions() {
         let show_generated = region.status == AiRegionStatus::Generated;
         let show_selected = selected_region_id == Some(region.id)
-            && matches!(region.status, AiRegionStatus::Generated | AiRegionStatus::Running);
+            && matches!(
+                region.status,
+                AiRegionStatus::Generated | AiRegionStatus::Running
+            );
         if !show_generated && !show_selected {
             continue;
         }
@@ -1281,7 +1284,10 @@ pub fn render_buffer(
                                 (0, line_char_count - 1)
                             }
                         } else if selection.start_line == selection.end_line {
-                            (selection.start_col, selection.end_col.min(line_char_count.saturating_sub(1)))
+                            (
+                                selection.start_col,
+                                selection.end_col.min(line_char_count.saturating_sub(1)),
+                            )
                         } else if line_idx == selection.start_line {
                             (selection.start_col, line_char_count.saturating_sub(1))
                         } else if line_idx == selection.end_line {
@@ -1302,8 +1308,7 @@ pub fn render_buffer(
                         );
 
                         if !wrap {
-                            let start_display =
-                                expanded_char_to_display_col(&expanded_text, start);
+                            let start_display = expanded_char_to_display_col(&expanded_text, start);
                             let end_display =
                                 expanded_char_to_display_col(&expanded_text, end_exclusive);
                             if end_display <= h_offset || start_display >= h_offset + text_width {
@@ -2167,5 +2172,4 @@ mod tests {
         );
         assert_eq!(ranges, vec![(6, 10)]);
     }
-
 }

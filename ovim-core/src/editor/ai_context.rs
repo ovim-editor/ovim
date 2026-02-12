@@ -25,7 +25,9 @@ impl Editor {
             };
         }
 
-        let start_line = selection.start_line.saturating_sub(SURROUNDING_WINDOW_LINES);
+        let start_line = selection
+            .start_line
+            .saturating_sub(SURROUNDING_WINDOW_LINES);
         let end_line = selection
             .end_line
             .saturating_add(SURROUNDING_WINDOW_LINES)
@@ -52,7 +54,9 @@ impl Editor {
             })
             .map(|diag| DiagnosticFact {
                 message: diag.message.clone(),
-                severity: diag.severity.map(|severity| format!("{:?}", severity).to_lowercase()),
+                severity: diag
+                    .severity
+                    .map(|severity| format!("{:?}", severity).to_lowercase()),
                 line: diag.range.start.line + 1,
                 start_character: diag.range.start.character,
                 end_character: diag.range.end.character,

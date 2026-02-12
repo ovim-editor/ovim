@@ -594,7 +594,8 @@ impl LspManager {
         let result = server
             .request("codeAction/resolve", serde_json::to_value(action)?)
             .await?;
-        let resolved: Option<lsp_types::CodeAction> = parse_lsp_response(result, "codeAction/resolve");
+        let resolved: Option<lsp_types::CodeAction> =
+            parse_lsp_response(result, "codeAction/resolve");
         Ok(resolved.unwrap_or(fallback))
     }
 
@@ -1841,10 +1842,7 @@ impl LspManager {
         let with_sources = self
             .code_actions_multi_with_sources(uri, line, character, server_ids, diagnostics)
             .await?;
-        Ok(with_sources
-            .into_iter()
-            .map(|(_, action)| action)
-            .collect())
+        Ok(with_sources.into_iter().map(|(_, action)| action).collect())
     }
 
     /// Code actions from multiple servers with the source server_id retained.
@@ -1860,13 +1858,17 @@ impl LspManager {
 
         let mut futures = Vec::new();
         for sid in server_ids {
-            let server = self.servers.get(sid.as_str()).map(|entry| entry.value().clone());
+            let server = self
+                .servers
+                .get(sid.as_str())
+                .map(|entry| entry.value().clone());
             if let Some(server) = server {
                 let sid = sid.clone();
                 let uri = uri.clone();
                 let diags = diagnostics.clone();
                 futures.push(tokio::spawn(async move {
-                    let request = Self::code_actions_on_server(&server, &uri, line, character, diags);
+                    let request =
+                        Self::code_actions_on_server(&server, &uri, line, character, diags);
                     match tokio::time::timeout(Duration::from_secs(3), request).await {
                         Ok(Ok(actions)) => Some(
                             actions
