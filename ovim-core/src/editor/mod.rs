@@ -1,4 +1,5 @@
 mod ai_integration;
+mod ai_context;
 mod ai_state;
 mod blame_commands;
 mod buffer_manager;
@@ -59,7 +60,7 @@ pub use crate::textobjects;
 pub use crate::change::{
     Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType,
 };
-pub use ai_state::{AiJobStatus, AiLogBlock};
+pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use editing_state::{EditingState, PendingChangeRepeat};
@@ -382,8 +383,7 @@ impl Editor {
     /// Starts in Dashboard mode when no file is opened
     pub fn new() -> Self {
         let buffer = Buffer::new();
-
-        Self {
+        let mut editor = Self {
             buffers: vec![buffer],
             current_buffer_index: 0,
             window_manager: None, // Will be initialized when viewport size is known
@@ -421,14 +421,15 @@ impl Editor {
             api_port: None,
             active_session: None,
             git_branch: None,
-        }
+        };
+        editor.ai_state.last_observed_buffer_version = editor.buffer().version();
+        editor
     }
 
     /// Creates an editor with initial content
     pub fn with_content(content: &str) -> Self {
         let buffer = Buffer::new_from_str(content);
-
-        Self {
+        let mut editor = Self {
             buffers: vec![buffer],
             current_buffer_index: 0,
             window_manager: None, // Will be initialized when viewport size is known
@@ -466,7 +467,9 @@ impl Editor {
             api_port: None,
             active_session: None,
             git_branch: None,
-        }
+        };
+        editor.ai_state.last_observed_buffer_version = editor.buffer().version();
+        editor
     }
 
     // ==================== Rename Input ====================
@@ -541,6 +544,8 @@ impl Editor {
         self.input.pending_operator = None;
         self.input.pending_command = None;
         self.input.pending_register = None;
+        self.input.pending_mapping_sequence.clear();
+        self.input.pending_mapping_events.clear();
 
         // Clear visual selection when leaving visual modes
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
@@ -1283,6 +1288,34 @@ impl Editor {
     /// Gets a mutable reference to the keymaps
     pub fn keymaps_mut(&mut self) -> &mut KeyMapManager {
         &mut self.keymaps
+    }
+
+    /// Returns true when normal-mode keymap matching is waiting for more input.
+    pub fn has_pending_mapping(&self) -> bool {
+        !self.input.pending_mapping_sequence.is_empty()
+    }
+
+    /// Returns the pending normal-mode mapping key sequence.
+    pub fn pending_mapping_sequence(&self) -> &str {
+        &self.input.pending_mapping_sequence
+    }
+
+    /// Appends one encoded key token to the pending mapping sequence.
+    pub fn append_pending_mapping(&mut self, token: &str, event: crate::KeyEvent) {
+        self.input.pending_mapping_sequence.push_str(token);
+        self.input.pending_mapping_events.push(event);
+    }
+
+    /// Clears all pending mapping state.
+    pub fn clear_pending_mapping(&mut self) {
+        self.input.pending_mapping_sequence.clear();
+        self.input.pending_mapping_events.clear();
+    }
+
+    /// Drains pending mapping events and clears the pending sequence.
+    pub fn take_pending_mapping_events(&mut self) -> Vec<crate::KeyEvent> {
+        self.input.pending_mapping_sequence.clear();
+        std::mem::take(&mut self.input.pending_mapping_events)
     }
 
     /// Gets the pending register for next operation

@@ -7,5 +7,6 @@ pub use config::{AiConfig, AiProfileConfig};
 pub use extract::{extract_response, AiExtractedResponse};
 pub use provider::request_ai_edit;
 pub use types::{
-    AiJobResult, AiProviderKind, AiRequest, BufferLock, ExtractionStrategy, PROFILE_LOCAL,
+    AgentMode, AiContextPack, AiJobResult, AiProviderKind, AiRequest, BufferLock, CapabilityTier,
+    CodeSlice, ContextPolicy, DiagnosticFact, ExtractionStrategy, SymbolFact, PROFILE_LOCAL,
 };

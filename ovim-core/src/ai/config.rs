@@ -1,4 +1,6 @@
-use crate::ai::types::{AiProviderKind, ExtractionStrategy, PROFILE_LOCAL};
+use crate::ai::types::{
+    AgentMode, AiProviderKind, CapabilityTier, ContextPolicy, ExtractionStrategy, PROFILE_LOCAL,
+};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -16,6 +18,7 @@ pub struct AiProfileConfig {
     pub max_tokens: Option<u32>,
     pub system_prompt: Option<String>,
     pub extraction: ExtractionStrategy,
+    pub context_policy: ContextPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +44,14 @@ struct AiTomlProfile {
     max_tokens: Option<u32>,
     system_prompt: Option<String>,
     extraction: Option<ExtractionStrategy>,
+    capability_tier: Option<CapabilityTier>,
+    agent_mode: Option<AgentMode>,
+    context_budget_tokens: Option<usize>,
+    max_tool_calls: Option<u16>,
+    max_iterations: Option<u8>,
+    retrieval_k: Option<u16>,
+    callgraph_hops: Option<u8>,
+    enable_pruning: Option<bool>,
 }
 
 impl Default for AiConfig {
@@ -58,6 +69,7 @@ impl Default for AiConfig {
                 max_tokens: Some(2048),
                 system_prompt: Some(default_system_prompt().to_string()),
                 extraction: ExtractionStrategy::Json,
+                context_policy: ContextPolicy::for_tier(CapabilityTier::Small),
             },
         );
 
@@ -82,6 +94,30 @@ impl AiConfig {
 
         let mut cfg = Self::default();
         for (name, profile) in parsed.profiles {
+            let mut context_policy =
+                ContextPolicy::for_tier(profile.capability_tier.unwrap_or_default());
+            if let Some(mode) = profile.agent_mode {
+                context_policy.mode = mode;
+            }
+            if let Some(value) = profile.context_budget_tokens {
+                context_policy.context_budget_tokens = value;
+            }
+            if let Some(value) = profile.max_tool_calls {
+                context_policy.max_tool_calls = value;
+            }
+            if let Some(value) = profile.max_iterations {
+                context_policy.max_iterations = value;
+            }
+            if let Some(value) = profile.retrieval_k {
+                context_policy.retrieval_k = value;
+            }
+            if let Some(value) = profile.callgraph_hops {
+                context_policy.callgraph_hops = value;
+            }
+            if let Some(value) = profile.enable_pruning {
+                context_policy.enable_pruning = value;
+            }
+
             cfg.profiles.insert(
                 name.clone(),
                 AiProfileConfig {
@@ -94,6 +130,7 @@ impl AiConfig {
                     max_tokens: profile.max_tokens,
                     system_prompt: profile.system_prompt,
                     extraction: profile.extraction.unwrap_or(ExtractionStrategy::Json),
+                    context_policy,
                 },
             );
         }
@@ -122,4 +159,3 @@ fn config_path() -> PathBuf {
 fn default_system_prompt() -> &'static str {
     "You are an editing agent. Return JSON: {\"replacement\": string, \"top_insertions\": string[], \"log\": string[]}. Only include valid JSON."
 }
-

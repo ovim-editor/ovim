@@ -255,7 +255,7 @@ fn read_api_key(profile: &AiProfileConfig) -> Result<String> {
 fn build_user_prompt(request: &AiRequest) -> String {
     let language = request.language_id.as_deref().unwrap_or("plain_text");
     let file_path = request.file_path.as_deref().unwrap_or("[No Name]");
-    format!(
+    let mut prompt = format!(
         "Edit the selected text based on the instruction.\n\
 Instruction:\n{}\n\n\
 File: {}\n\
@@ -268,6 +268,46 @@ Selected text:\n```{}\n{}\n```",
         request.extraction,
         language,
         request.selected_text
-    )
-}
+    );
 
+    if let Some(context_pack) = &request.context_pack {
+        if !context_pack.symbol_facts.is_empty() {
+            prompt.push_str("\n\nNearby symbols:\n");
+            for symbol in context_pack.symbol_facts.iter().take(12) {
+                prompt.push_str(&format!(
+                    "- {} [{}] at {}:{}\n",
+                    symbol.name, symbol.kind, symbol.line, symbol.character
+                ));
+            }
+        }
+
+        if !context_pack.diagnostics.is_empty() {
+            prompt.push_str("\nDiagnostics overlapping selection:\n");
+            for diag in context_pack.diagnostics.iter().take(12) {
+                let severity = diag.severity.as_deref().unwrap_or("unknown");
+                prompt.push_str(&format!(
+                    "- {} ({} at {}:{}-{})\n",
+                    diag.message, severity, diag.line, diag.start_character, diag.end_character
+                ));
+            }
+        }
+
+        for slice in context_pack.surrounding.iter().take(3) {
+            let slice_language = slice.language.as_deref().unwrap_or(language);
+            prompt.push_str(&format!(
+                "\nContext slice [{} lines {}-{}]:\n```{}\n{}\n```",
+                slice.label, slice.start_line, slice.end_line, slice_language, slice.content
+            ));
+        }
+
+        for slice in context_pack.related_slices.iter().take(3) {
+            let slice_language = slice.language.as_deref().unwrap_or(language);
+            prompt.push_str(&format!(
+                "\nRelated slice [{} lines {}-{}]:\n```{}\n{}\n```",
+                slice.label, slice.start_line, slice.end_line, slice_language, slice.content
+            ));
+        }
+    }
+
+    prompt
+}
