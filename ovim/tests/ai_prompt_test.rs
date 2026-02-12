@@ -123,6 +123,18 @@ async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
     test.assert_mode(Mode::Normal);
     assert_eq!(test.editor.buffer().ai_locks().len(), 1);
     assert_eq!(test.editor.ai_state.pending_jobs.len(), 1);
+    assert!(
+        test.editor.ai_state.regions[0]
+            .reasoning_lines
+            .iter()
+            .any(|line| line.contains("agent mode="))
+    );
+    assert!(
+        test.editor.ai_state.regions[0]
+            .reasoning_lines
+            .iter()
+            .any(|line| line.contains("waiting for model response"))
+    );
 }
 
 #[test]
@@ -408,6 +420,18 @@ async fn test_ctrl_space_retries_generation_for_selected_region() {
     assert_eq!(
         test.editor.ai_state.regions[0].status,
         ovim::editor::AiRegionStatus::Running
+    );
+    assert!(
+        test.editor.ai_state.regions[0]
+            .reasoning_lines
+            .iter()
+            .any(|line| line.contains("agent mode="))
+    );
+    assert!(
+        test.editor.ai_state.regions[0]
+            .reasoning_lines
+            .iter()
+            .any(|line| line.contains("retrying with same prompt"))
     );
     assert_eq!(test.editor.buffer().ai_locks().len(), 1);
     assert!(test.editor.buffer().ai_locks()[0].blocks_edits);

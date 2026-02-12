@@ -1,6 +1,6 @@
 use super::ai_state::{AiEditRegion, AiRegionStatus, AiSelectionSnapshot, PendingAiJob};
 use super::Editor;
-use crate::ai::{request_ai_edit, AiRequest};
+use crate::ai::request_ai_edit;
 use crate::editor::lsp_state::HoverContentType;
 use crate::mode::Mode;
 use anyhow::{anyhow, Result};
@@ -132,25 +132,13 @@ impl Editor {
         };
 
         let extraction = self.ai_state.extraction;
-        let file_path = self.buffer().file_path().map(ToString::to_string);
-        let language_id = file_path
-            .as_deref()
-            .and_then(crate::syntax::LanguageRegistry::get_lsp_language_id)
-            .map(ToString::to_string);
-        let context_pack = if profile.context_policy.context_budget_tokens == 0 {
-            None
-        } else {
-            Some(self.build_ai_context_pack(&selection))
-        };
-
-        let request = AiRequest {
-            prompt: prompt.clone(),
-            selected_text: selection.selected_text.clone(),
-            language_id,
-            file_path,
+        let (request, mut prep_trace) = self.build_ai_request_for_selection(
+            &profile,
+            prompt.clone(),
+            &selection,
             extraction,
-            context_pack,
-        };
+        );
+        prep_trace.push("waiting for model response...".to_string());
 
         let lock_id = self.ai_state.next_lock_id;
         self.ai_state.next_lock_id = self.ai_state.next_lock_id.saturating_add(1);
@@ -174,7 +162,7 @@ impl Editor {
             profile_name: profile_name.clone(),
             provider_label: provider_label.clone(),
             extraction,
-            reasoning_lines: vec!["waiting for model response...".to_string()],
+            reasoning_lines: prep_trace,
             raw_output: None,
             created_at: now,
             updated_at: now,
@@ -452,25 +440,13 @@ impl Editor {
             return Ok(true);
         };
 
-        let file_path = self.buffer().file_path().map(ToString::to_string);
-        let language_id = file_path
-            .as_deref()
-            .and_then(crate::syntax::LanguageRegistry::get_lsp_language_id)
-            .map(ToString::to_string);
-        let context_pack = if profile.context_policy.context_budget_tokens == 0 {
-            None
-        } else {
-            Some(self.build_ai_context_pack(&selection))
-        };
-
-        let request = AiRequest {
-            prompt: prompt.clone(),
-            selected_text: selected_text.clone(),
-            language_id,
-            file_path,
+        let (request, mut prep_trace) = self.build_ai_request_for_selection(
+            &profile,
+            prompt.clone(),
+            &selection,
             extraction,
-            context_pack,
-        };
+        );
+        prep_trace.push("retrying with same prompt...".to_string());
 
         // Replace tracking lock with blocking lock while generation is in flight.
         self.buffer_mut().remove_ai_lock(region_id);
@@ -484,7 +460,7 @@ impl Editor {
             region.original_text = selected_text.clone();
             region.generated_text.clear();
             region.provider_label = provider_label.clone();
-            region.reasoning_lines = vec!["retrying with same prompt...".to_string()];
+            region.reasoning_lines = prep_trace;
             region.raw_output = None;
             region.updated_at = Instant::now();
         }
