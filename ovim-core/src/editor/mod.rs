@@ -1,4 +1,6 @@
 mod ai_agent;
+mod ai_chat;
+pub(crate) mod ai_chat_state;
 mod ai_context;
 mod ai_integration;
 mod ai_state;

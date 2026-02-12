@@ -36,6 +36,8 @@ pub enum Mode {
     RenameInput,
     /// AiPrompt mode - for entering prompt text for visual AI edit
     AiPrompt,
+    /// AiChat mode - multi-turn AI chat panel
+    AiChat,
 }
 
 impl Mode {
@@ -59,6 +61,7 @@ impl Mode {
             Mode::LspManager => "LSP MANAGER",
             Mode::RenameInput => "RENAME",
             Mode::AiPrompt => "AI",
+            Mode::AiChat => "AI CHAT",
         }
     }
 

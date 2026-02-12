@@ -20,6 +20,10 @@ pub struct RenderCache {
     pub ai_prompt_input_rows: Vec<(crate::Rect, usize, usize)>,
     /// Cached AI prompt model picker hitboxes from last render.
     pub ai_prompt_model_hitboxes: Vec<(crate::Rect, String)>,
+    /// Cached AI chat input area from last render.
+    pub ai_chat_input_area: Option<crate::Rect>,
+    /// Cached AI chat input cursor position from last render.
+    pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
 }
 
 impl Default for RenderCache {
@@ -33,6 +37,8 @@ impl Default for RenderCache {
             ai_prompt_input_area: None,
             ai_prompt_input_rows: Vec::new(),
             ai_prompt_model_hitboxes: Vec::new(),
+            ai_chat_input_area: None,
+            ai_chat_input_cursor_pos: None,
         }
     }
 }

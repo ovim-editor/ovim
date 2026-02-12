@@ -1,5 +1,7 @@
+use crate::ai::chat_types::ConversationTree;
 use crate::ai::{AiConfig, AiJobResult, ExtractionStrategy, PROFILE_LOCAL};
 use crate::mode::Mode;
+use std::collections::HashMap;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,10 @@ pub struct AiState {
     pub next_lock_id: u64,
     pub next_job_id: u64,
     pub last_observed_buffer_version: usize,
+    /// Active chat session state (None when chat is closed).
+    pub chat: Option<super::ai_chat_state::AiChatState>,
+    /// Persistent conversations keyed by (buffer_id, conversation_name).
+    pub conversations: HashMap<(usize, String), ConversationTree>,
 }
 
 impl Default for AiState {
@@ -107,6 +113,8 @@ impl Default for AiState {
             next_lock_id: 1,
             next_job_id: 1,
             last_observed_buffer_version: 0,
+            chat: None,
+            conversations: HashMap::new(),
         }
     }
 }

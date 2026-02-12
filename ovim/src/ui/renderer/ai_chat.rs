@@ -1,0 +1,581 @@
+use crate::editor::Editor;
+use ovim_core::ai::chat_types::{ChatFocus, ChatMessage, ChatRole};
+use ratatui::{
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
+    Frame,
+};
+
+// ---------------------------------------------------------------------------
+// Colors
+// ---------------------------------------------------------------------------
+
+const BG_PANEL: Color = Color::Rgb(20, 23, 30);
+const BG_INPUT: Color = Color::Rgb(28, 33, 42);
+
+const BORDER_USER: Color = Color::Cyan;
+const BORDER_ASSISTANT_EDIT: Color = Color::Green;
+const BORDER_ASSISTANT_QUERY: Color = Color::Rgb(100, 149, 237); // cornflower blue
+const BORDER_ERROR: Color = Color::Red;
+const BORDER_SELECTED: Color = Color::Yellow;
+
+const TEXT_DIM: Color = Color::Rgb(128, 140, 155);
+const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+/// Split content area into buffer (top) and chat panel (bottom).
+pub fn compute_chat_split(content_area: Rect, _allow_edits: bool) -> (Rect, Rect) {
+    let total = content_area.height;
+    // Chat panel gets ~60% of space, minimum 8 rows
+    let chat_height = (total * 60 / 100).max(8).min(total.saturating_sub(3));
+    let buffer_height = total.saturating_sub(chat_height);
+
+    let buffer_rect = Rect {
+        x: content_area.x,
+        y: content_area.y,
+        width: content_area.width,
+        height: buffer_height,
+    };
+    let chat_rect = Rect {
+        x: content_area.x,
+        y: content_area.y + buffer_height,
+        width: content_area.width,
+        height: chat_height,
+    };
+    (buffer_rect, chat_rect)
+}
+
+/// Render the full chat panel.
+pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
+    if chat_area.width < 4 || chat_area.height < 3 {
+        return;
+    }
+
+    // Fill background
+    let bg_lines: Vec<Line> = (0..chat_area.height)
+        .map(|_| {
+            Line::from(Span::styled(
+                " ".repeat(chat_area.width as usize),
+                Style::default().bg(BG_PANEL),
+            ))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(bg_lines), chat_area);
+
+    // Layout: [message_history | input_bar(2) | model_selector(1)]
+    let model_bar_height = 1u16;
+    let input_height = 2u16;
+    let min_chrome = model_bar_height + input_height;
+
+    if chat_area.height <= min_chrome {
+        // Too small — just render input
+        render_text_input(frame, editor, chat_area);
+        return;
+    }
+
+    let messages_height = chat_area.height - min_chrome;
+
+    let messages_area = Rect {
+        x: chat_area.x,
+        y: chat_area.y,
+        width: chat_area.width,
+        height: messages_height,
+    };
+    let input_area = Rect {
+        x: chat_area.x,
+        y: chat_area.y + messages_height,
+        width: chat_area.width,
+        height: input_height,
+    };
+    let model_area = Rect {
+        x: chat_area.x,
+        y: chat_area.y + messages_height + input_height,
+        width: chat_area.width,
+        height: model_bar_height,
+    };
+
+    render_message_history(frame, editor, messages_area);
+    render_text_input(frame, editor, input_area);
+    render_model_selector_bar(frame, editor, model_area);
+
+    if editor.ai_chat_waiting() {
+        render_waiting_indicator(frame, messages_area);
+    }
+}
+
+/// Returns cursor (x, y) for the chat input, if focused.
+pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> {
+    let focus = editor.ai_chat_focus();
+    if focus != ChatFocus::TextInput {
+        return None;
+    }
+
+    let min_chrome = 3u16; // input(2) + model(1)
+    if chat_area.height <= min_chrome {
+        return None;
+    }
+
+    let messages_height = chat_area.height - min_chrome;
+    let input_y = chat_area.y + messages_height;
+    // Input has a 1-char border + ">> " prefix = 4 chars offset
+    let prefix_len = 4u16;
+    let cursor_byte = editor.ai_chat_input_cursor();
+    let input = editor.ai_chat_input();
+    let cursor_display: usize = input[..cursor_byte.min(input.len())].chars().count();
+
+    let x = chat_area
+        .x
+        .saturating_add(prefix_len)
+        .saturating_add(cursor_display as u16)
+        .min(chat_area.x + chat_area.width.saturating_sub(1));
+
+    Some((x, input_y))
+}
+
+// ---------------------------------------------------------------------------
+// Message History
+// ---------------------------------------------------------------------------
+
+fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
+    let messages = editor.ai_chat_messages();
+    if messages.is_empty() {
+        // Empty state
+        let help = if editor.ai_chat_allow_edits() {
+            " Type a message and press Enter to chat with AI "
+        } else {
+            " Type a question and press Enter (read-only mode) "
+        };
+        let y = area.y + area.height / 2;
+        if y < area.y + area.height {
+            let line = Line::from(Span::styled(
+                center_text(help, area.width as usize),
+                Style::default().fg(TEXT_DIM).bg(BG_PANEL),
+            ));
+            let r = Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(vec![line]), r);
+        }
+        return;
+    }
+
+    let allow_edits = editor.ai_chat_allow_edits();
+    let focus = editor.ai_chat_focus();
+    let scroll = editor.ai_chat_message_scroll();
+    let panel_width = area.width as usize;
+
+    // Render messages bottom-up with scroll
+    let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
+    for (idx, msg) in messages.iter().enumerate() {
+        let is_selected =
+            focus == ChatFocus::MessageHistory && idx == messages.len().saturating_sub(1 + scroll);
+        let bubble_lines = render_chat_bubble(msg, panel_width, is_selected, allow_edits);
+        for line in bubble_lines {
+            rendered_lines.push((line, false));
+        }
+        // Spacing between messages
+        rendered_lines.push((
+            Line::from(Span::styled(
+                " ".repeat(panel_width),
+                Style::default().bg(BG_PANEL),
+            )),
+            true,
+        ));
+    }
+
+    // Display from bottom of area, scrolled
+    let visible_rows = area.height as usize;
+    let total = rendered_lines.len();
+    let start = total.saturating_sub(visible_rows + scroll);
+    let end = total.saturating_sub(scroll).min(total);
+
+    for (row_idx, line_idx) in (start..end).enumerate() {
+        if row_idx >= visible_rows {
+            break;
+        }
+        let r = Rect {
+            x: area.x,
+            y: area.y + row_idx as u16,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(vec![rendered_lines[line_idx].0.clone()]), r);
+    }
+}
+
+fn render_chat_bubble(
+    message: &ChatMessage,
+    panel_width: usize,
+    is_selected: bool,
+    allow_edits: bool,
+) -> Vec<Line<'static>> {
+    let max_bubble_width = (panel_width * 3 / 4)
+        .max(20)
+        .min(panel_width.saturating_sub(4));
+    let inner_width = max_bubble_width.saturating_sub(4); // borders + padding
+
+    let border_color = if is_selected {
+        BORDER_SELECTED
+    } else {
+        match message.role {
+            ChatRole::User => BORDER_USER,
+            ChatRole::Assistant => {
+                if allow_edits {
+                    BORDER_ASSISTANT_EDIT
+                } else {
+                    BORDER_ASSISTANT_QUERY
+                }
+            }
+            ChatRole::Error => BORDER_ERROR,
+        }
+    };
+
+    let text_color = if message.role == ChatRole::Error {
+        Color::Red
+    } else {
+        TEXT_NORMAL
+    };
+
+    let is_user = message.role == ChatRole::User;
+    let indent = if is_user {
+        panel_width.saturating_sub(max_bubble_width)
+    } else {
+        1
+    };
+
+    let wrapped = word_wrap(&message.content, inner_width);
+
+    let border_style = Style::default().fg(border_color).bg(BG_PANEL);
+    let text_style = Style::default().fg(text_color).bg(BG_PANEL);
+    let pad_style = Style::default().bg(BG_PANEL);
+
+    let mut lines = Vec::new();
+
+    // Role label
+    let label = match message.role {
+        ChatRole::User => "You",
+        ChatRole::Assistant => {
+            "" // model label is handled separately below
+        }
+        ChatRole::Error => "Error",
+    };
+    let label_text = if message.role == ChatRole::Assistant {
+        if let Some(ref model) = message.model {
+            format!(" {} ", model)
+        } else {
+            " Assistant ".to_string()
+        }
+    } else {
+        format!(" {} ", label)
+    };
+
+    // Top border: ╭─ label ─╮
+    let label_display_len = label_text.chars().count();
+    let top_fill = max_bubble_width.saturating_sub(2 + label_display_len);
+    let top = format!(
+        "{}╭{}{}╮{}",
+        " ".repeat(indent),
+        &label_text,
+        "─".repeat(top_fill),
+        " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
+    );
+    lines.push(Line::from(Span::styled(top, border_style)));
+
+    // Content lines
+    for row in &wrapped {
+        let row_chars: usize = row.chars().count();
+        let padding = inner_width.saturating_sub(row_chars);
+        let spans = vec![
+            Span::styled(" ".repeat(indent), pad_style),
+            Span::styled("│ ", border_style),
+            Span::styled(format!("{}{}", row, " ".repeat(padding)), text_style),
+            Span::styled(" │", border_style),
+            Span::styled(
+                " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
+                pad_style,
+            ),
+        ];
+        lines.push(Line::from(spans));
+    }
+
+    // Bottom border: ╰──╯
+    let bottom = format!(
+        "{}╰{}╯{}",
+        " ".repeat(indent),
+        "─".repeat(max_bubble_width.saturating_sub(2)),
+        " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
+    );
+    lines.push(Line::from(Span::styled(bottom, border_style)));
+
+    lines
+}
+
+// ---------------------------------------------------------------------------
+// Text Input
+// ---------------------------------------------------------------------------
+
+fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
+    if area.height == 0 || area.width < 4 {
+        return;
+    }
+
+    let focus = editor.ai_chat_focus();
+    let waiting = editor.ai_chat_waiting();
+    let input = editor.ai_chat_input();
+
+    let border_color = if focus == ChatFocus::TextInput {
+        Color::Rgb(82, 139, 255)
+    } else {
+        Color::Rgb(60, 66, 80)
+    };
+
+    let border_style = Style::default().fg(border_color).bg(BG_PANEL);
+    let w = area.width as usize;
+
+    // Top border of input box
+    let top = format!("╭{}╮", "─".repeat(w.saturating_sub(2)));
+    let top_line = Line::from(Span::styled(top, border_style));
+    frame.render_widget(
+        Paragraph::new(vec![top_line]),
+        Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        },
+    );
+
+    // Input content line
+    if area.height >= 2 {
+        let prefix = "│ >> ";
+        let prefix_len = prefix.chars().count();
+        let content_width = w.saturating_sub(prefix_len + 2); // trailing " │"
+
+        let display_input = if waiting {
+            "Waiting for response..."
+        } else {
+            input
+        };
+        let truncated: String = display_input.chars().take(content_width).collect();
+        let padding = content_width.saturating_sub(truncated.chars().count());
+
+        let input_fg = if waiting { TEXT_DIM } else { TEXT_NORMAL };
+        let input_style = Style::default().fg(input_fg).bg(BG_INPUT);
+
+        let line = Line::from(vec![
+            Span::styled("│ ", border_style),
+            Span::styled(
+                ">> ",
+                Style::default().fg(Color::Rgb(82, 139, 255)).bg(BG_INPUT),
+            ),
+            Span::styled(format!("{}{}", truncated, " ".repeat(padding)), input_style),
+            Span::styled(" │", border_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(vec![line]),
+            Rect {
+                x: area.x,
+                y: area.y + 1,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Model Selector Bar
+// ---------------------------------------------------------------------------
+
+fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
+    if area.height == 0 || area.width < 10 {
+        return;
+    }
+
+    let focus = editor.ai_chat_focus();
+    let is_focused = focus == ChatFocus::ModelSelector;
+    let w = area.width as usize;
+
+    let mut profile_names = editor.ai_profile_names_sorted();
+    if profile_names.is_empty() {
+        profile_names.push(editor.ai_state.active_profile.clone());
+    }
+
+    let mut spans: Vec<Span> = Vec::new();
+    let mut used_width = 0usize;
+
+    // Arrow indicator
+    let arrow = if is_focused { "▸ " } else { "  " };
+    spans.push(Span::styled(
+        arrow,
+        Style::default()
+            .fg(if is_focused { Color::Yellow } else { TEXT_DIM })
+            .bg(BG_PANEL),
+    ));
+    used_width += 2;
+
+    for name in &profile_names {
+        let Some(profile) = editor.ai_state.config.resolve_profile(name) else {
+            continue;
+        };
+        let model_short: String = profile.model.chars().take(20).collect();
+        let label = format!(" {}:{} ", name, model_short);
+        let label_w = label.chars().count();
+        if used_width + label_w + 1 > w {
+            break;
+        }
+
+        let is_active = *name == editor.ai_state.active_profile;
+        let style = if is_active {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(66, 86, 112))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Rgb(180, 188, 202))
+                .bg(Color::Rgb(46, 52, 64))
+        };
+        spans.push(Span::styled(label, style));
+        used_width += label_w;
+
+        // Separator
+        if used_width + 3 < w {
+            spans.push(Span::styled(
+                " │ ",
+                Style::default().fg(TEXT_DIM).bg(BG_PANEL),
+            ));
+            used_width += 3;
+        }
+    }
+
+    // Hints at right
+    let hint = " [Enter send] [Esc×2 close] ";
+    let hint_w = hint.chars().count();
+    if used_width + hint_w < w {
+        let gap = w.saturating_sub(used_width + hint_w);
+        spans.push(Span::styled(" ".repeat(gap), Style::default().bg(BG_PANEL)));
+        spans.push(Span::styled(
+            hint,
+            Style::default().fg(TEXT_DIM).bg(BG_PANEL),
+        ));
+    } else {
+        let remaining = w.saturating_sub(used_width);
+        spans.push(Span::styled(
+            " ".repeat(remaining),
+            Style::default().bg(BG_PANEL),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(vec![Line::from(spans)]), area);
+}
+
+// ---------------------------------------------------------------------------
+// Waiting Indicator
+// ---------------------------------------------------------------------------
+
+fn render_waiting_indicator(frame: &mut Frame, messages_area: Rect) {
+    if messages_area.height == 0 {
+        return;
+    }
+    let y = messages_area.y + messages_area.height - 1;
+    let dots = "  ···";
+    let line = Line::from(Span::styled(
+        dots,
+        Style::default()
+            .fg(Color::Rgb(120, 140, 180))
+            .bg(BG_PANEL)
+            .add_modifier(Modifier::DIM),
+    ));
+    frame.render_widget(
+        Paragraph::new(vec![line]),
+        Rect {
+            x: messages_area.x,
+            y,
+            width: messages_area.width.min(dots.len() as u16),
+            height: 1,
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Word Wrap
+// ---------------------------------------------------------------------------
+
+fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current_line = String::new();
+        let mut current_width = 0usize;
+
+        for word in paragraph.split_whitespace() {
+            let word_width = word.chars().count();
+            if current_width == 0 {
+                // First word on line
+                if word_width > max_width {
+                    // Break long word
+                    let mut chars = word.chars();
+                    while current_width < word_width {
+                        let remaining = max_width.saturating_sub(current_width);
+                        let chunk: String = chars.by_ref().take(remaining).collect();
+                        if chunk.is_empty() {
+                            break;
+                        }
+                        current_line.push_str(&chunk);
+                        current_width += chunk.chars().count();
+                        if current_width >= max_width {
+                            lines.push(std::mem::take(&mut current_line));
+                            current_width = 0;
+                        }
+                    }
+                } else {
+                    current_line.push_str(word);
+                    current_width = word_width;
+                }
+            } else if current_width + 1 + word_width <= max_width {
+                current_line.push(' ');
+                current_line.push_str(word);
+                current_width += 1 + word_width;
+            } else {
+                lines.push(std::mem::take(&mut current_line));
+                current_line = word.to_string();
+                current_width = word_width;
+            }
+        }
+        lines.push(current_line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn center_text(text: &str, width: usize) -> String {
+    let text_len = text.chars().count();
+    if text_len >= width {
+        return text.to_string();
+    }
+    let padding = (width - text_len) / 2;
+    format!(
+        "{}{}{}",
+        " ".repeat(padding),
+        text,
+        " ".repeat(width - padding - text_len)
+    )
+}
