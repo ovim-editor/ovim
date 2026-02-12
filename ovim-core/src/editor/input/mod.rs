@@ -54,6 +54,9 @@ mod rename_input_mode;
 /// AI prompt mode handler
 mod ai_prompt_mode;
 
+/// AI chat mode handler
+mod ai_chat_mode;
+
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
@@ -147,6 +150,7 @@ impl InputHandler {
                 Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
                 Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
                 Mode::AiPrompt => ai_prompt_mode::handle_ai_prompt_mode(editor, key_event),
+                Mode::AiChat => ai_chat_mode::handle_ai_chat_mode(editor, key_event),
             }
         };
 

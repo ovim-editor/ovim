@@ -1,0 +1,378 @@
+use crate::ai::chat_types::{ChatFocus, ChatMessage, ChatOpts, ConversationTree};
+use crate::ai::request_ai_chat;
+use crate::mode::Mode;
+use anyhow::Result;
+
+use super::ai_chat_state::{AiChatState, PendingAiChatJob, ScratchBufferState};
+use super::Editor;
+
+impl Editor {
+    // -----------------------------------------------------------------
+    // Open / Close
+    // -----------------------------------------------------------------
+
+    /// Open or resume an AI chat panel.
+    pub fn open_ai_chat(&mut self, opts: ChatOpts) -> Result<()> {
+        let buffer_id = self.current_buffer_index;
+        let mode_before = self.mode();
+
+        // Ensure conversation exists
+        let key = (buffer_id, opts.name.clone());
+        if !self.ai_state.conversations.contains_key(&key) {
+            self.ai_state
+                .conversations
+                .insert(key, ConversationTree::new());
+        }
+
+        // Set profile override if specified
+        if let Some(ref profile) = opts.profile {
+            if self.ai_state.config.resolve_profile(profile).is_some() {
+                self.ai_state.active_profile = profile.clone();
+            }
+        }
+
+        // Send initial message if provided and conversation is empty
+        let initial = opts.initial_message.clone();
+        let chat = AiChatState::new(opts, buffer_id, mode_before);
+        self.ai_state.chat = Some(chat);
+        self.set_mode(Mode::AiChat);
+
+        if let Some(msg) = initial {
+            let key = self.ai_chat_conversation_key();
+            if let Some(conv) = self.ai_state.conversations.get(&key) {
+                if conv.is_empty() && !msg.is_empty() {
+                    // Will be handled as if user typed and submitted
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.input = msg;
+                        chat.input_cursor = chat.input.len();
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Close the AI chat panel, preserving conversation history.
+    pub fn close_ai_chat(&mut self) {
+        if let Some(chat) = self.ai_state.chat.take() {
+            self.set_mode(chat.mode_before_chat);
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Submit
+    // -----------------------------------------------------------------
+
+    /// Submit the current chat input as a user message and spawn the AI request.
+    pub fn submit_ai_chat_message(&mut self) -> Result<()> {
+        let chat = match self.ai_state.chat.as_mut() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let input = chat.input.trim().to_string();
+        if input.is_empty() || chat.waiting {
+            return Ok(());
+        }
+
+        // Append user message to conversation
+        let key = self.ai_chat_conversation_key();
+        if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+            conv.append_user_message(input.clone());
+        }
+
+        // Clear input
+        let chat = self.ai_state.chat.as_mut().unwrap();
+        chat.input.clear();
+        chat.input_cursor = 0;
+        chat.waiting = true;
+        chat.message_scroll = 0;
+
+        // Resolve profile
+        let profile_name = chat
+            .opts
+            .profile
+            .clone()
+            .unwrap_or_else(|| self.ai_state.active_profile.clone());
+        let profile = match self.ai_state.config.resolve_profile(&profile_name) {
+            Some(p) => p.clone(),
+            None => {
+                // No valid profile — record error and bail
+                if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                    conv.append_error(format!("No AI profile '{}' configured", profile_name));
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.waiting = false;
+                }
+                return Ok(());
+            }
+        };
+
+        let model_name = profile.model.clone();
+        let system_prompt = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.opts.system_prompt.clone());
+
+        // Collect messages for the API call
+        let messages: Vec<ChatMessage> = self
+            .ai_state
+            .conversations
+            .get(&key)
+            .map(|c| c.messages().to_vec())
+            .unwrap_or_default();
+
+        // Spawn async task
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = request_ai_chat(&profile, &messages, system_prompt.as_deref()).await;
+            let _ = tx.send(result);
+            Ok(String::new()) // Task return value not used; result goes through channel
+        });
+
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_job = Some(PendingAiChatJob {
+                receiver: rx,
+                task,
+                profile_name: profile_name.clone(),
+                model_name,
+            });
+        }
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Poll
+    // -----------------------------------------------------------------
+
+    /// Check if the pending chat job has completed. Returns true if state changed.
+    pub fn poll_pending_ai_chat_job(&mut self) -> bool {
+        let chat = match self.ai_state.chat.as_mut() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let job = match chat.pending_job.as_mut() {
+            Some(j) => j,
+            None => return false,
+        };
+
+        match job.receiver.try_recv() {
+            Ok(result) => {
+                let model = job.model_name.clone();
+                let key = self.ai_chat_conversation_key();
+
+                match result {
+                    Ok(content) => {
+                        if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                            conv.append_assistant_message(content, model);
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                            conv.append_error(err.to_string());
+                        }
+                    }
+                }
+
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.waiting = false;
+                    chat.pending_job = None;
+                    chat.message_scroll = 0;
+                }
+                true
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => false,
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                // Channel dropped (task panicked or was cancelled)
+                let key = self.ai_chat_conversation_key();
+                if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                    conv.append_error("AI request was cancelled".to_string());
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.waiting = false;
+                    chat.pending_job = None;
+                }
+                true
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Context profile (M1: just returns active_profile)
+    // -----------------------------------------------------------------
+
+    pub fn ai_chat_context_profile(&self, _context: &str) -> Option<String> {
+        Some(self.ai_state.active_profile.clone())
+    }
+
+    // -----------------------------------------------------------------
+    // Scratch buffer (<C-g>)
+    // -----------------------------------------------------------------
+
+    /// Create a scratch buffer from the chat input for editing in Normal mode.
+    pub fn open_chat_scratch_editor(&mut self) {
+        let chat = match self.ai_state.chat.as_mut() {
+            Some(c) => c,
+            None => return,
+        };
+
+        let original_input = chat.input.clone();
+        let original_buffer_index = self.current_buffer_index;
+
+        // Create a new buffer with the current input
+        let mut buffer = crate::buffer::Buffer::default();
+        buffer.replace_all(&original_input);
+        self.buffers.push(buffer);
+        let scratch_index = self.buffers.len() - 1;
+        self.current_buffer_index = scratch_index;
+
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.scratch = Some(ScratchBufferState {
+                scratch_buffer_index: scratch_index,
+                original_buffer_index: original_buffer_index,
+                original_input,
+            });
+        }
+
+        self.set_mode(Mode::Normal);
+    }
+
+    /// Close the scratch buffer and optionally transfer content back to chat input.
+    pub fn finish_chat_scratch(&mut self, send: bool) -> Result<()> {
+        let chat = match self.ai_state.chat.as_mut() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        let scratch = match chat.scratch.take() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        if send {
+            // Transfer scratch buffer content back to chat input
+            let content = self.buffers[scratch.scratch_buffer_index]
+                .rope()
+                .to_string();
+            let trimmed = content.trim_end_matches('\n').to_string();
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.input = trimmed;
+                chat.input_cursor = chat.input.len();
+            }
+        } else {
+            // Discard — restore original input
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.input = scratch.original_input;
+                chat.input_cursor = chat.input.len();
+            }
+        }
+
+        // Remove scratch buffer
+        if scratch.scratch_buffer_index < self.buffers.len() {
+            self.buffers.remove(scratch.scratch_buffer_index);
+        }
+        self.current_buffer_index = scratch.original_buffer_index;
+        self.set_mode(Mode::AiChat);
+
+        Ok(())
+    }
+
+    /// Check if the current buffer is a chat scratch buffer.
+    pub fn is_chat_scratch_buffer(&self) -> bool {
+        if let Some(chat) = &self.ai_state.chat {
+            if let Some(scratch) = &chat.scratch {
+                return self.current_buffer_index == scratch.scratch_buffer_index;
+            }
+        }
+        false
+    }
+
+    // -----------------------------------------------------------------
+    // Accessors
+    // -----------------------------------------------------------------
+
+    /// Get a reference to the active chat state.
+    pub fn ai_chat_state(&self) -> Option<&AiChatState> {
+        self.ai_state.chat.as_ref()
+    }
+
+    /// Get the messages for the current chat conversation.
+    pub fn ai_chat_messages(&self) -> &[ChatMessage] {
+        let key = self.ai_chat_conversation_key();
+        self.ai_state
+            .conversations
+            .get(&key)
+            .map(|c| c.messages())
+            .unwrap_or(&[])
+    }
+
+    /// Get the current chat focus zone.
+    pub fn ai_chat_focus(&self) -> ChatFocus {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.focus)
+            .unwrap_or(ChatFocus::TextInput)
+    }
+
+    /// Get chat input text.
+    pub fn ai_chat_input(&self) -> &str {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.input.as_str())
+            .unwrap_or("")
+    }
+
+    /// Get chat input cursor position.
+    pub fn ai_chat_input_cursor(&self) -> usize {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.input_cursor)
+            .unwrap_or(0)
+    }
+
+    /// Whether chat is waiting for a response.
+    pub fn ai_chat_waiting(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.waiting)
+            .unwrap_or(false)
+    }
+
+    /// Whether chat allows edits.
+    pub fn ai_chat_allow_edits(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.allow_edits)
+            .unwrap_or(true)
+    }
+
+    /// Message scroll offset.
+    pub fn ai_chat_message_scroll(&self) -> usize {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.message_scroll)
+            .unwrap_or(0)
+    }
+
+    // -----------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------
+
+    fn ai_chat_conversation_key(&self) -> (usize, String) {
+        if let Some(chat) = &self.ai_state.chat {
+            (chat.active_buffer_id, chat.opts.name.clone())
+        } else {
+            (self.current_buffer_index, "chat".to_string())
+        }
+    }
+}

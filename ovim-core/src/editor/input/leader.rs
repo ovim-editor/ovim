@@ -65,6 +65,28 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             editor.reset_input_state();
         }
 
+        // AI chat commands
+        ' ' => {
+            // <Space><Space> - Open AI chat
+            editor.open_ai_chat(crate::ai::chat_types::ChatOpts {
+                name: "chat".into(),
+                profile: editor.ai_chat_context_profile("chat"),
+                allow_edits: true,
+                ..Default::default()
+            })?;
+            editor.reset_input_state();
+        }
+        '?' => {
+            // <Space>? - Open AI query (read-only)
+            editor.open_ai_chat(crate::ai::chat_types::ChatOpts {
+                name: "query".into(),
+                profile: editor.ai_chat_context_profile("query"),
+                allow_edits: false,
+                ..Default::default()
+            })?;
+            editor.reset_input_state();
+        }
+
         // Multi-key sequences - accumulate the key
         'l' => {
             // <Space>l... - LSP manager prefix

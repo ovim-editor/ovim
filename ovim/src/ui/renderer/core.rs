@@ -39,6 +39,7 @@ struct FrameAreas {
     status_chunk: Rect,
     command_chunk: Rect,
     progress_chunk: Option<Rect>,
+    chat_area: Option<Rect>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,15 +94,29 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
 
     // Buffer + optional progress line + status line + command/prompt area
     let has_progress = editor.lsp_progress_message().is_some();
+    let is_ai_chat = editor.mode() == crate::mode::Mode::AiChat;
     let command_height = if editor.mode() == crate::mode::Mode::AiPrompt {
         let max_height = content_area
             .height
             .saturating_sub(if has_progress { 2 } else { 1 })
             .max(1);
         ai_prompt_panel_height(editor, content_area.width, max_height)
+    } else if is_ai_chat {
+        1 // model selector bar
     } else {
         1
     };
+
+    // In AiChat mode, split content area into buffer (top) + chat panel (bottom)
+    let (effective_content, chat_area) = if is_ai_chat {
+        let allow_edits = editor.ai_chat_allow_edits();
+        let (buffer_rect, chat_rect) =
+            super::ai_chat::compute_chat_split(content_area, allow_edits);
+        (buffer_rect, Some(chat_rect))
+    } else {
+        (content_area, None)
+    };
+
     let chunks = if has_progress {
         Layout::default()
             .direction(Direction::Vertical)
@@ -114,7 +129,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
                 ]
                 .as_ref(),
             )
-            .split(content_area)
+            .split(effective_content)
     } else {
         Layout::default()
             .direction(Direction::Vertical)
@@ -126,7 +141,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
                 ]
                 .as_ref(),
             )
-            .split(content_area)
+            .split(effective_content)
     };
 
     let (status_chunk, command_chunk, progress_chunk) = if has_progress {
@@ -142,6 +157,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         status_chunk,
         command_chunk,
         progress_chunk,
+        chat_area,
     })
 }
 
@@ -454,6 +470,13 @@ fn set_cursor_position(
         let rename_cursor_x =
             (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
+    } else if editor.mode() == crate::mode::Mode::AiChat {
+        // Recompute chat area for cursor positioning
+        let allow_edits = editor.ai_chat_allow_edits();
+        let (_, chat_rect) = super::ai_chat::compute_chat_split(layout.buffer_area, allow_edits);
+        if let Some((cx, cy)) = super::ai_chat::chat_cursor_info(editor, chat_rect) {
+            frame.set_cursor_position((cx, cy));
+        }
     } else if editor.mode() == crate::mode::Mode::AiPrompt {
         if !editor.render_cache.ai_prompt_input_rows.is_empty() {
             let cursor_byte = editor
@@ -781,6 +804,11 @@ impl Renderer {
             wm.update_dimensions(layout.buffer_area.width, layout.buffer_area.height);
         }
 
+        // Render chat panel (if in AiChat mode)
+        if let Some(chat_area) = areas.chat_area {
+            super::ai_chat::render_chat_panel(frame, editor, chat_area);
+        }
+
         // Render status + overlays + cursor
         render_status_area(frame, editor, &theme, &areas);
         let ctx = OverlayContext {
@@ -800,6 +828,7 @@ impl Renderer {
             crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::RenameInput => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::AiPrompt => SetCursorStyle::BlinkingBar,
+            crate::mode::Mode::AiChat => SetCursorStyle::BlinkingBar,
             crate::mode::Mode::HoverPreview | crate::mode::Mode::HoverNavigate => {
                 SetCursorStyle::SteadyBlock
             }

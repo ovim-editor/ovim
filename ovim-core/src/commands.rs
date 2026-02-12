@@ -58,6 +58,29 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Com
 
 /// Execute a command (e.g., :w, :q, :tabnew)
 pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
+    // Intercept write/quit commands when in a chat scratch buffer
+    if editor.is_chat_scratch_buffer() {
+        match command {
+            "w" | "write" | "wq" | "x" => {
+                let _ = editor.finish_chat_scratch(true);
+                return CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Scratch content transferred to chat input".to_string()),
+                    line_count: None,
+                });
+            }
+            "q!" | "quit!" | "bd!" | "bdelete!" | "q" | "quit" => {
+                let _ = editor.finish_chat_scratch(false);
+                return CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Scratch buffer discarded".to_string()),
+                    line_count: None,
+                });
+            }
+            _ => {}
+        }
+    }
+
     match command {
         "q" | "quit" => {
             // If there are multiple tabs, close current tab. Otherwise quit.
