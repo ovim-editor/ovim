@@ -1659,6 +1659,10 @@ impl Editor {
 
     /// Adds a change to the change manager
     pub fn add_change(&mut self, change: Change) {
+        // AI lock blocked the underlying edit: don't record a semantic no-op.
+        if self.buffer().ai_lock_blocked() {
+            return;
+        }
         self.buffer_mut().change_manager_mut().add_change(change);
     }
 

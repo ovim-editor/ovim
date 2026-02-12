@@ -1,6 +1,7 @@
 use super::ai_state::{AiEditRegion, AiRegionStatus, AiSelectionSnapshot, PendingAiJob};
 use super::Editor;
 use crate::ai::request_ai_edit;
+use crate::edit::Edit;
 use crate::editor::lsp_state::HoverContentType;
 use crate::mode::Mode;
 use anyhow::{anyhow, Result};
@@ -188,6 +189,7 @@ impl Editor {
             submitted_at: Instant::now(),
             task,
             receiver: rx,
+            completed_result: None,
         });
 
         self.ai_state.prompt.input.clear();
@@ -204,33 +206,41 @@ impl Editor {
         let mut idx = 0;
 
         while idx < self.ai_state.pending_jobs.len() {
-            let mut finished = false;
-            let result = {
+            let defer_apply = self.ai_should_defer_completed_job_apply();
+            let mut ready_result = None;
+
+            {
                 let pending = &mut self.ai_state.pending_jobs[idx];
-                match pending.receiver.try_recv() {
-                    Ok(result) => {
-                        finished = true;
-                        Some(result)
-                    }
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Closed) => {
-                        finished = true;
-                        Some(Err(anyhow!("AI job channel closed")))
+                if pending.completed_result.is_none() {
+                    match pending.receiver.try_recv() {
+                        Ok(result) => {
+                            pending.completed_result = Some(result);
+                        }
+                        Err(TryRecvError::Empty) => {}
+                        Err(TryRecvError::Closed) => {
+                            pending.completed_result = Some(Err(anyhow!("AI job channel closed")));
+                        }
                     }
                 }
-            };
 
-            if !finished {
+                if pending.completed_result.is_some() && !defer_apply {
+                    ready_result = pending.completed_result.take();
+                }
+            }
+
+            let Some(result) = ready_result else {
+                // Job is still running, or it's done and deferred until current edit
+                // transaction has been finalized.
                 idx += 1;
                 continue;
-            }
+            };
 
             let job = self.ai_state.pending_jobs.remove(idx);
             let _ = job.task.is_finished();
             changed = true;
 
             match result {
-                Some(Ok(job_result)) => {
+                Ok(job_result) => {
                     if let Err(err) = self.apply_ai_job_result(job.lock_id, &job_result) {
                         self.buffer_mut().remove_ai_lock(job.lock_id);
                         self.update_ai_region_failure(
@@ -246,7 +256,7 @@ impl Editor {
                         ));
                     }
                 }
-                Some(Err(err)) => {
+                Err(err) => {
                     self.buffer_mut().remove_ai_lock(job.lock_id);
                     self.update_ai_region_failure(
                         job.lock_id,
@@ -255,7 +265,6 @@ impl Editor {
                     );
                     self.set_lsp_status(format!("AI job failed: {}", err));
                 }
-                None => {}
             }
         }
 
@@ -357,6 +366,7 @@ impl Editor {
         let replacement = region.original_text.clone();
 
         let cursor_before = self.cursor_position();
+        let cursor_abs_before = self.cursor_abs_char();
         let ((), edits) = self.buffer_mut().with_ai_lock_bypass(|buf| {
             buf.record(|buf| {
                 if end_char > start_char {
@@ -372,6 +382,9 @@ impl Editor {
         });
 
         if !edits.is_empty() {
+            let cursor_abs_after = remap_abs_char_through_edits(cursor_abs_before, &edits)
+                .min(self.buffer().rope().len_chars());
+            self.set_cursor_from_abs_char(cursor_abs_after);
             let cursor_after = self.cursor_position();
             self.push_recorded_undo(edits, cursor_before, cursor_after);
         }
@@ -486,6 +499,7 @@ impl Editor {
             submitted_at: Instant::now(),
             task,
             receiver: rx,
+            completed_result: None,
         });
 
         self.ai_state.selection_hold_until_exit = false;
@@ -547,6 +561,30 @@ impl Editor {
         self.ai_refresh_region_selection_from_cursor();
     }
 
+    fn ai_should_defer_completed_job_apply(&self) -> bool {
+        // Avoid interleaving async AI edits into an in-progress insert/change
+        // transaction. This keeps undo boundaries coherent.
+        self.buffer().change_manager().is_building() || self.mode() == Mode::Replace
+    }
+
+    fn set_cursor_from_abs_char(&mut self, abs_char: usize) {
+        let (line, col) = self.abs_char_to_line_col(abs_char);
+        self.buffer_mut().cursor_mut().set_position(line, col);
+
+        // In normal-like modes cursor must stay on a valid character cell.
+        if !matches!(
+            self.mode(),
+            Mode::Insert
+                | Mode::Replace
+                | Mode::AiPrompt
+                | Mode::Command
+                | Mode::Search
+                | Mode::RenameInput
+        ) {
+            self.buffer_mut().validate_cursor_position();
+        }
+    }
+
     fn apply_ai_job_result(&mut self, lock_id: u64, result: &crate::ai::AiJobResult) -> Result<()> {
         let lock = self
             .buffer()
@@ -567,7 +605,16 @@ impl Editor {
         }
 
         let cursor_before = self.cursor_position();
-        let replacement = result.replacement.clone();
+        let cursor_abs_before = self.cursor_abs_char();
+        let original_text = self
+            .ai_state
+            .regions
+            .iter()
+            .find(|region| region.id == lock_id)
+            .map(|region| region.original_text.clone())
+            .unwrap_or_default();
+        let replacement =
+            normalize_generated_replacement(&original_text, result.replacement.clone());
         let insert_pos = lock.start_char.min(self.buffer().rope().len_chars());
         let ((), edits) = self.buffer_mut().with_ai_lock_bypass(|buf| {
             buf.record(|buf| {
@@ -592,6 +639,9 @@ impl Editor {
             return Err(anyhow!("AI produced no edits"));
         }
 
+        let cursor_abs_after =
+            remap_abs_char_through_edits(cursor_abs_before, &edits).min(self.buffer().rope().len_chars());
+        self.set_cursor_from_abs_char(cursor_abs_after);
         let cursor_after = self.cursor_position();
         self.push_recorded_undo(edits, cursor_before, cursor_after);
 
@@ -610,7 +660,7 @@ impl Editor {
             region.start_char = new_start;
             region.end_char = new_end;
             region.status = AiRegionStatus::Generated;
-            region.generated_text = replacement;
+            region.generated_text = replacement.clone();
             region.provider_label = format!("{}/{}", result.provider, result.model);
             region.profile_name = result.profile_name.clone();
             region.reasoning_lines = if result.log_lines.is_empty() {
@@ -775,5 +825,197 @@ fn region_contains_char(region: &AiEditRegion, abs_char: usize) -> bool {
         abs_char >= region.start_char && abs_char < region.end_char
     } else {
         abs_char == region.start_char
+    }
+}
+
+fn remap_abs_char_through_edits(mut abs_char: usize, edits: &[Edit]) -> usize {
+    for edit in edits {
+        match edit {
+            Edit::Insert { offset, text } => {
+                if *offset <= abs_char {
+                    abs_char = abs_char.saturating_add(text.chars().count());
+                }
+            }
+            Edit::Delete { offset, text } => {
+                let deleted_len = text.chars().count();
+                let delete_end = offset.saturating_add(deleted_len);
+                if abs_char >= delete_end {
+                    abs_char = abs_char.saturating_sub(deleted_len);
+                } else if abs_char > *offset {
+                    abs_char = *offset;
+                }
+            }
+        }
+    }
+    abs_char
+}
+
+fn normalize_generated_replacement(original_text: &str, mut replacement: String) -> String {
+    // Preserve indentation shape for multiline selections when the model dedents output.
+    if original_text.contains('\n') {
+        let base_indent = original_text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| {
+                line.chars()
+                    .take_while(|ch| *ch == ' ' || *ch == '\t')
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+
+        if !base_indent.is_empty() {
+            let mut has_non_empty = false;
+            let mut all_non_empty_already_indented = true;
+            for line in replacement.split('\n') {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                has_non_empty = true;
+                if !line.starts_with(&base_indent) {
+                    all_non_empty_already_indented = false;
+                    break;
+                }
+            }
+
+            if has_non_empty && !all_non_empty_already_indented {
+                let mut normalized = String::with_capacity(replacement.len() + base_indent.len() * 4);
+                for segment in replacement.split_inclusive('\n') {
+                    let (line, has_newline) = if let Some(stripped) = segment.strip_suffix('\n') {
+                        (stripped, true)
+                    } else {
+                        (segment, false)
+                    };
+
+                    if !line.trim().is_empty() && !line.starts_with(&base_indent) {
+                        normalized.push_str(&base_indent);
+                    }
+                    normalized.push_str(line);
+                    if has_newline {
+                        normalized.push('\n');
+                    }
+                }
+                replacement = normalized;
+            }
+        }
+    }
+
+    // Preserve trailing newline shape from the original selection.
+    if original_text.ends_with('\n') && !replacement.ends_with('\n') {
+        replacement.push('\n');
+    }
+
+    replacement
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_generated_replacement, remap_abs_char_through_edits, AiRegionStatus, Editor};
+    use crate::ai::{AiJobResult, AiProviderKind, ExtractionStrategy};
+    use crate::edit::Edit;
+    use std::time::Instant;
+
+    #[test]
+    fn normalize_generated_replacement_preserves_trailing_newline() {
+        let original = "    a();\n";
+        let replacement = "    b();".to_string();
+        assert_eq!(
+            normalize_generated_replacement(original, replacement),
+            "    b();\n"
+        );
+    }
+
+    #[test]
+    fn normalize_generated_replacement_restores_missing_base_indent() {
+        let original = "    first();\n    second();\n";
+        let replacement = "first();\nsecond();".to_string();
+        assert_eq!(
+            normalize_generated_replacement(original, replacement),
+            "    first();\n    second();\n"
+        );
+    }
+
+    #[test]
+    fn normalize_generated_replacement_does_not_double_indent() {
+        let original = "    first();\n    second();\n";
+        let replacement = "    first();\n    second();\n".to_string();
+        assert_eq!(
+            normalize_generated_replacement(original, replacement),
+            "    first();\n    second();\n"
+        );
+    }
+
+    #[test]
+    fn remap_abs_char_tracks_insertions_and_deletions() {
+        let edits = vec![
+            Edit::Delete {
+                offset: 5,
+                text: "xx".to_string(),
+            },
+            Edit::Insert {
+                offset: 0,
+                text: "head\n".to_string(),
+            },
+        ];
+        // Start at absolute char 12 in the original document:
+        // - delete 2 chars before cursor => 10
+        // - insert 5 chars at top before cursor => 15
+        assert_eq!(remap_abs_char_through_edits(12, &edits), 15);
+    }
+
+    #[test]
+    fn remap_abs_char_clamps_into_deleted_span() {
+        let edits = vec![Edit::Delete {
+            offset: 10,
+            text: "abcdef".to_string(),
+        }];
+        // Cursor inside deleted span should clamp to deletion start.
+        assert_eq!(remap_abs_char_through_edits(13, &edits), 10);
+    }
+
+    #[test]
+    fn apply_ai_job_result_keeps_cursor_on_same_text_after_top_insertions() {
+        let mut editor = Editor::with_content("a\nb\nc\n");
+        let start = editor.buffer().rope().line_to_char(1);
+        let end = editor.buffer().rope().line_to_char(2);
+        editor.buffer_mut().add_ai_lock(99, start, end);
+
+        let now = Instant::now();
+        editor.ai_state.regions.push(super::AiEditRegion {
+            id: 99,
+            start_char: start,
+            end_char: end,
+            status: AiRegionStatus::Running,
+            prompt: "rewrite".to_string(),
+            original_text: "b\n".to_string(),
+            generated_text: String::new(),
+            profile_name: "alpha".to_string(),
+            provider_label: "ollama/model".to_string(),
+            extraction: ExtractionStrategy::Json,
+            reasoning_lines: vec![],
+            raw_output: None,
+            created_at: now,
+            updated_at: now,
+        });
+
+        // Cursor starts on the "c" line.
+        editor.buffer_mut().cursor_mut().set_position(2, 0);
+
+        let result = AiJobResult {
+            replacement: "b\n".to_string(),
+            top_insertions: vec!["// head".to_string()],
+            log_lines: vec![],
+            raw_output: "{}".to_string(),
+            provider: AiProviderKind::Ollama,
+            profile_name: "alpha".to_string(),
+            model: "model".to_string(),
+        };
+
+        editor
+            .apply_ai_job_result(99, &result)
+            .expect("apply should succeed");
+
+        assert_eq!(editor.buffer().rope().to_string(), "// head\na\nb\nc\n");
+        // Cursor remains anchored to the original "c" line (now shifted down by one).
+        assert_eq!(editor.cursor_position(), (3, 0));
     }
 }

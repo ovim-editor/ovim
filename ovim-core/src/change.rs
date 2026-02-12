@@ -316,17 +316,25 @@ impl Change {
         match self {
             Self::InsertText { position, text, .. } => {
                 let (line, col) = *position;
+                let version_before = buffer.version();
                 buffer.insert_text_at(line, col, text);
-                // Update cursor to end of inserted text
-                let end_pos = Self::calculate_end_position(*position, text);
-                buffer.cursor_mut().set_position(end_pos.0, end_pos.1);
+                // Keep cursor stable when insertion was blocked/no-op.
+                if buffer.version() != version_before {
+                    // Update cursor to end of inserted text
+                    let end_pos = Self::calculate_end_position(*position, text);
+                    buffer.cursor_mut().set_position(end_pos.0, end_pos.1);
+                }
             }
             Self::DeleteText { range, .. } => {
                 let (start_line, start_col) = range.start;
                 let (end_line, end_col) = range.end;
+                let version_before = buffer.version();
                 buffer.delete_range(start_line, start_col, end_line, end_col);
-                // Position cursor at deletion start
-                buffer.cursor_mut().set_position(start_line, start_col);
+                // Keep cursor stable when deletion was blocked/no-op.
+                if buffer.version() != version_before {
+                    // Position cursor at deletion start
+                    buffer.cursor_mut().set_position(start_line, start_col);
+                }
             }
             Self::Composite {
                 changes,

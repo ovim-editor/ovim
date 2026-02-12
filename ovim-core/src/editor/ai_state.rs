@@ -63,6 +63,7 @@ pub struct PendingAiJob {
     pub submitted_at: Instant,
     pub task: tokio::task::JoinHandle<anyhow::Result<AiJobResult>>,
     pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<AiJobResult>>,
+    pub completed_result: Option<anyhow::Result<AiJobResult>>,
 }
 
 pub struct AiState {

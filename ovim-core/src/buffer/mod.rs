@@ -573,6 +573,11 @@ impl Buffer {
         std::mem::take(&mut self.ai_lock_blocked)
     }
 
+    /// Returns true when an edit was blocked by an AI lock since the last reset.
+    pub fn ai_lock_blocked(&self) -> bool {
+        self.ai_lock_blocked
+    }
+
     /// Execute code while bypassing AI lock checks.
     pub fn with_ai_lock_bypass<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         self.ai_lock_bypass_depth = self.ai_lock_bypass_depth.saturating_add(1);
@@ -588,7 +593,7 @@ impl Buffer {
         self.ai_locks
             .iter()
             .filter(|lock| lock.blocks_edits)
-            .any(|lock| position >= lock.start_char && position <= lock.end_char)
+            .any(|lock| position >= lock.start_char && position < lock.end_char)
     }
 
     pub(crate) fn ai_delete_is_blocked(&self, start_char: usize, end_char: usize) -> bool {
