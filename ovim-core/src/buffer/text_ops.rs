@@ -822,11 +822,13 @@ impl Buffer {
             (abs_end, abs_start + 1)
         };
 
-        let (del_start_line, del_start_col) = Motions::abs_pos_to_line_col(&self.rope, delete_start);
+        let (del_start_line, del_start_col) =
+            Motions::abs_pos_to_line_col(&self.rope, delete_start);
         let (del_end_line, del_end_col) = Motions::abs_pos_to_line_col(&self.rope, delete_end);
 
         let deleted = self.delete_range(del_start_line, del_start_col, del_end_line, del_end_col);
-        self.cursor_mut().set_position(del_start_line, del_start_col);
+        self.cursor_mut()
+            .set_position(del_start_line, del_start_col);
         self.clamp_cursor_col();
         deleted
     }
@@ -977,11 +979,7 @@ impl Buffer {
         if fnb == col {
             return String::new();
         }
-        let (start, end) = if fnb < col {
-            (fnb, col)
-        } else {
-            (col, fnb)
-        };
+        let (start, end) = if fnb < col { (fnb, col) } else { (col, fnb) };
         let deleted = self.delete_range(line_idx, start, line_idx, end);
         self.cursor_mut().set_position(line_idx, start);
         self.clamp_cursor_col();

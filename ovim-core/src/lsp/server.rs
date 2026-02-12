@@ -1462,7 +1462,7 @@ impl LanguageServer {
             let mut process = self.inner.process.lock().await;
             if let Some(ref mut child) = *process {
                 match child.try_wait() {
-                    Ok(None) => true,    // Still running
+                    Ok(None) => true,     // Still running
                     Ok(Some(_)) => false, // Exited
                     Err(_) => false,      // Error checking
                 }

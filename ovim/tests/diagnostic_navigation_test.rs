@@ -56,8 +56,7 @@ fn test_prev_diagnostic_jumps_to_column() {
 
 #[test]
 fn test_diagnostic_nav_wraps_with_column() {
-    let mut test =
-        EditorTest::new("let a = 1;\nlet b = bad();\nlet c = 3;\nlet d = worse();\n");
+    let mut test = EditorTest::new("let a = 1;\nlet b = bad();\nlet c = 3;\nlet d = worse();\n");
 
     test.editor.set_test_diagnostics(vec![
         make_diagnostic(1, 8, "error on b"),

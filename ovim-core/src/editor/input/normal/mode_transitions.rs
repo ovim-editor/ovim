@@ -14,18 +14,17 @@ use anyhow::Result;
 /// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     match key_event.code {
-        // Escape - clear pending state, or dismiss diagnostic badge on double-Escape
+        // Escape - clear pending state, or dismiss top-right overlays on double-Escape
         KeyCode::Esc => {
-            let (errors, warnings, _, _) = editor.cached_diagnostic_count();
-            let badge_visible =
-                !editor.diagnostic_badge_dismissed() && (errors > 0 || warnings > 0);
+            let overlay_visible = editor.has_top_right_overlay();
 
-            if badge_visible {
+            if overlay_visible {
                 if let Some(last) = editor.last_escape_time() {
                     if last.elapsed() < std::time::Duration::from_millis(300) {
-                        editor.dismiss_diagnostic_badge();
-                        editor.clear_last_escape_time();
-                        return Ok(true);
+                        if editor.dismiss_top_right_overlay() {
+                            editor.clear_last_escape_time();
+                            return Ok(true);
+                        }
                     }
                 }
             }

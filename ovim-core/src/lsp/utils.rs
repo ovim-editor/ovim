@@ -29,8 +29,14 @@ pub fn compute_simple_diff(
     // Use split('\n') instead of .lines() to preserve trailing newline information.
     // "foo\nbar\n" splits into ["foo", "bar", ""] which correctly represents
     // the empty line after the trailing \n (matching LSP's line model).
-    let old_lines: Vec<&str> = old_content.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
-    let new_lines: Vec<&str> = new_content.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+    let old_lines: Vec<&str> = old_content
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
+    let new_lines: Vec<&str> = new_content
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
 
     // Find first differing line from start
     let mut start_line = 0;
@@ -139,7 +145,10 @@ pub fn compute_simple_diff(
         };
         let ep = Position {
             line: (end_line_old - 1) as u32,
-            character: char_col_to_utf16(old_lines[end_line_old - 1], old_lines[end_line_old - 1].chars().count()),
+            character: char_col_to_utf16(
+                old_lines[end_line_old - 1],
+                old_lines[end_line_old - 1].chars().count(),
+            ),
         };
         (sp, ep)
     } else if start_line > 0 {
@@ -153,7 +162,10 @@ pub fn compute_simple_diff(
         let ep = if old_changed > 0 {
             Position {
                 line: (end_line_old - 1) as u32,
-                character: char_col_to_utf16(old_lines[end_line_old - 1], old_lines[end_line_old - 1].chars().count()),
+                character: char_col_to_utf16(
+                    old_lines[end_line_old - 1],
+                    old_lines[end_line_old - 1].chars().count(),
+                ),
             }
         } else {
             anchor
@@ -168,7 +180,10 @@ pub fn compute_simple_diff(
         let ep = if old_changed > 0 {
             Position {
                 line: (end_line_old - 1) as u32,
-                character: char_col_to_utf16(old_lines[end_line_old - 1], old_lines[end_line_old - 1].chars().count()),
+                character: char_col_to_utf16(
+                    old_lines[end_line_old - 1],
+                    old_lines[end_line_old - 1].chars().count(),
+                ),
             }
         } else {
             sp
@@ -247,11 +262,7 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
     let start_offset = if (range.start.line as usize) < lines.len() {
         let line = lines[range.start.line as usize];
         let char_col = utf16_to_char_col(line, range.start.character);
-        let char_offset: usize = line
-            .chars()
-            .take(char_col)
-            .map(|c| c.len_utf8())
-            .sum();
+        let char_offset: usize = line.chars().take(char_col).map(|c| c.len_utf8()).sum();
         line_offsets[range.start.line as usize] + char_offset
     } else {
         content.len()
@@ -260,11 +271,7 @@ fn apply_edit(content: &str, range: &Range, new_text: &str) -> String {
     let end_offset = if (range.end.line as usize) < lines.len() {
         let line = lines[range.end.line as usize];
         let char_col = utf16_to_char_col(line, range.end.character);
-        let char_offset: usize = line
-            .chars()
-            .take(char_col)
-            .map(|c| c.len_utf8())
-            .sum();
+        let char_offset: usize = line.chars().take(char_col).map(|c| c.len_utf8()).sum();
         line_offsets[range.end.line as usize] + char_offset
     } else {
         content.len()

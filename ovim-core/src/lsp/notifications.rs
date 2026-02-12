@@ -564,12 +564,7 @@ impl LspManager {
                     }
                     Ok(Err(e)) => {
                         // LSP send failed (server might be down)
-                        lsp_warn!(
-                            "LSP-BROADCAST",
-                            "Flush failed for server {}: {}",
-                            sid,
-                            e
-                        );
+                        lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {}", sid, e);
                     }
                     Err(_) => {
                         // Timeout: server is hanging
@@ -1140,7 +1135,9 @@ impl LspManager {
                         let debouncer = debouncer_arc.lock().await;
                         debouncer.language_id.clone()
                     };
-                    if let Err(e) = self.flush_pending_changes_broadcast(&uri, &language_id).await
+                    if let Err(e) = self
+                        .flush_pending_changes_broadcast(&uri, &language_id)
+                        .await
                     {
                         lsp_error!(
                             "Debounce",

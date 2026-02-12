@@ -133,12 +133,8 @@ impl Editor {
         };
 
         let extraction = self.ai_state.extraction;
-        let (request, mut prep_trace) = self.build_ai_request_for_selection(
-            &profile,
-            prompt.clone(),
-            &selection,
-            extraction,
-        );
+        let (request, mut prep_trace) =
+            self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, extraction);
         prep_trace.push("waiting for model response...".to_string());
 
         let lock_id = self.ai_state.next_lock_id;
@@ -453,12 +449,8 @@ impl Editor {
             return Ok(true);
         };
 
-        let (request, mut prep_trace) = self.build_ai_request_for_selection(
-            &profile,
-            prompt.clone(),
-            &selection,
-            extraction,
-        );
+        let (request, mut prep_trace) =
+            self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, extraction);
         prep_trace.push("retrying with same prompt...".to_string());
 
         // Replace tracking lock with blocking lock while generation is in flight.
@@ -639,8 +631,8 @@ impl Editor {
             return Err(anyhow!("AI produced no edits"));
         }
 
-        let cursor_abs_after =
-            remap_abs_char_through_edits(cursor_abs_before, &edits).min(self.buffer().rope().len_chars());
+        let cursor_abs_after = remap_abs_char_through_edits(cursor_abs_before, &edits)
+            .min(self.buffer().rope().len_chars());
         self.set_cursor_from_abs_char(cursor_abs_after);
         let cursor_after = self.cursor_position();
         self.push_recorded_undo(edits, cursor_before, cursor_after);
@@ -878,7 +870,8 @@ fn normalize_generated_replacement(original_text: &str, mut replacement: String)
             }
 
             if has_non_empty && !all_non_empty_already_indented {
-                let mut normalized = String::with_capacity(replacement.len() + base_indent.len() * 4);
+                let mut normalized =
+                    String::with_capacity(replacement.len() + base_indent.len() * 4);
                 for segment in replacement.split_inclusive('\n') {
                     let (line, has_newline) = if let Some(stripped) = segment.strip_suffix('\n') {
                         (stripped, true)
@@ -909,7 +902,9 @@ fn normalize_generated_replacement(original_text: &str, mut replacement: String)
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_generated_replacement, remap_abs_char_through_edits, AiRegionStatus, Editor};
+    use super::{
+        normalize_generated_replacement, remap_abs_char_through_edits, AiRegionStatus, Editor,
+    };
     use crate::ai::{AiJobResult, AiProviderKind, ExtractionStrategy};
     use crate::edit::Edit;
     use std::time::Instant;

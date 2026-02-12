@@ -9,7 +9,10 @@ pub struct AiExtractedResponse {
     pub log_lines: Vec<String>,
 }
 
-pub fn extract_response(strategy: ExtractionStrategy, raw_output: &str) -> Result<AiExtractedResponse> {
+pub fn extract_response(
+    strategy: ExtractionStrategy,
+    raw_output: &str,
+) -> Result<AiExtractedResponse> {
     match strategy {
         ExtractionStrategy::Json => extract_json(raw_output),
         ExtractionStrategy::Codeblock => extract_codeblock(raw_output),
@@ -95,7 +98,8 @@ mod tests {
 
     #[test]
     fn json_extract_basic() {
-        let raw = r#"{"replacement":"fn x() {}", "top_insertions":["use std::fmt;"], "log":["done"]}"#;
+        let raw =
+            r#"{"replacement":"fn x() {}", "top_insertions":["use std::fmt;"], "log":["done"]}"#;
         let parsed = extract_response(ExtractionStrategy::Json, raw).expect("json parse");
         assert_eq!(parsed.replacement, "fn x() {}");
         assert_eq!(parsed.top_insertions, vec!["use std::fmt;"]);
@@ -105,8 +109,7 @@ mod tests {
     #[test]
     fn codeblock_extract_basic() {
         let raw = "text\n```rust\nfn y() {}\n```\n";
-        let parsed =
-            extract_response(ExtractionStrategy::Codeblock, raw).expect("codeblock parse");
+        let parsed = extract_response(ExtractionStrategy::Codeblock, raw).expect("codeblock parse");
         assert_eq!(parsed.replacement, "fn y() {}");
         assert!(parsed.top_insertions.is_empty());
     }

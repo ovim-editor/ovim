@@ -10,11 +10,11 @@ pub use encoding::FileEncoding;
 pub use highlighting::LineHighlights;
 pub use line_ending::LineEnding;
 
+use crate::ai::BufferLock;
 use crate::change::ChangeManager;
 use crate::edit::Edit;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
-use crate::ai::BufferLock;
 use crate::GitStatus;
 use ropey::Rope;
 use std::path::PathBuf;

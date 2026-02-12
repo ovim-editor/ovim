@@ -327,7 +327,9 @@ impl Editor {
                 } else if executed_command {
                     self.set_lsp_status("Executing code action command...".to_string());
                 } else if !had_command && !available.resolved {
-                    self.set_lsp_status("Code action unresolved and has no edit or command".to_string());
+                    self.set_lsp_status(
+                        "Code action unresolved and has no edit or command".to_string(),
+                    );
                 } else if !had_command {
                     self.set_lsp_status("Code action has no edit or command".to_string());
                 }
@@ -543,8 +545,9 @@ mod tests {
     #[test]
     fn apply_code_action_command_only_uses_command_path() {
         let mut editor = Editor::new();
-        editor.lsp_state.available_code_actions =
-            vec![available(code_action_with_command("rust-analyzer.applySourceChange"))];
+        editor.lsp_state.available_code_actions = vec![available(code_action_with_command(
+            "rust-analyzer.applySourceChange",
+        ))];
 
         editor.apply_code_action(0);
 
@@ -555,8 +558,8 @@ mod tests {
     #[test]
     fn apply_code_action_without_edit_or_command_reports_specific_status() {
         let mut editor = Editor::new();
-        editor.lsp_state.available_code_actions = vec![available(CodeActionOrCommand::CodeAction(
-            CodeAction {
+        editor.lsp_state.available_code_actions =
+            vec![available(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "Noop".to_string(),
                 kind: None,
                 diagnostics: None,
@@ -565,8 +568,7 @@ mod tests {
                 is_preferred: None,
                 disabled: None,
                 data: None,
-            },
-        ))];
+            }))];
 
         editor.apply_code_action(0);
 

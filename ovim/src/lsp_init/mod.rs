@@ -161,9 +161,7 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
 
                 // Start notification listener to receive diagnostics
                 // Use server_id (may differ from language_id for multi-root)
-                lsp_manager
-                    .start_notification_listener(server_id)
-                    .await;
+                lsp_manager.start_notification_listener(server_id).await;
 
                 // PRE-WARM: Send didOpen immediately to eliminate first-request latency
                 // This ensures the LSP server has indexed the document before the first

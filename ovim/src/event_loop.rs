@@ -481,6 +481,9 @@ pub async fn run_event_loop(
                 if editor.tick_yank_flash() {
                     editor.mark_dirty();
                 }
+                if editor.tick_toasts() {
+                    editor.mark_dirty();
+                }
             }
         }
 

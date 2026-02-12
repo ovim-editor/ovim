@@ -6,7 +6,10 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-pub async fn request_ai_edit(profile: &AiProfileConfig, request: &AiRequest) -> Result<AiJobResult> {
+pub async fn request_ai_edit(
+    profile: &AiProfileConfig,
+    request: &AiRequest,
+) -> Result<AiJobResult> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -105,10 +108,7 @@ async fn request_anthropic(
         "x-api-key",
         HeaderValue::from_str(&api_key).context("invalid Anthropic API key")?,
     );
-    headers.insert(
-        "anthropic-version",
-        HeaderValue::from_static("2023-06-01"),
-    );
+    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
     let mut body = json!({
         "model": profile.model,
@@ -246,7 +246,10 @@ fn read_api_key(profile: &AiProfileConfig) -> Result<String> {
         });
 
     if key_env.is_empty() {
-        return Err(anyhow!("missing api_key_env for provider {}", profile.provider));
+        return Err(anyhow!(
+            "missing api_key_env for provider {}",
+            profile.provider
+        ));
     }
 
     std::env::var(key_env).with_context(|| format!("environment variable {key_env} is not set"))
@@ -262,12 +265,7 @@ File: {}\n\
 Language: {}\n\
 Extraction strategy: {}\n\n\
 Selected text:\n```{}\n{}\n```",
-        request.prompt,
-        file_path,
-        language,
-        request.extraction,
-        language,
-        request.selected_text
+        request.prompt, file_path, language, request.extraction, language, request.selected_text
     );
 
     if let Some(context_pack) = &request.context_pack {

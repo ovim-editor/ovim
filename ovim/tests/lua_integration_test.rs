@@ -175,12 +175,21 @@ fn test_vim_keymap_set_insert_mode_mapping() {
         .process_lua_commands()
         .expect("Failed to process commands");
 
-    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Char('i'), Modifiers::NONE))
-        .expect("Failed to enter insert mode");
-    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Char('j'), Modifiers::NONE))
-        .expect("Failed to handle first mapped key");
-    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Char('k'), Modifiers::NONE))
-        .expect("Failed to handle second mapped key");
+    InputHandler::handle_key_event(
+        &mut editor,
+        KeyEvent::new(KeyCode::Char('i'), Modifiers::NONE),
+    )
+    .expect("Failed to enter insert mode");
+    InputHandler::handle_key_event(
+        &mut editor,
+        KeyEvent::new(KeyCode::Char('j'), Modifiers::NONE),
+    )
+    .expect("Failed to handle first mapped key");
+    InputHandler::handle_key_event(
+        &mut editor,
+        KeyEvent::new(KeyCode::Char('k'), Modifiers::NONE),
+    )
+    .expect("Failed to handle second mapped key");
 
     assert_eq!(editor.mode(), Mode::Normal);
     let line = editor.buffer().line(0).unwrap_or_default();
