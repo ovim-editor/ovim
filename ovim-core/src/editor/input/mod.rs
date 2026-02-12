@@ -1,4 +1,4 @@
-use crate::editor::{Editor, InputState};
+use crate::editor::{Editor, InputState, MapMode};
 use crate::mode::Mode;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -69,6 +69,8 @@ mod normal;
 /// Handles input events for the editor
 pub struct InputHandler;
 
+const MAX_MAPPING_REMAP_DEPTH: usize = 32;
+
 impl InputHandler {
     /// Processes a keyboard event and marks the editor dirty.
     /// Use this for single-event callers that want automatic dirty marking.
@@ -81,9 +83,20 @@ impl InputHandler {
     /// Processes a keyboard event without marking the editor dirty.
     /// Use this for batch processing where dirty should be marked once at the end.
     pub fn handle_key_event_no_dirty(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+        Self::handle_key_event_internal(editor, key_event, true, true, 0)
+    }
+
+    fn handle_key_event_internal(
+        editor: &mut Editor,
+        key_event: KeyEvent,
+        allow_remap: bool,
+        record_macro: bool,
+        remap_depth: usize,
+    ) -> Result<()> {
         // Record the event if we're recording a macro
         // (but don't record the 'q' that stops recording)
-        let should_record_macro = editor.is_recording_macro()
+        let should_record_macro = record_macro
+            && editor.is_recording_macro()
             && !(key_event.code == KeyCode::Char('q') && editor.mode() == Mode::Normal);
 
         if should_record_macro {
@@ -97,34 +110,44 @@ impl InputHandler {
             return Ok(());
         }
 
-        let result = match editor.mode() {
-            Mode::Normal => Self::handle_normal_mode(editor, key_event),
-            Mode::Insert => insert_mode::handle_insert_mode(editor, key_event),
-            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
-                visual_mode::handle_visual_mode(editor, key_event)
-            }
-            Mode::Command => commands::handle_command_mode(editor, key_event),
-            Mode::Search => search_mode::handle_search_mode(editor, key_event),
-            Mode::Replace => replace_mode::handle_replace_mode(editor, key_event),
-            Mode::Picker => picker_mode::handle_picker_mode(editor, key_event),
-            Mode::HoverPreview => {
-                // HoverPreview may forward keys to normal mode
-                if let Some(forwarded_key) =
-                    hover_mode::handle_hover_preview_mode(editor, key_event)?
-                {
-                    Self::handle_normal_mode(editor, forwarded_key)?;
+        let mapping_handled = if allow_remap {
+            Self::try_handle_normal_mode_mapping(editor, key_event, remap_depth)?
+        } else {
+            false
+        };
+
+        let result = if mapping_handled {
+            Ok(())
+        } else {
+            match editor.mode() {
+                Mode::Normal => Self::handle_normal_mode(editor, key_event),
+                Mode::Insert => insert_mode::handle_insert_mode(editor, key_event),
+                Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
+                    visual_mode::handle_visual_mode(editor, key_event)
                 }
-                Ok(())
+                Mode::Command => commands::handle_command_mode(editor, key_event),
+                Mode::Search => search_mode::handle_search_mode(editor, key_event),
+                Mode::Replace => replace_mode::handle_replace_mode(editor, key_event),
+                Mode::Picker => picker_mode::handle_picker_mode(editor, key_event),
+                Mode::HoverPreview => {
+                    // HoverPreview may forward keys to normal mode
+                    if let Some(forwarded_key) =
+                        hover_mode::handle_hover_preview_mode(editor, key_event)?
+                    {
+                        Self::handle_normal_mode(editor, forwarded_key)?;
+                    }
+                    Ok(())
+                }
+                Mode::HoverNavigate => hover_mode::handle_hover_navigate_mode(editor, key_event),
+                Mode::FileTree => filetree_mode::handle_filetree_mode(editor, key_event),
+                Mode::SubstituteConfirm => {
+                    substitute_mode::handle_substitute_confirm_mode(editor, key_event)
+                }
+                Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
+                Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
+                Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
+                Mode::AiPrompt => ai_prompt_mode::handle_ai_prompt_mode(editor, key_event),
             }
-            Mode::HoverNavigate => hover_mode::handle_hover_navigate_mode(editor, key_event),
-            Mode::FileTree => filetree_mode::handle_filetree_mode(editor, key_event),
-            Mode::SubstituteConfirm => {
-                substitute_mode::handle_substitute_confirm_mode(editor, key_event)
-            }
-            Mode::Dashboard => dashboard_mode::handle_dashboard_mode(editor, key_event),
-            Mode::LspManager => lsp_manager_mode::handle_lsp_manager_mode(editor, key_event),
-            Mode::RenameInput => rename_input_mode::handle_rename_input_mode(editor, key_event),
-            Mode::AiPrompt => ai_prompt_mode::handle_ai_prompt_mode(editor, key_event),
         };
 
         // Update scroll offset to keep cursor visible with scrolloff margin
@@ -142,6 +165,181 @@ impl InputHandler {
         } else {
             // Reset flag for next key event
             editor.viewport.skip_scroll_update = false;
+        }
+
+        editor.ai_post_input_refresh();
+
+        result
+    }
+
+    fn is_normal_mode_mapping_context(editor: &Editor) -> bool {
+        editor.mode() == Mode::Normal
+            && editor.count().is_none()
+            && editor.pending_operator().is_none()
+            && editor.pending_command().is_none()
+            && editor.pending_register().is_none()
+            && matches!(editor.input_state(), InputState::Normal)
+    }
+
+    fn try_handle_normal_mode_mapping(
+        editor: &mut Editor,
+        key_event: KeyEvent,
+        remap_depth: usize,
+    ) -> Result<bool> {
+        if editor.mode() != Mode::Normal {
+            editor.clear_pending_mapping();
+            return Ok(false);
+        }
+
+        if !editor.has_pending_mapping() && !Self::is_normal_mode_mapping_context(editor) {
+            return Ok(false);
+        }
+
+        let Some(encoded_key) = Self::encode_key_for_mapping_lookup(key_event) else {
+            if editor.has_pending_mapping() {
+                let mut replay = editor.take_pending_mapping_events();
+                replay.push(key_event);
+                for event in replay {
+                    Self::handle_key_event_internal(editor, event, false, false, remap_depth)?;
+                }
+                return Ok(true);
+            }
+            return Ok(false);
+        };
+
+        editor.append_pending_mapping(&encoded_key, key_event);
+        let sequence = editor.pending_mapping_sequence().to_string();
+
+        if let Some(mapping) = editor
+            .keymaps()
+            .get_mapping(MapMode::Normal, &sequence)
+            .cloned()
+        {
+            editor.clear_pending_mapping();
+            if remap_depth >= MAX_MAPPING_REMAP_DEPTH {
+                editor.set_lsp_status("Mapping recursion limit reached".to_string());
+                return Ok(true);
+            }
+
+            Self::execute_mapping_rhs(editor, &mapping.rhs, !mapping.noremap, remap_depth + 1)?;
+            return Ok(true);
+        }
+
+        if editor.keymaps().has_prefix(MapMode::Normal, &sequence) {
+            return Ok(true);
+        }
+
+        let replay = editor.take_pending_mapping_events();
+        for event in replay {
+            Self::handle_key_event_internal(editor, event, false, false, remap_depth)?;
+        }
+        Ok(true)
+    }
+
+    fn execute_mapping_rhs(
+        editor: &mut Editor,
+        rhs: &str,
+        allow_remap: bool,
+        remap_depth: usize,
+    ) -> Result<()> {
+        let events = Self::decode_mapping_rhs(rhs);
+        for event in events {
+            Self::handle_key_event_internal(editor, event, allow_remap, false, remap_depth)?;
+        }
+        Ok(())
+    }
+
+    fn encode_key_for_mapping_lookup(key_event: KeyEvent) -> Option<String> {
+        if key_event.modifiers.contains(Modifiers::SUPER)
+            || key_event.modifiers.contains(Modifiers::ALT)
+        {
+            return None;
+        }
+
+        match key_event.code {
+            KeyCode::Char(c) => {
+                if key_event.modifiers.contains(Modifiers::CONTROL) {
+                    if c.is_ascii_alphabetic() {
+                        let ctrl = ((c.to_ascii_lowercase() as u8) - b'a' + 1) as char;
+                        return Some(ctrl.to_string());
+                    }
+                    return None;
+                }
+
+                if key_event.modifiers == Modifiers::NONE || key_event.modifiers == Modifiers::SHIFT
+                {
+                    Some(c.to_string())
+                } else {
+                    None
+                }
+            }
+            KeyCode::Enter if key_event.modifiers == Modifiers::NONE => Some("\n".to_string()),
+            KeyCode::Esc if key_event.modifiers == Modifiers::NONE => Some("\x1b".to_string()),
+            KeyCode::Tab if key_event.modifiers == Modifiers::NONE => Some("\t".to_string()),
+            KeyCode::Backspace if key_event.modifiers == Modifiers::NONE => {
+                Some("\x7f".to_string())
+            }
+            KeyCode::Up if key_event.modifiers == Modifiers::NONE => Some("\x1b[A".to_string()),
+            KeyCode::Down if key_event.modifiers == Modifiers::NONE => Some("\x1b[B".to_string()),
+            KeyCode::Right if key_event.modifiers == Modifiers::NONE => Some("\x1b[C".to_string()),
+            KeyCode::Left if key_event.modifiers == Modifiers::NONE => Some("\x1b[D".to_string()),
+            _ => None,
+        }
+    }
+
+    fn decode_mapping_rhs(rhs: &str) -> Vec<KeyEvent> {
+        let chars: Vec<char> = rhs.chars().collect();
+        let mut result = Vec::new();
+        let mut i = 0usize;
+
+        while i < chars.len() {
+            let ch = chars[i];
+            match ch {
+                '\n' => {
+                    result.push(KeyEvent::new(KeyCode::Enter, Modifiers::NONE));
+                    i += 1;
+                }
+                '\t' => {
+                    result.push(KeyEvent::new(KeyCode::Tab, Modifiers::NONE));
+                    i += 1;
+                }
+                '\x7f' => {
+                    result.push(KeyEvent::new(KeyCode::Backspace, Modifiers::NONE));
+                    i += 1;
+                }
+                '\x1b' => {
+                    if i + 2 < chars.len() && chars[i + 1] == '[' {
+                        let arrow_key = match chars[i + 2] {
+                            'A' => Some(KeyCode::Up),
+                            'B' => Some(KeyCode::Down),
+                            'C' => Some(KeyCode::Right),
+                            'D' => Some(KeyCode::Left),
+                            _ => None,
+                        };
+                        if let Some(code) = arrow_key {
+                            result.push(KeyEvent::new(code, Modifiers::NONE));
+                            i += 3;
+                            continue;
+                        }
+                    }
+                    result.push(KeyEvent::new(KeyCode::Esc, Modifiers::NONE));
+                    i += 1;
+                }
+                c if c.is_ascii() => {
+                    let byte = c as u8;
+                    if (1..=26).contains(&byte) {
+                        let ctrl_char = (byte - 1 + b'a') as char;
+                        result.push(KeyEvent::new(KeyCode::Char(ctrl_char), Modifiers::CONTROL));
+                    } else {
+                        result.push(KeyEvent::new(KeyCode::Char(c), Modifiers::NONE));
+                    }
+                    i += 1;
+                }
+                c => {
+                    result.push(KeyEvent::new(KeyCode::Char(c), Modifiers::NONE));
+                    i += 1;
+                }
+            }
         }
 
         result

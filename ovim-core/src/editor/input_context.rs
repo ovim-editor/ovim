@@ -6,6 +6,7 @@
 
 use crate::editor::input_state::InputState;
 use crate::editor::operators::Operator;
+use crate::KeyEvent;
 
 /// Context for input state machine (counts, operators, pending commands).
 ///
@@ -37,6 +38,12 @@ pub struct InputContext {
 
     /// Leader key (default: space)
     pub leader_key: char,
+
+    /// Pending raw key sequence being considered for normal-mode mappings
+    pub pending_mapping_sequence: String,
+
+    /// Original key events that produced pending_mapping_sequence
+    pub pending_mapping_events: Vec<KeyEvent>,
 }
 
 impl InputContext {
@@ -49,6 +56,8 @@ impl InputContext {
             pending_register: None,
             input_state: InputState::Normal,
             leader_key: ' ', // default space
+            pending_mapping_sequence: String::new(),
+            pending_mapping_events: Vec::new(),
         }
     }
 
@@ -60,6 +69,8 @@ impl InputContext {
         self.pending_command = None;
         self.pending_register = None;
         self.input_state.reset();
+        self.pending_mapping_sequence.clear();
+        self.pending_mapping_events.clear();
     }
 
     /// Returns true if any input is currently pending.
@@ -69,6 +80,7 @@ impl InputContext {
             || self.pending_command.is_some()
             || self.pending_register.is_some()
             || !self.input_state.is_normal()
+            || !self.pending_mapping_sequence.is_empty()
     }
 }
 
@@ -91,6 +103,8 @@ mod tests {
         assert_eq!(ctx.pending_register, None);
         assert_eq!(ctx.input_state, InputState::Normal);
         assert_eq!(ctx.leader_key, ' ');
+        assert!(ctx.pending_mapping_sequence.is_empty());
+        assert!(ctx.pending_mapping_events.is_empty());
     }
 
     #[test]
@@ -109,6 +123,11 @@ mod tests {
         ctx.input_state = InputState::OperatorPending {
             operator: Operator::Delete,
         };
+        ctx.pending_mapping_sequence = "jk".to_string();
+        ctx.pending_mapping_events = vec![KeyEvent::new(
+            crate::KeyCode::Char('j'),
+            crate::Modifiers::NONE,
+        )];
 
         ctx.reset();
 
@@ -117,6 +136,8 @@ mod tests {
         assert_eq!(ctx.pending_command, None);
         assert_eq!(ctx.pending_register, None);
         assert_eq!(ctx.input_state, InputState::Normal);
+        assert!(ctx.pending_mapping_sequence.is_empty());
+        assert!(ctx.pending_mapping_events.is_empty());
     }
 
     #[test]
@@ -143,6 +164,10 @@ mod tests {
         ctx.input_state = InputState::OperatorPending {
             operator: Operator::Delete,
         };
+        assert!(ctx.has_pending_input());
+
+        ctx.reset();
+        ctx.pending_mapping_sequence = "jk".to_string();
         assert!(ctx.has_pending_input());
     }
 }
