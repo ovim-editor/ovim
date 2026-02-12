@@ -111,7 +111,7 @@ impl InputHandler {
         }
 
         let mapping_handled = if allow_remap {
-            Self::try_handle_normal_mode_mapping(editor, key_event, remap_depth)?
+            Self::try_handle_mode_mapping(editor, key_event, remap_depth)?
         } else {
             false
         };
@@ -172,8 +172,18 @@ impl InputHandler {
         result
     }
 
-    fn is_normal_mode_mapping_context(editor: &Editor) -> bool {
-        editor.mode() == Mode::Normal
+    fn active_mapping_mode(editor: &Editor) -> Option<MapMode> {
+        match editor.mode() {
+            Mode::Normal => Some(MapMode::Normal),
+            Mode::Insert => Some(MapMode::Insert),
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => Some(MapMode::Visual),
+            Mode::Command => Some(MapMode::Command),
+            _ => None,
+        }
+    }
+
+    fn is_mapping_context(editor: &Editor) -> bool {
+        editor.pending_mapping_sequence().is_empty()
             && editor.count().is_none()
             && editor.pending_operator().is_none()
             && editor.pending_command().is_none()
@@ -181,17 +191,17 @@ impl InputHandler {
             && matches!(editor.input_state(), InputState::Normal)
     }
 
-    fn try_handle_normal_mode_mapping(
+    fn try_handle_mode_mapping(
         editor: &mut Editor,
         key_event: KeyEvent,
         remap_depth: usize,
     ) -> Result<bool> {
-        if editor.mode() != Mode::Normal {
+        let Some(map_mode) = Self::active_mapping_mode(editor) else {
             editor.clear_pending_mapping();
             return Ok(false);
-        }
+        };
 
-        if !editor.has_pending_mapping() && !Self::is_normal_mode_mapping_context(editor) {
+        if !editor.has_pending_mapping() && !Self::is_mapping_context(editor) {
             return Ok(false);
         }
 
@@ -210,11 +220,7 @@ impl InputHandler {
         editor.append_pending_mapping(&encoded_key, key_event);
         let sequence = editor.pending_mapping_sequence().to_string();
 
-        if let Some(mapping) = editor
-            .keymaps()
-            .get_mapping(MapMode::Normal, &sequence)
-            .cloned()
-        {
+        if let Some(mapping) = editor.keymaps().get_mapping(map_mode, &sequence).cloned() {
             editor.clear_pending_mapping();
             if remap_depth >= MAX_MAPPING_REMAP_DEPTH {
                 editor.set_lsp_status("Mapping recursion limit reached".to_string());
@@ -225,7 +231,7 @@ impl InputHandler {
             return Ok(true);
         }
 
-        if editor.keymaps().has_prefix(MapMode::Normal, &sequence) {
+        if editor.keymaps().has_prefix(map_mode, &sequence) {
             return Ok(true);
         }
 

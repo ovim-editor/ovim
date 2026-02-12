@@ -2,6 +2,7 @@ mod helpers;
 
 use helpers::EditorTest;
 use ovim::editor::{InputHandler, LspAction};
+use ovim::mode::Mode;
 
 #[test]
 fn test_normal_mode_mapping_executes_rhs() {
@@ -75,4 +76,36 @@ fn test_leader_format_mapping_queues_format_action() {
         test.editor.pending_lsp_action(),
         Some(&LspAction::FormatDocument)
     );
+}
+
+#[test]
+fn test_insert_mode_mapping_executes_rhs() {
+    let mut test = EditorTest::new("abc\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "inoremap jk <Esc>").unwrap();
+    test.keys("ijk");
+
+    test.assert_mode(Mode::Normal);
+    assert_eq!(test.buffer_content(), "abc\n");
+}
+
+#[test]
+fn test_visual_mode_mapping_executes_rhs() {
+    let mut test = EditorTest::new("abc\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "vnoremap q d").unwrap();
+    test.keys("vlq");
+
+    test.assert_mode(Mode::Normal);
+    assert_eq!(test.buffer_content(), "c\n");
+}
+
+#[test]
+fn test_command_mode_mapping_executes_rhs() {
+    let mut test = EditorTest::new("abc\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "cnoremap jj <Esc>").unwrap();
+    test.keys(":jj");
+
+    test.assert_mode(Mode::Normal);
 }

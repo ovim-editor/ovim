@@ -1,6 +1,7 @@
 #![cfg(feature = "lua")]
 
 use ovim::editor::{Editor, InputHandler};
+use ovim::mode::Mode;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 #[test]
@@ -160,4 +161,28 @@ fn test_vim_keymap_set_normal_mode_mapping() {
 
     let line = editor.buffer().line(0).unwrap_or_default();
     assert_eq!(line.trim_end_matches('\n'), "bc");
+}
+
+#[test]
+fn test_vim_keymap_set_insert_mode_mapping() {
+    let mut editor = Editor::with_content("abc");
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    editor
+        .execute_lua("vim.keymap.set('i', 'jk', '<Esc>')")
+        .expect("Failed to execute Lua");
+    editor
+        .process_lua_commands()
+        .expect("Failed to process commands");
+
+    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Char('i'), Modifiers::NONE))
+        .expect("Failed to enter insert mode");
+    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Char('j'), Modifiers::NONE))
+        .expect("Failed to handle first mapped key");
+    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Char('k'), Modifiers::NONE))
+        .expect("Failed to handle second mapped key");
+
+    assert_eq!(editor.mode(), Mode::Normal);
+    let line = editor.buffer().line(0).unwrap_or_default();
+    assert_eq!(line.trim_end_matches('\n'), "abc");
 }
