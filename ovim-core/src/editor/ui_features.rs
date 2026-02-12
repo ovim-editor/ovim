@@ -81,8 +81,11 @@ impl Editor {
 
                 let range = Range::new((cursor_line, trigger_col), (cursor_line, cursor_col));
                 let change = Change::delete(range, deleted_text, cursor_before);
+                let version_before = self.buffer().version();
                 change.apply(self.buffer_mut());
-                changes.push(change);
+                if self.buffer().version() != version_before {
+                    changes.push(change);
+                }
             }
 
             // Insert the completion text (tracked for undo)
@@ -91,8 +94,11 @@ impl Editor {
                 text_to_insert.clone(),
                 cursor_before,
             );
+            let version_before = self.buffer().version();
             insert_change.apply(self.buffer_mut());
-            changes.push(insert_change);
+            if self.buffer().version() != version_before {
+                changes.push(insert_change);
+            }
 
             // Move cursor to end of inserted text
             let new_col = trigger_col + text_to_insert.chars().count();
@@ -101,8 +107,10 @@ impl Editor {
                 .set_position(cursor_line, new_col);
 
             let cursor_after = (cursor_line, new_col);
-            self.add_change(Change::composite(changes, cursor_before, cursor_after));
-            self.mark_buffer_modified();
+            if !changes.is_empty() {
+                self.add_change(Change::composite(changes, cursor_before, cursor_after));
+                self.mark_buffer_modified();
+            }
         }
 
         // Hide the completion menu
@@ -357,20 +365,30 @@ impl Editor {
             let cursor_before = (self.buffer().cursor().line(), self.buffer().cursor().col());
 
             // Delete the matched text
+            let version_before_delete = self.buffer().version();
             let deleted = self
                 .buffer_mut()
                 .delete_range(line, start_col, line, end_col);
+            let deleted_match = self.buffer().version() != version_before_delete;
             let delete_range = Range::new((line, start_col), (line, end_col));
             let delete_change = Change::delete(delete_range, deleted, cursor_before);
 
             // Insert the replacement
             let insert_change =
                 Change::insert((line, start_col), replacement.clone(), cursor_before);
+            let version_before = self.buffer().version();
             insert_change.apply(self.buffer_mut());
+            let inserted = self.buffer().version() != version_before;
 
-            self.add_change(delete_change);
-            self.add_change(insert_change);
-            self.mark_buffer_modified();
+            if deleted_match {
+                self.add_change(delete_change);
+            }
+            if inserted {
+                self.add_change(insert_change);
+            }
+            if deleted_match || inserted {
+                self.mark_buffer_modified();
+            }
 
             self.editing.substitute_match_index += 1;
             if self.editing.substitute_match_index >= self.editing.substitute_matches.len() {

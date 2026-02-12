@@ -62,6 +62,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                 if col < chars.len() {
                     // Track the original character for undo
                     let old_char = chars[col];
+                    let version_before = editor.buffer().version();
 
                     // Delete character under cursor
                     editor
@@ -71,6 +72,9 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     // Insert new character
                     let new_char = c.to_string();
                     editor.buffer_mut().insert_text_at(line_idx, col, &new_char);
+                    if editor.buffer().version() == version_before {
+                        return Ok(());
+                    }
 
                     // Track for dot-repeat
                     if let Some(ref mut state) = editor.editing.replace_mode_state {
@@ -82,7 +86,11 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     editor.buffer_mut().cursor_mut().move_right(1);
                 } else {
                     // At end of line, just insert (like append)
+                    let version_before = editor.buffer().version();
                     helpers::insert_char(editor, c)?;
+                    if editor.buffer().version() == version_before {
+                        return Ok(());
+                    }
                     // Also track for dot-repeat
                     if let Some(ref mut state) = editor.editing.replace_mode_state {
                         state.replacements.push(c);

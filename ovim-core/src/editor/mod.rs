@@ -1610,8 +1610,7 @@ impl Editor {
                 let cursor_before = (cursor.line(), cursor.col());
                 let position = (cursor.line(), cursor.col());
                 let change = Change::insert(position, text.to_string(), cursor_before);
-                change.apply(self.buffer_mut());
-                self.add_change(change);
+                self.apply_change_and_record(change);
             }
             Mode::Normal => {
                 // Set unnamed register and paste after cursor
@@ -1620,8 +1619,7 @@ impl Editor {
                 let cursor_before = (cursor.line(), cursor.col());
                 let position = (cursor.line(), cursor.col() + 1);
                 let change = Change::insert(position, text.to_string(), cursor_before);
-                change.apply(self.buffer_mut());
-                self.add_change(change);
+                self.apply_change_and_record(change);
             }
             Mode::Command => {
                 // Insert text into command buffer
@@ -1657,12 +1655,19 @@ impl Editor {
         self.buffer_mut().change_manager_mut().set_entry_mode(mode);
     }
 
+    /// Applies a change and records it only when it mutated the buffer.
+    pub fn apply_change_and_record(&mut self, change: Change) -> bool {
+        let version_before = self.buffer().version();
+        change.apply(self.buffer_mut());
+        if self.buffer().version() == version_before {
+            return false;
+        }
+        self.add_change(change);
+        true
+    }
+
     /// Adds a change to the change manager
     pub fn add_change(&mut self, change: Change) {
-        // AI lock blocked the underlying edit: don't record a semantic no-op.
-        if self.buffer().ai_lock_blocked() {
-            return;
-        }
         self.buffer_mut().change_manager_mut().add_change(change);
     }
 
