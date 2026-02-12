@@ -12,23 +12,38 @@ fn unique_test_id() -> u128 {
         .as_nanos()
 }
 
+fn relative_path(from: &std::path::Path, to: &std::path::Path) -> std::path::PathBuf {
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+
+    let common_len = from_components
+        .iter()
+        .zip(to_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut out = std::path::PathBuf::new();
+    for _ in common_len..from_components.len() {
+        out.push("..");
+    }
+    for component in &to_components[common_len..] {
+        out.push(component.as_os_str());
+    }
+    out
+}
+
 fn tilde_workspace_path(file_name: &str) -> (String, std::path::PathBuf) {
     let home = dirs::home_dir().expect("HOME should be available");
     let cwd = std::env::current_dir().expect("cwd should be available");
-    let rel = cwd
-        .strip_prefix(&home)
-        .expect("workspace should be under HOME for tilde tests");
-
+    let rel = relative_path(&home, &cwd);
     let test_dir = cwd.join("target").join("command_mode_tests");
     fs::create_dir_all(&test_dir).expect("create test dir");
-
-    let rel_str = rel.to_string_lossy();
-    let tilde_prefix = if rel_str.is_empty() {
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    let tilde_prefix = if rel.is_empty() {
         "~".to_string()
     } else {
-        format!("~/{}", rel_str)
+        format!("~/{}", rel)
     };
-
     (
         format!("{}/target/command_mode_tests/{}", tilde_prefix, file_name),
         test_dir.join(file_name),
