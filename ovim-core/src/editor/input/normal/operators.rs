@@ -1370,9 +1370,9 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_paragraph_forward(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_paragraph_forward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1396,9 +1396,9 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_paragraph_backward(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_paragraph_backward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1593,7 +1593,10 @@ fn handle_yb(editor: &mut Editor, count: usize) -> Result<()> {
     let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(end_line, end_col, start_line, start_col.saturating_sub(1));
-    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(end_line, end_col);
     editor.clear_count();
     Ok(())
 }
@@ -1611,7 +1614,10 @@ fn handle_ye(editor: &mut Editor, count: usize) -> Result<()> {
     let yanked = yank_range(editor, start_line, start_col, end_line, end_col + 1);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.clear_count();
     Ok(())
 }
@@ -1628,7 +1634,10 @@ fn handle_y_big_b(editor: &mut Editor, count: usize) -> Result<()> {
     let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(end_line, end_col, start_line, start_col.saturating_sub(1));
-    editor.buffer_mut().cursor_mut().set_position(end_line, end_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(end_line, end_col);
     editor.clear_count();
     Ok(())
 }
@@ -1645,7 +1654,10 @@ fn handle_y_big_e(editor: &mut Editor, count: usize) -> Result<()> {
     let yanked = yank_range(editor, start_line, start_col, end_line, end_col + 1);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.clear_count();
     Ok(())
 }
@@ -1661,7 +1673,10 @@ fn handle_yh(editor: &mut Editor, count: usize) -> Result<()> {
     let yanked = yank_range(editor, line_idx, start_col, line_idx, col);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(line_idx, start_col, line_idx, col.saturating_sub(1));
-    editor.buffer_mut().cursor_mut().set_position(line_idx, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(line_idx, start_col);
     editor.clear_count();
     Ok(())
 }
@@ -1693,7 +1708,10 @@ fn handle_y_caret(editor: &mut Editor) -> Result<()> {
     let yanked = yank_range(editor, line_idx, start, line_idx, end);
     editor.yank_to_register(yanked);
     editor.set_yank_flash_range(line_idx, start, line_idx, end.saturating_sub(1));
-    editor.buffer_mut().cursor_mut().set_position(line_idx, start);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(line_idx, start);
     editor.clear_count();
     Ok(())
 }
@@ -1711,7 +1729,10 @@ fn handle_y_big_w(editor: &mut Editor, count: usize) -> Result<()> {
     editor.yank_to_register(yanked);
     let flash_end_col = if end_col > 0 { end_col - 1 } else { 0 };
     editor.set_yank_flash_range(start_line, start_col, end_line, flash_end_col);
-    editor.buffer_mut().cursor_mut().set_position(start_line, start_col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, start_col);
     editor.clear_count();
     Ok(())
 }
@@ -1750,9 +1771,9 @@ fn yank_range(
 fn handle_cb(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_word_backward(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_word_backward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1778,9 +1799,7 @@ fn handle_cb(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_ce(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_word_end(count)
-    });
+    let (deleted, edits) = editor.buffer_mut().record(|buf| buf.delete_word_end(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1806,9 +1825,9 @@ fn handle_ce(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c_big_b(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_word_backward_big(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_word_backward_big(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1834,9 +1853,9 @@ fn handle_c_big_b(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c_big_e(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_word_end_big(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_word_end_big(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1862,9 +1881,9 @@ fn handle_c_big_e(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_ch(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_char_left(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_char_left(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1890,9 +1909,9 @@ fn handle_ch(editor: &mut Editor, count: usize) -> Result<()> {
 fn handle_c0(editor: &mut Editor) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_to_start_of_line()
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_to_start_of_line());
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1918,9 +1937,9 @@ fn handle_c0(editor: &mut Editor) -> Result<()> {
 fn handle_c_caret(editor: &mut Editor) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_to_first_non_blank()
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_to_first_non_blank());
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
@@ -1946,9 +1965,9 @@ fn handle_c_caret(editor: &mut Editor) -> Result<()> {
 fn handle_c_big_w(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        buf.delete_word_forward_big(count)
-    });
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_word_forward_big(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))

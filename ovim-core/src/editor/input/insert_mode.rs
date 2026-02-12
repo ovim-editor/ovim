@@ -115,7 +115,6 @@ fn exit_insert_mode(editor: &mut Editor) {
             linewise: pending.linewise,
         });
     }
-
     // Check for pending semantic change operation (ci", cw, etc.)
     else if let Some(pending) = editor.take_pending_semantic_change() {
         // Get the inserted text from the last change

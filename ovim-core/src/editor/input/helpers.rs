@@ -425,16 +425,16 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<()> {
 
     // Add extra indent after opening brackets
     let trimmed = line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
-    let extra_indent =
-        if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
-            if editor.options.expand_tab {
-                " ".repeat(editor.options.shift_width)
-            } else {
-                "\t".to_string()
-            }
+    let extra_indent = if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[')
+    {
+        if editor.options.expand_tab {
+            " ".repeat(editor.options.shift_width)
         } else {
-            String::new()
-        };
+            "\t".to_string()
+        }
+    } else {
+        String::new()
+    };
     let indent = format!("{}{}", indent, extra_indent);
 
     // Determine insert position and text
@@ -497,11 +497,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
     }
 
     // Multiply paste text by count
-    let text = if count > 1 {
-        text.repeat(count)
-    } else {
-        text
-    };
+    let text = if count > 1 { text.repeat(count) } else { text };
 
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
@@ -691,11 +687,7 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
     }
 
     // Multiply paste text by count
-    let text = if count > 1 {
-        text.repeat(count)
-    } else {
-        text
-    };
+    let text = if count > 1 { text.repeat(count) } else { text };
 
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());

@@ -589,8 +589,7 @@ impl Motions {
         }
 
         // Skip whitespace backward again
-        let (final_line, final_col) =
-            Self::skip_whitespace_backward(line_idx, col, &get_chars);
+        let (final_line, final_col) = Self::skip_whitespace_backward(line_idx, col, &get_chars);
         buffer.cursor_mut().set_position(final_line, final_col);
     }
 
