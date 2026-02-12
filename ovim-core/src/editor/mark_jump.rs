@@ -1,4 +1,4 @@
-use super::{Editor, FindDirection, FindType, TagEntry};
+use super::{Editor, FindDirection, FindType, Motions, TagEntry};
 use crate::editor::MarkManager;
 
 impl Editor {
@@ -160,6 +160,72 @@ impl Editor {
     /// Gets the last find motion
     pub fn get_last_find(&self) -> Option<(char, FindType, FindDirection)> {
         self.nav.last_find
+    }
+
+    /// Repeats the last character-find motion (`;`/`,` in Vim).
+    ///
+    /// Returns `true` if a motion executed and moved the cursor.
+    pub fn repeat_last_find(&mut self, reverse: bool) -> bool {
+        let mut moved = false;
+
+        if let Some((ch, find_type, direction)) = self.get_last_find() {
+            let count = self.effective_count();
+
+            let direction = if reverse {
+                match direction {
+                    FindDirection::Forward => FindDirection::Backward,
+                    FindDirection::Backward => FindDirection::Forward,
+                }
+            } else {
+                direction
+            };
+
+            moved = match (find_type, direction) {
+                (FindType::Find, FindDirection::Forward) => {
+                    Motions::find_char_forward(self.buffer_mut(), ch, count)
+                }
+                (FindType::Find, FindDirection::Backward) => {
+                    Motions::find_char_backward(self.buffer_mut(), ch, count)
+                }
+                (FindType::Till, FindDirection::Forward) => {
+                    if !reverse {
+                        // For ';' after `t`, skip past current target before repeating.
+                        let col = self.buffer().cursor().col();
+                        self.buffer_mut().cursor_mut().set_col(col + 1);
+                        if !Motions::till_char_forward(self.buffer_mut(), ch, count) {
+                            self.buffer_mut().cursor_mut().set_col(col);
+                            false
+                        } else {
+                            true
+                        }
+                    } else {
+                        Motions::till_char_forward(self.buffer_mut(), ch, count)
+                    }
+                }
+                (FindType::Till, FindDirection::Backward) => {
+                    if !reverse {
+                        // For ';' after `T`, skip past current target before repeating.
+                        let col = self.buffer().cursor().col();
+                        if col > 0 {
+                            self.buffer_mut().cursor_mut().set_col(col - 1);
+                            if !Motions::till_char_backward(self.buffer_mut(), ch, count) {
+                                self.buffer_mut().cursor_mut().set_col(col);
+                                false
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        Motions::till_char_backward(self.buffer_mut(), ch, count)
+                    }
+                }
+            };
+        }
+
+        self.clear_count();
+        moved
     }
 
     /// Gets the mark manager (for reading marks)

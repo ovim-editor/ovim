@@ -4,7 +4,7 @@
 //! h, j, k, l, w, W, b, B, e, E, 0, $, ^, _, +, -, G, %, {, }, (, ), ;, ,, n, N, *, #, K
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, FindDirection, FindType, Motions, Search};
+use crate::editor::{Editor, Motions, Search};
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -223,11 +223,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
         // Repeat find motion
         KeyCode::Char(';') => {
-            repeat_find_motion(editor, false);
+            editor.repeat_last_find(false);
             Ok(true)
         }
         KeyCode::Char(',') => {
-            repeat_find_motion(editor, true);
+            editor.repeat_last_find(true);
             Ok(true)
         }
         KeyCode::Tab => {
@@ -425,56 +425,4 @@ fn search_word_backward(editor: &mut Editor) {
         }
         editor.set_current_search(search);
     }
-}
-
-/// Repeat the last f/F/t/T motion
-fn repeat_find_motion(editor: &mut Editor, reverse: bool) {
-    if let Some((ch, find_type, direction)) = editor.get_last_find() {
-        let count = editor.effective_count();
-
-        let direction = if reverse {
-            match direction {
-                FindDirection::Forward => FindDirection::Backward,
-                FindDirection::Backward => FindDirection::Forward,
-            }
-        } else {
-            direction
-        };
-
-        match (find_type, direction) {
-            (FindType::Find, FindDirection::Forward) => {
-                Motions::find_char_forward(editor.buffer_mut(), ch, count);
-            }
-            (FindType::Find, FindDirection::Backward) => {
-                Motions::find_char_backward(editor.buffer_mut(), ch, count);
-            }
-            (FindType::Till, FindDirection::Forward) => {
-                if !reverse {
-                    // For ; after t, skip past current target
-                    let col = editor.buffer().cursor().col();
-                    editor.buffer_mut().cursor_mut().set_col(col + 1);
-                    if !Motions::till_char_forward(editor.buffer_mut(), ch, count) {
-                        editor.buffer_mut().cursor_mut().set_col(col);
-                    }
-                } else {
-                    Motions::till_char_forward(editor.buffer_mut(), ch, count);
-                }
-            }
-            (FindType::Till, FindDirection::Backward) => {
-                if !reverse {
-                    // For ; after T, skip past current target
-                    let col = editor.buffer().cursor().col();
-                    if col > 0 {
-                        editor.buffer_mut().cursor_mut().set_col(col - 1);
-                        if !Motions::till_char_backward(editor.buffer_mut(), ch, count) {
-                            editor.buffer_mut().cursor_mut().set_col(col);
-                        }
-                    }
-                } else {
-                    Motions::till_char_backward(editor.buffer_mut(), ch, count);
-                }
-            }
-        }
-    }
-    editor.clear_count();
 }

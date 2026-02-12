@@ -369,6 +369,13 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 operator: None,
             });
         }
+        // Repeat the last find motion in visual modes (`;`/`,`).
+        KeyCode::Char(';') => {
+            editor.repeat_last_find(false);
+        }
+        KeyCode::Char(',') => {
+            editor.repeat_last_find(true);
+        }
         // Jump to matching bracket (%)
         KeyCode::Char('%') => {
             Motions::jump_to_matching_bracket(editor.buffer_mut());
