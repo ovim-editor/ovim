@@ -45,7 +45,7 @@ async fn process_editor_tick(
         // Poll for server-initiated workspace edits (e.g., from refactoring operations)
         let pending_edits = lsp_manager.poll_pending_workspace_edits().await;
         for workspace_edit in pending_edits {
-            match editor.apply_workspace_edit(workspace_edit).await {
+            match editor.apply_workspace_edit(workspace_edit) {
                 Ok(applied) => {
                     if applied {
                         editor.set_lsp_status("Applied workspace edit".to_string());

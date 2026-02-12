@@ -9,6 +9,7 @@ pub enum HoverContentType {
     LspHover,
     Diagnostic,
     BlameInfo,
+    AiReasoning,
 }
 
 /// Per-document synchronisation state, keyed by canonical file path
@@ -180,6 +181,16 @@ pub struct CompletionTaskResult {
     pub synced_content: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AvailableCodeAction {
+    /// LSP server ID that produced this action (language ID for primary server).
+    pub server_id: String,
+    /// The code action payload as returned by the server.
+    pub action: lsp_types::CodeActionOrCommand,
+    /// Whether this action has been resolved via `codeAction/resolve`.
+    pub resolved: bool,
+}
+
 /// LSP-related state for the editor
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LspResultType {
@@ -239,7 +250,7 @@ pub struct LspState {
     /// File path that needs didClose notification (set when switching files)
     pub pending_did_close_file: Option<String>,
     /// Available code actions at current cursor position
-    pub available_code_actions: Vec<lsp_types::CodeActionOrCommand>,
+    pub available_code_actions: Vec<AvailableCodeAction>,
     /// Available completion items at current cursor position
     pub available_completions: Vec<lsp_types::CompletionItem>,
     /// Available LSP references at current cursor position

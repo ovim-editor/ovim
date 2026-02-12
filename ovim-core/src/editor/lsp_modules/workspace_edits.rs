@@ -53,7 +53,7 @@ impl Editor {
     }
 
     /// Apply a workspace edit (used for rename, organize imports, etc.)
-    pub async fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
+    pub fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
         let mut all_applied = true;
         let mut modified_files = Vec::new();
 
