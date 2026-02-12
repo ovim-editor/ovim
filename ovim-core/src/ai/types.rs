@@ -46,6 +46,126 @@ impl Default for ExtractionStrategy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityTier {
+    Small,
+    Mid,
+    Frontier,
+}
+
+impl Default for CapabilityTier {
+    fn default() -> Self {
+        Self::Mid
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMode {
+    FastPath,
+    Hybrid,
+    ReactOnly,
+}
+
+impl Default for AgentMode {
+    fn default() -> Self {
+        Self::Hybrid
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ContextPolicy {
+    pub tier: CapabilityTier,
+    pub mode: AgentMode,
+    pub context_budget_tokens: usize,
+    pub max_tool_calls: u16,
+    pub max_iterations: u8,
+    pub retrieval_k: u16,
+    pub callgraph_hops: u8,
+    pub enable_pruning: bool,
+}
+
+impl ContextPolicy {
+    pub fn for_tier(tier: CapabilityTier) -> Self {
+        match tier {
+            CapabilityTier::Small => Self {
+                tier,
+                mode: AgentMode::FastPath,
+                context_budget_tokens: 2_500,
+                max_tool_calls: 10,
+                max_iterations: 2,
+                retrieval_k: 6,
+                callgraph_hops: 1,
+                enable_pruning: true,
+            },
+            CapabilityTier::Mid => Self {
+                tier,
+                mode: AgentMode::Hybrid,
+                context_budget_tokens: 8_000,
+                max_tool_calls: 20,
+                max_iterations: 4,
+                retrieval_k: 12,
+                callgraph_hops: 2,
+                enable_pruning: true,
+            },
+            CapabilityTier::Frontier => Self {
+                tier,
+                mode: AgentMode::Hybrid,
+                context_budget_tokens: 24_000,
+                max_tool_calls: 36,
+                max_iterations: 6,
+                retrieval_k: 20,
+                callgraph_hops: 3,
+                enable_pruning: true,
+            },
+        }
+    }
+}
+
+impl Default for ContextPolicy {
+    fn default() -> Self {
+        Self::for_tier(CapabilityTier::default())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeSlice {
+    pub label: String,
+    pub path: Option<String>,
+    pub language: Option<String>,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SymbolFact {
+    pub name: String,
+    pub kind: String,
+    pub line: u32,
+    pub character: u32,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticFact {
+    pub message: String,
+    pub severity: Option<String>,
+    pub line: u32,
+    pub start_character: u32,
+    pub end_character: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AiContextPack {
+    pub selection: String,
+    pub surrounding: Vec<CodeSlice>,
+    pub symbol_facts: Vec<SymbolFact>,
+    pub diagnostics: Vec<DiagnosticFact>,
+    pub related_slices: Vec<CodeSlice>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AiRequest {
     pub prompt: String,
@@ -53,6 +173,7 @@ pub struct AiRequest {
     pub language_id: Option<String>,
     pub file_path: Option<String>,
     pub extraction: ExtractionStrategy,
+    pub context_pack: Option<AiContextPack>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,5 +192,7 @@ pub struct BufferLock {
     pub id: u64,
     pub start_char: usize,
     pub end_char: usize,
+    /// Whether edits overlapping this range should be blocked.
+    /// Running AI jobs use `true`; generated-range tracking uses `false`.
+    pub blocks_edits: bool,
 }
-
