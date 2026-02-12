@@ -1,5 +1,6 @@
-use crate::ai::chat_types::{ChatFocus, ChatOpts};
+use crate::ai::chat_types::{ChatFocus, ChatOpts, StreamChunk};
 use crate::mode::Mode;
+use std::collections::HashSet;
 
 pub struct AiChatState {
     pub opts: ChatOpts,
@@ -25,6 +26,12 @@ pub struct AiChatState {
     pub mode_before_chat: Mode,
     /// Timestamp of last Esc press (for double-Esc detection).
     pub last_escape: Option<std::time::Instant>,
+    /// Accumulated streaming content (committed on Done).
+    pub streaming_content: Option<String>,
+    /// Accumulated streaming thinking (committed on Done).
+    pub streaming_thinking: Option<String>,
+    /// Indices of thinking messages that are expanded in the UI.
+    pub expanded_thinking: HashSet<usize>,
 }
 
 impl AiChatState {
@@ -43,13 +50,16 @@ impl AiChatState {
             scratch: None,
             mode_before_chat: mode_before,
             last_escape: None,
+            streaming_content: None,
+            streaming_thinking: None,
+            expanded_thinking: HashSet::new(),
         }
     }
 }
 
 pub struct PendingAiChatJob {
-    pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<String>>,
-    pub task: tokio::task::JoinHandle<anyhow::Result<String>>,
+    pub receiver: tokio::sync::mpsc::UnboundedReceiver<StreamChunk>,
+    pub task: tokio::task::JoinHandle<()>,
     pub profile_name: String,
     pub model_name: String,
 }

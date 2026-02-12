@@ -89,7 +89,7 @@ pub struct AiState {
 
 impl Default for AiState {
     fn default() -> Self {
-        let config = AiConfig::load().unwrap_or_else(|_| AiConfig::default());
+        let mut config = AiConfig::load().unwrap_or_else(|_| AiConfig::default());
         let default_profile = if config.profiles.contains_key(&config.default_profile) {
             config.default_profile.clone()
         } else {
@@ -99,6 +99,15 @@ impl Default for AiState {
             .resolve_profile(&default_profile)
             .map(|profile| profile.extraction)
             .unwrap_or_default();
+
+        // Initialize default contexts if empty
+        if config.contexts.is_empty() {
+            for ctx in &["selection", "chat", "query"] {
+                config
+                    .contexts
+                    .insert(ctx.to_string(), default_profile.clone());
+            }
+        }
 
         Self {
             config,

@@ -19,9 +19,11 @@ const BORDER_USER: Color = Color::Cyan;
 const BORDER_ASSISTANT_EDIT: Color = Color::Green;
 const BORDER_ASSISTANT_QUERY: Color = Color::Rgb(100, 149, 237); // cornflower blue
 const BORDER_ERROR: Color = Color::Red;
+const BORDER_THINKING: Color = Color::Rgb(80, 88, 100);
 const BORDER_SELECTED: Color = Color::Yellow;
 
 const TEXT_DIM: Color = Color::Rgb(128, 140, 155);
+const TEXT_THINKING: Color = Color::Rgb(100, 112, 130);
 const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
 
 // ---------------------------------------------------------------------------
@@ -103,8 +105,18 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
     render_text_input(frame, editor, input_area);
     render_model_selector_bar(frame, editor, model_area);
 
+    // Show standalone waiting indicator only before first streaming chunk arrives.
+    // Once visible content or thinking is streaming, the ··· lives inside the bubble.
     if editor.ai_chat_waiting() {
-        render_waiting_indicator(frame, messages_area);
+        let has_visible_streaming = editor
+            .ai_chat_streaming_content()
+            .is_some_and(|s| !s.is_empty())
+            || editor
+                .ai_chat_streaming_thinking()
+                .is_some_and(|s| !s.is_empty());
+        if !has_visible_streaming {
+            render_waiting_indicator(frame, messages_area);
+        }
     }
 }
 
@@ -177,7 +189,14 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected =
             focus == ChatFocus::MessageHistory && idx == messages.len().saturating_sub(1 + scroll);
-        let bubble_lines = render_chat_bubble(msg, panel_width, is_selected, allow_edits);
+        let is_thinking_expanded = editor.ai_chat_is_thinking_expanded(idx);
+        let bubble_lines = render_chat_bubble(
+            msg,
+            panel_width,
+            is_selected,
+            allow_edits,
+            is_thinking_expanded,
+        );
         for line in bubble_lines {
             rendered_lines.push((line, false));
         }
@@ -189,6 +208,60 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
             )),
             true,
         ));
+    }
+
+    // Streaming thinking bubble (if any)
+    if let Some(thinking) = editor.ai_chat_streaming_thinking() {
+        if !thinking.is_empty() {
+            let streaming_thinking_msg = ChatMessage {
+                role: ChatRole::Thinking,
+                content: thinking.to_string(),
+                model: None,
+                timestamp: std::time::Instant::now(),
+            };
+            let bubble_lines = render_chat_bubble(
+                &streaming_thinking_msg,
+                panel_width,
+                false,
+                allow_edits,
+                true,
+            );
+            for line in bubble_lines {
+                rendered_lines.push((line, false));
+            }
+            rendered_lines.push((
+                Line::from(Span::styled(
+                    " ".repeat(panel_width),
+                    Style::default().bg(BG_PANEL),
+                )),
+                true,
+            ));
+        }
+    }
+
+    // Streaming content bubble (if any)
+    if let Some(content) = editor.ai_chat_streaming_content() {
+        if !content.is_empty() {
+            let display = format!("{}···", content);
+            let streaming_msg = ChatMessage {
+                role: ChatRole::Assistant,
+                content: display,
+                model: None,
+                timestamp: std::time::Instant::now(),
+            };
+            let bubble_lines =
+                render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false);
+            for line in bubble_lines {
+                rendered_lines.push((line, false));
+            }
+            rendered_lines.push((
+                Line::from(Span::styled(
+                    " ".repeat(panel_width),
+                    Style::default().bg(BG_PANEL),
+                )),
+                true,
+            ));
+        }
     }
 
     // Display from bottom of area, scrolled
@@ -216,6 +289,7 @@ fn render_chat_bubble(
     panel_width: usize,
     is_selected: bool,
     allow_edits: bool,
+    is_thinking_expanded: bool,
 ) -> Vec<Line<'static>> {
     let max_bubble_width = (panel_width * 3 / 4)
         .max(20)
@@ -234,14 +308,15 @@ fn render_chat_bubble(
                     BORDER_ASSISTANT_QUERY
                 }
             }
+            ChatRole::Thinking => BORDER_THINKING,
             ChatRole::Error => BORDER_ERROR,
         }
     };
 
-    let text_color = if message.role == ChatRole::Error {
-        Color::Red
-    } else {
-        TEXT_NORMAL
+    let text_color = match message.role {
+        ChatRole::Error => Color::Red,
+        ChatRole::Thinking => TEXT_THINKING,
+        _ => TEXT_NORMAL,
     };
 
     let is_user = message.role == ChatRole::User;
@@ -251,8 +326,6 @@ fn render_chat_bubble(
         1
     };
 
-    let wrapped = word_wrap(&message.content, inner_width);
-
     let border_style = Style::default().fg(border_color).bg(BG_PANEL);
     let text_style = Style::default().fg(text_color).bg(BG_PANEL);
     let pad_style = Style::default().bg(BG_PANEL);
@@ -260,21 +333,17 @@ fn render_chat_bubble(
     let mut lines = Vec::new();
 
     // Role label
-    let label = match message.role {
-        ChatRole::User => "You",
+    let label_text = match message.role {
+        ChatRole::User => " You ".to_string(),
         ChatRole::Assistant => {
-            "" // model label is handled separately below
+            if let Some(ref model) = message.model {
+                format!(" {} ", model)
+            } else {
+                " Assistant ".to_string()
+            }
         }
-        ChatRole::Error => "Error",
-    };
-    let label_text = if message.role == ChatRole::Assistant {
-        if let Some(ref model) = message.model {
-            format!(" {} ", model)
-        } else {
-            " Assistant ".to_string()
-        }
-    } else {
-        format!(" {} ", label)
+        ChatRole::Thinking => " thinking ".to_string(),
+        ChatRole::Error => " Error ".to_string(),
     };
 
     // Top border: ╭─ label ─╮
@@ -289,14 +358,20 @@ fn render_chat_bubble(
     );
     lines.push(Line::from(Span::styled(top, border_style)));
 
-    // Content lines
-    for row in &wrapped {
-        let row_chars: usize = row.chars().count();
+    // For thinking messages: collapsed vs expanded
+    if message.role == ChatRole::Thinking && !is_thinking_expanded {
+        // Collapsed: single line with ▸ prefix + truncated content
+        let prefix = "▸ ";
+        let max_preview = inner_width.saturating_sub(prefix.len());
+        let first_line = message.content.lines().next().unwrap_or("");
+        let preview: String = first_line.chars().take(max_preview).collect();
+        let row_chars = prefix.len() + preview.chars().count();
         let padding = inner_width.saturating_sub(row_chars);
         let spans = vec![
             Span::styled(" ".repeat(indent), pad_style),
             Span::styled("│ ", border_style),
-            Span::styled(format!("{}{}", row, " ".repeat(padding)), text_style),
+            Span::styled(prefix, text_style),
+            Span::styled(format!("{}{}", preview, " ".repeat(padding)), text_style),
             Span::styled(" │", border_style),
             Span::styled(
                 " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
@@ -304,6 +379,29 @@ fn render_chat_bubble(
             ),
         ];
         lines.push(Line::from(spans));
+    } else {
+        // Full content (expanded thinking or any other role)
+        let display_content = if message.role == ChatRole::Thinking {
+            format!("▾ {}", message.content)
+        } else {
+            message.content.clone()
+        };
+        let wrapped = word_wrap(&display_content, inner_width);
+        for row in &wrapped {
+            let row_chars: usize = row.chars().count();
+            let padding = inner_width.saturating_sub(row_chars);
+            let spans = vec![
+                Span::styled(" ".repeat(indent), pad_style),
+                Span::styled("│ ", border_style),
+                Span::styled(format!("{}{}", row, " ".repeat(padding)), text_style),
+                Span::styled(" │", border_style),
+                Span::styled(
+                    " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
+                    pad_style,
+                ),
+            ];
+            lines.push(Line::from(spans));
+        }
     }
 
     // Bottom border: ╰──╯

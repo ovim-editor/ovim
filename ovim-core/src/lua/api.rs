@@ -31,6 +31,10 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
     let opt = create_opt_table(lua, bridge.clone())?;
     vim.set("opt", opt)?;
 
+    // Create vim.ai namespace
+    let ai = crate::lua::ai_api::setup_ai_api(lua, bridge.clone())?;
+    vim.set("ai", ai)?;
+
     // Set vim as a global
     lua.globals().set("vim", vim)?;
 

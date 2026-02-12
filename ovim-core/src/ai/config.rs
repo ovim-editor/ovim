@@ -1,5 +1,6 @@
 use crate::ai::types::{
-    AgentMode, AiProviderKind, CapabilityTier, ContextPolicy, ExtractionStrategy, PROFILE_LOCAL,
+    AgentMode, AiProviderKind, CapabilityTier, ContextPolicy, EditMode, ExtractionStrategy,
+    ProfileScope, PROFILE_LOCAL,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -19,12 +20,18 @@ pub struct AiProfileConfig {
     pub system_prompt: Option<String>,
     pub extraction: ExtractionStrategy,
     pub context_policy: ContextPolicy,
+    pub tools: Vec<String>,
+    pub scope: ProfileScope,
+    pub edit_mode: EditMode,
+    pub edit_format: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct AiConfig {
     pub default_profile: String,
     pub profiles: HashMap<String, AiProfileConfig>,
+    /// Maps context names ("chat", "selection", "query") to profile names.
+    pub contexts: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,12 +77,17 @@ impl Default for AiConfig {
                 system_prompt: Some(default_system_prompt().to_string()),
                 extraction: ExtractionStrategy::Json,
                 context_policy: ContextPolicy::for_tier(CapabilityTier::Small),
+                tools: vec![],
+                scope: ProfileScope::default(),
+                edit_mode: EditMode::Format,
+                edit_format: "codeblock".to_string(),
             },
         );
 
         Self {
             default_profile: PROFILE_LOCAL.to_string(),
             profiles,
+            contexts: HashMap::new(),
         }
     }
 }
@@ -131,6 +143,10 @@ impl AiConfig {
                     system_prompt: profile.system_prompt,
                     extraction: profile.extraction.unwrap_or(ExtractionStrategy::Json),
                     context_policy,
+                    tools: vec![],
+                    scope: ProfileScope::default(),
+                    edit_mode: EditMode::Format,
+                    edit_format: "codeblock".to_string(),
                 },
             );
         }
@@ -148,6 +164,41 @@ impl AiConfig {
 
     pub fn resolve_profile(&self, name: &str) -> Option<&AiProfileConfig> {
         self.profiles.get(name)
+    }
+}
+
+/// Infer provider from model name prefix.
+pub fn infer_provider(model: &str) -> AiProviderKind {
+    let m = model.to_lowercase();
+    if m.starts_with("claude") {
+        AiProviderKind::Anthropic
+    } else if m.starts_with("gpt-")
+        || m.starts_with("o1-")
+        || m.starts_with("o3-")
+        || m.starts_with("o4-")
+    {
+        AiProviderKind::OpenAi
+    } else {
+        AiProviderKind::Ollama
+    }
+}
+
+/// Default API key environment variable for a given provider.
+pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
+    match provider {
+        AiProviderKind::OpenAi => Some("OPENAI_API_KEY".to_string()),
+        AiProviderKind::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
+        AiProviderKind::Ollama => None,
+    }
+}
+
+/// Parse a provider string (e.g. from Lua) into AiProviderKind.
+pub fn parse_provider_str(s: &str) -> Option<AiProviderKind> {
+    match s.to_lowercase().as_str() {
+        "openai" => Some(AiProviderKind::OpenAi),
+        "anthropic" => Some(AiProviderKind::Anthropic),
+        "ollama" => Some(AiProviderKind::Ollama),
+        _ => None,
     }
 }
 

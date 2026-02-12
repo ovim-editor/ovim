@@ -2,6 +2,37 @@ use serde::{Deserialize, Serialize};
 
 pub const PROFILE_LOCAL: &str = "local";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileScope {
+    #[default]
+    File,
+    Project,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileScope {
+    pub files: FileScope,
+    pub shell: bool,
+    pub network: bool,
+}
+
+impl Default for ProfileScope {
+    fn default() -> Self {
+        Self {
+            files: FileScope::File,
+            shell: false,
+            network: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EditMode {
+    #[default]
+    Format,
+    Tools,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {

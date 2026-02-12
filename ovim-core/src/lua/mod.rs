@@ -1,3 +1,4 @@
+pub mod ai_api;
 pub mod api;
 pub mod editor_bridge;
 pub mod util;

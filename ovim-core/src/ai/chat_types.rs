@@ -4,7 +4,32 @@ use std::time::Instant;
 pub enum ChatRole {
     User,
     Assistant,
+    Thinking,
     Error,
+}
+
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Chain-of-thought tokens (Anthropic extended thinking).
+    Thinking(String),
+    /// Response content tokens.
+    Content(String),
+    /// Tool call in progress (M4 — parsers ignore for now).
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    /// Completed tool call (M4).
+    ToolCallComplete {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    /// Stream finished successfully.
+    Done,
+    /// Stream error.
+    Error(String),
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +69,15 @@ impl ConversationTree {
     pub fn append_assistant_message(&mut self, content: String, model: String) {
         self.messages.push(ChatMessage {
             role: ChatRole::Assistant,
+            content,
+            model: Some(model),
+            timestamp: Instant::now(),
+        });
+    }
+
+    pub fn append_thinking_message(&mut self, content: String, model: String) {
+        self.messages.push(ChatMessage {
+            role: ChatRole::Thinking,
             content,
             model: Some(model),
             timestamp: Instant::now(),
