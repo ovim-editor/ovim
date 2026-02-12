@@ -1,5 +1,6 @@
 mod ai_integration;
 mod ai_context;
+mod ai_agent;
 mod ai_state;
 mod blame_commands;
 mod buffer_manager;
