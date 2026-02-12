@@ -1,10 +1,13 @@
 use super::ai_state::AiSelectionSnapshot;
 use super::Editor;
-use crate::ai::{AgentMode, AiProfileConfig, AiRequest, CodeSlice, ExtractionStrategy};
+use crate::ai::{
+    AgentMode, AiContextPack, AiProfileConfig, AiRequest, CodeSlice, ExtractionStrategy,
+};
 use std::collections::HashSet;
 
 const RELATED_SLICE_RADIUS: usize = 2;
 const MAX_ITERATIONS_CAP: u8 = 3;
+const TOKEN_ESTIMATE_CHAR_DIVISOR: usize = 4;
 
 impl Editor {
     /// Builds an AI request using the profile's agent mode and context policy.
@@ -28,6 +31,14 @@ impl Editor {
             profile.context_policy.tier,
             profile.context_policy.context_budget_tokens
         )];
+        trace.push(format!(
+            "policy: retrieval_k={} max_iterations={} max_tool_calls={} hops={} pruning={}",
+            profile.context_policy.retrieval_k,
+            profile.context_policy.max_iterations,
+            profile.context_policy.max_tool_calls,
+            profile.context_policy.callgraph_hops,
+            profile.context_policy.enable_pruning
+        ));
 
         let context_pack = if profile.context_policy.context_budget_tokens == 0 {
             trace.push("context disabled by profile policy".to_string());
@@ -45,24 +56,36 @@ impl Editor {
                         .min(MAX_ITERATIONS_CAP)
                         .max(1);
                     let target_related = profile.context_policy.retrieval_k as usize;
+                    let per_iteration_target = if target_related == 0 {
+                        0
+                    } else {
+                        (target_related + max_iterations as usize - 1) / max_iterations as usize
+                    };
+                    let slice_radius = RELATED_SLICE_RADIUS
+                        .saturating_mul(profile.context_policy.callgraph_hops.max(1) as usize)
+                        .min(12);
                     let mut seen_ranges = HashSet::new();
                     for iteration in 0..max_iterations {
                         let remaining = target_related.saturating_sub(pack.related_slices.len());
                         if remaining == 0 {
                             break;
                         }
+                        let iteration_target = remaining.min(per_iteration_target.max(1));
                         let added = self.expand_related_slices(
                             &mut pack.related_slices,
                             &file_path,
                             &language_id,
                             selection,
-                            remaining,
+                            iteration_target,
+                            slice_radius,
                             &mut seen_ranges,
                         );
                         trace.push(format!(
-                            "iteration {}: expanded {} related slices",
+                            "iteration {}: expanded {} related slices (target {} radius {})",
                             iteration + 1,
-                            added
+                            added,
+                            iteration_target,
+                            slice_radius
                         ));
                         if added == 0 {
                             break;
@@ -70,6 +93,12 @@ impl Editor {
                     }
                 }
             }
+            prune_context_pack_to_budget(
+                &mut pack,
+                profile.context_policy.context_budget_tokens,
+                profile.context_policy.enable_pruning,
+                &mut trace,
+            );
             Some(pack)
         };
 
@@ -93,6 +122,7 @@ impl Editor {
         language_id: &Option<String>,
         selection: &AiSelectionSnapshot,
         max_to_add: usize,
+        slice_radius: usize,
         seen_ranges: &mut HashSet<(usize, usize)>,
     ) -> usize {
         if max_to_add == 0 || self.buffer().line_count() == 0 {
@@ -111,8 +141,8 @@ impl Editor {
                 continue;
             }
 
-            let start_line = line.saturating_sub(RELATED_SLICE_RADIUS);
-            let end_line = line.saturating_add(RELATED_SLICE_RADIUS).min(max_line);
+            let start_line = line.saturating_sub(slice_radius);
+            let end_line = line.saturating_add(slice_radius).min(max_line);
             if !seen_ranges.insert((start_line, end_line)) {
                 continue;
             }
@@ -145,4 +175,131 @@ fn collect_lines(editor: &Editor, start_line: usize, end_line: usize) -> String 
         }
     }
     content
+}
+
+fn estimate_tokens(text: &str) -> usize {
+    let char_count = text.chars().count();
+    if char_count == 0 {
+        0
+    } else {
+        (char_count + TOKEN_ESTIMATE_CHAR_DIVISOR - 1) / TOKEN_ESTIMATE_CHAR_DIVISOR
+    }
+}
+
+fn estimate_code_slice_tokens(slice: &CodeSlice) -> usize {
+    estimate_tokens(&slice.label) + estimate_tokens(&slice.content) + 6
+}
+
+fn estimate_context_pack_tokens(pack: &AiContextPack) -> usize {
+    let mut total = estimate_tokens(&pack.selection);
+    total += pack
+        .surrounding
+        .iter()
+        .map(estimate_code_slice_tokens)
+        .sum::<usize>();
+    total += pack
+        .related_slices
+        .iter()
+        .map(estimate_code_slice_tokens)
+        .sum::<usize>();
+    total += pack
+        .symbol_facts
+        .iter()
+        .map(|symbol| estimate_tokens(&symbol.name) + estimate_tokens(&symbol.kind) + 4)
+        .sum::<usize>();
+    total += pack
+        .diagnostics
+        .iter()
+        .map(|diag| estimate_tokens(&diag.message) + 4)
+        .sum::<usize>();
+    total
+}
+
+fn trim_last_content_line(content: &mut String) -> bool {
+    if content.is_empty() {
+        return false;
+    }
+
+    let trimmed = content.trim_end_matches('\n');
+    if trimmed.is_empty() {
+        content.clear();
+        return false;
+    }
+
+    if let Some(last_newline) = trimmed.rfind('\n') {
+        content.truncate(last_newline + 1);
+    } else {
+        content.clear();
+    }
+    true
+}
+
+fn prune_context_pack_to_budget(
+    pack: &mut AiContextPack,
+    budget_tokens: usize,
+    enable_pruning: bool,
+    trace: &mut Vec<String>,
+) {
+    let mut estimated = estimate_context_pack_tokens(pack);
+    if estimated <= budget_tokens {
+        trace.push(format!("context estimate {}t within budget", estimated));
+        return;
+    }
+
+    if !enable_pruning {
+        trace.push(format!(
+            "context estimate {}t exceeds budget {}t (pruning disabled)",
+            estimated, budget_tokens
+        ));
+        return;
+    }
+
+    let mut dropped_related = 0usize;
+    let mut dropped_symbols = 0usize;
+    let mut dropped_diagnostics = 0usize;
+
+    while estimated > budget_tokens && !pack.related_slices.is_empty() {
+        pack.related_slices.pop();
+        dropped_related += 1;
+        estimated = estimate_context_pack_tokens(pack);
+    }
+
+    while estimated > budget_tokens && !pack.symbol_facts.is_empty() {
+        pack.symbol_facts.pop();
+        dropped_symbols += 1;
+        estimated = estimate_context_pack_tokens(pack);
+    }
+
+    while estimated > budget_tokens && !pack.diagnostics.is_empty() {
+        pack.diagnostics.pop();
+        dropped_diagnostics += 1;
+        estimated = estimate_context_pack_tokens(pack);
+    }
+
+    if estimated > budget_tokens {
+        for idx in 0..pack.surrounding.len() {
+            while estimated > budget_tokens {
+                let trimmed = {
+                    let slice = &mut pack.surrounding[idx];
+                    trim_last_content_line(&mut slice.content)
+                };
+                if !trimmed {
+                    break;
+                }
+                estimated = estimate_context_pack_tokens(pack);
+            }
+            if estimated <= budget_tokens {
+                break;
+            }
+        }
+    }
+
+    trace.push(format!(
+        "context pruning applied: -{} related, -{} symbols, -{} diagnostics",
+        dropped_related, dropped_symbols, dropped_diagnostics
+    ));
+    trace.push(format!(
+        "context estimate after pruning: {}t/{}t",
+        estimated, budget_tokens
+    ));
 }
