@@ -411,7 +411,7 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
-pub fn insert_line_below(editor: &mut Editor) -> Result<()> {
+pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
     let line_idx = cursor.line();
@@ -449,18 +449,22 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<()> {
 
     // Create and apply the change (this records it for undo)
     let change = Change::insert(insert_position, text_to_insert, cursor_before);
+    let version_before = editor.buffer().version();
     change.apply(editor.buffer_mut());
+    if editor.buffer().version() == version_before {
+        return Ok(false);
+    }
     editor.add_change(change);
 
     // Position cursor at end of indentation on new line
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(line_idx + 1, indent.len());
-    Ok(())
+        .set_position(line_idx + 1, indent.chars().count());
+    Ok(true)
 }
 
-pub fn insert_line_above(editor: &mut Editor) -> Result<()> {
+pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
     let cursor_before = (cursor.line(), cursor.col());
     let line_idx = cursor.line();
@@ -478,7 +482,11 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<()> {
 
     // Create and apply the change (this records it for undo)
     let change = Change::insert(insert_position, text_to_insert, cursor_before);
+    let version_before = editor.buffer().version();
     change.apply(editor.buffer_mut());
+    if editor.buffer().version() == version_before {
+        return Ok(false);
+    }
     editor.add_change(change);
 
     // Position cursor at end of indentation on the new line (which is still at line_idx
@@ -486,8 +494,8 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<()> {
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(line_idx, indent.len());
-    Ok(())
+        .set_position(line_idx, indent.chars().count());
+    Ok(true)
 }
 
 pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {

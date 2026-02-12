@@ -51,6 +51,22 @@ fn test_visual_space_enters_ai_prompt_mode() {
 }
 
 #[test]
+fn test_visual_line_ai_selection_keeps_indent_and_trailing_newline() {
+    let mut test = EditorTest::new("    one\n    two\nnext\n");
+
+    test.keys("Vj<Space>");
+
+    test.assert_mode(Mode::AiPrompt);
+    let selection = test
+        .editor
+        .ai_state
+        .active_selection
+        .as_ref()
+        .expect("expected active AI selection");
+    assert_eq!(selection.selected_text, "    one\n    two\n");
+}
+
+#[test]
 fn test_ai_prompt_escape_clears_state() {
     let mut test = EditorTest::new("hello world\n");
 
@@ -92,6 +108,64 @@ fn test_ai_lock_blocks_inside_and_allows_outside_edits() {
     test.set_cursor(0, 0);
     test.keys("iX<Esc>");
     assert_eq!(test.buffer_content(), "Xhello world\n");
+}
+
+#[test]
+fn test_o_at_ai_lock_end_boundary_opens_new_line() {
+    editor_flow_test! {
+        content "fn main() {\n    do_work();\n}\nlet after = 1;\n";
+        setup |test| {
+            let start = test.editor.buffer().rope().line_to_char(0);
+            let end = test.editor.buffer().rope().line_to_char(3);
+            test.editor.buffer_mut().add_ai_lock(11, start, end);
+            test.set_cursor(2, 0);
+        }
+        step "o" => |test| {
+            test.assert_mode(Mode::Insert);
+            assert_eq!(
+                test.buffer_content(),
+                "fn main() {\n    do_work();\n}\n\nlet after = 1;\n"
+            );
+            test.assert_cursor(3, 0);
+        }
+        step "<Esc>" => |test| {
+            test.assert_mode(Mode::Normal);
+        }
+    }
+}
+
+#[test]
+fn test_o_blocked_by_ai_lock_stays_normal_mode() {
+    editor_flow_test! {
+        content "alpha\nbeta\ngamma\n";
+        setup |test| {
+            let start = test.editor.buffer().rope().line_to_char(0);
+            let end = test.editor.buffer().rope().line_to_char(3);
+            test.editor.buffer_mut().add_ai_lock(12, start, end);
+            test.set_cursor(1, 0);
+        }
+        step "o" => |test| {
+            test.assert_mode(Mode::Normal);
+            assert_eq!(test.buffer_content(), "alpha\nbeta\ngamma\n");
+            assert_eq!(test.editor.lsp_status(), "AI lock active for selected region");
+        }
+    }
+}
+
+#[test]
+fn test_blocked_ai_lock_insert_does_not_pollute_undo_history() {
+    let mut test = EditorTest::new("hello world\n");
+    test.editor.buffer_mut().add_ai_lock(13, 6, 11); // lock "world"
+
+    test.keys("iX<Esc>");
+    assert_eq!(test.buffer_content(), "Xhello world\n");
+
+    test.set_cursor(0, 7);
+    test.keys("ix<Esc>");
+    assert_eq!(test.buffer_content(), "Xhello world\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "hello world\n");
 }
 
 #[tokio::test(flavor = "current_thread")]

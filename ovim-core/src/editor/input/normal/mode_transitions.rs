@@ -105,8 +105,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::OpenBelow);
-            editor.set_mode(Mode::Insert);
-            helpers::insert_line_below(editor)?;
+            if helpers::insert_line_below(editor)? {
+                editor.set_mode(Mode::Insert);
+            } else {
+                // Abort empty builder when insertion was blocked/no-op.
+                editor.finalize_change_building();
+            }
             Ok(true)
         }
         // O - open line above
@@ -118,8 +122,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::OpenAbove);
-            editor.set_mode(Mode::Insert);
-            helpers::insert_line_above(editor)?;
+            if helpers::insert_line_above(editor)? {
+                editor.set_mode(Mode::Insert);
+            } else {
+                // Abort empty builder when insertion was blocked/no-op.
+                editor.finalize_change_building();
+            }
             Ok(true)
         }
         // v - visual mode

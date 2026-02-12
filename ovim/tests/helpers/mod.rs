@@ -231,6 +231,49 @@ macro_rules! key_test {
     }};
 }
 
+/// Declarative flow tests for stateful edge cases where fixture-only assertions
+/// are not enough (AI locks, async apply state, undo-depth checks).
+#[macro_export]
+macro_rules! editor_flow_test {
+    (
+        content $content:expr;
+        setup |$setup_t:ident| $setup:block
+        $(
+            step $keys:literal => |$step_t:ident| $assert:block
+        )+
+        $(,)?
+    ) => {{
+        let mut __test = $crate::helpers::EditorTest::new($content);
+        {
+            let $setup_t = &mut __test;
+            $setup
+        }
+        $(
+            __test.keys($keys);
+            {
+                let $step_t = &mut __test;
+                $assert
+            }
+        )+
+    }};
+    (
+        content $content:expr;
+        $(
+            step $keys:literal => |$step_t:ident| $assert:block
+        )+
+        $(,)?
+    ) => {{
+        let mut __test = $crate::helpers::EditorTest::new($content);
+        $(
+            __test.keys($keys);
+            {
+                let $step_t = &mut __test;
+                $assert
+            }
+        )+
+    }};
+}
+
 /// Test helper that provides a fluent API for driving editor operations
 /// and capturing snapshots of editor state
 pub struct EditorTest {
