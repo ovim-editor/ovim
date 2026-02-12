@@ -437,11 +437,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         line_count: None,
                     })
                 }
-                Err(e) => {
-                    CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to open LSP log at {}: {}", log_path_str, e),
-                    })
-                }
+                Err(e) => CommandResult::Error(ErrorResponse {
+                    error: format!("Failed to open LSP log at {}: {}", log_path_str, e),
+                }),
             }
         }
         cmd if cmd.starts_with("LspRename ") => {
@@ -1543,9 +1541,21 @@ fn is_mapclear_command(cmd: &str) -> bool {
     )
 }
 
+/// Parse key notation for map/unmap commands with `<leader>` expansion.
+fn parse_map_keys(editor: &Editor, input: &str) -> String {
+    use crate::editor::KeyMapManager;
+
+    let leader = editor.leader_key().to_string();
+    let expanded = input
+        .replace("<leader>", &leader)
+        .replace("<Leader>", &leader);
+
+    KeyMapManager::parse_key_notation(&expanded)
+}
+
 /// Handle map and noremap commands
 fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
-    use crate::editor::{KeyMapManager, MapMode};
+    use crate::editor::MapMode;
 
     let parts: Vec<&str> = command.splitn(3, char::is_whitespace).collect();
     let cmd_word = parts.first().copied().unwrap_or("");
@@ -1597,7 +1607,7 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
 
     // If only lhs provided, show mapping for that key
     if parts.len() == 2 {
-        let lhs = KeyMapManager::parse_key_notation(parts[1]);
+        let lhs = parse_map_keys(editor, parts[1]);
         if let Some(mapping) = editor.keymaps().get_mapping(mode, &lhs) {
             return CommandResult::Success(SuccessResponse {
                 success: true,
@@ -1619,8 +1629,8 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
     }
 
     // parts.len() >= 3: lhs and rhs provided
-    let lhs = KeyMapManager::parse_key_notation(parts[1]);
-    let rhs = KeyMapManager::parse_key_notation(parts[2]);
+    let lhs = parse_map_keys(editor, parts[1]);
+    let rhs = parse_map_keys(editor, parts[2]);
 
     editor
         .keymaps_mut()
@@ -1635,7 +1645,7 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
 
 /// Handle unmap commands
 fn handle_unmap_command(editor: &mut Editor, command: &str) -> CommandResult {
-    use crate::editor::{KeyMapManager, MapMode};
+    use crate::editor::MapMode;
 
     let parts: Vec<&str> = command.split_whitespace().collect();
     let cmd_word = parts.first().copied().unwrap_or("");
@@ -1655,7 +1665,7 @@ fn handle_unmap_command(editor: &mut Editor, command: &str) -> CommandResult {
         });
     }
 
-    let lhs = KeyMapManager::parse_key_notation(parts[1]);
+    let lhs = parse_map_keys(editor, parts[1]);
     if editor.keymaps_mut().remove_mapping(mode, &lhs) {
         CommandResult::Success(SuccessResponse {
             success: true,

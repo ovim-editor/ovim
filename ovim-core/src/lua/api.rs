@@ -19,6 +19,10 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
     let cmd = create_cmd_function(lua, bridge.clone())?;
     vim.set("cmd", cmd)?;
 
+    // Create vim.keymap namespace
+    let keymap = create_keymap_table(lua, bridge.clone())?;
+    vim.set("keymap", keymap)?;
+
     // Create vim.g (global variables) namespace with metatable
     let g = create_g_table(lua, bridge.clone())?;
     vim.set("g", g)?;
@@ -132,6 +136,84 @@ fn create_cmd_function(lua: &Lua, bridge: EditorBridge) -> Result<mlua::Function
         Ok(())
     })?;
     Ok(cmd)
+}
+
+fn keymap_command_for_mode(mode: &str, noremap: bool) -> Option<&'static str> {
+    match (mode, noremap) {
+        ("n", true) => Some("nnoremap"),
+        ("n", false) => Some("nmap"),
+        ("i", true) => Some("inoremap"),
+        ("i", false) => Some("imap"),
+        ("v", true) => Some("vnoremap"),
+        ("v", false) => Some("vmap"),
+        ("x", true) => Some("xnoremap"),
+        ("x", false) => Some("xmap"),
+        ("c", true) => Some("cnoremap"),
+        ("c", false) => Some("cmap"),
+        ("", true) => Some("noremap"),
+        ("", false) => Some("map"),
+        _ => None,
+    }
+}
+
+/// Creates the vim.keymap table with keymap helper functions
+fn create_keymap_table(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
+    let keymap = lua.create_table()?;
+
+    // vim.keymap.set(mode, lhs, rhs, opts?)
+    let bridge_clone = bridge.clone();
+    let set = lua.create_function(
+        move |_lua, (mode, lhs, rhs, opts): (Value, String, String, Option<Table>)| {
+            let mut noremap = true; // vim.keymap.set defaults to non-recursive mappings
+            if let Some(opts) = opts {
+                if let Ok(remap) = opts.get::<_, bool>("remap") {
+                    noremap = !remap;
+                }
+                if let Ok(explicit_noremap) = opts.get::<_, bool>("noremap") {
+                    noremap = explicit_noremap;
+                }
+            }
+
+            let mut modes = Vec::new();
+            match mode {
+                Value::String(mode_str) => modes.push(
+                    mode_str
+                        .to_str()
+                        .map_err(mlua::Error::external)?
+                        .to_string(),
+                ),
+                Value::Table(mode_table) => {
+                    for value in mode_table.sequence_values::<String>() {
+                        modes.push(value.map_err(mlua::Error::external)?);
+                    }
+                    if modes.is_empty() {
+                        return Err(mlua::Error::external(
+                            "vim.keymap.set mode list cannot be empty",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(mlua::Error::external(
+                        "vim.keymap.set mode must be a string or list of strings",
+                    ))
+                }
+            }
+
+            for mode in modes {
+                let cmd = keymap_command_for_mode(mode.as_str(), noremap).ok_or_else(|| {
+                    mlua::Error::external(format!("vim.keymap.set unsupported mode '{}'", mode))
+                })?;
+                bridge_clone
+                    .execute_command(format!("{} {} {}", cmd, lhs, rhs))
+                    .map_err(mlua::Error::external)?;
+            }
+
+            Ok(())
+        },
+    )?;
+    keymap.set("set", set)?;
+
+    Ok(keymap)
 }
 
 /// Creates the vim.g table with metatable for global variables

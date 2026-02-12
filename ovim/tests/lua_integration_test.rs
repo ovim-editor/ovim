@@ -1,6 +1,7 @@
 #![cfg(feature = "lua")]
 
-use ovim::editor::Editor;
+use ovim::editor::{Editor, InputHandler};
+use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 #[test]
 fn test_lua_basic_execution() {
@@ -126,4 +127,37 @@ fn test_vim_namespace_exists() {
     // Test vim.cmd exists
     let result = editor.execute_lua("return vim.cmd ~= nil").expect("Failed");
     assert_eq!(result, "true");
+}
+
+#[test]
+fn test_vim_keymap_set_exists() {
+    let mut editor = Editor::new();
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    let result = editor
+        .execute_lua("return vim.keymap ~= nil and vim.keymap.set ~= nil")
+        .expect("Failed");
+    assert_eq!(result, "true");
+}
+
+#[test]
+fn test_vim_keymap_set_normal_mode_mapping() {
+    let mut editor = Editor::with_content("abc");
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    editor
+        .execute_lua("vim.keymap.set('n', 'Q', 'x')")
+        .expect("Failed to execute Lua");
+    editor
+        .process_lua_commands()
+        .expect("Failed to process commands");
+
+    InputHandler::handle_key_event(
+        &mut editor,
+        KeyEvent::new(KeyCode::Char('Q'), Modifiers::NONE),
+    )
+    .expect("Failed to handle key");
+
+    let line = editor.buffer().line(0).unwrap_or_default();
+    assert_eq!(line.trim_end_matches('\n'), "bc");
 }
