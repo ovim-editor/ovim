@@ -1,11 +1,11 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
-use crate::{KeyCode, KeyEvent};
+use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
 pub fn handle_ai_prompt_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
-        KeyCode::Char(ch) => {
+        KeyCode::Char(ch) if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             let pos = editor.ai_state.prompt.cursor;
             let mut buf = editor.ai_state.prompt.input.clone();
             buf.insert(pos, ch);
@@ -64,10 +64,22 @@ pub fn handle_ai_prompt_mode(editor: &mut Editor, key_event: KeyEvent) -> Result
         KeyCode::End => {
             editor.ai_state.prompt.cursor = editor.ai_state.prompt.input.len();
         }
+        KeyCode::Tab | KeyCode::Down => {
+            editor.ai_cycle_profile(true);
+        }
+        KeyCode::BackTab | KeyCode::Up => {
+            editor.ai_cycle_profile(false);
+        }
         KeyCode::Enter => {
             editor.submit_ai_prompt_job()?;
         }
         KeyCode::Esc => {
+            editor.ai_state.prompt.input.clear();
+            editor.ai_state.prompt.cursor = 0;
+            editor.ai_state.active_selection = None;
+            editor.set_mode(Mode::Normal);
+        }
+        KeyCode::Char('c') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.ai_state.prompt.input.clear();
             editor.ai_state.prompt.cursor = 0;
             editor.ai_state.active_selection = None;

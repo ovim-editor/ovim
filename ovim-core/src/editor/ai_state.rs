@@ -2,28 +2,6 @@ use crate::ai::{AiConfig, AiJobResult, ExtractionStrategy, PROFILE_LOCAL};
 use crate::mode::Mode;
 use std::time::Instant;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AiJobStatus {
-    Queued,
-    Running,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-
-impl std::fmt::Display for AiJobStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::Succeeded => "done",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        };
-        write!(f, "{value}")
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct AiPromptState {
     pub input: String,
@@ -52,13 +30,29 @@ pub struct AiSelectionSnapshot {
     pub mode_before_prompt: Mode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiRegionStatus {
+    Running,
+    Generated,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Debug, Clone)]
-pub struct AiLogBlock {
-    pub lock_id: u64,
-    pub anchor_line: usize,
-    pub status: AiJobStatus,
+pub struct AiEditRegion {
+    pub id: u64,
+    pub start_char: usize,
+    pub end_char: usize,
+    pub status: AiRegionStatus,
+    pub prompt: String,
+    pub original_text: String,
+    pub generated_text: String,
+    pub profile_name: String,
     pub provider_label: String,
-    pub lines: Vec<String>,
+    pub extraction: ExtractionStrategy,
+    pub reasoning_lines: Vec<String>,
+    pub raw_output: Option<String>,
+    pub created_at: Instant,
     pub updated_at: Instant,
 }
 
@@ -76,11 +70,14 @@ pub struct AiState {
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
     pub pending_jobs: Vec<PendingAiJob>,
-    pub logs: Vec<AiLogBlock>,
+    pub regions: Vec<AiEditRegion>,
+    pub selected_region_id: Option<u64>,
+    pub selection_hold_until_exit: bool,
     pub active_profile: String,
     pub extraction: ExtractionStrategy,
     pub next_lock_id: u64,
     pub next_job_id: u64,
+    pub last_observed_buffer_version: usize,
 }
 
 impl Default for AiState {
@@ -101,12 +98,14 @@ impl Default for AiState {
             prompt: AiPromptState::default(),
             active_selection: None,
             pending_jobs: Vec::new(),
-            logs: Vec::new(),
+            regions: Vec::new(),
+            selected_region_id: None,
+            selection_hold_until_exit: false,
             active_profile: default_profile,
             extraction,
             next_lock_id: 1,
             next_job_id: 1,
+            last_observed_buffer_version: 0,
         }
     }
 }
-

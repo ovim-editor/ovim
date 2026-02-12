@@ -140,6 +140,7 @@ pub fn render_hover_window(
     let title = match (is_preview, content_type) {
         (true, crate::editor::HoverContentType::Diagnostic) => " Diagnostic ".to_string(),
         (true, crate::editor::HoverContentType::BlameInfo) => " Blame ".to_string(),
+        (true, crate::editor::HoverContentType::AiReasoning) => " AI reasoning ".to_string(),
         (true, crate::editor::HoverContentType::LspHover) => " K: navigate ".to_string(),
         (false, _) if total_lines > content_height => {
             format!(
