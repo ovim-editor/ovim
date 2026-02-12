@@ -3,6 +3,10 @@
 #[cfg(feature = "lua")]
 use super::Editor;
 #[cfg(feature = "lua")]
+use crate::ai::ChatOpts;
+#[cfg(feature = "lua")]
+use crate::lua::editor_bridge::AiCommand;
+#[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 #[cfg(feature = "lua")]
 use anyhow::Result;
@@ -30,6 +34,7 @@ impl Editor {
                     for cmd in commands {
                         let _ = InputHandler::execute_command_string(self, &cmd);
                     }
+                    self.sync_ai_config_from_bridge(&bridge);
                 }
                 Ok(false) => {
                     // No config file found - not an error
@@ -47,6 +52,7 @@ impl Editor {
             for cmd in commands {
                 let _ = InputHandler::execute_command_string(self, &cmd);
             }
+            self.sync_ai_config_from_bridge(&bridge);
             self.lua_context = Some(context);
             self.editor_bridge = Some(bridge);
         }
@@ -107,6 +113,12 @@ impl Editor {
             // Execute each command using InputHandler
             InputHandler::execute_command_string(self, &cmd)?;
         }
+        // Process AI bridge commands and config
+        self.process_ai_bridge_commands();
+        if let Some(ref bridge) = self.editor_bridge {
+            let bridge = bridge.clone();
+            self.sync_ai_config_from_bridge(&bridge);
+        }
         Ok(())
     }
 
@@ -140,6 +152,65 @@ impl Editor {
             Ok(())
         } else {
             anyhow::bail!("Lua support not enabled")
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // AI bridge integration
+    // -----------------------------------------------------------------
+
+    /// Sync AI config (profiles, contexts, default_profile) from Lua bridge.
+    fn sync_ai_config_from_bridge(&mut self, bridge: &crate::lua::EditorBridge) {
+        if let Some((contexts, default_profile, profiles)) = bridge.take_ai_config_if_dirty() {
+            // Merge Lua profiles (Lua wins over TOML on conflict)
+            for (name, lua_profile) in profiles {
+                let profile = lua_profile.into_profile_config(name.clone());
+                self.ai_state.config.profiles.insert(name, profile);
+            }
+            // Merge contexts
+            for (ctx_name, profile_name) in contexts {
+                self.ai_state.config.contexts.insert(ctx_name, profile_name);
+            }
+            // Default profile
+            if let Some(dp) = default_profile {
+                self.ai_state.config.default_profile = dp.clone();
+                self.ai_state.active_profile = dp;
+            }
+        }
+    }
+
+    /// Process pending AI commands queued from Lua.
+    fn process_ai_bridge_commands(&mut self) {
+        let commands = if let Some(ref bridge) = self.editor_bridge {
+            bridge.drain_ai_commands()
+        } else {
+            return;
+        };
+
+        for cmd in commands {
+            match cmd {
+                AiCommand::OpenChat {
+                    name,
+                    profile,
+                    allow_edits,
+                    system_prompt,
+                    initial_message,
+                } => {
+                    let _ = self.open_ai_chat(ChatOpts {
+                        name: name.unwrap_or_else(|| "chat".to_string()),
+                        profile,
+                        allow_edits: allow_edits.unwrap_or(true),
+                        system_prompt,
+                        initial_message,
+                    });
+                }
+                AiCommand::EditSelection { profile } => {
+                    if let Some(p) = profile {
+                        self.ai_state.active_profile = p;
+                    }
+                    let _ = self.start_ai_prompt_from_visual();
+                }
+            }
         }
     }
 }

@@ -1,5 +1,5 @@
-use crate::ai::chat_types::{ChatFocus, ChatMessage, ChatOpts, ConversationTree};
-use crate::ai::request_ai_chat;
+use crate::ai::chat_types::{ChatFocus, ChatMessage, ChatOpts, ConversationTree, StreamChunk};
+use crate::ai::stream_ai_chat;
 use crate::mode::Mode;
 use anyhow::Result;
 
@@ -124,12 +124,15 @@ impl Editor {
             .map(|c| c.messages().to_vec())
             .unwrap_or_default();
 
-        // Spawn async task
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Spawn streaming async task
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx_err = tx.clone();
         let task = tokio::spawn(async move {
-            let result = request_ai_chat(&profile, &messages, system_prompt.as_deref()).await;
-            let _ = tx.send(result);
-            Ok(String::new()) // Task return value not used; result goes through channel
+            if let Err(e) =
+                stream_ai_chat(&profile, &messages, system_prompt.as_deref(), tx.clone()).await
+            {
+                let _ = tx_err.send(StreamChunk::Error(e.to_string()));
+            }
         });
 
         if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -139,6 +142,8 @@ impl Editor {
                 profile_name: profile_name.clone(),
                 model_name,
             });
+            chat.streaming_content = Some(String::new());
+            chat.streaming_thinking = None;
         }
 
         Ok(())
@@ -148,7 +153,7 @@ impl Editor {
     // Poll
     // -----------------------------------------------------------------
 
-    /// Check if the pending chat job has completed. Returns true if state changed.
+    /// Drain available streaming chunks. Returns true if state changed.
     pub fn poll_pending_ai_chat_job(&mut self) -> bool {
         let chat = match self.ai_state.chat.as_mut() {
             Some(c) => c,
@@ -160,52 +165,180 @@ impl Editor {
             None => return false,
         };
 
-        match job.receiver.try_recv() {
-            Ok(result) => {
-                let model = job.model_name.clone();
-                let key = self.ai_chat_conversation_key();
-
-                match result {
-                    Ok(content) => {
-                        if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
-                            conv.append_assistant_message(content, model);
-                        }
-                    }
-                    Err(err) => {
-                        if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
-                            conv.append_error(err.to_string());
-                        }
-                    }
+        // Phase 1: Drain all available chunks into a local vec.
+        let mut chunks = Vec::new();
+        let mut disconnected = false;
+        loop {
+            match job.receiver.try_recv() {
+                Ok(chunk) => chunks.push(chunk),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
                 }
-
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.waiting = false;
-                    chat.pending_job = None;
-                    chat.message_scroll = 0;
-                }
-                true
-            }
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => false,
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                // Channel dropped (task panicked or was cancelled)
-                let key = self.ai_chat_conversation_key();
-                if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
-                    conv.append_error("AI request was cancelled".to_string());
-                }
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.waiting = false;
-                    chat.pending_job = None;
-                }
-                true
             }
         }
+
+        if chunks.is_empty() && !disconnected {
+            return false;
+        }
+
+        // Extract model_name and conversation key before processing.
+        let model_name = chat
+            .pending_job
+            .as_ref()
+            .map(|j| j.model_name.clone())
+            .unwrap_or_default();
+        let key = self.ai_chat_conversation_key();
+
+        // Phase 2: Process collected chunks.
+        let mut changed = false;
+        for chunk in chunks {
+            match chunk {
+                StreamChunk::Content(text) => {
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        if let Some(ref mut s) = chat.streaming_content {
+                            s.push_str(&text);
+                        }
+                    }
+                    changed = true;
+                }
+                StreamChunk::Thinking(text) => {
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        match chat.streaming_thinking.as_mut() {
+                            Some(s) => s.push_str(&text),
+                            None => chat.streaming_thinking = Some(text),
+                        }
+                    }
+                    changed = true;
+                }
+                StreamChunk::Done => {
+                    // Commit thinking (if any) as a Thinking message.
+                    let thinking = self
+                        .ai_state
+                        .chat
+                        .as_mut()
+                        .and_then(|c| c.streaming_thinking.take());
+                    if let Some(thinking_text) = thinking {
+                        if !thinking_text.is_empty() {
+                            if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                                conv.append_thinking_message(thinking_text, model_name.clone());
+                            }
+                        }
+                    }
+
+                    // Commit content as an Assistant message.
+                    let content = self
+                        .ai_state
+                        .chat
+                        .as_mut()
+                        .and_then(|c| c.streaming_content.take());
+                    if let Some(content_text) = content {
+                        if !content_text.is_empty() {
+                            if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                                conv.append_assistant_message(content_text, model_name.clone());
+                            }
+                        }
+                    }
+
+                    // Clear streaming state.
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.waiting = false;
+                        chat.pending_job = None;
+                        chat.streaming_content = None;
+                        chat.streaming_thinking = None;
+                        chat.message_scroll = 0;
+                    }
+                    return true;
+                }
+                StreamChunk::Error(msg) => {
+                    // Commit any partial thinking/content first.
+                    let thinking = self
+                        .ai_state
+                        .chat
+                        .as_mut()
+                        .and_then(|c| c.streaming_thinking.take());
+                    if let Some(thinking_text) = thinking {
+                        if !thinking_text.is_empty() {
+                            if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                                conv.append_thinking_message(thinking_text, model_name.clone());
+                            }
+                        }
+                    }
+
+                    let content = self
+                        .ai_state
+                        .chat
+                        .as_mut()
+                        .and_then(|c| c.streaming_content.take());
+                    if let Some(content_text) = content {
+                        if !content_text.is_empty() {
+                            if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                                conv.append_assistant_message(content_text, model_name.clone());
+                            }
+                        }
+                    }
+
+                    // Append the error.
+                    if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                        conv.append_error(msg);
+                    }
+
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.waiting = false;
+                        chat.pending_job = None;
+                        chat.streaming_content = None;
+                        chat.streaming_thinking = None;
+                    }
+                    return true;
+                }
+                StreamChunk::ToolCall { .. } | StreamChunk::ToolCallComplete { .. } => {
+                    // M4 — ignored for now.
+                }
+            }
+        }
+
+        // Handle channel disconnected without Done (task crashed/cancelled).
+        if disconnected {
+            let content = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|c| c.streaming_content.take());
+            if let Some(content_text) = content {
+                if !content_text.is_empty() {
+                    if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                        conv.append_assistant_message(content_text, model_name.clone());
+                    }
+                }
+            }
+            if let Some(conv) = self.ai_state.conversations.get_mut(&key) {
+                conv.append_error("Stream interrupted".to_string());
+            }
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.waiting = false;
+                chat.pending_job = None;
+                chat.streaming_content = None;
+                chat.streaming_thinking = None;
+            }
+            return true;
+        }
+
+        changed
     }
 
     // -----------------------------------------------------------------
     // Context profile (M1: just returns active_profile)
     // -----------------------------------------------------------------
 
-    pub fn ai_chat_context_profile(&self, _context: &str) -> Option<String> {
+    pub fn ai_chat_context_profile(&self, context: &str) -> Option<String> {
+        // Look up in contexts table first
+        if let Some(profile) = self.ai_state.config.contexts.get(context) {
+            if self.ai_state.config.profiles.contains_key(profile) {
+                return Some(profile.clone());
+            }
+        }
+        // Fallback to active profile
         Some(self.ai_state.active_profile.clone())
     }
 
@@ -362,6 +495,40 @@ impl Editor {
             .as_ref()
             .map(|c| c.message_scroll)
             .unwrap_or(0)
+    }
+
+    /// Streaming content being accumulated (not yet committed).
+    pub fn ai_chat_streaming_content(&self) -> Option<&str> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.streaming_content.as_deref())
+    }
+
+    /// Streaming thinking being accumulated (not yet committed).
+    pub fn ai_chat_streaming_thinking(&self) -> Option<&str> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.streaming_thinking.as_deref())
+    }
+
+    /// Whether tokens are actively streaming in.
+    pub fn ai_chat_is_streaming(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.waiting && c.streaming_content.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Whether a thinking message at the given index is expanded.
+    pub fn ai_chat_is_thinking_expanded(&self, index: usize) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.expanded_thinking.contains(&index))
+            .unwrap_or(false)
     }
 
     // -----------------------------------------------------------------

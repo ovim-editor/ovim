@@ -1,4 +1,4 @@
-use crate::ai::chat_types::ChatFocus;
+use crate::ai::chat_types::{ChatFocus, ChatRole};
 use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -161,6 +161,19 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     chat.focus = ChatFocus::TextInput;
                 } else {
                     chat.message_scroll = chat.message_scroll.saturating_sub(1);
+                }
+            }
+        }
+        KeyCode::Enter => {
+            // Toggle expand/collapse for thinking messages
+            let messages = editor.ai_chat_messages();
+            let scroll = editor.ai_chat_message_scroll();
+            let idx = messages.len().saturating_sub(1 + scroll);
+            if idx < messages.len() && messages[idx].role == ChatRole::Thinking {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    if !chat.expanded_thinking.remove(&idx) {
+                        chat.expanded_thinking.insert(idx);
+                    }
                 }
             }
         }

@@ -26,7 +26,9 @@ shellexpand = "3.1"
 git2 = "0.19"
 anyhow = "1.0"
 # session.rs
-reqwest = { version = "0.12.23", features = ["json", "blocking"] }
+reqwest = { version = "0.12.23", features = ["json", "blocking", "stream"] }
+futures-core = "0.3"
+bytes = "1"
 # lsp/
 lsp-types = "0.97"
 dashmap = "6.0"

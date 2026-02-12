@@ -1,10 +1,13 @@
+use crate::ai::chat_types::StreamChunk;
 use crate::ai::config::AiProfileConfig;
 use crate::ai::extract::extract_response;
+use crate::ai::stream_parsers;
 use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest};
 use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 use std::time::Duration;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub async fn request_ai_edit(
     profile: &AiProfileConfig,
@@ -208,28 +211,29 @@ async fn request_ollama(
 }
 
 // ---------------------------------------------------------------------------
-// Multi-turn chat API
+// Multi-turn streaming chat API
 // ---------------------------------------------------------------------------
 
-pub async fn request_ai_chat(
+pub async fn stream_ai_chat(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
-) -> Result<String> {
+    tx: UnboundedSender<StreamChunk>,
+) -> Result<()> {
+    // No timeout — streaming connections are long-lived.
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
         .build()
         .context("failed to create AI HTTP client")?;
 
     match profile.provider {
         AiProviderKind::OpenAi => {
-            request_openai_chat(&client, profile, messages, system_prompt).await
+            stream_openai_chat(&client, profile, messages, system_prompt, tx).await
         }
         AiProviderKind::Anthropic => {
-            request_anthropic_chat(&client, profile, messages, system_prompt).await
+            stream_anthropic_chat(&client, profile, messages, system_prompt, tx).await
         }
         AiProviderKind::Ollama => {
-            request_ollama_chat(&client, profile, messages, system_prompt).await
+            stream_ollama_chat(&client, profile, messages, system_prompt, tx).await
         }
     }
 }
@@ -237,24 +241,30 @@ pub async fn request_ai_chat(
 fn chat_messages_to_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
     messages
         .iter()
-        .filter(|m| m.role != super::chat_types::ChatRole::Error)
+        .filter(|m| {
+            m.role != super::chat_types::ChatRole::Error
+                && m.role != super::chat_types::ChatRole::Thinking
+        })
         .map(|m| {
             let role = match m.role {
                 super::chat_types::ChatRole::User => "user",
                 super::chat_types::ChatRole::Assistant => "assistant",
-                super::chat_types::ChatRole::Error => unreachable!(),
+                super::chat_types::ChatRole::Error | super::chat_types::ChatRole::Thinking => {
+                    unreachable!()
+                }
             };
             json!({ "role": role, "content": m.content })
         })
         .collect()
 }
 
-async fn request_openai_chat(
+async fn stream_openai_chat(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
-) -> Result<String> {
+    tx: UnboundedSender<StreamChunk>,
+) -> Result<()> {
     let base_url = profile
         .base_url
         .as_deref()
@@ -279,6 +289,7 @@ async fn request_openai_chat(
     let mut body = json!({
         "model": profile.model,
         "messages": api_messages,
+        "stream": true,
     });
     if let Some(temp) = profile.temperature {
         body["temperature"] = json!(temp);
@@ -287,7 +298,7 @@ async fn request_openai_chat(
         body["max_tokens"] = json!(max_tokens);
     }
 
-    let value = client
+    let response = client
         .post(url)
         .headers(headers)
         .json(&body)
@@ -295,20 +306,23 @@ async fn request_openai_chat(
         .await
         .context("OpenAI request failed")?
         .error_for_status()
-        .context("OpenAI returned error status")?
-        .json::<Value>()
-        .await
-        .context("failed to decode OpenAI response")?;
+        .context("OpenAI returned error status")?;
 
-    parse_openai_content(&value).context("invalid OpenAI response payload")
+    use futures_core::Stream;
+    let byte_stream = response.bytes_stream();
+    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>> =
+        Box::pin(byte_stream);
+    stream_parsers::parse_openai_stream(pinned, tx).await;
+    Ok(())
 }
 
-async fn request_anthropic_chat(
+async fn stream_anthropic_chat(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
-) -> Result<String> {
+    tx: UnboundedSender<StreamChunk>,
+) -> Result<()> {
     let base_url = profile
         .base_url
         .as_deref()
@@ -328,6 +342,7 @@ async fn request_anthropic_chat(
         "model": profile.model,
         "max_tokens": profile.max_tokens.unwrap_or(2048),
         "messages": chat_messages_to_json(messages),
+        "stream": true,
     });
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     if let Some(sp) = sys {
@@ -337,7 +352,7 @@ async fn request_anthropic_chat(
         body["temperature"] = json!(temp);
     }
 
-    let value = client
+    let response = client
         .post(url)
         .headers(headers)
         .json(&body)
@@ -345,27 +360,23 @@ async fn request_anthropic_chat(
         .await
         .context("Anthropic request failed")?
         .error_for_status()
-        .context("Anthropic returned error status")?
-        .json::<Value>()
-        .await
-        .context("failed to decode Anthropic response")?;
+        .context("Anthropic returned error status")?;
 
-    let content = value
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|entry| entry.get("text"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing content[0].text"))?;
-    Ok(content.to_string())
+    use futures_core::Stream;
+    let byte_stream = response.bytes_stream();
+    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>> =
+        Box::pin(byte_stream);
+    stream_parsers::parse_anthropic_stream(pinned, tx).await;
+    Ok(())
 }
 
-async fn request_ollama_chat(
+async fn stream_ollama_chat(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
-) -> Result<String> {
+    tx: UnboundedSender<StreamChunk>,
+) -> Result<()> {
     let base_url = profile
         .base_url
         .as_deref()
@@ -381,31 +392,28 @@ async fn request_ollama_chat(
 
     let mut body = json!({
         "model": profile.model,
-        "stream": false,
+        "stream": true,
         "messages": api_messages,
     });
     if let Some(temp) = profile.temperature {
         body["options"] = json!({ "temperature": temp });
     }
 
-    let value = client
+    let response = client
         .post(url)
         .json(&body)
         .send()
         .await
         .context("Ollama request failed")?
         .error_for_status()
-        .context("Ollama returned error status")?
-        .json::<Value>()
-        .await
-        .context("failed to decode Ollama response")?;
+        .context("Ollama returned error status")?;
 
-    let content = value
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing message.content"))?;
-    Ok(content.to_string())
+    use futures_core::Stream;
+    let byte_stream = response.bytes_stream();
+    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>> =
+        Box::pin(byte_stream);
+    stream_parsers::parse_ollama_stream(pinned, tx).await;
+    Ok(())
 }
 
 fn parse_openai_content(value: &Value) -> Result<String> {

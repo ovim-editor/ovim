@@ -214,6 +214,10 @@ async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
             system_prompt: None,
             extraction: ExtractionStrategy::Json,
             context_policy: ContextPolicy::default(),
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
 
@@ -259,6 +263,10 @@ async fn test_ai_prompt_submit_applies_context_budget_trace() {
             system_prompt: None,
             extraction: ExtractionStrategy::Json,
             context_policy,
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
 
@@ -293,6 +301,10 @@ fn test_ai_prompt_keyboard_model_picker_cycles_profiles() {
             system_prompt: None,
             extraction: ExtractionStrategy::Json,
             context_policy: ContextPolicy::default(),
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
     test.editor.ai_state.config.profiles.insert(
@@ -308,6 +320,10 @@ fn test_ai_prompt_keyboard_model_picker_cycles_profiles() {
             system_prompt: None,
             extraction: ExtractionStrategy::Codeblock,
             context_policy: ContextPolicy::default(),
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
     test.editor.ai_state.active_profile = "alpha".to_string();
@@ -348,6 +364,10 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
             system_prompt: None,
             extraction: ExtractionStrategy::Json,
             context_policy: ContextPolicy::default(),
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
     test.editor.ai_state.config.profiles.insert(
@@ -363,6 +383,10 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
             system_prompt: None,
             extraction: ExtractionStrategy::Codeblock,
             context_policy: ContextPolicy::default(),
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
     test.editor.ai_state.active_profile = "alpha".to_string();
@@ -547,6 +571,10 @@ async fn test_ctrl_space_retries_generation_for_selected_region() {
             system_prompt: None,
             extraction: ExtractionStrategy::Json,
             context_policy: ContextPolicy::default(),
+            tools: vec![],
+            scope: ovim_core::ai::ProfileScope::default(),
+            edit_mode: ovim_core::ai::EditMode::default(),
+            edit_format: "codeblock".to_string(),
         },
     );
 
