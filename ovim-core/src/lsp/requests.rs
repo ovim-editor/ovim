@@ -1340,6 +1340,42 @@ impl LspManager {
         }
     }
 
+    /// Executes a command on a specific server ID.
+    /// Returns the command result if successful.
+    pub async fn execute_command_on_server_id(
+        &self,
+        command: String,
+        arguments: Option<Vec<serde_json::Value>>,
+        server_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        use lsp_types::ExecuteCommandParams;
+
+        let server = self
+            .servers
+            .get(server_id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| anyhow::anyhow!("No server with id: {}", server_id))?;
+
+        if !server.supports_execute_command().await {
+            return Err(anyhow::anyhow!(
+                "Server '{}' does not support workspace/executeCommand",
+                server_id
+            ));
+        }
+
+        let params = ExecuteCommandParams {
+            command: command.clone(),
+            arguments: arguments.unwrap_or_default(),
+            work_done_progress_params: Default::default(),
+        };
+
+        let result = server
+            .request("workspace/executeCommand", serde_json::to_value(params)?)
+            .await?;
+
+        Ok(Some(result))
+    }
+
     /// Requests inlay hints for a document range
     pub async fn inlay_hints(
         &self,

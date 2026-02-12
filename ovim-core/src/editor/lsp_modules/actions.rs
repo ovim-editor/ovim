@@ -254,7 +254,11 @@ impl Editor {
         }
     }
 
-    fn execute_code_action_command(&mut self, command: lsp_types::Command) -> bool {
+    fn execute_code_action_command(
+        &mut self,
+        source_server_id: &str,
+        command: lsp_types::Command,
+    ) -> bool {
         let lsp = match &self.lsp_state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
@@ -263,32 +267,20 @@ impl Editor {
             }
         };
 
-        let language_id = match self.buffer().file_path() {
-            Some(path) => match crate::syntax::LanguageRegistry::get_lsp_language_id(path) {
-                Some(id) => id.to_string(),
-                None => {
-                    self.set_lsp_status("Language not supported for LSP".to_string());
-                    return false;
-                }
-            },
-            None => {
-                self.set_lsp_status("No file open for command execution".to_string());
-                return false;
-            }
-        };
-
         let command_name = command.command.clone();
         let command_args = command.arguments.clone();
+        let server_id = source_server_id.to_string();
 
         tokio::spawn(async move {
             if let Err(e) = lsp
-                .execute_command(command_name.clone(), command_args, &language_id)
+                .execute_command_on_server_id(command_name.clone(), command_args, &server_id)
                 .await
             {
                 crate::lsp_warn!(
                     "LSP-CODE-ACTION",
-                    "Failed to execute code action command '{}': {}",
+                    "Failed to execute code action command '{}' on server '{}': {}",
                     command_name,
+                    server_id,
                     e
                 );
             }
@@ -321,7 +313,10 @@ impl Editor {
                 }
 
                 let (had_command, executed_command) = match code_action.command {
-                    Some(command) => (true, self.execute_code_action_command(command)),
+                    Some(command) => (
+                        true,
+                        self.execute_code_action_command(&available.server_id, command),
+                    ),
                     None => (false, false),
                 };
 
@@ -338,7 +333,7 @@ impl Editor {
                 }
             }
             lsp_types::CodeActionOrCommand::Command(command) => {
-                if self.execute_code_action_command(command) {
+                if self.execute_code_action_command(&available.server_id, command) {
                     self.set_lsp_status("Executing code action command...".to_string());
                 }
             }
