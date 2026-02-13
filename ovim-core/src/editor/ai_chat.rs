@@ -87,6 +87,7 @@ impl Editor {
         chat.input_cursor = 0;
         chat.waiting = true;
         chat.message_scroll = 0;
+        chat.tool_iterations = 0;
 
         // Spawn the streaming request
         if let Err(e) = self.spawn_streaming_request() {

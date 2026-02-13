@@ -43,6 +43,11 @@ pub struct AiChatState {
 }
 
 impl AiChatState {
+    /// Number of lines in the input text (at least 1).
+    pub fn input_line_count(&self) -> usize {
+        self.input.lines().count().max(1)
+    }
+
     pub fn new(opts: ChatOpts, active_buffer_id: usize, mode_before: Mode) -> Self {
         let allow_edits = opts.allow_edits;
         Self {

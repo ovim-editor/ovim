@@ -140,15 +140,33 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Up => {
-            // Navigate to message history
             if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.focus = ChatFocus::MessageHistory;
+                let (line, _total) = cursor_line_info(&chat.input, chat.input_cursor);
+                if line == 0 {
+                    // First line — navigate to message history
+                    chat.focus = ChatFocus::MessageHistory;
+                } else {
+                    chat.input_cursor =
+                        move_cursor_vertical(&chat.input, chat.input_cursor, -1);
+                }
             }
         }
         KeyCode::Down => {
-            // Navigate to model selector
             if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.focus = ChatFocus::ModelSelector;
+                let (line, total) = cursor_line_info(&chat.input, chat.input_cursor);
+                if line >= total - 1 {
+                    // Last line — navigate to model selector
+                    chat.focus = ChatFocus::ModelSelector;
+                } else {
+                    chat.input_cursor =
+                        move_cursor_vertical(&chat.input, chat.input_cursor, 1);
+                }
+            }
+        }
+        KeyCode::Enter if key_event.modifiers.contains(Modifiers::SHIFT) => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.input.insert(chat.input_cursor, '\n');
+                chat.input_cursor += 1;
             }
         }
         KeyCode::Enter => {
@@ -300,6 +318,68 @@ fn dfs_collect(conv: &crate::ai::chat_types::ConversationTree, node_id: u64, out
     if let Some(node) = conv.node(node_id) {
         for &child_id in &node.children {
             dfs_collect(conv, child_id, out);
+        }
+    }
+}
+
+/// Returns (current_line_index, total_lines) for the cursor position in input.
+fn cursor_line_info(input: &str, cursor: usize) -> (usize, usize) {
+    let cursor = cursor.min(input.len());
+    let line = input[..cursor].matches('\n').count();
+    let total = input.matches('\n').count() + 1;
+    (line, total)
+}
+
+/// Move cursor up (direction=-1) or down (direction=1) within multi-line input.
+/// Tries to maintain column offset. Returns the new byte offset.
+fn move_cursor_vertical(input: &str, cursor: usize, direction: i8) -> usize {
+    let cursor = cursor.min(input.len());
+
+    // Find start of current line and column offset
+    let line_start = input[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col: usize = input[line_start..cursor].chars().count();
+
+    if direction < 0 {
+        // Move up: find the previous line
+        if line_start == 0 {
+            return cursor; // already on first line
+        }
+        let prev_line_end = line_start - 1; // the '\n' before current line
+        let prev_line_start = input[..prev_line_end]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let prev_line = &input[prev_line_start..prev_line_end];
+        let prev_line_chars = prev_line.chars().count();
+        let target_col = col.min(prev_line_chars);
+        // Convert char offset to byte offset
+        let byte_offset: usize = prev_line
+            .chars()
+            .take(target_col)
+            .map(|c| c.len_utf8())
+            .sum();
+        prev_line_start + byte_offset
+    } else {
+        // Move down: find the next line
+        let next_newline = input[cursor..].find('\n');
+        match next_newline {
+            None => cursor, // already on last line
+            Some(rel) => {
+                let next_line_start = cursor + rel + 1;
+                let next_line_end = input[next_line_start..]
+                    .find('\n')
+                    .map(|i| next_line_start + i)
+                    .unwrap_or(input.len());
+                let next_line = &input[next_line_start..next_line_end];
+                let next_line_chars = next_line.chars().count();
+                let target_col = col.min(next_line_chars);
+                let byte_offset: usize = next_line
+                    .chars()
+                    .take(target_col)
+                    .map(|c| c.len_utf8())
+                    .sum();
+                next_line_start + byte_offset
+            }
         }
     }
 }
