@@ -31,10 +31,10 @@ pub(crate) const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
 // ---------------------------------------------------------------------------
 
 /// Split content area into buffer (top) and chat panel (bottom).
-pub fn compute_chat_split(content_area: Rect, _allow_edits: bool) -> (Rect, Rect) {
+pub fn compute_chat_split(content_area: Rect, allow_edits: bool) -> (Rect, Rect) {
     let total = content_area.height;
-    // Chat panel gets ~60% of space, minimum 8 rows
-    let chat_height = (total * 60 / 100).max(8).min(total.saturating_sub(3));
+    let chat_pct = if allow_edits { 60 } else { 40 };
+    let chat_height = (total * chat_pct / 100).max(8).min(total.saturating_sub(3));
     let buffer_height = total.saturating_sub(chat_height);
 
     let buffer_rect = Rect {
@@ -352,6 +352,27 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
         }
     }
 
+    // Tool call status rows (dim indicators during tool execution)
+    if let Some(chat) = editor.ai_state.chat.as_ref() {
+        if !chat.streaming_tool_calls.is_empty() {
+            for tc in &chat.streaming_tool_calls {
+                let status_text = format!("  \u{26A1} {}(...)", tc.name);
+                let padded = format!(
+                    "{}{}",
+                    status_text,
+                    " ".repeat(panel_width.saturating_sub(status_text.chars().count()))
+                );
+                rendered_lines.push((
+                    Line::from(Span::styled(
+                        padded,
+                        Style::default().fg(TEXT_DIM).bg(BG_PANEL),
+                    )),
+                    false,
+                ));
+            }
+        }
+    }
+
     // Display from bottom of area, scrolled
     let visible_rows = area.height as usize;
     let total = rendered_lines.len();
@@ -399,7 +420,13 @@ fn render_chat_bubble(
             }
             ChatRole::Thinking => BORDER_THINKING,
             ChatRole::Error => BORDER_ERROR,
-            ChatRole::Tool => BORDER_ASSISTANT_QUERY,
+            ChatRole::Tool => {
+                if message.content.starts_with("Error: ") {
+                    BORDER_ERROR
+                } else {
+                    BORDER_ASSISTANT_QUERY
+                }
+            }
         }
     };
 
@@ -502,6 +529,28 @@ fn render_chat_bubble(
             ];
             lines.push(Line::from(spans));
         }
+    }
+
+    // Retry hint for error bubbles
+    if message.role == ChatRole::Error {
+        let hint = "(submit again to retry)";
+        let hint_chars = hint.chars().count();
+        let padding = inner_width.saturating_sub(hint_chars);
+        let hint_style = Style::default().fg(TEXT_DIM).bg(BG_PANEL);
+        let spans = vec![
+            Span::styled(" ".repeat(indent), pad_style),
+            Span::styled("│ ", border_style),
+            Span::styled(
+                format!("{}{}", hint, " ".repeat(padding)),
+                hint_style,
+            ),
+            Span::styled(" │", border_style),
+            Span::styled(
+                " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
+                pad_style,
+            ),
+        ];
+        lines.push(Line::from(spans));
     }
 
     // Bottom border: ╰──╯
@@ -695,7 +744,12 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     }
 
     // Hints at right
-    let hint = " [Enter send] [Esc×2 close] ";
+    let allow_edits = editor.ai_chat_allow_edits();
+    let hint = if allow_edits {
+        " [Enter send] [Esc\u{00d7}2 close] "
+    } else {
+        " [?] [Enter send] [Esc\u{00d7}2 close] "
+    };
     let hint_w = hint.chars().count();
     if used_width + hint_w < w {
         let gap = w.saturating_sub(used_width + hint_w);
