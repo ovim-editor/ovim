@@ -101,9 +101,15 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
         super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
     }
 
-    // Layout: [message_history | input_bar(2) | model_selector(1)]
+    // Layout: [message_history | input_bar(dynamic) | model_selector(1)]
     let model_bar_height = 1u16;
-    let input_height = 2u16;
+    let input_lines = editor
+        .ai_state
+        .chat
+        .as_ref()
+        .map(|c| c.input_line_count())
+        .unwrap_or(1);
+    let input_height = (1 + input_lines as u16).min(6); // border + content, max ~5 lines
     let min_chrome = model_bar_height + input_height;
 
     if main_area.height <= min_chrome {
@@ -172,26 +178,42 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
         chat_area
     };
 
-    let min_chrome = 3u16; // input(2) + model(1)
+    let input_lines = editor
+        .ai_state
+        .chat
+        .as_ref()
+        .map(|c| c.input_line_count())
+        .unwrap_or(1);
+    let input_height = (1 + input_lines as u16).min(6);
+    let min_chrome = input_height + 1; // input + model(1)
     if main_area.height <= min_chrome {
         return None;
     }
 
     let messages_height = main_area.height - min_chrome;
     let input_y = main_area.y + messages_height;
-    // Input has a 1-char border + ">> " prefix = 4 chars offset
-    let prefix_len = 4u16;
+
     let cursor_byte = editor.ai_chat_input_cursor();
     let input = editor.ai_chat_input();
-    let cursor_display: usize = input[..cursor_byte.min(input.len())].chars().count();
+    let safe_cursor = cursor_byte.min(input.len());
 
+    // Find which line the cursor is on and column within that line
+    let before_cursor = &input[..safe_cursor];
+    let cursor_line = before_cursor.matches('\n').count();
+    let line_start = before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col: usize = input[line_start..safe_cursor].chars().count();
+
+    // First line has ">> " prefix (3 chars + 1 border = 4), continuation lines have "   " (3 + 1 = 4)
+    let prefix_len = 4u16;
     let x = main_area
         .x
         .saturating_add(prefix_len)
-        .saturating_add(cursor_display as u16)
+        .saturating_add(col as u16)
         .min(main_area.x + main_area.width.saturating_sub(1));
+    // +1 for the top border row, then offset by cursor_line
+    let y = input_y + 1 + cursor_line as u16;
 
-    Some((x, input_y))
+    Some((x, y))
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +528,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     let focus = editor.ai_chat_focus();
     let waiting = editor.ai_chat_waiting();
     let input = editor.ai_chat_input();
+    let allow_edits = editor.ai_chat_allow_edits();
 
     let border_color = if focus == ChatFocus::TextInput {
         Color::Rgb(82, 139, 255)
@@ -529,27 +552,43 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
         },
     );
 
-    // Input content line
-    if area.height >= 2 {
-        let prefix = "│ >> ";
-        let prefix_len = prefix.chars().count();
-        let content_width = w.saturating_sub(prefix_len + 2); // trailing " │"
+    // Input content lines
+    let content_rows = (area.height as usize).saturating_sub(1); // minus top border
+    if content_rows == 0 {
+        return;
+    }
 
-        let display_input = if waiting {
-            "Waiting for response..."
-        } else {
-            input
-        };
-        let truncated: String = display_input.chars().take(content_width).collect();
+    let prompt = if allow_edits { ">> " } else { "?  " };
+    let prompt_len = prompt.len(); // 3
+    let prefix_total = 2 + prompt_len; // "│ " + prompt = 5
+    let suffix_len = 2; // " │"
+    let content_width = w.saturating_sub(prefix_total + suffix_len);
+
+    let input_fg = if waiting { TEXT_DIM } else { TEXT_NORMAL };
+    let input_style = Style::default().fg(input_fg).bg(BG_INPUT);
+
+    let display_input: &str = if waiting {
+        "Waiting for response..."
+    } else {
+        input
+    };
+
+    let input_lines: Vec<&str> = if display_input.is_empty() {
+        vec![""]
+    } else {
+        display_input.split('\n').collect()
+    };
+
+    for (row_idx, line_text) in input_lines.iter().enumerate().take(content_rows) {
+        let truncated: String = line_text.chars().take(content_width).collect();
         let padding = content_width.saturating_sub(truncated.chars().count());
 
-        let input_fg = if waiting { TEXT_DIM } else { TEXT_NORMAL };
-        let input_style = Style::default().fg(input_fg).bg(BG_INPUT);
+        let row_prefix = if row_idx == 0 { prompt } else { "   " };
 
         let line = Line::from(vec![
             Span::styled("│ ", border_style),
             Span::styled(
-                ">> ",
+                row_prefix,
                 Style::default().fg(Color::Rgb(82, 139, 255)).bg(BG_INPUT),
             ),
             Span::styled(format!("{}{}", truncated, " ".repeat(padding)), input_style),
@@ -559,7 +598,29 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
             Paragraph::new(vec![line]),
             Rect {
                 x: area.x,
-                y: area.y + 1,
+                y: area.y + 1 + row_idx as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
+    }
+
+    // Fill remaining content rows with empty bordered lines
+    for row_idx in input_lines.len()..content_rows {
+        let padding = content_width + prompt_len;
+        let line = Line::from(vec![
+            Span::styled("│ ", border_style),
+            Span::styled(
+                " ".repeat(padding),
+                Style::default().bg(BG_INPUT),
+            ),
+            Span::styled(" │", border_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(vec![line]),
+            Rect {
+                x: area.x,
+                y: area.y + 1 + row_idx as u16,
                 width: area.width,
                 height: 1,
             },
