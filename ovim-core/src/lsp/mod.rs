@@ -108,12 +108,12 @@ pub(crate) struct ChangeDebouncer {
 }
 
 impl ChangeDebouncer {
-    fn new(uri: Uri, language_id: String, text: String, old_text: Option<String>) -> Self {
+    fn new(uri: Uri, language_id: String) -> Self {
         Self {
             uri,
             language_id,
-            pending_text: text,
-            old_text,
+            pending_text: String::new(),
+            old_text: None,
             timer_handle: None,
         }
     }

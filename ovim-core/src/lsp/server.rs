@@ -694,12 +694,25 @@ impl LanguageServer {
             Duration::from_secs(120) // 2 minutes for other languages
         };
 
-        tokio::time::timeout(init_timeout, self.initialize_internal(root_uri))
-            .await
-            .context(format!(
-                "LSP initialization timed out after {:?}. For large projects, this may take several minutes on first run.",
-                init_timeout
-            ))?
+        match tokio::time::timeout(init_timeout, self.initialize_internal(root_uri)).await {
+            Ok(result) => result,
+            Err(_) => {
+                // OV-00155: Timeout cancels initialize_internal mid-execution,
+                // so its error handler never runs. Transition to Failed here to
+                // trigger cleanup of orphaned pending requests.
+                let msg = format!(
+                    "LSP initialization timed out after {:?}",
+                    init_timeout
+                );
+                crate::lsp_error!(&self.log_prefix(), "{}", msg);
+                self.transition_to(ServerState::Failed {
+                    error: msg.clone(),
+                    at: Instant::now(),
+                })
+                .await;
+                Err(anyhow::anyhow!("{msg}. For large projects, this may take several minutes on first run."))
+            }
+        }
     }
 
     /// Internal initialization implementation (wrapped by timeout)

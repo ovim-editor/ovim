@@ -354,7 +354,10 @@ impl LspManager {
         text: String,
         old_text: Option<String>,
     ) -> Result<()> {
-        // Get or create debouncer for this document atomically to prevent race conditions
+        // Get or create debouncer for this document atomically to prevent race conditions.
+        // OV-00152: Don't clone text/old_text into the constructor — the move below
+        // overwrites pending_text anyway, so the clone was pure waste on every first
+        // keystroke after a flush.
         let debouncer_arc = self
             .change_debouncers
             .entry(uri.clone())
@@ -362,8 +365,6 @@ impl LspManager {
                 Arc::new(Mutex::new(ChangeDebouncer::new(
                     uri.clone(),
                     language_id.to_string(),
-                    text.clone(),
-                    old_text.clone(),
                 )))
             })
             .clone();
