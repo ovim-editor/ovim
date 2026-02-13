@@ -224,40 +224,6 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         .map(|b| format!(" {}", b))
         .unwrap_or_default();
 
-    // Get diagnostic counts
-    let (errors, warnings, _info, _hints) = editor.cached_diagnostic_count();
-    let diagnostics = if errors > 0 || warnings > 0 {
-        format!(" E:{} W:{} ", errors, warnings)
-    } else {
-        String::new()
-    };
-
-    // Get LSP status
-    let lsp_status = if !editor.lsp_status().is_empty() {
-        format!(" {} ", editor.lsp_status())
-    } else if !editor.active_lsp_servers().is_empty() {
-        " LSP ".to_string()
-    } else {
-        String::new()
-    };
-
-    // Calculate padding accounting for all elements including recording indicator
-    let recording_len = if !recording_indicator.is_empty() {
-        recording_indicator.len() + 1 // +1 for space after mode
-    } else {
-        1 // just the space after mode
-    };
-
-    let padding_len = (area.width as usize)
-        .saturating_sub(mode_indicator.len())
-        .saturating_sub(recording_len)
-        .saturating_sub(file.len())
-        .saturating_sub(modified.len())
-        .saturating_sub(branch_display.len())
-        .saturating_sub(diagnostics.len())
-        .saturating_sub(lsp_status.len())
-        .saturating_sub(position.len());
-
     let status_bg = ui_color(theme, UiGroup::StatusLineBackground);
     let status_fg = ui_color(theme, UiGroup::StatusLineForeground);
     let accent_bg = ui_color(theme, UiGroup::TabActiveBg);
@@ -294,43 +260,140 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
             Style::default().fg(status_fg).add_modifier(Modifier::DIM),
         ));
     }
-    spans.push(Span::raw(" ".repeat(padding_len)));
 
-    // Add diagnostics indicator if present
-    if !diagnostics.is_empty() {
-        spans.push(Span::styled(
-            &diagnostics,
-            Style::default().fg(Color::Black).bg(if errors > 0 {
-                error_color
-            } else {
-                ui_color(theme, UiGroup::Warning)
-            }),
+    // Right-side widgets differ for AI chat mode
+    let is_ai_chat = mode == crate::mode::Mode::AiChat;
+    let mut right_spans: Vec<Span> = Vec::new();
+
+    if is_ai_chat {
+        // AI chat right-side: profile:model, tool iterations, streaming status, position
+        let active_profile = &editor.ai_state.active_profile;
+        let model_display = editor
+            .ai_state
+            .config
+            .resolve_profile(active_profile)
+            .map(|p| {
+                let short: String = p.model.chars().take(16).collect();
+                format!(" {}:{} ", active_profile, short)
+            })
+            .unwrap_or_else(|| format!(" {} ", active_profile));
+        right_spans.push(Span::styled(
+            model_display,
+            Style::default()
+                .fg(Color::Rgb(180, 188, 202))
+                .bg(Color::Rgb(46, 52, 64)),
         ));
-    }
 
-    // Add LSP status if present
-    if !lsp_status.is_empty() {
-        let lsp_color =
-            if editor.lsp_status().contains("Failed") || editor.lsp_status().contains("Error") {
+        if let Some(chat) = editor.ai_state.chat.as_ref() {
+            if chat.tool_iterations > 0 {
+                let max_iter = chat
+                    .opts
+                    .profile
+                    .as_ref()
+                    .and_then(|p| editor.ai_state.config.resolve_profile(p))
+                    .map(|p| p.context_policy.max_iterations)
+                    .unwrap_or(4);
+                let iter_text = format!(" \u{26A1}{}/{} ", chat.tool_iterations, max_iter);
+                right_spans.push(Span::styled(
+                    iter_text,
+                    Style::default().fg(Color::Yellow).bg(status_bg),
+                ));
+            }
+
+            if chat.waiting {
+                let status_text = if chat.streaming_content.is_some() {
+                    " streaming... "
+                } else if chat.streaming_thinking.is_some() {
+                    " thinking... "
+                } else {
+                    " waiting... "
+                };
+                right_spans.push(Span::styled(
+                    status_text,
+                    Style::default()
+                        .fg(Color::Rgb(120, 180, 255))
+                        .bg(status_bg)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+        }
+
+        right_spans.push(Span::styled(
+            &position,
+            Style::default()
+                .fg(accent_fg)
+                .bg(accent_bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        // Normal right-side: diagnostics, LSP, position
+        let (errors, warnings, _info, _hints) = editor.cached_diagnostic_count();
+        let diagnostics = if errors > 0 || warnings > 0 {
+            format!(" E:{} W:{} ", errors, warnings)
+        } else {
+            String::new()
+        };
+
+        let lsp_status = if !editor.lsp_status().is_empty() {
+            format!(" {} ", editor.lsp_status())
+        } else if !editor.active_lsp_servers().is_empty() {
+            " LSP ".to_string()
+        } else {
+            String::new()
+        };
+
+        if !diagnostics.is_empty() {
+            right_spans.push(Span::styled(
+                diagnostics,
+                Style::default().fg(Color::Black).bg(if errors > 0 {
+                    error_color
+                } else {
+                    ui_color(theme, UiGroup::Warning)
+                }),
+            ));
+        }
+
+        if !lsp_status.is_empty() {
+            let lsp_color = if editor.lsp_status().contains("Failed")
+                || editor.lsp_status().contains("Error")
+            {
                 error_color
             } else if editor.lsp_status().contains("ready") {
                 Color::Green
             } else {
                 ui_color(theme, UiGroup::Info)
             };
-        spans.push(Span::styled(
-            &lsp_status,
-            Style::default().fg(Color::Black).bg(lsp_color),
+            right_spans.push(Span::styled(
+                lsp_status,
+                Style::default().fg(Color::Black).bg(lsp_color),
+            ));
+        }
+
+        right_spans.push(Span::styled(
+            &position,
+            Style::default()
+                .fg(accent_fg)
+                .bg(accent_bg)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
-    spans.push(Span::styled(
-        position,
-        Style::default()
-            .fg(accent_fg)
-            .bg(accent_bg)
-            .add_modifier(Modifier::BOLD),
-    ));
+    // Calculate padding
+    let recording_len = if !recording_indicator.is_empty() {
+        recording_indicator.len() + 1
+    } else {
+        1
+    };
+    let left_used = mode_indicator.len()
+        + recording_len
+        + file.len()
+        + modified.len()
+        + branch_display.len();
+    let right_used: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let padding_len = (area.width as usize).saturating_sub(left_used + right_used);
+
+    spans.push(Span::raw(" ".repeat(padding_len)));
+    spans.extend(right_spans);
 
     let status_line = Line::from(spans);
 
