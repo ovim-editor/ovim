@@ -8,15 +8,11 @@ Ordered by impact and dependency. Earlier items unblock later ones.
 
 ---
 
-### 1. Buffer content replacement (reload problem)
+### 1. Buffer content replacement (reload problem) — DONE
 
-**Problem:** Buffer holds ~20 independently-managed fields (rope, cursor, change_manager, fold_manager, git_status, git_blame, cached_highlights, semantic_highlights, code_block_cache, syntax, version, encoding, line_ending, file_mtime, modified, pending_rehighlight...). `reload_from_disk` replaces the rope and touches *some* of these. It misses undo history, folds, git state, highlight caches, version counter, LSP sync — 7 bugs from one root cause.
-
-**Fix:** `Buffer::replace_content(rope, source)` that resets all derived state. Either group derived state into a sub-struct that gets wholesale replaced, or construct a fresh buffer and transplant identity fields (file_path, window assignment). Make `reload_from_disk`, `reload_if_changed`, and any future content-replacement operations go through this single method.
+`reset_derived_state()` implemented: resets ChangeManager, folds, git state, highlight caches, version counter. `reload_from_disk` and `reload_if_changed` both go through it. LSP notified via `mark_buffer_modified_force_send()`.
 
 **Issues resolved:** OV-00099, OV-00100, OV-00103, OV-00104, OV-00105, OV-00106, OV-00107, OV-00108, OV-00109
-
-**Depends on:** Nothing. Self-contained.
 
 ---
 
@@ -103,15 +99,11 @@ All indentation bugs fixed: expandtab/shiftwidth consulted, empty lines skipped,
 
 ---
 
-### 8. Command dispatch consolidation
+### 8. Command dispatch consolidation — DONE
 
-**Problem:** `:e filename` handled in two places with different features (tilde expansion in one, not the other). `:e! filename` falls through the cracks. `:e filename` doesn't check for unsaved changes. The two-tier dispatch (commands.rs → input/commands.rs) creates dead code.
-
-**Fix:** Single dispatch for each command. `:e`/`:e!` should go through one handler that checks the `!` flag, handles filenames, checks `is_modified()`, and calls `replace_content()` (from item 1). Remove dead duplicate handlers.
+`:e`/`:e!` consolidated in commands.rs with unsaved-changes check, tilde expansion, and force-reload support. No duplicate handler in input/commands.rs.
 
 **Issues resolved:** OV-00101, OV-00102, OV-00110
-
-**Depends on:** Item 1 (buffer content replacement) for proper reload behavior.
 
 ---
 
@@ -125,8 +117,6 @@ All paste bugs fixed: count implemented, P cursor corrected, visual paste update
 
 ## Status
 
-Items 2, 3, 4, 6, 7, 9 are **DONE**. Remaining work:
+Items 1, 2, 3, 4, 6, 7, 8, 9 are **DONE**. Remaining work:
 
-- **Item 1** (buffer content replacement): Foundation work, self-contained
 - **Item 5** (Pattern A→B migration): Ongoing, depends on item 2 (done)
-- **Item 8** (command dispatch consolidation): Depends on item 1
