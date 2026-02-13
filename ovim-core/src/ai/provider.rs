@@ -564,7 +564,9 @@ fn read_api_key(profile: &AiProfileConfig) -> Result<String> {
         ));
     }
 
-    std::env::var(key_env).with_context(|| format!("environment variable {key_env} is not set"))
+    std::env::var(key_env).with_context(|| {
+        format!("environment variable {key_env} is not set (set it in your shell before launching ovim)")
+    })
 }
 
 fn build_user_prompt(request: &AiRequest) -> String {

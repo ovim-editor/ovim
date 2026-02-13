@@ -402,22 +402,6 @@ pub async fn parse_ollama_stream<E: Display>(
                         continue;
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                        // Check if done
-                        if value.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                            // May contain final content
-                            if let Some(content) = value
-                                .get("message")
-                                .and_then(|m| m.get("content"))
-                                .and_then(|c| c.as_str())
-                            {
-                                if !content.is_empty() {
-                                    let _ = tx.send(StreamChunk::Content(content.to_string()));
-                                }
-                            }
-                            let _ = tx.send(StreamChunk::Done);
-                            return;
-                        }
-
                         // Extract content
                         if let Some(content) = value
                             .get("message")
@@ -427,6 +411,40 @@ pub async fn parse_ollama_stream<E: Display>(
                             if !content.is_empty() {
                                 let _ = tx.send(StreamChunk::Content(content.to_string()));
                             }
+                        }
+
+                        // Extract tool calls (Ollama sends these on the done message
+                        // or as non-streaming responses)
+                        if let Some(tool_calls) = value
+                            .get("message")
+                            .and_then(|m| m.get("tool_calls"))
+                            .and_then(|tc| tc.as_array())
+                        {
+                            for (i, tc) in tool_calls.iter().enumerate() {
+                                let name = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("");
+                                let arguments = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("arguments"))
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                                if !name.is_empty() {
+                                    let _ = tx.send(StreamChunk::ToolCallComplete {
+                                        id: format!("ollama-tc-{}", i),
+                                        name: name.to_string(),
+                                        arguments,
+                                    });
+                                }
+                            }
+                        }
+
+                        // Check if done
+                        if value.get("done").and_then(|d| d.as_bool()) == Some(true) {
+                            let _ = tx.send(StreamChunk::Done);
+                            return;
                         }
                     }
                 }
@@ -643,6 +661,76 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "OK"));
         assert!(matches!(&chunks[1], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn ollama_tool_call_on_done() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"read_file\",\"arguments\":{\"start_line\":1}}}]},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 2); // ToolCallComplete + Done
+        match &chunks[0] {
+            StreamChunk::ToolCallComplete {
+                id,
+                name,
+                arguments,
+            } => {
+                assert!(id.starts_with("ollama-tc-"));
+                assert_eq!(name, "read_file");
+                assert_eq!(arguments["start_line"], 1);
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[1], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn ollama_tool_call_with_content() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"Let me check.\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"read_diagnostics\",\"arguments\":{}}}]},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 3); // Content + ToolCallComplete + Done
+        assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "Let me check."));
+        match &chunks[1] {
+            StreamChunk::ToolCallComplete { name, .. } => {
+                assert_eq!(name, "read_diagnostics");
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[2], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn ollama_multiple_tool_calls() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"read_file\",\"arguments\":{}}},{\"function\":{\"name\":\"read_diagnostics\",\"arguments\":{}}}]},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 3); // 2 ToolCallComplete + Done
+        match &chunks[0] {
+            StreamChunk::ToolCallComplete { id, name, .. } => {
+                assert_eq!(id, "ollama-tc-0");
+                assert_eq!(name, "read_file");
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        match &chunks[1] {
+            StreamChunk::ToolCallComplete { id, name, .. } => {
+                assert_eq!(id, "ollama-tc-1");
+                assert_eq!(name, "read_diagnostics");
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[2], StreamChunk::Done));
     }
 
     // ---- Stream disconnect ----
