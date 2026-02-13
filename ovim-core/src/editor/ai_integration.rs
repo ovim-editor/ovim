@@ -559,7 +559,7 @@ impl Editor {
         self.buffer().change_manager().is_building() || self.mode() == Mode::Replace
     }
 
-    fn set_cursor_from_abs_char(&mut self, abs_char: usize) {
+    pub(crate) fn set_cursor_from_abs_char(&mut self, abs_char: usize) {
         let (line, col) = self.abs_char_to_line_col(abs_char);
         self.buffer_mut().cursor_mut().set_position(line, col);
 
@@ -769,7 +769,7 @@ impl Editor {
         self.buffer_mut().remove_ai_lock(region_id);
     }
 
-    fn cursor_abs_char(&self) -> usize {
+    pub(crate) fn cursor_abs_char(&self) -> usize {
         let cursor = self.buffer().cursor();
         let rope = self.buffer().rope();
         if rope.len_lines() == 0 {
@@ -820,7 +820,7 @@ fn region_contains_char(region: &AiEditRegion, abs_char: usize) -> bool {
     }
 }
 
-fn remap_abs_char_through_edits(mut abs_char: usize, edits: &[Edit]) -> usize {
+pub(crate) fn remap_abs_char_through_edits(mut abs_char: usize, edits: &[Edit]) -> usize {
     for edit in edits {
         match edit {
             Edit::Insert { offset, text } => {
