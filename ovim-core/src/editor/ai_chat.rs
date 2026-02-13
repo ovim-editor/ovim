@@ -1,5 +1,5 @@
 use crate::ai::chat_types::{
-    ChatFocus, ChatMessage, ChatOpts, ConversationTree, StreamChunk, ToolCallInfo,
+    ChatFocus, ChatMessage, ChatOpts, ConversationTree, NodeId, StreamChunk, ToolCallInfo,
 };
 use crate::mode::Mode;
 use anyhow::Result;
@@ -480,13 +480,31 @@ impl Editor {
             .unwrap_or(false)
     }
 
-    /// Whether a thinking message at the given index is expanded.
-    pub fn ai_chat_is_thinking_expanded(&self, index: usize) -> bool {
+    /// Whether a thinking message with the given node ID is expanded.
+    pub fn ai_chat_is_thinking_expanded(&self, node_id: NodeId) -> bool {
         self.ai_state
             .chat
             .as_ref()
-            .map(|c| c.expanded_thinking.contains(&index))
+            .map(|c| c.expanded_thinking.contains(&node_id))
             .unwrap_or(false)
+    }
+
+    /// Whether the tree panel sidebar is open.
+    pub fn ai_chat_tree_panel_open(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.tree_panel_open)
+            .unwrap_or(false)
+    }
+
+    /// Cursor position in the tree panel.
+    pub fn ai_chat_tree_panel_cursor(&self) -> usize {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.tree_panel_cursor)
+            .unwrap_or(0)
     }
 
     // -----------------------------------------------------------------
@@ -502,7 +520,7 @@ impl Editor {
     }
 
     /// Shorthand for getting the current conversation (read-only).
-    pub(crate) fn conversation(&self) -> Option<&ConversationTree> {
+    pub fn conversation(&self) -> Option<&ConversationTree> {
         let key = self.ai_chat_conversation_key();
         self.ai_state.conversations.get(&key)
     }

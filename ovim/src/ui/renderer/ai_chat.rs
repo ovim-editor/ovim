@@ -9,10 +9,10 @@ use ratatui::{
 };
 
 // ---------------------------------------------------------------------------
-// Colors
+// Colors (pub(crate) so conversation_tree can reuse them)
 // ---------------------------------------------------------------------------
 
-const BG_PANEL: Color = Color::Rgb(20, 23, 30);
+pub(crate) const BG_PANEL: Color = Color::Rgb(20, 23, 30);
 const BG_INPUT: Color = Color::Rgb(28, 33, 42);
 
 const BORDER_USER: Color = Color::Cyan;
@@ -22,9 +22,9 @@ const BORDER_ERROR: Color = Color::Red;
 const BORDER_THINKING: Color = Color::Rgb(80, 88, 100);
 const BORDER_SELECTED: Color = Color::Yellow;
 
-const TEXT_DIM: Color = Color::Rgb(128, 140, 155);
+pub(crate) const TEXT_DIM: Color = Color::Rgb(128, 140, 155);
 const TEXT_THINKING: Color = Color::Rgb(100, 112, 130);
-const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
+pub(crate) const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -52,6 +52,12 @@ pub fn compute_chat_split(content_area: Rect, _allow_edits: bool) -> (Rect, Rect
     (buffer_rect, chat_rect)
 }
 
+/// Width of tree panel when open.
+fn tree_panel_width(chat_width: u16) -> u16 {
+    let quarter = chat_width / 4;
+    quarter.max(20).min(36)
+}
+
 /// Render the full chat panel.
 pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
     if chat_area.width < 4 || chat_area.height < 3 {
@@ -69,35 +75,61 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
         .collect();
     frame.render_widget(Paragraph::new(bg_lines), chat_area);
 
+    // Split for tree panel if open
+    let tree_open = editor.ai_chat_tree_panel_open();
+    let (tree_area, main_area) = if tree_open && chat_area.width > 40 {
+        let tw = tree_panel_width(chat_area.width);
+        let tree_rect = Rect {
+            x: chat_area.x,
+            y: chat_area.y,
+            width: tw,
+            height: chat_area.height,
+        };
+        let main_rect = Rect {
+            x: chat_area.x + tw,
+            y: chat_area.y,
+            width: chat_area.width.saturating_sub(tw),
+            height: chat_area.height,
+        };
+        (Some(tree_rect), main_rect)
+    } else {
+        (None, chat_area)
+    };
+
+    // Render tree panel if open
+    if let Some(tree_rect) = tree_area {
+        super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
+    }
+
     // Layout: [message_history | input_bar(2) | model_selector(1)]
     let model_bar_height = 1u16;
     let input_height = 2u16;
     let min_chrome = model_bar_height + input_height;
 
-    if chat_area.height <= min_chrome {
+    if main_area.height <= min_chrome {
         // Too small — just render input
-        render_text_input(frame, editor, chat_area);
+        render_text_input(frame, editor, main_area);
         return;
     }
 
-    let messages_height = chat_area.height - min_chrome;
+    let messages_height = main_area.height - min_chrome;
 
     let messages_area = Rect {
-        x: chat_area.x,
-        y: chat_area.y,
-        width: chat_area.width,
+        x: main_area.x,
+        y: main_area.y,
+        width: main_area.width,
         height: messages_height,
     };
     let input_area = Rect {
-        x: chat_area.x,
-        y: chat_area.y + messages_height,
-        width: chat_area.width,
+        x: main_area.x,
+        y: main_area.y + messages_height,
+        width: main_area.width,
         height: input_height,
     };
     let model_area = Rect {
-        x: chat_area.x,
-        y: chat_area.y + messages_height + input_height,
-        width: chat_area.width,
+        x: main_area.x,
+        y: main_area.y + messages_height + input_height,
+        width: main_area.width,
         height: model_bar_height,
     };
 
@@ -106,7 +138,6 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
     render_model_selector_bar(frame, editor, model_area);
 
     // Show standalone waiting indicator only before first streaming chunk arrives.
-    // Once visible content or thinking is streaming, the ··· lives inside the bubble.
     if editor.ai_chat_waiting() {
         let has_visible_streaming = editor
             .ai_chat_streaming_content()
@@ -127,24 +158,38 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
         return None;
     }
 
+    // Account for tree panel offset
+    let tree_open = editor.ai_chat_tree_panel_open();
+    let main_area = if tree_open && chat_area.width > 40 {
+        let tw = tree_panel_width(chat_area.width);
+        Rect {
+            x: chat_area.x + tw,
+            y: chat_area.y,
+            width: chat_area.width.saturating_sub(tw),
+            height: chat_area.height,
+        }
+    } else {
+        chat_area
+    };
+
     let min_chrome = 3u16; // input(2) + model(1)
-    if chat_area.height <= min_chrome {
+    if main_area.height <= min_chrome {
         return None;
     }
 
-    let messages_height = chat_area.height - min_chrome;
-    let input_y = chat_area.y + messages_height;
+    let messages_height = main_area.height - min_chrome;
+    let input_y = main_area.y + messages_height;
     // Input has a 1-char border + ">> " prefix = 4 chars offset
     let prefix_len = 4u16;
     let cursor_byte = editor.ai_chat_input_cursor();
     let input = editor.ai_chat_input();
     let cursor_display: usize = input[..cursor_byte.min(input.len())].chars().count();
 
-    let x = chat_area
+    let x = main_area
         .x
         .saturating_add(prefix_len)
         .saturating_add(cursor_display as u16)
-        .min(chat_area.x + chat_area.width.saturating_sub(1));
+        .min(main_area.x + main_area.width.saturating_sub(1));
 
     Some((x, input_y))
 }
@@ -184,18 +229,34 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
     let scroll = editor.ai_chat_message_scroll();
     let panel_width = area.width as usize;
 
+    // Get node IDs for active branch (parallel to messages)
+    let node_ids = editor
+        .conversation()
+        .map(|c| c.node_ids_for_active_branch().to_vec())
+        .unwrap_or_default();
+
     // Render messages bottom-up with scroll
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected =
             focus == ChatFocus::MessageHistory && idx == messages.len().saturating_sub(1 + scroll);
-        let is_thinking_expanded = editor.ai_chat_is_thinking_expanded(idx);
+
+        // Look up NodeId for thinking expansion and child count
+        let node_id = node_ids.get(idx).copied();
+        let is_thinking_expanded = node_id
+            .map(|id| editor.ai_chat_is_thinking_expanded(id))
+            .unwrap_or(false);
+        let child_count = node_id
+            .and_then(|id| editor.conversation().map(|c| c.child_count(id)))
+            .unwrap_or(0);
+
         let bubble_lines = render_chat_bubble(
             msg,
             panel_width,
             is_selected,
             allow_edits,
             is_thinking_expanded,
+            child_count,
         );
         for line in bubble_lines {
             rendered_lines.push((line, false));
@@ -227,6 +288,7 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
                 false,
                 allow_edits,
                 true,
+                0,
             );
             for line in bubble_lines {
                 rendered_lines.push((line, false));
@@ -254,7 +316,7 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
                 tool_call_id: None,
             };
             let bubble_lines =
-                render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false);
+                render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false, 0);
             for line in bubble_lines {
                 rendered_lines.push((line, false));
             }
@@ -294,6 +356,7 @@ fn render_chat_bubble(
     is_selected: bool,
     allow_edits: bool,
     is_thinking_expanded: bool,
+    child_count: usize,
 ) -> Vec<Line<'static>> {
     let max_bubble_width = (panel_width * 3 / 4)
         .max(20)
@@ -352,14 +415,23 @@ fn render_chat_bubble(
         ChatRole::Tool => " Tool ".to_string(),
     };
 
-    // Top border: ╭─ label ─╮
+    // Branch indicator suffix for top border
+    let branch_suffix = if child_count > 1 {
+        format!(" \u{2442} {} ", child_count) // ⑂ N
+    } else {
+        String::new()
+    };
+    let suffix_display_len = branch_suffix.chars().count();
+
+    // Top border: ╭─ label ──────── ⑂ N ─╮
     let label_display_len = label_text.chars().count();
-    let top_fill = max_bubble_width.saturating_sub(2 + label_display_len);
+    let top_fill = max_bubble_width.saturating_sub(2 + label_display_len + suffix_display_len);
     let top = format!(
-        "{}╭{}{}╮{}",
+        "{}╭{}{}{}╮{}",
         " ".repeat(indent),
         &label_text,
         "─".repeat(top_fill),
+        &branch_suffix,
         " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
     );
     lines.push(Line::from(Span::styled(top, border_style)));

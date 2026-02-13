@@ -19,10 +19,24 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
+    // <C-t> toggles tree panel from any focus zone
+    if key_event.code == KeyCode::Char('t') && key_event.modifiers.contains(Modifiers::CONTROL) {
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.tree_panel_open = !chat.tree_panel_open;
+            if chat.tree_panel_open {
+                chat.focus = ChatFocus::TreePanel;
+            } else if chat.focus == ChatFocus::TreePanel {
+                chat.focus = ChatFocus::TextInput;
+            }
+        }
+        return Ok(());
+    }
+
     match focus {
         ChatFocus::TextInput => handle_text_input(editor, key_event),
         ChatFocus::MessageHistory => handle_message_history(editor, key_event),
         ChatFocus::ModelSelector => handle_model_selector(editor, key_event),
+        ChatFocus::TreePanel => handle_tree_panel(editor, key_event),
     }
 }
 
@@ -165,14 +179,39 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         KeyCode::Enter => {
-            // Toggle expand/collapse for thinking messages
+            let node_ids = editor
+                .conversation()
+                .map(|c| c.node_ids_for_active_branch().to_vec())
+                .unwrap_or_default();
             let messages = editor.ai_chat_messages();
             let scroll = editor.ai_chat_message_scroll();
             let idx = messages.len().saturating_sub(1 + scroll);
-            if idx < messages.len() && messages[idx].role == ChatRole::Thinking {
-                if let Some(chat) = editor.ai_state.chat.as_mut() {
-                    if !chat.expanded_thinking.remove(&idx) {
-                        chat.expanded_thinking.insert(idx);
+
+            if idx < messages.len() && idx < node_ids.len() {
+                let node_id = node_ids[idx];
+                let role = messages[idx].role.clone();
+
+                if role == ChatRole::Thinking {
+                    // Toggle thinking expand/collapse
+                    if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        if !chat.expanded_thinking.remove(&node_id) {
+                            chat.expanded_thinking.insert(node_id);
+                        }
+                    }
+                } else if role == ChatRole::User {
+                    // Fork: set active_leaf to parent of this user message
+                    let parent_id = editor
+                        .conversation()
+                        .and_then(|c| c.node(node_id))
+                        .and_then(|n| n.parent);
+                    if let Some(pid) = parent_id {
+                        if let Some(conv) = editor.conversation_mut() {
+                            conv.fork_from(pid);
+                        }
+                    }
+                    // Return to text input for the new message
+                    if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        chat.focus = ChatFocus::TextInput;
                     }
                 }
             }
@@ -198,4 +237,69 @@ fn handle_model_selector(editor: &mut Editor, key_event: KeyEvent) -> Result<()>
         _ => {}
     }
     Ok(())
+}
+
+fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            let total = tree_panel_node_count(editor);
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                if total > 0 {
+                    chat.tree_panel_cursor = (chat.tree_panel_cursor + 1).min(total - 1);
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.tree_panel_cursor = chat.tree_panel_cursor.saturating_sub(1);
+            }
+        }
+        KeyCode::Enter => {
+            let node_id = tree_panel_selected_node_id(editor);
+            if let Some(id) = node_id {
+                if let Some(conv) = editor.conversation_mut() {
+                    conv.switch_to_branch(id);
+                }
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    chat.focus = ChatFocus::TextInput;
+                }
+            }
+        }
+        KeyCode::Char('q') => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.tree_panel_open = false;
+                chat.focus = ChatFocus::TextInput;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Count total nodes for tree panel navigation.
+fn tree_panel_node_count(editor: &Editor) -> usize {
+    editor
+        .conversation()
+        .map(|c| c.all_nodes().len())
+        .unwrap_or(0)
+}
+
+/// Get the NodeId at the current tree panel cursor position.
+/// Uses DFS order from root.
+fn tree_panel_selected_node_id(editor: &Editor) -> Option<u64> {
+    let conv = editor.conversation()?;
+    let root_id = conv.root_id()?;
+    let cursor = editor.ai_chat_tree_panel_cursor();
+    let mut dfs_order = Vec::new();
+    dfs_collect(conv, root_id, &mut dfs_order);
+    dfs_order.get(cursor).copied()
+}
+
+fn dfs_collect(conv: &crate::ai::chat_types::ConversationTree, node_id: u64, out: &mut Vec<u64>) {
+    out.push(node_id);
+    if let Some(node) = conv.node(node_id) {
+        for &child_id in &node.children {
+            dfs_collect(conv, child_id, out);
+        }
+    }
 }
