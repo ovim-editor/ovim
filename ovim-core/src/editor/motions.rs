@@ -317,23 +317,14 @@ impl Motions {
 
     fn word_end_forward_once(buffer: &mut Buffer, big_word: bool, prefer_current: bool) {
         let (line_idx, col, total_lines, line_string) = {
-            let rope = buffer.rope();
             let cursor = buffer.cursor();
-
-            // Use Vim-compatible line count: exclude phantom empty line after trailing '\n'.
-            let raw = rope.len_lines();
-            let total_lines =
-                if raw > 1 && rope.len_chars() > 0 && rope.char(rope.len_chars() - 1) == '\n' {
-                    raw - 1
-                } else {
-                    raw
-                };
+            let total_lines = buffer.line_count();
 
             (
                 cursor.line(),
                 cursor.col(),
                 total_lines,
-                rope.line(cursor.line()).to_string(),
+                buffer.rope().line(cursor.line()).to_string(),
             )
         };
 
@@ -970,10 +961,9 @@ impl Motions {
     }
 
     fn paragraph_forward_once(buffer: &mut Buffer) {
-        let rope = buffer.rope();
         let cursor = buffer.cursor();
         let mut line_idx = cursor.line();
-        let total_lines = rope.len_lines();
+        let total_lines = buffer.line_count();
 
         // First skip any blank lines at/after cursor
         while line_idx < total_lines {
@@ -1079,17 +1069,17 @@ impl Motions {
         // but implementing full abbreviation support would require a dictionary or more
         // sophisticated pattern matching. Low priority since basic sentence navigation works.
 
-        let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
         let col = cursor.col();
+        let total_lines = buffer.line_count();
 
         // Get text from current position onwards
         let mut current_line = line_idx;
         let mut current_col = col + 1;
 
         // Look for sentence-ending punctuation (.!?) followed by space/newline
-        while current_line < rope.len_lines() {
+        while current_line < total_lines {
             if let Some(line) = buffer.line(current_line) {
                 let chars: Vec<char> = line.chars().collect();
 
@@ -1107,7 +1097,7 @@ impl Motions {
 
                             if current_col >= chars.len() {
                                 // Move to next line
-                                if current_line + 1 < rope.len_lines() {
+                                if current_line + 1 < total_lines {
                                     buffer.cursor_mut().set_position(current_line + 1, 0);
                                 } else {
                                     buffer.cursor_mut().set_position(
@@ -1130,7 +1120,7 @@ impl Motions {
         }
 
         // No sentence found, move to end of buffer
-        let last_line = rope.len_lines().saturating_sub(1);
+        let last_line = buffer.line_count().saturating_sub(1);
         buffer.cursor_mut().set_position(last_line, 0);
     }
 
@@ -1200,7 +1190,7 @@ impl Motions {
                             col += 1;
                         }
 
-                        if col >= chars.len() && line_idx + 1 < buffer.rope().len_lines() {
+                        if col >= chars.len() && line_idx + 1 < buffer.line_count() {
                             buffer.cursor_mut().set_position(line_idx + 1, 0);
                         } else {
                             buffer
@@ -1803,7 +1793,7 @@ impl Motions {
     /// `]m` motion in Vim
     /// Looks for patterns like: fn name(, def name(, function name(, etc.
     pub fn method_forward(buffer: &mut Buffer, count: usize) {
-        let total_lines = buffer.rope().len_lines();
+        let total_lines = buffer.line_count();
         let mut current_line = buffer.cursor().line();
 
         for _ in 0..count {
@@ -1820,9 +1810,14 @@ impl Motions {
             }
         }
 
-        // Position cursor at first non-whitespace
+        // Position cursor at first non-whitespace (strip trailing newline so it
+        // isn't counted as whitespace — buffer.line() includes the '\n')
         if let Some(line) = buffer.line(current_line) {
-            let col = line.chars().take_while(|c| c.is_whitespace()).count();
+            let col = line
+                .trim_end_matches('\n')
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .count();
             buffer.cursor_mut().set_position(current_line, col);
         } else {
             buffer.cursor_mut().set_position(current_line, 0);
@@ -1851,9 +1846,14 @@ impl Motions {
             }
         }
 
-        // Position cursor at first non-whitespace
+        // Position cursor at first non-whitespace (strip trailing newline so it
+        // isn't counted as whitespace — buffer.line() includes the '\n')
         if let Some(line) = buffer.line(current_line) {
-            let col = line.chars().take_while(|c| c.is_whitespace()).count();
+            let col = line
+                .trim_end_matches('\n')
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .count();
             buffer.cursor_mut().set_position(current_line, col);
         } else {
             buffer.cursor_mut().set_position(current_line, 0);
@@ -1863,7 +1863,7 @@ impl Motions {
     /// Method navigation: jump to next method/function end
     /// `]M` motion in Vim
     pub fn method_end_forward(buffer: &mut Buffer, count: usize) {
-        let total_lines = buffer.rope().len_lines();
+        let total_lines = buffer.line_count();
         let mut current_line = buffer.cursor().line();
 
         for _ in 0..count {

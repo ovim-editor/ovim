@@ -173,6 +173,17 @@ impl InputHandler {
 
         editor.ai_post_input_refresh();
 
+        // Safety net: ensure cursor is within buffer bounds after every key event.
+        // Individual motions/operators should maintain this invariant themselves, but
+        // this catch-all prevents any cursor-out-of-bounds state from persisting.
+        //
+        // Skip in Insert/Replace modes: `validate_cursor_position` uses Normal mode
+        // semantics (cursor must be ON a character), but Insert mode legitimately
+        // allows cursor at `line_len` (the append position, e.g. after `A`).
+        if !matches!(editor.mode(), Mode::Insert | Mode::Replace) {
+            editor.buffer_mut().validate_cursor_position();
+        }
+
         result
     }
 

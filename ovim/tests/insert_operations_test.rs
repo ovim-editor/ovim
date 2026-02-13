@@ -119,7 +119,9 @@ fn test_a_empty_line() {
     test.press('a').type_text("text").press_esc();
 
     assert_eq!(test.buffer_content(), "text\n");
-    test.assert_cursor(0, 4);
+    // After Esc from insert mode, cursor lands on the last typed character.
+    // "text" has 4 chars (cols 0-3), so cursor should be at col 3.
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================
