@@ -229,6 +229,71 @@ impl Editor {
         true
     }
 
+    /// Build a context-aware system prompt for chat mode.
+    ///
+    /// This ensures the model responds in natural language instead of falling
+    /// back to the profile's editing system prompt (which asks for JSON).
+    fn build_chat_system_prompt(&self, profile: &crate::ai::AiProfileConfig) -> String {
+        let caps = self.build_chat_capabilities();
+        let tools = self
+            .ai_state
+            .tool_registry
+            .tools_for_profile(profile, &caps);
+
+        let buf = &self.buffers[self.current_buffer_index];
+        let file_info = match buf.file_path() {
+            Some(path) => {
+                let lang = crate::syntax::LanguageRegistry::get_lsp_language_id(path)
+                    .unwrap_or("unknown");
+                format!("Current file: {} ({})", path, lang)
+            }
+            None => "No file open.".to_string(),
+        };
+
+        let allow_edits = self
+            .ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.allow_edits)
+            .unwrap_or(false);
+
+        let mut prompt = String::from(
+            "You are a coding assistant inside the ovim editor.\n\
+             Respond in natural language. Do NOT return raw JSON.\n",
+        );
+
+        if !tools.is_empty() {
+            let read_tools: Vec<&str> = tools
+                .iter()
+                .filter(|t| t.side_effect == SideEffect::Read)
+                .map(|t| t.name.as_str())
+                .collect();
+            if !read_tools.is_empty() {
+                prompt.push_str(&format!(
+                    "You have read tools: {}. Use them when the user asks about code.\n",
+                    read_tools.join(", ")
+                ));
+            }
+
+            if allow_edits {
+                let mutation_tools: Vec<&str> = tools
+                    .iter()
+                    .filter(|t| t.side_effect == SideEffect::Mutation)
+                    .map(|t| t.name.as_str())
+                    .collect();
+                if !mutation_tools.is_empty() {
+                    prompt.push_str(&format!(
+                        "You can edit files using: {}.\n",
+                        mutation_tools.join(", ")
+                    ));
+                }
+            }
+        }
+
+        prompt.push_str(&file_info);
+        prompt
+    }
+
     /// Resolve profile, collect messages, and spawn a streaming AI request.
     ///
     /// Shared by `submit_ai_chat_message` (initial send) and `process_tool_calls`
@@ -254,7 +319,12 @@ impl Editor {
             .clone();
 
         let model_name = profile.model.clone();
-        let system_prompt = chat.opts.system_prompt.clone();
+        let system_prompt = Some(
+            chat.opts
+                .system_prompt
+                .clone()
+                .unwrap_or_else(|| self.build_chat_system_prompt(&profile)),
+        );
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
 
         let messages: Vec<ChatMessage> = self
