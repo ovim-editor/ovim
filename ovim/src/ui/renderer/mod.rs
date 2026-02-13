@@ -7,6 +7,7 @@ pub use dashboard::MENU_ITEMS;
 pub mod ai_chat;
 mod buffer;
 pub mod cat_animation;
+pub mod conversation_tree;
 mod core;
 pub mod dashboard;
 mod file_tree_widget;

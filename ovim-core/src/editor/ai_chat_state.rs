@@ -1,4 +1,4 @@
-use crate::ai::chat_types::{ChatFocus, ChatOpts, StreamChunk, ToolCallInfo};
+use crate::ai::chat_types::{ChatFocus, ChatOpts, NodeId, StreamChunk, ToolCallInfo};
 use crate::mode::Mode;
 use std::collections::HashSet;
 
@@ -30,8 +30,12 @@ pub struct AiChatState {
     pub streaming_content: Option<String>,
     /// Accumulated streaming thinking (committed on Done).
     pub streaming_thinking: Option<String>,
-    /// Indices of thinking messages that are expanded in the UI.
-    pub expanded_thinking: HashSet<usize>,
+    /// Node IDs of thinking messages that are expanded in the UI.
+    pub expanded_thinking: HashSet<NodeId>,
+    /// Whether the tree panel sidebar is open.
+    pub tree_panel_open: bool,
+    /// Cursor index into the flattened DFS tree list.
+    pub tree_panel_cursor: usize,
     /// Tool calls accumulated during streaming.
     pub streaming_tool_calls: Vec<ToolCallInfo>,
     /// Number of tool-call iterations in current turn.
@@ -57,6 +61,8 @@ impl AiChatState {
             streaming_content: None,
             streaming_thinking: None,
             expanded_thinking: HashSet::new(),
+            tree_panel_open: false,
+            tree_panel_cursor: 0,
             streaming_tool_calls: Vec::new(),
             tool_iterations: 0,
         }
