@@ -40,12 +40,78 @@ impl SseLineBuffer {
 // OpenAI-compatible SSE parser
 // ---------------------------------------------------------------------------
 
+/// Accumulates incremental OpenAI tool call chunks.
+struct OpenAiToolAccumulator {
+    /// index -> (id, name, arguments_so_far)
+    calls: std::collections::HashMap<usize, (String, String, String)>,
+}
+
+impl OpenAiToolAccumulator {
+    fn new() -> Self {
+        Self {
+            calls: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Process a tool_calls array from a delta. Returns true if any tool call data was found.
+    fn process_delta(&mut self, tool_calls: &[serde_json::Value]) -> bool {
+        let mut found = false;
+        for tc in tool_calls {
+            let Some(index) = tc.get("index").and_then(|i| i.as_u64()) else {
+                continue;
+            };
+            let index = index as usize;
+            found = true;
+
+            let entry = self
+                .calls
+                .entry(index)
+                .or_insert_with(|| (String::new(), String::new(), String::new()));
+
+            if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                entry.0 = id.to_string();
+            }
+            if let Some(func) = tc.get("function") {
+                if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                    entry.1 = name.to_string();
+                }
+                if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                    entry.2.push_str(args);
+                }
+            }
+        }
+        found
+    }
+
+    /// Emit ToolCallComplete for all accumulated calls.
+    fn emit_all(&mut self, tx: &UnboundedSender<StreamChunk>) {
+        let mut indices: Vec<usize> = self.calls.keys().copied().collect();
+        indices.sort();
+        for idx in indices {
+            if let Some((id, name, args_str)) = self.calls.remove(&idx) {
+                let arguments =
+                    serde_json::from_str(&args_str).unwrap_or(serde_json::Value::String(args_str));
+                let _ = tx.send(StreamChunk::ToolCallComplete {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+}
+
 pub async fn parse_openai_stream<E: Display>(
     mut stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
     tx: UnboundedSender<StreamChunk>,
 ) {
     use std::future::poll_fn;
     let mut buf = SseLineBuffer::new();
+    let mut tool_acc = OpenAiToolAccumulator::new();
 
     loop {
         let item = poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await;
@@ -55,11 +121,28 @@ pub async fn parse_openai_stream<E: Display>(
                 let lines = buf.feed(&bytes);
                 for line in lines {
                     if line.starts_with("data: [DONE]") {
+                        // Emit any remaining tool calls before Done
+                        if !tool_acc.is_empty() {
+                            tool_acc.emit_all(&tx);
+                        }
                         let _ = tx.send(StreamChunk::Done);
                         return;
                     }
                     if let Some(json_str) = line.strip_prefix("data: ") {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                            let delta = value
+                                .get("choices")
+                                .and_then(|c| c.get(0))
+                                .and_then(|c| c.get("delta"));
+
+                            // Accumulate tool calls if present
+                            if let Some(tool_calls) = delta
+                                .and_then(|d| d.get("tool_calls"))
+                                .and_then(|t| t.as_array())
+                            {
+                                tool_acc.process_delta(tool_calls);
+                            }
+
                             // Check finish_reason
                             if let Some(finish) = value
                                 .get("choices")
@@ -67,30 +150,34 @@ pub async fn parse_openai_stream<E: Display>(
                                 .and_then(|c| c.get("finish_reason"))
                                 .and_then(|f| f.as_str())
                             {
-                                if finish == "stop" || finish == "length" {
-                                    // Extract any final delta content before Done
-                                    if let Some(content) = value
-                                        .get("choices")
-                                        .and_then(|c| c.get(0))
-                                        .and_then(|c| c.get("delta"))
-                                        .and_then(|d| d.get("content"))
-                                        .and_then(|c| c.as_str())
-                                    {
-                                        if !content.is_empty() {
-                                            let _ =
-                                                tx.send(StreamChunk::Content(content.to_string()));
-                                        }
+                                match finish {
+                                    "tool_calls" => {
+                                        // Emit all accumulated tool calls, then Done
+                                        tool_acc.emit_all(&tx);
+                                        let _ = tx.send(StreamChunk::Done);
+                                        return;
                                     }
-                                    let _ = tx.send(StreamChunk::Done);
-                                    return;
+                                    "stop" | "length" => {
+                                        // Extract any final delta content before Done
+                                        if let Some(content) = delta
+                                            .and_then(|d| d.get("content"))
+                                            .and_then(|c| c.as_str())
+                                        {
+                                            if !content.is_empty() {
+                                                let _ = tx.send(StreamChunk::Content(
+                                                    content.to_string(),
+                                                ));
+                                            }
+                                        }
+                                        let _ = tx.send(StreamChunk::Done);
+                                        return;
+                                    }
+                                    _ => {}
                                 }
                             }
 
                             // Extract delta content
-                            if let Some(content) = value
-                                .get("choices")
-                                .and_then(|c| c.get(0))
-                                .and_then(|c| c.get("delta"))
+                            if let Some(content) = delta
                                 .and_then(|d| d.get("content"))
                                 .and_then(|c| c.as_str())
                             {
@@ -108,6 +195,9 @@ pub async fn parse_openai_stream<E: Display>(
             }
             None => {
                 // Stream ended without [DONE] — graceful close
+                if !tool_acc.is_empty() {
+                    tool_acc.emit_all(&tx);
+                }
                 let _ = tx.send(StreamChunk::Done);
                 return;
             }
@@ -127,7 +217,12 @@ pub async fn parse_anthropic_stream<E: Display>(
 
     let mut buf = SseLineBuffer::new();
     let mut current_event_type = String::new();
-    let mut current_block_type = String::new(); // "thinking" or "text"
+    let mut current_block_type = String::new(); // "thinking", "text", or "tool_use"
+
+    // Accumulator for current tool_use block
+    let mut tool_id = String::new();
+    let mut tool_name = String::new();
+    let mut tool_input_json = String::new();
 
     loop {
         let item = poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await;
@@ -145,13 +240,25 @@ pub async fn parse_anthropic_stream<E: Display>(
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                             match current_event_type.as_str() {
                                 "content_block_start" => {
-                                    // Track block type
-                                    if let Some(block_type) = value
-                                        .get("content_block")
-                                        .and_then(|b| b.get("type"))
-                                        .and_then(|t| t.as_str())
-                                    {
-                                        current_block_type = block_type.to_string();
+                                    if let Some(block) = value.get("content_block") {
+                                        if let Some(block_type) =
+                                            block.get("type").and_then(|t| t.as_str())
+                                        {
+                                            current_block_type = block_type.to_string();
+                                            if block_type == "tool_use" {
+                                                tool_id = block
+                                                    .get("id")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                tool_name = block
+                                                    .get("name")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string();
+                                                tool_input_json.clear();
+                                            }
+                                        }
                                     }
                                 }
                                 "content_block_delta" => {
@@ -180,6 +287,15 @@ pub async fn parse_anthropic_stream<E: Display>(
                                                     }
                                                 }
                                             }
+                                            Some("input_json_delta") => {
+                                                // Accumulate partial JSON for tool_use
+                                                if let Some(partial) = delta
+                                                    .get("partial_json")
+                                                    .and_then(|v| v.as_str())
+                                                {
+                                                    tool_input_json.push_str(partial);
+                                                }
+                                            }
                                             _ => {
                                                 // Fallback: use block type to determine
                                                 if current_block_type == "thinking" {
@@ -192,6 +308,13 @@ pub async fn parse_anthropic_stream<E: Display>(
                                                                 text.to_string(),
                                                             ));
                                                         }
+                                                    }
+                                                } else if current_block_type == "tool_use" {
+                                                    if let Some(partial) = delta
+                                                        .get("partial_json")
+                                                        .and_then(|v| v.as_str())
+                                                    {
+                                                        tool_input_json.push_str(partial);
                                                     }
                                                 } else if let Some(text) =
                                                     delta.get("text").and_then(|t| t.as_str())
@@ -207,7 +330,19 @@ pub async fn parse_anthropic_stream<E: Display>(
                                     }
                                 }
                                 "content_block_stop" => {
-                                    // Block ended, reset type
+                                    if current_block_type == "tool_use" {
+                                        // Parse accumulated JSON and emit ToolCallComplete
+                                        let arguments = serde_json::from_str(&tool_input_json)
+                                            .unwrap_or(serde_json::Value::Object(
+                                                serde_json::Map::new(),
+                                            ));
+                                        let _ = tx.send(StreamChunk::ToolCallComplete {
+                                            id: std::mem::take(&mut tool_id),
+                                            name: std::mem::take(&mut tool_name),
+                                            arguments,
+                                        });
+                                        tool_input_json.clear();
+                                    }
                                     current_block_type.clear();
                                 }
                                 "message_stop" => {
@@ -538,5 +673,134 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "ok"));
         assert!(matches!(&chunks[1], StreamChunk::Error(s) if s == "connection reset"));
+    }
+
+    // ---- OpenAI tool call tests ----
+
+    #[tokio::test]
+    async fn openai_tool_call_single() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"start_line\\\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\": 1}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+        ]);
+        parse_openai_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 2); // ToolCallComplete + Done
+        match &chunks[0] {
+            StreamChunk::ToolCallComplete {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "read_file");
+                assert_eq!(arguments["start_line"], 1);
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[1], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn openai_tool_call_with_content() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Let me check.\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"read_diagnostics\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+        ]);
+        parse_openai_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 3); // Content + ToolCallComplete + Done
+        assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "Let me check."));
+        match &chunks[1] {
+            StreamChunk::ToolCallComplete { id, name, .. } => {
+                assert_eq!(id, "call_2");
+                assert_eq!(name, "read_diagnostics");
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[2], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn openai_multiple_tool_calls() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"read_diagnostics\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+        ]);
+        parse_openai_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 3); // 2 ToolCallComplete + Done
+        match &chunks[0] {
+            StreamChunk::ToolCallComplete { name, .. } => assert_eq!(name, "read_file"),
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        match &chunks[1] {
+            StreamChunk::ToolCallComplete { name, .. } => assert_eq!(name, "read_diagnostics"),
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[2], StreamChunk::Done));
+    }
+
+    // ---- Anthropic tool call tests ----
+
+    #[tokio::test]
+    async fn anthropic_tool_use_block() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "event: content_block_start\ndata: {\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"Checking.\"}}\n\n",
+            "event: content_block_stop\ndata: {}\n\n",
+            "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"read_file\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"start\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"_line\\\": 1}\"}}\n\n",
+            "event: content_block_stop\ndata: {}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        ]);
+        parse_anthropic_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 3); // Content + ToolCallComplete + Done
+        assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "Checking."));
+        match &chunks[1] {
+            StreamChunk::ToolCallComplete {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "toolu_1");
+                assert_eq!(name, "read_file");
+                assert_eq!(arguments["start_line"], 1);
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[2], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn anthropic_tool_use_only() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"read_diagnostics\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
+            "event: content_block_stop\ndata: {}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        ]);
+        parse_anthropic_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 2); // ToolCallComplete + Done
+        match &chunks[0] {
+            StreamChunk::ToolCallComplete { id, name, .. } => {
+                assert_eq!(id, "toolu_2");
+                assert_eq!(name, "read_diagnostics");
+            }
+            other => panic!("expected ToolCallComplete, got: {:?}", other),
+        }
+        assert!(matches!(&chunks[1], StreamChunk::Done));
     }
 }

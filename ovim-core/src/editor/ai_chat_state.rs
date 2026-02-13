@@ -1,4 +1,4 @@
-use crate::ai::chat_types::{ChatFocus, ChatOpts, StreamChunk};
+use crate::ai::chat_types::{ChatFocus, ChatOpts, StreamChunk, ToolCallInfo};
 use crate::mode::Mode;
 use std::collections::HashSet;
 
@@ -32,6 +32,10 @@ pub struct AiChatState {
     pub streaming_thinking: Option<String>,
     /// Indices of thinking messages that are expanded in the UI.
     pub expanded_thinking: HashSet<usize>,
+    /// Tool calls accumulated during streaming.
+    pub streaming_tool_calls: Vec<ToolCallInfo>,
+    /// Number of tool-call iterations in current turn.
+    pub tool_iterations: u8,
 }
 
 impl AiChatState {
@@ -53,6 +57,8 @@ impl AiChatState {
             streaming_content: None,
             streaming_thinking: None,
             expanded_thinking: HashSet::new(),
+            streaming_tool_calls: Vec::new(),
+            tool_iterations: 0,
         }
     }
 }

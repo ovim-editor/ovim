@@ -1,4 +1,5 @@
 use crate::ai::chat_types::ConversationTree;
+use crate::ai::tools::ToolRegistry;
 use crate::ai::{AiConfig, AiJobResult, ExtractionStrategy, PROFILE_LOCAL};
 use crate::mode::Mode;
 use std::collections::HashMap;
@@ -85,6 +86,8 @@ pub struct AiState {
     pub chat: Option<super::ai_chat_state::AiChatState>,
     /// Persistent conversations keyed by (buffer_id, conversation_name).
     pub conversations: HashMap<(usize, String), ConversationTree>,
+    /// Registry of all available tools.
+    pub tool_registry: ToolRegistry,
 }
 
 impl Default for AiState {
@@ -124,6 +127,7 @@ impl Default for AiState {
             last_observed_buffer_version: 0,
             chat: None,
             conversations: HashMap::new(),
+            tool_registry: ToolRegistry::new(),
         }
     }
 }
