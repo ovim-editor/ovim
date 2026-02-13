@@ -17,6 +17,16 @@ Reload:
 - `:ConfigReload` (ovim-specific)
 - `:reload`
 
+## AI Configuration
+
+AI is configured primarily through the Lua API (`vim.ai.setup(...)`) in `init.lua`.
+
+See [ai.md](ai.md) for:
+
+- Lua-first AI profile configuration
+- Secure API key setup without `~/.zshrc`
+- Legacy `ai.toml` compatibility and provider naming differences
+
 ## Options (`:set`)
 
 Options mirror Vim-style `:set` behavior.
@@ -69,4 +79,3 @@ You can override this location by setting:
 `OVIM_SESSION_DIR=/path/to/dir`
 
 This affects session file reads/writes and cleanup.
-
