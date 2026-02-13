@@ -772,7 +772,9 @@ impl Buffer {
 
         let deleted = self.delete_range(start_line, start_col, end_line, 0);
         self.cursor_mut().set_position(start_line, start_col);
-        self.clamp_cursor_col();
+        // validate_cursor_position clamps both line (may be past EOF after delete)
+        // and column, which is a superset of clamp_cursor_col
+        self.validate_cursor_position();
         deleted
     }
 
@@ -789,7 +791,9 @@ impl Buffer {
 
         let deleted = self.delete_range(start_line, 0, end_line, end_col);
         self.cursor_mut().set_position(start_line, 0);
-        self.clamp_cursor_col();
+        // validate_cursor_position clamps both line (may be past EOF after delete)
+        // and column, which is a superset of clamp_cursor_col
+        self.validate_cursor_position();
         deleted
     }
 
