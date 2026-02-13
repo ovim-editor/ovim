@@ -1498,8 +1498,7 @@ impl LspManager {
             return Ok(None);
         }
 
-        let tokens: lsp_types::SemanticTokens = serde_json::from_value(result)?;
-        Ok(Some(tokens))
+        Ok(parse_lsp_response(result, "textDocument/semanticTokens/full"))
     }
 
     /// Requests semantic tokens for a range within the document
@@ -1551,8 +1550,7 @@ impl LspManager {
             return Ok(None);
         }
 
-        let tokens: lsp_types::SemanticTokens = serde_json::from_value(result)?;
-        Ok(Some(tokens))
+        Ok(parse_lsp_response(result, "textDocument/semanticTokens/range"))
     }
 
     /// Gets the semantic tokens legend from a server's capabilities
