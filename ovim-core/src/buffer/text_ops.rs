@@ -2,7 +2,9 @@ use super::Buffer;
 use crate::change::{find_number_at_or_after, format_number, parse_number, TextObjectType};
 use crate::edit::Edit;
 use crate::textobjects::TextObjects;
-use crate::unicode::grapheme_count;
+use crate::unicode::{
+    char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col,
+};
 
 impl Buffer {
     /// Inserts text at a specific position (line, col)
@@ -280,9 +282,9 @@ impl Buffer {
             // Insert the joined line with newline
             self.insert_text_at(start_line, 0, &format!("{}\n", joined));
 
-            // Fix: Position cursor at the junction point (end of original first line)
-            // This is where the separator (space) was inserted
-            let junction_col = current_line_text.chars().count();
+            // Position cursor at the junction point (end of original first line).
+            // cursor.col() is a grapheme index, so use grapheme_count (not chars().count()).
+            let junction_col = grapheme_count(&current_line_text);
             self.cursor.set_position(start_line, junction_col);
         }
 
@@ -356,35 +358,53 @@ impl Buffer {
 
     /// Toggle case of character at cursor, advance cursor.
     /// Returns true if cursor advanced (more chars available on line).
+    ///
+    /// cursor.col() is a grapheme index; rope operations use char indices.
+    /// We convert at the boundary to handle multi-codepoint graphemes correctly.
     pub fn toggle_char_at_cursor(&mut self) -> bool {
         let line_idx = self.cursor().line();
-        let col = self.cursor().col();
+        let grapheme_col = self.cursor().col(); // grapheme index
         let Some(line) = self.line(line_idx) else {
             return false;
         };
         let line_text = line.trim_end_matches('\n');
-        let chars: Vec<char> = line_text.chars().collect();
-        if col >= chars.len() {
+        let line_grapheme_len = grapheme_count(line_text);
+        if grapheme_col >= line_grapheme_len {
             return false;
         }
 
-        let ch = chars[col];
-        let toggled = if ch.is_lowercase() {
-            ch.to_uppercase().to_string()
-        } else {
-            ch.to_lowercase().to_string()
-        };
-        self.delete_range(line_idx, col, line_idx, col + 1);
-        self.insert_text_at(line_idx, col, &toggled);
+        // Get the grapheme cluster at cursor (not a single char)
+        let grapheme = grapheme_at_index(line_text, grapheme_col).unwrap();
 
-        // Re-read line length: toggling may change char count (e.g. ß → SS)
-        let new_col = col + toggled.chars().count();
-        let new_line_len = self
+        // Toggle case of all chars in the grapheme (handles combining marks, etc.)
+        let toggled: String = grapheme
+            .chars()
+            .map(|ch| {
+                if ch.is_lowercase() {
+                    ch.to_uppercase().to_string()
+                } else if ch.is_uppercase() {
+                    ch.to_lowercase().to_string()
+                } else {
+                    ch.to_string()
+                }
+            })
+            .collect();
+
+        // Convert grapheme col → char col for rope operations
+        let char_col = grapheme_to_char_col(line_text, grapheme_col);
+        let grapheme_char_len = grapheme.chars().count();
+        self.delete_range(line_idx, char_col, line_idx, char_col + grapheme_char_len);
+        self.insert_text_at(line_idx, char_col, &toggled);
+
+        // Re-read line: toggling may change grapheme count (e.g. ß → SS)
+        let new_line_grapheme_len = self
             .line(line_idx)
-            .map(|l| l.trim_end_matches('\n').chars().count())
+            .map(|l| grapheme_count(l.trim_end_matches('\n')))
             .unwrap_or(0);
-        if new_col < new_line_len {
-            self.cursor_mut().set_col(new_col);
+        let toggled_grapheme_count = grapheme_count(&toggled);
+        let new_grapheme_col = grapheme_col + toggled_grapheme_count;
+        if new_grapheme_col < new_line_grapheme_len {
+            self.cursor_mut().set_col(new_grapheme_col);
             true
         } else {
             false
@@ -392,10 +412,12 @@ impl Buffer {
     }
 
     /// Gets the word under the cursor
-    /// Returns the word and its (start_col, end_col) on the current line
+    /// Returns the word and its (start_col, end_col) as char indices on the current line.
+    ///
+    /// cursor.col() is a grapheme index; we convert to char index for the chars vec lookup.
     pub fn word_under_cursor(&self) -> Option<(String, usize, usize)> {
         let line_idx = self.cursor.line();
-        let col = self.cursor.col();
+        let grapheme_col = self.cursor.col(); // grapheme index
 
         if line_idx >= self.line_count() {
             return None;
@@ -407,25 +429,29 @@ impl Buffer {
         // Build a chars vector from the slice (excluding newline)
         let chars: Vec<char> = line_slice.chars().take_while(|&c| c != '\n').collect();
 
-        if chars.is_empty() || col >= chars.len() {
+        // Convert grapheme col → char col for indexing into chars vec
+        let line_text: String = chars.iter().collect();
+        let char_col = grapheme_to_char_col(&line_text, grapheme_col);
+
+        if chars.is_empty() || char_col >= chars.len() {
             return None;
         }
 
         // Check if cursor is on a word character
         let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
 
-        if !is_word_char(chars[col]) {
+        if !is_word_char(chars[char_col]) {
             return None;
         }
 
-        // Find start of word
-        let mut start = col;
+        // Find start of word (char indices)
+        let mut start = char_col;
         while start > 0 && is_word_char(chars[start - 1]) {
             start -= 1;
         }
 
-        // Find end of word
-        let mut end = col;
+        // Find end of word (char indices)
+        let mut end = char_col;
         while end < chars.len() && is_word_char(chars[end]) {
             end += 1;
         }
@@ -437,16 +463,24 @@ impl Buffer {
 
     /// Finds the number at/after cursor, applies delta, replaces it in-place.
     /// Positions cursor on the last digit of the new number.
+    ///
+    /// cursor.col() is a grapheme index; find_number_at_or_after works in char indices.
+    /// We convert at the boundaries.
     pub fn modify_number_at_cursor(&mut self, delta: i64) {
         let line_idx = self.cursor().line();
-        let col = self.cursor().col();
+        let grapheme_col = self.cursor().col(); // grapheme index
 
         let Some(line) = self.line(line_idx) else {
             return;
         };
         let line_text = line.trim_end_matches('\n');
 
-        let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, col) else {
+        // Convert grapheme col → char col for find_number_at_or_after (char-based)
+        let char_col = grapheme_to_char_col(line_text, grapheme_col);
+
+        let Some((start_col, end_col, number_str)) =
+            find_number_at_or_after(line_text, char_col)
+        else {
             return;
         };
         let Ok((mut value, base, prefix_len)) = parse_number(&number_str) else {
@@ -462,11 +496,16 @@ impl Buffer {
             new_number_str = format!("+{}", new_number_str);
         }
 
+        // start_col/end_col are char indices — correct for delete_range/insert_text_at
         self.delete_range(line_idx, start_col, line_idx, end_col);
         self.insert_text_at(line_idx, start_col, &new_number_str);
 
-        let new_end_col = start_col + new_number_str.chars().count() - 1;
-        self.cursor_mut().set_position(line_idx, new_end_col);
+        // Convert the char-based end position → grapheme for cursor
+        let new_char_end_col = start_col + new_number_str.chars().count() - 1;
+        let new_line = self.line(line_idx).unwrap_or_default();
+        let new_line_text = new_line.trim_end_matches('\n');
+        let new_grapheme_col = char_to_grapheme_col(new_line_text, new_char_end_col);
+        self.cursor_mut().set_position(line_idx, new_grapheme_col);
     }
 
     /// Finds and deletes a text object at the current cursor position.
