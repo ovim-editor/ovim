@@ -1,9 +1,18 @@
-/// Represents a cursor position in a buffer
+/// Represents a cursor position in a buffer.
+///
+/// **Important column semantics**: `col` is a **grapheme cluster index**, not a char index.
+/// A grapheme cluster is what a user perceives as a single character (e.g., 👨‍👩‍👧‍👦 is
+/// 1 grapheme but 7 Unicode scalar values). Cursor movement, clamping, and all
+/// code that sets cursor positions should work in grapheme space.
+///
+/// When passing a cursor column to rope operations (which work in char indices),
+/// convert using `grapheme_to_char_col()`. When converting rope results back to
+/// cursor positions, use `char_to_grapheme_col()`. Both are in `crate::unicode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
     /// Line number (0-indexed)
     line: usize,
-    /// Column number (0-indexed, in characters not bytes)
+    /// Column number (0-indexed, in grapheme clusters — NOT chars or bytes)
     col: usize,
     /// Visual column for handling tabs (used for display)
     visual_col: usize,
@@ -27,7 +36,9 @@ impl Cursor {
         self.line
     }
 
-    /// Gets the column number
+    /// Gets the column number (grapheme cluster index, 0-indexed).
+    ///
+    /// Convert to char index via `grapheme_to_char_col()` before passing to rope operations.
     pub fn col(&self) -> usize {
         self.col
     }

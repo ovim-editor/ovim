@@ -1,5 +1,6 @@
 use super::Editor;
 use crate::editor::Search;
+use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col};
 
 impl Editor {
     /// Gets the search buffer
@@ -106,9 +107,10 @@ impl Editor {
             let mut search_clone = search.clone();
 
             // For forward search, start from col+1; for backward, start from col-1 or col
+            // cursor_col is a grapheme index — use grapheme_count for line length comparison
             let (search_line, search_col) = if is_forward {
                 if let Some(line) = self.buffer().line(cursor_line) {
-                    let line_len = line.trim_end_matches('\n').chars().count();
+                    let line_len = grapheme_count(line.trim_end_matches('\n'));
                     if cursor_col + 1 >= line_len {
                         // OV-00040: Advance to next line instead of col 0 of same line
                         let next_line = (cursor_line + 1) % self.buffer().line_count().max(1);
@@ -158,8 +160,9 @@ impl Editor {
                 }
             } else {
                 // Original was backward, now forward - clamp to avoid exceeding line length
+                // cursor_col is grapheme index — use grapheme_count for comparison
                 if let Some(line) = self.buffer().line(cursor_line) {
-                    let line_len = line.trim_end_matches('\n').chars().count();
+                    let line_len = grapheme_count(line.trim_end_matches('\n'));
                     if cursor_col + 1 >= line_len {
                         // OV-00040: Advance to next line instead of col 0 of same line
                         let next_line = (cursor_line + 1) % self.buffer().line_count().max(1);
@@ -212,25 +215,31 @@ impl Editor {
         if let Some(ref search) = self.search.current_search {
             let mut search_clone = search.clone();
 
-            // In normal mode, check if cursor is within a match at current position
+            // In normal mode, check if cursor is within a match at current position.
+            // find_all_in_line returns char-based cols; cursor_col is grapheme-based.
+            // Convert cursor_col → char for comparison, then char → grapheme for positions.
             if !in_visual_mode {
                 if let Some(line_text) = self.buffer().line(cursor_line) {
+                    let line_trimmed = line_text.trim_end_matches('\n');
+                    let cursor_char_col = grapheme_to_char_col(line_trimmed, cursor_col);
                     let matches = search_clone.find_all_in_line(&line_text);
                     let cursor_in_match = matches.iter().any(|(start_col, end_col)| {
-                        cursor_col >= *start_col && cursor_col < *end_col
+                        cursor_char_col >= *start_col && cursor_char_col < *end_col
                     });
 
                     if cursor_in_match {
                         // If cursor is within a match, select the current match
                         if let Some((start_col, end_col)) = matches
                             .iter()
-                            .find(|(start, end)| cursor_col >= *start && cursor_col < *end)
+                            .find(|(start, end)| cursor_char_col >= *start && cursor_char_col < *end)
                         {
-                            // In normal mode, enter visual mode and select this match
-                            self.set_visual_start(cursor_line, *start_col);
+                            // Convert char cols → grapheme for visual start and cursor
+                            let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
+                            let end_grapheme = char_to_grapheme_col(line_trimmed, end_col - 1);
+                            self.set_visual_start(cursor_line, start_grapheme);
                             self.buffer_mut()
                                 .cursor_mut()
-                                .set_position(cursor_line, end_col - 1);
+                                .set_position(cursor_line, end_grapheme);
                             self.set_mode(Mode::Visual);
                             return true;
                         }
@@ -243,8 +252,9 @@ impl Editor {
             if let Some((line, col, match_text)) =
                 search_clone.find_next(self.buffer(), cursor_line, search_col)
             {
-                let match_len = match_text.chars().count();
-                let match_end = col + match_len - 1;
+                // col is now grapheme-based (from find_next); use grapheme_count for match length
+                let match_grapheme_len = grapheme_count(&match_text);
+                let match_end = col + match_grapheme_len - 1;
 
                 if in_visual_mode {
                     // In visual mode, extend selection to include the next match
@@ -292,24 +302,26 @@ impl Editor {
             );
 
             // Find the previous match
-            // If cursor is within a match, start searching from before that match
+            // If cursor is within a match, start searching from before that match.
+            // find_all_in_line returns char-based cols; convert for cursor comparison.
             let search_col = if in_visual_mode {
                 cursor_col
             } else {
-                // Check if cursor is within a match - if so, search from before it
                 let mut col = if cursor_col > 0 { cursor_col - 1 } else { 0 };
                 if let Some(line_text) = self.buffer().line(cursor_line) {
+                    let line_trimmed = line_text.trim_end_matches('\n');
+                    let cursor_char_col = grapheme_to_char_col(line_trimmed, cursor_col);
                     let matches = rev_search.find_all_in_line(&line_text);
                     if let Some((start_col, _end_col)) = matches
                         .iter()
-                        .find(|(start, end)| cursor_col >= *start && cursor_col < *end)
+                        .find(|(start, end)| cursor_char_col >= *start && cursor_char_col < *end)
                     {
-                        // Cursor is inside a match - search from before this match's start
-                        col = if *start_col > 0 {
-                            start_col - 1
+                        // Cursor is inside a match — search from before this match's start
+                        // Convert char-based start_col to grapheme for the search_col
+                        let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
+                        col = if start_grapheme > 0 {
+                            start_grapheme - 1
                         } else {
-                            // Match starts at col 0 — find_backward with from_col=0
-                            // searches empty text on current line, then wraps to previous lines
                             0
                         };
                     }
@@ -319,8 +331,9 @@ impl Editor {
             if let Some((line, col, match_text)) =
                 rev_search.find_next(self.buffer(), cursor_line, search_col)
             {
-                let match_len = match_text.chars().count();
-                let match_end = col + match_len - 1;
+                // col is now grapheme-based (from find_next); use grapheme_count for match length
+                let match_grapheme_len = grapheme_count(&match_text);
+                let match_end = col + match_grapheme_len - 1;
 
                 if in_visual_mode {
                     // In visual mode, extend selection to include the previous match

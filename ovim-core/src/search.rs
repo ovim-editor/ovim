@@ -1,4 +1,5 @@
 use crate::buffer::Buffer;
+use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col};
 use regex::{Regex, RegexBuilder};
 
 /// Represents a search query with its direction
@@ -64,8 +65,10 @@ impl Search {
         self.forward
     }
 
-    /// Finds the next match starting from the given position
-    /// Returns (line, col, match_text) if found
+    /// Finds the next match starting from the given position.
+    ///
+    /// `from_col` is a **grapheme** index (matching cursor.col() semantics).
+    /// The returned `col` is also a **grapheme** index suitable for cursor positioning.
     pub fn find_next(
         &mut self,
         buffer: &Buffer,
@@ -75,11 +78,28 @@ impl Search {
         let regex = self.regex.as_ref()?;
         let forward = self.forward;
 
-        let result = if forward {
-            self.find_forward(buffer, regex, from_line, from_col)
+        // Convert from_col from grapheme to char for internal search
+        let from_col_char = if let Some(line_text) = buffer.line(from_line) {
+            grapheme_to_char_col(line_text.trim_end_matches('\n'), from_col)
         } else {
-            self.find_backward(buffer, regex, from_line, from_col)
+            from_col
         };
+
+        let result = if forward {
+            self.find_forward(buffer, regex, from_line, from_col_char)
+        } else {
+            self.find_backward(buffer, regex, from_line, from_col_char)
+        };
+
+        // Convert returned col from char to grapheme
+        let result = result.map(|(line, char_col, match_text)| {
+            let grapheme_col = if let Some(line_text) = buffer.line(line) {
+                char_to_grapheme_col(line_text.trim_end_matches('\n'), char_col)
+            } else {
+                char_col
+            };
+            (line, grapheme_col, match_text)
+        });
 
         if let Some((line, col, _)) = result {
             self.last_match = Some((line, col));
