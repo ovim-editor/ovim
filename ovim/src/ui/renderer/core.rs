@@ -176,10 +176,24 @@ fn render_buffer_area(
         .unwrap_or(false);
 
     if has_splits {
-        // For splits, use buffer_chunk width for wrap map (focused window area
-        // isn't known until render_window_tree runs)
+        // For splits, apply textwidth narrowing before computing wrap map width,
+        // matching the single-window path. Without this, the wrap map gets the
+        // full buffer_chunk width and wraps at the wrong column. (OV-00019)
         if editor.options.wrap {
-            let est_layout = BufferLayout::compute(editor, areas.buffer_chunk);
+            let est_area = if let Some(tw) = editor.options.textwidth {
+                let max_w = tw as u16;
+                if areas.buffer_chunk.width > max_w {
+                    Rect {
+                        width: max_w,
+                        ..areas.buffer_chunk
+                    }
+                } else {
+                    areas.buffer_chunk
+                }
+            } else {
+                areas.buffer_chunk
+            };
+            let est_layout = BufferLayout::compute(editor, est_area);
             editor.ensure_wrap_map(est_layout.text_width);
         }
 
