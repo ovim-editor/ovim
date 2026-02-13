@@ -87,7 +87,7 @@ impl ToolRegistry {
     pub fn tools_for_scope(&self, caps: &Capabilities) -> Vec<&ToolDefinition> {
         self.tools
             .values()
-            .filter(|t| caps.contains(&t.required_scope))
+            .filter(|t| caps.contains(&t.required_scope) && caps.allows_side_effect(t.side_effect))
             .collect()
     }
 
@@ -101,8 +101,8 @@ impl ToolRegistry {
         self.tools
             .values()
             .filter(|t| {
-                // Must fit within capabilities
-                if !caps.contains(&t.required_scope) {
+                // Must fit within capabilities (scope + side effect)
+                if !caps.contains(&t.required_scope) || !caps.allows_side_effect(t.side_effect) {
                     return false;
                 }
                 // If profile has an explicit tool list, tool must be in it
@@ -172,12 +172,13 @@ mod tests {
             file_scope: FileScope::File,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let tools = reg.tools_for_scope(&caps);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(!names.contains(&"search_project")); // Needs Project scope
-        assert!(names.contains(&"run_shell")); // File scope is enough, shell not required by required_scope
+        assert!(!names.contains(&"run_shell")); // External side effect blocked (shell=false)
     }
 
     #[test]
@@ -196,6 +197,7 @@ mod tests {
             file_scope: FileScope::File,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
 
         // Profile with explicit tool list
@@ -231,5 +233,47 @@ mod tests {
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("read_selection").is_some());
         assert!(reg.get("read_diagnostics").is_some());
+        assert!(reg.get("search_project").is_some());
+        assert!(reg.get("list_files").is_some());
+        assert!(reg.get("edit_range").is_some());
+        assert!(reg.get("insert_lines").is_some());
+        assert!(reg.get("delete_lines").is_some());
+    }
+
+    #[test]
+    fn mutation_tools_excluded_when_allow_edits_false() {
+        let reg = ToolRegistry::new();
+        let caps = Capabilities {
+            file_scope: FileScope::Project,
+            shell: true,
+            network: true,
+            allow_mutations: false,
+        };
+        let tools = reg.tools_for_scope(&caps);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        // Read tools present
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"search_project"));
+        assert!(names.contains(&"list_files"));
+        // Mutation tools excluded
+        assert!(!names.contains(&"edit_range"));
+        assert!(!names.contains(&"insert_lines"));
+        assert!(!names.contains(&"delete_lines"));
+    }
+
+    #[test]
+    fn mutation_tools_included_when_allow_edits_true() {
+        let reg = ToolRegistry::new();
+        let caps = Capabilities {
+            file_scope: FileScope::Project,
+            shell: true,
+            network: true,
+            allow_mutations: true,
+        };
+        let tools = reg.tools_for_scope(&caps);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"edit_range"));
+        assert!(names.contains(&"insert_lines"));
+        assert!(names.contains(&"delete_lines"));
     }
 }

@@ -5,17 +5,138 @@
 
 use super::picker::PickerResult;
 use grep_matcher::Matcher;
-use grep_regex::RegexMatcherBuilder;
+use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
 use ignore::WalkBuilder;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Maximum number of results to prevent OOM on broad queries.
 const MAX_RESULTS: usize = 5000;
+
+// -----------------------------------------------------------------
+// Shared search primitives
+// -----------------------------------------------------------------
+
+/// Build a smart-case regex matcher from a query string.
+///
+/// Uses case-insensitive matching when the query is all lowercase.
+/// Falls back to literal (escaped) matching if the query is invalid regex.
+fn build_grep_matcher(query: &str) -> Result<RegexMatcher, ()> {
+    let case_insensitive = query.chars().all(|c| !c.is_uppercase());
+
+    RegexMatcherBuilder::new()
+        .case_insensitive(case_insensitive)
+        .build(query)
+        .or_else(|_| {
+            RegexMatcherBuilder::new()
+                .case_insensitive(case_insensitive)
+                .build(&regex::escape(query))
+        })
+        .map_err(|_| ())
+}
+
+/// Build a directory walker builder with standard gitignore and hidden file settings.
+pub(crate) fn build_walker(root: &Path) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true);
+    builder
+}
+
+/// Build a searcher that skips binary files.
+fn build_searcher() -> Searcher {
+    let mut searcher = Searcher::new();
+    searcher.set_binary_detection(grep_searcher::BinaryDetection::quit(0));
+    searcher
+}
+
+/// Extract the char-based column of the first match within a line.
+fn match_column(matcher: &RegexMatcher, line_content: &str) -> usize {
+    matcher
+        .find(line_content.as_bytes())
+        .ok()
+        .flatten()
+        .map(|m| line_content[..m.start()].chars().count())
+        .unwrap_or(0)
+}
+
+// -----------------------------------------------------------------
+// Public API
+// -----------------------------------------------------------------
+
+/// A single grep match for synchronous tool use.
+#[derive(Debug, Clone)]
+pub struct GrepMatch {
+    pub rel_path: String,
+    pub line: usize,     // 1-indexed
+    pub col: usize,      // 0-indexed
+    pub content: String, // matched line content, trimmed
+}
+
+/// Synchronous grep search for tool handlers.
+///
+/// Uses the same matching logic as `spawn_grep_search` but returns results
+/// directly (no channel, no cancel flag). Capped by `max_results`.
+pub fn grep_search_sync(query: &str, base_dir: &Path, max_results: usize) -> Vec<GrepMatch> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let matcher = match build_grep_matcher(query) {
+        Ok(m) => m,
+        Err(()) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+
+    for entry in build_walker(base_dir).build() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+            continue;
+        }
+
+        let file_path = entry.path().to_path_buf();
+
+        let _ = build_searcher().search_path(
+            &matcher,
+            &file_path,
+            UTF8(|line_num, line_content| {
+                if results.len() >= max_results {
+                    return Ok(false);
+                }
+
+                results.push(GrepMatch {
+                    rel_path: file_path
+                        .strip_prefix(base_dir)
+                        .unwrap_or(&file_path)
+                        .to_string_lossy()
+                        .to_string(),
+                    line: line_num as usize,
+                    col: match_column(&matcher, line_content),
+                    content: line_content.trim_end().to_string(),
+                });
+
+                Ok(true)
+            }),
+        );
+
+        if results.len() >= max_results {
+            break;
+        }
+    }
+
+    results
+}
 
 /// Spawns an in-process grep search in a blocking thread.
 ///
@@ -37,23 +158,9 @@ pub fn spawn_grep_search(
             return;
         }
 
-        // Smart-case: case-insensitive when query is all lowercase
-        let case_insensitive = query.chars().all(|c| !c.is_uppercase());
-
-        // Build regex matcher, falling back to literal if regex is invalid
-        let matcher = RegexMatcherBuilder::new()
-            .case_insensitive(case_insensitive)
-            .build(&query)
-            .or_else(|_| {
-                // Partial typing like `foo(` produces invalid regex — escape and retry
-                RegexMatcherBuilder::new()
-                    .case_insensitive(case_insensitive)
-                    .build(&regex::escape(&query))
-            });
-
-        let matcher = match matcher {
+        let matcher = match build_grep_matcher(&query) {
             Ok(m) => m,
-            Err(_) => return,
+            Err(()) => return,
         };
 
         let mut roots: Vec<(PathBuf, bool)> = Vec::new();
@@ -67,13 +174,9 @@ pub fn spawn_grep_search(
         for (root, is_preferred_root) in roots {
             let preferred_for_filter = preferred_dir.clone();
             let base_for_filter = base_dir.clone();
-            let walker = WalkBuilder::new(&root)
-                .hidden(true) // skip hidden files
-                .git_ignore(true)
-                .git_global(true)
-                .git_exclude(true)
+            let walker = build_walker(&root)
                 .filter_entry(move |entry| {
-                    // For the base-dir pass, skip the preferred subtree entirely to avoid duplicates.
+                    // For the base-dir pass, skip the preferred subtree to avoid duplicates.
                     if !is_preferred_root && preferred_for_filter != base_for_filter {
                         if entry.path().starts_with(&preferred_for_filter) {
                             return false;
@@ -93,66 +196,43 @@ pub fn spawn_grep_search(
                     Err(_) => continue,
                 };
 
-                // Skip directories
                 if entry.file_type().map_or(true, |ft| !ft.is_file()) {
                     continue;
                 }
 
                 let file_path = entry.path().to_path_buf();
-
-                let mut searcher = Searcher::new();
-                searcher.set_binary_detection(grep_searcher::BinaryDetection::quit(0));
-
-                let tx_ref = &tx;
-                let cancel_ref = &cancel;
-                let base_dir_ref = &base_dir;
                 let result_count_ref = &mut result_count;
 
-                let _ = searcher.search_path(
+                let _ = build_searcher().search_path(
                     &matcher,
                     &file_path,
                     UTF8(|line_num, line_content| {
-                        if cancel_ref.load(Ordering::Relaxed) {
-                            return Ok(false); // stop searching this file
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(false);
                         }
-
                         if *result_count_ref >= MAX_RESULTS {
                             return Ok(false);
                         }
 
                         let rel_path = file_path
-                            .strip_prefix(base_dir_ref)
+                            .strip_prefix(&base_dir)
                             .unwrap_or(&file_path)
                             .to_string_lossy();
-                        let abs_path = file_path.to_string_lossy();
-
-                        let content = line_content.trim_end().to_string();
                         let line = line_num as usize;
-
-                        // Find match position within the line for column positioning
-                        let col = matcher
-                            .find(line_content.as_bytes())
-                            .ok()
-                            .flatten()
-                            .map(|m| {
-                                // Convert byte offset to char offset
-                                line_content[..m.start()].chars().count()
-                            })
-                            .unwrap_or(0);
+                        let col = match_column(&matcher, line_content);
 
                         let result = PickerResult {
                             display: format!("{}:{}:{}", rel_path, line, col + 1),
-                            location: abs_path.to_string(),
+                            location: file_path.to_string_lossy().to_string(),
                             line: line.saturating_sub(1), // 0-indexed
                             col,
                             match_positions: Vec::new(),
-                            content: Some(content),
+                            content: Some(line_content.trim_end().to_string()),
                         };
 
                         *result_count_ref += 1;
 
-                        // If the receiver is dropped, stop searching
-                        if tx_ref.blocking_send(result).is_err() {
+                        if tx.blocking_send(result).is_err() {
                             return Ok(false);
                         }
 
@@ -223,5 +303,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn grep_search_sync_finds_matches() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.txt"), "hello world\nfoo bar\n").unwrap();
+        fs::write(root.join("b.txt"), "hello again\n").unwrap();
+
+        let results = grep_search_sync("hello", root, 100);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.content.contains("hello")));
+        // Lines are 1-indexed
+        assert!(results.iter().all(|r| r.line >= 1));
+    }
+
+    #[test]
+    fn grep_search_sync_respects_max_results() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let content: String = (0..100).map(|i| format!("needle {i}\n")).collect();
+        fs::write(root.join("big.txt"), &content).unwrap();
+
+        let results = grep_search_sync("needle", root, 10);
+        assert_eq!(results.len(), 10);
+    }
+
+    #[test]
+    fn grep_search_sync_empty_query_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let results = grep_search_sync("", dir.path(), 100);
+        assert!(results.is_empty());
     }
 }

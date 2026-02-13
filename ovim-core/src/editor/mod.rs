@@ -1,8 +1,10 @@
 mod ai_agent;
 mod ai_chat;
+mod ai_chat_mutations;
 pub(crate) mod ai_chat_state;
+mod ai_chat_tools;
 mod ai_context;
-mod ai_integration;
+pub(crate) mod ai_integration;
 mod ai_state;
 mod blame_commands;
 mod buffer_manager;

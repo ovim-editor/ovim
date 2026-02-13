@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
+use crate::ai::tools::SideEffect;
 use crate::ai::types::FileScope;
 
 /// Capabilities granted to a tool execution context.
@@ -10,6 +11,7 @@ pub struct Capabilities {
     pub file_scope: FileScope,
     pub shell: bool,
     pub network: bool,
+    pub allow_mutations: bool,
 }
 
 impl Capabilities {
@@ -76,6 +78,15 @@ impl Capabilities {
         }
     }
 
+    /// Whether this capability set allows the given side effect.
+    pub fn allows_side_effect(&self, effect: SideEffect) -> bool {
+        match effect {
+            SideEffect::Read => true,
+            SideEffect::Mutation => self.allow_mutations,
+            SideEffect::External => self.shell,
+        }
+    }
+
     /// Whether this scope satisfies the given requirement.
     pub fn contains(&self, required: &RequiredScope) -> bool {
         self.file_scope >= required.file_scope
@@ -89,6 +100,7 @@ impl Capabilities {
             file_scope: std::cmp::min(a.file_scope, b.file_scope),
             shell: a.shell && b.shell,
             network: a.network && b.network,
+            allow_mutations: a.allow_mutations && b.allow_mutations,
         }
     }
 }
@@ -154,6 +166,7 @@ mod tests {
             file_scope: FileScope::File,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/src/main.rs", "/src");
         assert!(caps.validate_path(Path::new("/src/main.rs"), &ctx).is_ok());
@@ -165,6 +178,7 @@ mod tests {
             file_scope: FileScope::File,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/src/main.rs", "/src");
         assert!(caps.validate_path(Path::new("/src/lib.rs"), &ctx).is_err());
@@ -176,6 +190,7 @@ mod tests {
             file_scope: FileScope::Project,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/project/src/main.rs", "/project");
         assert!(caps
@@ -189,6 +204,7 @@ mod tests {
             file_scope: FileScope::Project,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/project/src/main.rs", "/project");
         assert!(caps
@@ -202,6 +218,7 @@ mod tests {
             file_scope: FileScope::Any,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/src/main.rs", "/src");
         assert!(caps
@@ -215,6 +232,7 @@ mod tests {
             file_scope: FileScope::Project,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/project/src/main.rs", "/project");
         assert!(caps
@@ -228,6 +246,7 @@ mod tests {
             file_scope: FileScope::Selection,
             shell: false,
             network: false,
+            allow_mutations: true,
         };
         let ctx = ctx_with_file("/src/main.rs", "/src");
         assert!(caps.validate_path(Path::new("/src/main.rs"), &ctx).is_err());
@@ -239,6 +258,7 @@ mod tests {
             file_scope: FileScope::Project,
             shell: true,
             network: false,
+            allow_mutations: true,
         };
         let req_ok = RequiredScope {
             file_scope: FileScope::File,
@@ -268,16 +288,19 @@ mod tests {
             file_scope: FileScope::Project,
             shell: true,
             network: true,
+            allow_mutations: true,
         };
         let b = Capabilities {
             file_scope: FileScope::File,
             shell: false,
             network: true,
+            allow_mutations: false,
         };
         let result = Capabilities::intersect(&a, &b);
         assert_eq!(result.file_scope, FileScope::File);
         assert!(!result.shell);
         assert!(result.network);
+        assert!(!result.allow_mutations);
     }
 
     #[test]
@@ -286,8 +309,46 @@ mod tests {
             file_scope: FileScope::File,
             shell: true,
             network: false,
+            allow_mutations: true,
         };
         assert!(caps.check_shell().is_ok());
         assert!(caps.check_network().is_err());
+    }
+
+    #[test]
+    fn allows_side_effect_read_always_allowed() {
+        let caps = Capabilities {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+            allow_mutations: false,
+        };
+        assert!(caps.allows_side_effect(SideEffect::Read));
+    }
+
+    #[test]
+    fn allows_side_effect_mutation_respects_flag() {
+        let mut caps = Capabilities {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+            allow_mutations: false,
+        };
+        assert!(!caps.allows_side_effect(SideEffect::Mutation));
+        caps.allow_mutations = true;
+        assert!(caps.allows_side_effect(SideEffect::Mutation));
+    }
+
+    #[test]
+    fn allows_side_effect_external_respects_shell() {
+        let mut caps = Capabilities {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+            allow_mutations: true,
+        };
+        assert!(!caps.allows_side_effect(SideEffect::External));
+        caps.shell = true;
+        assert!(caps.allows_side_effect(SideEffect::External));
     }
 }
