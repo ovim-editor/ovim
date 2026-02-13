@@ -4,9 +4,38 @@ pub const PROFILE_LOCAL: &str = "local";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FileScope {
+    /// Only the current selection.
+    Selection,
+    /// Current file only.
     #[default]
     File,
+    /// All files in the project.
     Project,
+    /// Unrestricted file access.
+    Any,
+}
+
+impl FileScope {
+    fn ordinal(self) -> u8 {
+        match self {
+            Self::Selection => 0,
+            Self::File => 1,
+            Self::Project => 2,
+            Self::Any => 3,
+        }
+    }
+}
+
+impl PartialOrd for FileScope {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FileScope {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.ordinal().cmp(&other.ordinal())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,6 +6,8 @@ pub enum ChatRole {
     Assistant,
     Thinking,
     Error,
+    /// Tool result message.
+    Tool,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +34,14 @@ pub enum StreamChunk {
     Error(String),
 }
 
+/// Metadata about a tool call made by the assistant.
+#[derive(Debug, Clone)]
+pub struct ToolCallInfo {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: ChatRole,
@@ -39,6 +49,10 @@ pub struct ChatMessage {
     /// Which model generated this (assistant messages only).
     pub model: Option<String>,
     pub timestamp: Instant,
+    /// Tool calls made by this assistant message.
+    pub tool_calls: Vec<ToolCallInfo>,
+    /// For Tool role: which tool call this is a result for.
+    pub tool_call_id: Option<String>,
 }
 
 /// M1: linear append-only conversation. M6 adds branching.
@@ -63,6 +77,8 @@ impl ConversationTree {
             content,
             model: None,
             timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
         });
     }
 
@@ -72,6 +88,35 @@ impl ConversationTree {
             content,
             model: Some(model),
             timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        });
+    }
+
+    pub fn append_assistant_message_with_tools(
+        &mut self,
+        content: String,
+        model: String,
+        tool_calls: Vec<ToolCallInfo>,
+    ) {
+        self.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content,
+            model: Some(model),
+            timestamp: Instant::now(),
+            tool_calls,
+            tool_call_id: None,
+        });
+    }
+
+    pub fn append_tool_result(&mut self, tool_call_id: String, content: String) {
+        self.messages.push(ChatMessage {
+            role: ChatRole::Tool,
+            content,
+            model: None,
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: Some(tool_call_id),
         });
     }
 
@@ -81,6 +126,8 @@ impl ConversationTree {
             content,
             model: Some(model),
             timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
         });
     }
 
@@ -90,6 +137,8 @@ impl ConversationTree {
             content,
             model: None,
             timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
         });
     }
 

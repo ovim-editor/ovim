@@ -1,0 +1,198 @@
+use serde_json::json;
+
+use super::{ParamType, ToolDefinition};
+
+/// Generate tool schemas in OpenAI function calling format.
+pub fn tools_to_openai_schema(tools: &[&ToolDefinition]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": params_to_json_schema(&tool.parameters),
+                }
+            })
+        })
+        .collect()
+}
+
+/// Generate tool schemas in Anthropic tool use format.
+pub fn tools_to_anthropic_schema(tools: &[&ToolDefinition]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": params_to_json_schema(&tool.parameters),
+            })
+        })
+        .collect()
+}
+
+fn params_to_json_schema(params: &[super::ToolParam]) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+
+    for param in params {
+        let schema = param_type_to_schema(&param.param_type, &param.description);
+        properties.insert(param.name.clone(), schema);
+        if param.required {
+            required.push(json!(param.name));
+        }
+    }
+
+    let mut schema = json!({
+        "type": "object",
+        "properties": properties,
+    });
+    if !required.is_empty() {
+        schema["required"] = json!(required);
+    }
+    schema
+}
+
+fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json::Value {
+    match param_type {
+        ParamType::String => json!({
+            "type": "string",
+            "description": description,
+        }),
+        ParamType::Integer => json!({
+            "type": "integer",
+            "description": description,
+        }),
+        ParamType::Boolean => json!({
+            "type": "boolean",
+            "description": description,
+        }),
+        ParamType::FilePath => json!({
+            "type": "string",
+            "description": description,
+        }),
+        ParamType::LineNumber => json!({
+            "type": "integer",
+            "description": description,
+        }),
+        ParamType::LineRange => json!({
+            "type": "object",
+            "description": description,
+            "properties": {
+                "start": { "type": "integer" },
+                "end": { "type": "integer" },
+            },
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::scope::RequiredScope;
+    use crate::ai::tools::{SideEffect, ToolParam};
+    use crate::ai::types::FileScope;
+
+    fn test_tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "read_file".to_string(),
+            description: "Read file content.".to_string(),
+            required_scope: RequiredScope {
+                file_scope: FileScope::File,
+                shell: false,
+                network: false,
+            },
+            side_effect: SideEffect::Read,
+            parameters: vec![
+                ToolParam {
+                    name: "start_line".to_string(),
+                    param_type: ParamType::LineNumber,
+                    required: false,
+                    description: "Start line (1-indexed).".to_string(),
+                },
+                ToolParam {
+                    name: "end_line".to_string(),
+                    param_type: ParamType::LineNumber,
+                    required: false,
+                    description: "End line (1-indexed).".to_string(),
+                },
+            ],
+        }
+    }
+
+    fn test_tool_with_required() -> ToolDefinition {
+        ToolDefinition {
+            name: "search".to_string(),
+            description: "Search files.".to_string(),
+            required_scope: RequiredScope {
+                file_scope: FileScope::Project,
+                shell: false,
+                network: false,
+            },
+            side_effect: SideEffect::Read,
+            parameters: vec![ToolParam {
+                name: "query".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "Search query.".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn openai_schema_shape() {
+        let tool = test_tool();
+        let schemas = tools_to_openai_schema(&[&tool]);
+        assert_eq!(schemas.len(), 1);
+
+        let s = &schemas[0];
+        assert_eq!(s["type"], "function");
+        assert_eq!(s["function"]["name"], "read_file");
+        assert_eq!(s["function"]["parameters"]["type"], "object");
+        assert!(s["function"]["parameters"]["properties"]["start_line"].is_object());
+        assert!(s["function"]["parameters"]["properties"]["end_line"].is_object());
+        // No required params, so "required" key should be absent
+        assert!(s["function"]["parameters"].get("required").is_none());
+    }
+
+    #[test]
+    fn anthropic_schema_shape() {
+        let tool = test_tool();
+        let schemas = tools_to_anthropic_schema(&[&tool]);
+        assert_eq!(schemas.len(), 1);
+
+        let s = &schemas[0];
+        assert_eq!(s["name"], "read_file");
+        assert_eq!(s["input_schema"]["type"], "object");
+        assert!(s["input_schema"]["properties"]["start_line"].is_object());
+    }
+
+    #[test]
+    fn required_params_included() {
+        let tool = test_tool_with_required();
+        let schemas = tools_to_openai_schema(&[&tool]);
+        let s = &schemas[0];
+        let required = s["function"]["parameters"]["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "query");
+    }
+
+    #[test]
+    fn param_types_map_correctly() {
+        let schema = param_type_to_schema(&ParamType::String, "desc");
+        assert_eq!(schema["type"], "string");
+
+        let schema = param_type_to_schema(&ParamType::Integer, "desc");
+        assert_eq!(schema["type"], "integer");
+
+        let schema = param_type_to_schema(&ParamType::Boolean, "desc");
+        assert_eq!(schema["type"], "boolean");
+
+        let schema = param_type_to_schema(&ParamType::LineRange, "desc");
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["start"].is_object());
+        assert!(schema["properties"]["end"].is_object());
+    }
+}

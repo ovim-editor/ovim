@@ -218,6 +218,7 @@ pub async fn stream_ai_chat(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
     // No timeout — streaming connections are long-lived.
@@ -227,35 +228,119 @@ pub async fn stream_ai_chat(
 
     match profile.provider {
         AiProviderKind::OpenAi => {
-            stream_openai_chat(&client, profile, messages, system_prompt, tx).await
+            stream_openai_chat(&client, profile, messages, system_prompt, tools, tx).await
         }
         AiProviderKind::Anthropic => {
-            stream_anthropic_chat(&client, profile, messages, system_prompt, tx).await
+            stream_anthropic_chat(&client, profile, messages, system_prompt, tools, tx).await
         }
         AiProviderKind::Ollama => {
-            stream_ollama_chat(&client, profile, messages, system_prompt, tx).await
+            stream_ollama_chat(&client, profile, messages, system_prompt, tools, tx).await
         }
     }
 }
 
-fn chat_messages_to_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
+/// Serialize chat messages to OpenAI format (also used by Ollama).
+fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
+    use super::chat_types::ChatRole;
     messages
         .iter()
-        .filter(|m| {
-            m.role != super::chat_types::ChatRole::Error
-                && m.role != super::chat_types::ChatRole::Thinking
-        })
-        .map(|m| {
-            let role = match m.role {
-                super::chat_types::ChatRole::User => "user",
-                super::chat_types::ChatRole::Assistant => "assistant",
-                super::chat_types::ChatRole::Error | super::chat_types::ChatRole::Thinking => {
-                    unreachable!()
+        .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
+        .map(|m| match m.role {
+            ChatRole::User => json!({ "role": "user", "content": m.content }),
+            ChatRole::Assistant => {
+                if m.tool_calls.is_empty() {
+                    json!({ "role": "assistant", "content": m.content })
+                } else {
+                    let tc: Vec<Value> = m
+                        .tool_calls
+                        .iter()
+                        .map(|tc| {
+                            json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments.to_string(),
+                                }
+                            })
+                        })
+                        .collect();
+                    let mut msg = json!({ "role": "assistant", "tool_calls": tc });
+                    if !m.content.is_empty() {
+                        msg["content"] = json!(m.content);
+                    }
+                    msg
                 }
-            };
-            json!({ "role": role, "content": m.content })
+            }
+            ChatRole::Tool => {
+                json!({
+                    "role": "tool",
+                    "content": m.content,
+                    "tool_call_id": m.tool_call_id.as_deref().unwrap_or(""),
+                })
+            }
+            ChatRole::Error | ChatRole::Thinking => unreachable!(),
         })
         .collect()
+}
+
+/// Serialize chat messages to Anthropic format.
+fn chat_messages_to_anthropic_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
+    use super::chat_types::ChatRole;
+
+    // Anthropic expects tool results as user messages containing tool_result blocks.
+    // We need to merge consecutive Tool messages into a single user message.
+    let filtered: Vec<_> = messages
+        .iter()
+        .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
+        .collect();
+
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < filtered.len() {
+        let m = filtered[i];
+        match m.role {
+            ChatRole::User => {
+                result.push(json!({ "role": "user", "content": m.content }));
+            }
+            ChatRole::Assistant => {
+                let mut content_blocks = Vec::new();
+                if !m.content.is_empty() {
+                    content_blocks.push(json!({ "type": "text", "text": m.content }));
+                }
+                for tc in &m.tool_calls {
+                    content_blocks.push(json!({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    }));
+                }
+                if content_blocks.is_empty() {
+                    content_blocks.push(json!({ "type": "text", "text": "" }));
+                }
+                result.push(json!({ "role": "assistant", "content": content_blocks }));
+            }
+            ChatRole::Tool => {
+                // Collect consecutive Tool messages into one user message
+                let mut tool_result_blocks = Vec::new();
+                while i < filtered.len() && filtered[i].role == ChatRole::Tool {
+                    let tm = filtered[i];
+                    tool_result_blocks.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tm.tool_call_id.as_deref().unwrap_or(""),
+                        "content": tm.content,
+                    }));
+                    i += 1;
+                }
+                result.push(json!({ "role": "user", "content": tool_result_blocks }));
+                continue; // Skip the i += 1 at the end
+            }
+            ChatRole::Error | ChatRole::Thinking => {}
+        }
+        i += 1;
+    }
+    result
 }
 
 async fn stream_openai_chat(
@@ -263,6 +348,7 @@ async fn stream_openai_chat(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
     let base_url = profile
@@ -284,7 +370,7 @@ async fn stream_openai_chat(
     if let Some(sp) = sys {
         api_messages.push(json!({ "role": "system", "content": sp }));
     }
-    api_messages.extend(chat_messages_to_json(messages));
+    api_messages.extend(chat_messages_to_openai_json(messages));
 
     let mut body = json!({
         "model": profile.model,
@@ -296,6 +382,11 @@ async fn stream_openai_chat(
     }
     if let Some(max_tokens) = profile.max_tokens {
         body["max_tokens"] = json!(max_tokens);
+    }
+    if let Some(tools) = tools {
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
     }
 
     let response = client
@@ -321,6 +412,7 @@ async fn stream_anthropic_chat(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
     let base_url = profile
@@ -341,7 +433,7 @@ async fn stream_anthropic_chat(
     let mut body = json!({
         "model": profile.model,
         "max_tokens": profile.max_tokens.unwrap_or(2048),
-        "messages": chat_messages_to_json(messages),
+        "messages": chat_messages_to_anthropic_json(messages),
         "stream": true,
     });
     let sys = system_prompt.or(profile.system_prompt.as_deref());
@@ -350,6 +442,11 @@ async fn stream_anthropic_chat(
     }
     if let Some(temp) = profile.temperature {
         body["temperature"] = json!(temp);
+    }
+    if let Some(tools) = tools {
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
     }
 
     let response = client
@@ -375,6 +472,7 @@ async fn stream_ollama_chat(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
     let base_url = profile
@@ -388,7 +486,7 @@ async fn stream_ollama_chat(
     if let Some(sp) = sys {
         api_messages.push(json!({ "role": "system", "content": sp }));
     }
-    api_messages.extend(chat_messages_to_json(messages));
+    api_messages.extend(chat_messages_to_openai_json(messages));
 
     let mut body = json!({
         "model": profile.model,
@@ -397,6 +495,11 @@ async fn stream_ollama_chat(
     });
     if let Some(temp) = profile.temperature {
         body["options"] = json!({ "temperature": temp });
+    }
+    if let Some(tools) = tools {
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
     }
 
     let response = client
@@ -517,4 +620,184 @@ Selected text:\n```{}\n{}\n```",
     }
 
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
+    use std::time::Instant;
+
+    fn user_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::User,
+            content: content.to_string(),
+            model: None,
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+
+    fn assistant_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: content.to_string(),
+            model: Some("test".to_string()),
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+
+    fn assistant_msg_with_tools(content: &str, tool_calls: Vec<ToolCallInfo>) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: content.to_string(),
+            model: Some("test".to_string()),
+            timestamp: Instant::now(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    fn tool_msg(tool_call_id: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Tool,
+            content: content.to_string(),
+            model: None,
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: Some(tool_call_id.to_string()),
+        }
+    }
+
+    #[test]
+    fn openai_json_basic_messages() {
+        let msgs = vec![user_msg("hello"), assistant_msg("hi")];
+        let json = chat_messages_to_openai_json(&msgs);
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["role"], "user");
+        assert_eq!(json[0]["content"], "hello");
+        assert_eq!(json[1]["role"], "assistant");
+        assert_eq!(json[1]["content"], "hi");
+    }
+
+    #[test]
+    fn openai_json_filters_error_and_thinking() {
+        let msgs = vec![
+            user_msg("hello"),
+            ChatMessage {
+                role: ChatRole::Thinking,
+                content: "hmm".to_string(),
+                model: None,
+                timestamp: Instant::now(),
+                tool_calls: vec![],
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: ChatRole::Error,
+                content: "oops".to_string(),
+                model: None,
+                timestamp: Instant::now(),
+                tool_calls: vec![],
+                tool_call_id: None,
+            },
+            assistant_msg("hi"),
+        ];
+        let json = chat_messages_to_openai_json(&msgs);
+        assert_eq!(json.len(), 2);
+    }
+
+    #[test]
+    fn openai_json_assistant_with_tool_calls() {
+        let tc = ToolCallInfo {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"start_line": 1}),
+        };
+        let msgs = vec![
+            user_msg("check file"),
+            assistant_msg_with_tools("Let me check.", vec![tc]),
+        ];
+        let json = chat_messages_to_openai_json(&msgs);
+        assert_eq!(json[1]["role"], "assistant");
+        assert!(json[1]["tool_calls"].is_array());
+        assert_eq!(json[1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(json[1]["tool_calls"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn openai_json_tool_role_messages() {
+        let msgs = vec![
+            user_msg("check file"),
+            assistant_msg_with_tools(
+                "",
+                vec![ToolCallInfo {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+            ),
+            tool_msg("call_1", "file contents here"),
+        ];
+        let json = chat_messages_to_openai_json(&msgs);
+        assert_eq!(json[2]["role"], "tool");
+        assert_eq!(json[2]["content"], "file contents here");
+        assert_eq!(json[2]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn anthropic_json_basic_messages() {
+        let msgs = vec![user_msg("hello"), assistant_msg("hi")];
+        let json = chat_messages_to_anthropic_json(&msgs);
+        assert_eq!(json.len(), 2);
+        assert_eq!(json[0]["role"], "user");
+        assert_eq!(json[0]["content"], "hello");
+        assert_eq!(json[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn anthropic_json_tool_results_as_user() {
+        let tc = ToolCallInfo {
+            id: "toolu_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        let msgs = vec![
+            user_msg("check"),
+            assistant_msg_with_tools("", vec![tc]),
+            tool_msg("toolu_1", "file content"),
+        ];
+        let json = chat_messages_to_anthropic_json(&msgs);
+        assert_eq!(json.len(), 3); // user, assistant, user (tool result)
+                                   // Tool results become a user message with tool_result blocks
+        assert_eq!(json[2]["role"], "user");
+        let content = json[2]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "toolu_1");
+        assert_eq!(content[0]["content"], "file content");
+    }
+
+    #[test]
+    fn anthropic_json_assistant_with_tool_use() {
+        let tc = ToolCallInfo {
+            id: "toolu_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"start_line": 1}),
+        };
+        let msgs = vec![
+            user_msg("check"),
+            assistant_msg_with_tools("Let me check.", vec![tc]),
+        ];
+        let json = chat_messages_to_anthropic_json(&msgs);
+        assert_eq!(json[1]["role"], "assistant");
+        let content = json[1]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2); // text + tool_use
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Let me check.");
+        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(content[1]["id"], "toolu_1");
+        assert_eq!(content[1]["name"], "read_file");
+    }
 }

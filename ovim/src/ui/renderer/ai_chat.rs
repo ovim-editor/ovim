@@ -218,6 +218,8 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
                 content: thinking.to_string(),
                 model: None,
                 timestamp: std::time::Instant::now(),
+                tool_calls: vec![],
+                tool_call_id: None,
             };
             let bubble_lines = render_chat_bubble(
                 &streaming_thinking_msg,
@@ -248,6 +250,8 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
                 content: display,
                 model: None,
                 timestamp: std::time::Instant::now(),
+                tool_calls: vec![],
+                tool_call_id: None,
             };
             let bubble_lines =
                 render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false);
@@ -310,6 +314,7 @@ fn render_chat_bubble(
             }
             ChatRole::Thinking => BORDER_THINKING,
             ChatRole::Error => BORDER_ERROR,
+            ChatRole::Tool => BORDER_ASSISTANT_QUERY,
         }
     };
 
@@ -344,6 +349,7 @@ fn render_chat_bubble(
         }
         ChatRole::Thinking => " thinking ".to_string(),
         ChatRole::Error => " Error ".to_string(),
+        ChatRole::Tool => " Tool ".to_string(),
     };
 
     // Top border: ╭─ label ─╮
