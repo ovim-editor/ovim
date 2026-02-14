@@ -1,6 +1,7 @@
 use crate::ai::chat_types::StreamChunk;
 use crate::ai::config::{system_prompt_for_edit_format, AiProfileConfig};
 use crate::ai::extract::extract_response;
+use crate::ai::prompt::interpolate;
 use crate::ai::stream_parsers;
 use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest, ApiKeyConfig};
 use anyhow::{anyhow, Context, Result};
@@ -14,16 +15,19 @@ pub async fn request_ai_edit(
     profile: &AiProfileConfig,
     request: &AiRequest,
     registry: &HashMap<String, ApiKeyConfig>,
+    prompts: &HashMap<String, String>,
 ) -> Result<AiJobResult> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .context("failed to create AI HTTP client")?;
 
+    let system_prompt = resolve_edit_system_prompt(profile, prompts, request);
+
     let response_text = match profile.provider {
-        AiProviderKind::OpenAi => request_openai(&client, profile, request, registry).await?,
-        AiProviderKind::Anthropic => request_anthropic(&client, profile, request, registry).await?,
-        AiProviderKind::Ollama => request_ollama(&client, profile, request, registry).await?,
+        AiProviderKind::OpenAi => request_openai(&client, profile, request, &system_prompt, registry).await?,
+        AiProviderKind::Anthropic => request_anthropic(&client, profile, request, &system_prompt, registry).await?,
+        AiProviderKind::Ollama => request_ollama(&client, profile, request, &system_prompt, registry).await?,
     };
 
     let extracted = extract_response(&request.edit_format, &response_text)
@@ -38,6 +42,73 @@ pub async fn request_ai_edit(
         profile_name: profile.name.clone(),
         model: profile.model.clone(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// System prompt resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the system prompt for edit mode, following the priority chain:
+/// 1. `profile.edit_prompt` — per-profile override, interpolated
+/// 2. `prompts["edit"]` — global template, interpolated
+/// 3. `profile.system_prompt` — raw string, no interpolation (backward compat)
+/// 4. `system_prompt_for_edit_format()` — hardcoded fallback
+fn resolve_edit_system_prompt(
+    profile: &AiProfileConfig,
+    prompts: &HashMap<String, String>,
+    request: &AiRequest,
+) -> String {
+    let file = request.file_path.as_deref().unwrap_or("[No Name]");
+    let language = request.language_id.as_deref().unwrap_or("plain_text");
+    let vars = HashMap::from([
+        ("file", file),
+        ("language", language),
+        ("selection", request.selected_text.as_str()),
+        ("instruction", request.prompt.as_str()),
+    ]);
+
+    if let Some(ref template) = profile.edit_prompt {
+        return interpolate(template, &vars);
+    }
+
+    if let Some(template) = prompts.get("edit") {
+        return interpolate(template, &vars);
+    }
+
+    if let Some(ref sp) = profile.system_prompt {
+        return sp.clone();
+    }
+
+    system_prompt_for_edit_format(&request.edit_format).to_string()
+}
+
+/// Resolve the system prompt for chat mode, following the priority chain:
+/// 1. `chat.opts.system_prompt` — per-session override (handled by caller)
+/// 2. `profile.chat_prompt` — per-profile override, interpolated
+/// 3. `prompts["chat"]` — global template, interpolated
+/// 4. fallback built by caller (`build_chat_system_prompt`)
+pub(crate) fn resolve_chat_system_prompt(
+    profile: &AiProfileConfig,
+    prompts: &HashMap<String, String>,
+    file: &str,
+    language: &str,
+) -> Option<String> {
+    let vars = HashMap::from([
+        ("file", file),
+        ("language", language),
+        ("selection", ""),
+        ("instruction", ""),
+    ]);
+
+    if let Some(ref template) = profile.chat_prompt {
+        return Some(interpolate(template, &vars));
+    }
+
+    if let Some(template) = prompts.get("chat") {
+        return Some(interpolate(template, &vars));
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -153,17 +224,13 @@ async fn request_openai(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
+    system_prompt: &str,
     registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
 
-    let sys = profile
-        .system_prompt
-        .as_deref()
-        .unwrap_or_else(|| system_prompt_for_edit_format(&request.edit_format));
-
-    let mut messages = vec![json!({ "role": "system", "content": sys })];
+    let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
     messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
 
     let mut body = json!({ "model": profile.model, "messages": messages });
@@ -194,21 +261,17 @@ async fn request_anthropic(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
+    system_prompt: &str,
     registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
 
-    let sys = profile
-        .system_prompt
-        .as_deref()
-        .unwrap_or_else(|| system_prompt_for_edit_format(&request.edit_format));
-
     let mut body = json!({
         "model": profile.model,
         "max_tokens": profile.max_tokens.unwrap_or(2048),
         "messages": [{ "role": "user", "content": build_user_prompt(request) }],
-        "system": sys,
+        "system": system_prompt,
     });
     apply_optional_params(&mut body, profile, None);
 
@@ -233,17 +296,13 @@ async fn request_ollama(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
+    system_prompt: &str,
     registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
 
-    let sys = profile
-        .system_prompt
-        .as_deref()
-        .unwrap_or_else(|| system_prompt_for_edit_format(&request.edit_format));
-
-    let mut messages = vec![json!({ "role": "system", "content": sys })];
+    let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
     messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
 
     let mut body = json!({ "model": profile.model, "stream": false, "messages": messages });
@@ -1051,5 +1110,80 @@ mod tests {
 
         let result = read_api_key(&profile, &registry);
         assert_eq!(result.unwrap(), "sk-from-file");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_edit_system_prompt tests
+    // -----------------------------------------------------------------------
+
+    fn test_request() -> AiRequest {
+        use crate::ai::types::EditFormat;
+        AiRequest {
+            prompt: "fix this".to_string(),
+            selected_text: "let x = 1;".to_string(),
+            language_id: Some("rust".to_string()),
+            file_path: Some("main.rs".to_string()),
+            edit_format: EditFormat::Json,
+            context_pack: None,
+        }
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_profile_override() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.edit_prompt = Some("You are a {{language}} expert.".to_string());
+        let prompts = HashMap::new();
+        let request = test_request();
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        assert_eq!(result, "You are a rust expert.");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_global_template() {
+        let profile = test_profile(AiProviderKind::OpenAi);
+        let mut prompts = HashMap::new();
+        prompts.insert(
+            "edit".to_string(),
+            "Edit {{file}} ({{language}})".to_string(),
+        );
+        let request = test_request();
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        assert_eq!(result, "Edit main.rs (rust)");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_hardcoded_fallback() {
+        let profile = test_profile(AiProviderKind::OpenAi);
+        let prompts = HashMap::new();
+        let request = test_request();
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        // Should get the default JSON edit format prompt
+        assert!(result.contains("JSON"), "expected JSON fallback, got: {result}");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_profile_edit_prompt_wins_over_global() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.edit_prompt = Some("Profile override".to_string());
+        let mut prompts = HashMap::new();
+        prompts.insert("edit".to_string(), "Global template".to_string());
+        let request = test_request();
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        assert_eq!(result, "Profile override");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_raw_system_prompt_fallback() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.system_prompt = Some("Custom raw prompt".to_string());
+        let prompts = HashMap::new();
+        let request = test_request();
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        assert_eq!(result, "Custom raw prompt");
     }
 }

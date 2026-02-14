@@ -35,6 +35,8 @@ struct EditorBridgeInner {
     ai_pending_commands: Vec<AiCommand>,
     /// API key registry (name → config)
     api_key_registry: HashMap<String, ApiKeyConfig>,
+    /// Global prompt templates (e.g. "edit" → template string)
+    ai_prompts: HashMap<String, String>,
     /// Whether AI config has been modified since last sync
     ai_dirty: bool,
 }
@@ -147,12 +149,13 @@ impl LuaProfileConfig {
     }
 }
 
-/// Snapshot of AI config from Lua bridge: (contexts, default_profile, profiles, api_key_registry).
+/// Snapshot of AI config from Lua bridge: (contexts, default_profile, profiles, api_key_registry, prompts).
 pub type AiConfigSnapshot = (
     HashMap<String, String>,
     Option<String>,
     HashMap<String, LuaProfileConfig>,
     HashMap<String, ApiKeyConfig>,
+    HashMap<String, String>,
 );
 
 /// Commands queued by Lua for the editor to process.
@@ -194,6 +197,7 @@ impl EditorBridge {
                 ai_profiles: HashMap::new(),
                 ai_pending_commands: Vec::new(),
                 api_key_registry: HashMap::new(),
+                ai_prompts: HashMap::new(),
                 ai_dirty: false,
             })),
         }
@@ -375,6 +379,23 @@ impl EditorBridge {
         inner.ai_dirty = true;
     }
 
+    pub fn set_ai_prompt(&self, name: String, template: String) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.ai_prompts.insert(name, template);
+        inner.ai_dirty = true;
+    }
+
+    pub fn get_ai_prompt(&self, name: &str) -> Option<String> {
+        let inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.ai_prompts.get(name).cloned()
+    }
+
     /// Returns AI config if it was modified since last call.
     /// Clears the dirty flag.
     pub fn take_ai_config_if_dirty(&self) -> Option<AiConfigSnapshot> {
@@ -391,6 +412,7 @@ impl EditorBridge {
             inner.ai_default_profile.clone(),
             inner.ai_profiles.clone(),
             inner.api_key_registry.clone(),
+            inner.ai_prompts.clone(),
         ))
     }
 

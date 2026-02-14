@@ -319,12 +319,29 @@ impl Editor {
             .clone();
 
         let model_name = profile.model.clone();
-        let system_prompt = Some(
-            chat.opts
-                .system_prompt
-                .clone()
-                .unwrap_or_else(|| self.build_chat_system_prompt(&profile)),
-        );
+
+        // Resolution chain for chat system prompt:
+        // 1. chat.opts.system_prompt (per-session override)
+        // 2. profile.chat_prompt (per-profile, interpolated)
+        // 3. config.prompts["chat"] (global template, interpolated)
+        // 4. build_chat_system_prompt() (hardcoded fallback)
+        let system_prompt = if let Some(ref sp) = chat.opts.system_prompt {
+            Some(sp.clone())
+        } else {
+            let buf = &self.buffers[self.current_buffer_index];
+            let file = buf.file_path().unwrap_or("[No Name]");
+            let language = buf
+                .file_path()
+                .and_then(crate::syntax::LanguageRegistry::get_lsp_language_id)
+                .unwrap_or("unknown");
+            crate::ai::resolve_chat_system_prompt(
+                &profile,
+                &self.ai_state.config.prompts,
+                file,
+                language,
+            )
+            .or_else(|| Some(self.build_chat_system_prompt(&profile)))
+        };
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
 

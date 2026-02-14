@@ -42,6 +42,8 @@ pub struct AiConfig {
     pub contexts: HashMap<String, String>,
     /// Named API key sources (env var or file).
     pub api_key_registry: HashMap<String, ApiKeyConfig>,
+    /// Global prompt templates (e.g. "edit", "chat") with `{{variable}}` interpolation.
+    pub prompts: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +122,7 @@ impl Default for AiConfig {
             profiles,
             contexts: HashMap::new(),
             api_key_registry: HashMap::new(),
+            prompts: HashMap::new(),
         }
     }
 }
