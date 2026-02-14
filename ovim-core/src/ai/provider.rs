@@ -115,6 +115,24 @@ fn apply_optional_params(
         };
         body[key] = json!(max_tokens);
     }
+    // OpenAI reasoning_effort: enable extended thinking and strip incompatible params.
+    if profile.provider == AiProviderKind::OpenAi {
+        if let Some(ref effort) = profile.reasoning_effort {
+            if effort != "none" {
+                body["reasoning"] = json!({ "effort": effort });
+                body.as_object_mut().unwrap().remove("temperature");
+                body.as_object_mut().unwrap().remove("top_p");
+            }
+        }
+    }
+
+    // OpenAI verbosity (5.2+ parameter).
+    if profile.provider == AiProviderKind::OpenAi {
+        if let Some(ref verbosity) = profile.verbosity {
+            body["text"] = json!({ "verbosity": verbosity });
+        }
+    }
+
     if let Some(tools) = tools {
         if !tools.is_empty() {
             body["tools"] = json!(tools);
@@ -791,6 +809,86 @@ mod tests {
         assert_eq!(content[0]["type"], "tool_result");
         assert_eq!(content[0]["tool_use_id"], "toolu_1");
         assert_eq!(content[0]["content"], "file content");
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_optional_params tests
+    // -----------------------------------------------------------------------
+
+    fn test_profile(provider: AiProviderKind) -> AiProfileConfig {
+        use crate::ai::types::{EditFormat, ProfileScope, AgentLoopConfig, ContextGatheringPolicy, RetryPolicy};
+        AiProfileConfig {
+            name: "test".to_string(),
+            provider,
+            model: "test-model".to_string(),
+            base_url: None,
+            api_key: None,
+            api_key_env: None,
+            system_prompt: None,
+            temperature: Some(0.7),
+            max_tokens: None,
+            edit_format: EditFormat::default(),
+            chat_edit_format: None,
+            context: ContextGatheringPolicy::default(),
+            agent_loop: AgentLoopConfig::default(),
+            tools: vec![],
+            scope: ProfileScope::default(),
+            edit_prompt: None,
+            chat_prompt: None,
+            chat_edit_prompt: None,
+            reasoning_effort: None,
+            verbosity: None,
+            syntax_check: None,
+            retry: RetryPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_openai() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.reasoning_effort = Some("low".to_string());
+        let mut body = json!({ "model": "o3" });
+        apply_optional_params(&mut body, &profile, None);
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_none_is_noop() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.reasoning_effort = Some("none".to_string());
+        let mut body = json!({ "model": "o3" });
+        apply_optional_params(&mut body, &profile, None);
+        assert!(body.get("reasoning").is_none());
+        // temperature should still be present
+        assert!(body.get("temperature").is_some());
+    }
+
+    #[test]
+    fn reasoning_effort_ignored_for_anthropic() {
+        let mut profile = test_profile(AiProviderKind::Anthropic);
+        profile.reasoning_effort = Some("high".to_string());
+        let mut body = json!({ "model": "claude" });
+        apply_optional_params(&mut body, &profile, None);
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn verbosity_openai() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.verbosity = Some("high".to_string());
+        let mut body = json!({ "model": "gpt" });
+        apply_optional_params(&mut body, &profile, None);
+        assert_eq!(body["text"]["verbosity"], "high");
+    }
+
+    #[test]
+    fn verbosity_ignored_for_ollama() {
+        let mut profile = test_profile(AiProviderKind::Ollama);
+        profile.verbosity = Some("high".to_string());
+        let mut body = json!({ "model": "llama" });
+        apply_optional_params(&mut body, &profile, None);
+        assert!(body.get("text").is_none());
     }
 
     #[test]
