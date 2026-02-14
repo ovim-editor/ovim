@@ -397,8 +397,9 @@ pub fn apply_observation_mask(
                 turn_number += 1;
             }
             if i < boundary_index && msg.role == ChatRole::Tool {
-                let masked_content =
-                    config.mask_template.replace("{turn}", &turn_number.to_string());
+                let masked_content = config
+                    .mask_template
+                    .replace("{turn}", &turn_number.to_string());
                 ChatMessage {
                     role: msg.role.clone(),
                     content: masked_content,

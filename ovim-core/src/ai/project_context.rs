@@ -112,7 +112,8 @@ mod tests {
             budget: 2000,
             enabled: true,
         };
-        let result = load_project_context(&config, Some(dir.path().join("test.rs").to_str().unwrap()));
+        let result =
+            load_project_context(&config, Some(dir.path().join("test.rs").to_str().unwrap()));
         assert!(result.contains("# Project rules"), "got: {result}");
     }
 
@@ -139,7 +140,10 @@ mod tests {
         let root_pos = result.find("root context").expect("root context missing");
         let sub_pos = result.find("sub context").expect("sub context missing");
         assert!(root_pos < sub_pos, "root should appear before sub");
-        assert!(result.contains("---"), "sections should be separated by ---");
+        assert!(
+            result.contains("---"),
+            "sections should be separated by ---"
+        );
     }
 
     #[test]
@@ -156,7 +160,10 @@ mod tests {
             enabled: true,
         };
         let result = load_project_context(&config, Some(dir.path().join("t.rs").to_str().unwrap()));
-        assert!(result.contains("[project context truncated]"), "got: {result}");
+        assert!(
+            result.contains("[project context truncated]"),
+            "got: {result}"
+        );
         assert!(result.len() < content.len() + 50);
     }
 

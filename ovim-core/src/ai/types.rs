@@ -220,6 +220,8 @@ pub struct AiJobResult {
     pub provider: AiProviderKind,
     pub profile_name: String,
     pub model: String,
+    /// Number of retry attempts before extraction succeeded (0 = first attempt).
+    pub retry_attempts: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

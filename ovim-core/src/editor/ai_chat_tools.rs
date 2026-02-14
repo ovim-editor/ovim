@@ -347,8 +347,8 @@ impl Editor {
             &self.ai_state.config.project_context,
             self.buffers[self.current_buffer_index].file_path(),
         );
-        let system_prompt = system_prompt
-            .map(|sp| crate::ai::append_project_context(&sp, &project_ctx));
+        let system_prompt =
+            system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx));
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
 

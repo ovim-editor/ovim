@@ -24,33 +24,96 @@ pub async fn request_ai_edit(
         .build()
         .context("failed to create AI HTTP client")?;
 
-    let system_prompt = resolve_edit_system_prompt(profile, prompts, format_prompts, request);
-    let system_prompt = append_project_context(&system_prompt, project_context);
+    let retry_max = profile.retry.max;
+    let mut extra_messages: Vec<Value> = Vec::new();
+    let mut current_format = request.edit_format.clone();
+    let base_prompt =
+        resolve_edit_system_prompt(profile, prompts, format_prompts, request, &current_format);
+    let mut current_system_prompt = append_project_context(&base_prompt, project_context);
+    let mut last_error: Option<anyhow::Error> = None;
 
-    let response_text = match profile.provider {
-        AiProviderKind::OpenAi => {
-            request_openai(&client, profile, request, &system_prompt, registry).await?
+    for attempt in 0..=retry_max {
+        // On final attempt with fallback configured: switch format and rebuild system prompt.
+        if attempt > 0 && attempt == retry_max && profile.retry.fallback.is_some() {
+            let fb_name = profile.retry.fallback.as_ref().unwrap();
+            current_format = crate::ai::parse_edit_format_str(fb_name);
+            let base_prompt = resolve_edit_system_prompt(
+                profile,
+                prompts,
+                format_prompts,
+                request,
+                &current_format,
+            );
+            current_system_prompt = append_project_context(&base_prompt, project_context);
+            extra_messages.clear(); // fresh conversation for fallback format
         }
-        AiProviderKind::Anthropic => {
-            request_anthropic(&client, profile, request, &system_prompt, registry).await?
-        }
-        AiProviderKind::Ollama => {
-            request_ollama(&client, profile, request, &system_prompt, registry).await?
-        }
-    };
 
-    let extracted = extract_response(&request.edit_format, &response_text)
-        .context("failed to extract AI response")?;
+        let response_text = match profile.provider {
+            AiProviderKind::OpenAi => {
+                request_openai(
+                    &client,
+                    profile,
+                    request,
+                    &current_system_prompt,
+                    registry,
+                    &extra_messages,
+                )
+                .await?
+            }
+            AiProviderKind::Anthropic => {
+                request_anthropic(
+                    &client,
+                    profile,
+                    request,
+                    &current_system_prompt,
+                    registry,
+                    &extra_messages,
+                )
+                .await?
+            }
+            AiProviderKind::Ollama => {
+                request_ollama(
+                    &client,
+                    profile,
+                    request,
+                    &current_system_prompt,
+                    registry,
+                    &extra_messages,
+                )
+                .await?
+            }
+        };
 
-    Ok(AiJobResult {
-        replacement: extracted.replacement,
-        new_import_statements: extracted.new_import_statements,
-        log_lines: extracted.log_lines,
-        raw_output: response_text,
-        provider: profile.provider,
-        profile_name: profile.name.clone(),
-        model: profile.model.clone(),
-    })
+        match extract_response(&current_format, &response_text) {
+            Ok(extracted) => {
+                return Ok(AiJobResult {
+                    replacement: extracted.replacement,
+                    new_import_statements: extracted.new_import_statements,
+                    log_lines: extracted.log_lines,
+                    raw_output: response_text,
+                    provider: profile.provider,
+                    profile_name: profile.name.clone(),
+                    model: profile.model.clone(),
+                    retry_attempts: attempt,
+                });
+            }
+            Err(e) if attempt < retry_max => {
+                let format_hint = format_instructions_for(&current_format);
+                let feedback = format!(
+                    "Your response could not be parsed. Error: {}. Please respond with {}.",
+                    e, format_hint,
+                );
+                let retry_msgs = build_retry_messages(&response_text, &feedback, profile.provider);
+                extra_messages.extend(retry_msgs);
+                last_error = Some(e);
+            }
+            Err(e) => {
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("retry exhausted")))
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +132,7 @@ fn resolve_edit_system_prompt(
     prompts: &HashMap<String, String>,
     format_prompts: &HashMap<String, String>,
     request: &AiRequest,
+    format: &crate::ai::types::EditFormat,
 ) -> String {
     let file = request.file_path.as_deref().unwrap_or("[No Name]");
     let language = request.language_id.as_deref().unwrap_or("plain_text");
@@ -84,7 +148,7 @@ fn resolve_edit_system_prompt(
     }
 
     // Per-format prompt key: "selection_codeblock", "selection_json", etc.
-    let format_key = format!("selection_{}", request.edit_format);
+    let format_key = format!("selection_{}", format);
     if let Some(template) = prompts.get(&format_key) {
         return interpolate(template, &vars);
     }
@@ -95,7 +159,7 @@ fn resolve_edit_system_prompt(
     }
 
     // Format-specific prompt from vim.ai.formats.register()
-    let format_name = match &request.edit_format {
+    let format_name = match format {
         crate::ai::types::EditFormat::Lua(name) => Some(name.as_str()),
         _ => None,
     };
@@ -109,7 +173,7 @@ fn resolve_edit_system_prompt(
         return sp.clone();
     }
 
-    system_prompt_for_edit_format(&request.edit_format).to_string()
+    system_prompt_for_edit_format(format).to_string()
 }
 
 /// Resolve the system prompt for chat mode, following the priority chain:
@@ -261,12 +325,14 @@ async fn request_openai(
     request: &AiRequest,
     system_prompt: &str,
     registry: &HashMap<String, ApiKeyConfig>,
+    extra_messages: &[Value],
 ) -> Result<String> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
 
     let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
     messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
+    messages.extend_from_slice(extra_messages);
 
     let mut body = json!({ "model": profile.model, "messages": messages });
     // When expecting JSON, ask the API to enforce valid JSON output.
@@ -298,14 +364,18 @@ async fn request_anthropic(
     request: &AiRequest,
     system_prompt: &str,
     registry: &HashMap<String, ApiKeyConfig>,
+    extra_messages: &[Value],
 ) -> Result<String> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
 
+    let mut messages = vec![json!({ "role": "user", "content": build_user_prompt(request) })];
+    messages.extend_from_slice(extra_messages);
+
     let mut body = json!({
         "model": profile.model,
         "max_tokens": profile.max_tokens.unwrap_or(2048),
-        "messages": [{ "role": "user", "content": build_user_prompt(request) }],
+        "messages": messages,
         "system": system_prompt,
     });
     apply_optional_params(&mut body, profile, None);
@@ -333,12 +403,14 @@ async fn request_ollama(
     request: &AiRequest,
     system_prompt: &str,
     registry: &HashMap<String, ApiKeyConfig>,
+    extra_messages: &[Value],
 ) -> Result<String> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
 
     let mut messages = vec![json!({ "role": "system", "content": system_prompt })];
     messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
+    messages.extend_from_slice(extra_messages);
 
     let mut body = json!({ "model": profile.model, "stream": false, "messages": messages });
     apply_optional_params(&mut body, profile, None);
@@ -843,6 +915,39 @@ Selected text:\n```{}\n{}\n```",
     prompt
 }
 
+// ---------------------------------------------------------------------------
+// Retry helpers
+// ---------------------------------------------------------------------------
+
+/// Return a short description of the expected response format for retry feedback.
+fn format_instructions_for(format: &crate::ai::types::EditFormat) -> &'static str {
+    use crate::ai::types::EditFormat;
+    match format {
+        EditFormat::Json => "a valid JSON object with a \"replacement\" field",
+        EditFormat::Codeblock => "your code inside a single fenced code block (```)",
+        EditFormat::Raw => "the replacement text directly",
+        _ => "the replacement text in the expected format",
+    }
+}
+
+/// Build provider-appropriate retry messages (assistant echo + user feedback).
+fn build_retry_messages(
+    response_text: &str,
+    feedback: &str,
+    provider: AiProviderKind,
+) -> Vec<Value> {
+    match provider {
+        AiProviderKind::Anthropic => vec![
+            json!({"role": "assistant", "content": [{"type": "text", "text": response_text}]}),
+            json!({"role": "user", "content": feedback}),
+        ],
+        _ => vec![
+            json!({"role": "assistant", "content": response_text}),
+            json!({"role": "user", "content": feedback}),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1202,7 +1307,13 @@ mod tests {
         let prompts = HashMap::new();
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "You are a rust expert.");
     }
 
@@ -1216,7 +1327,13 @@ mod tests {
         );
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Edit main.rs (rust)");
     }
 
@@ -1226,7 +1343,13 @@ mod tests {
         let prompts = HashMap::new();
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         // Should get the default JSON edit format prompt
         assert!(
             result.contains("JSON"),
@@ -1242,7 +1365,13 @@ mod tests {
         prompts.insert("edit".to_string(), "Global template".to_string());
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Profile override");
     }
 
@@ -1253,7 +1382,13 @@ mod tests {
         let prompts = HashMap::new();
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Custom raw prompt");
     }
 
@@ -1269,7 +1404,13 @@ mod tests {
         let mut request = test_request();
         request.edit_format = crate::ai::types::EditFormat::Lua("upper".to_string());
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &format_prompts, &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &format_prompts,
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Return code as-is for rust.");
     }
 
@@ -1283,7 +1424,13 @@ mod tests {
         let mut request = test_request();
         request.edit_format = crate::ai::types::EditFormat::Lua("upper".to_string());
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &format_prompts, &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &format_prompts,
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Profile wins");
     }
 
@@ -1300,7 +1447,13 @@ mod tests {
         let mut request = test_request();
         request.edit_format = crate::ai::types::EditFormat::Codeblock;
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Codeblock prompt for rust");
     }
 
@@ -1313,7 +1466,125 @@ mod tests {
         let mut request = test_request();
         request.edit_format = crate::ai::types::EditFormat::Codeblock;
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &request.edit_format,
+        );
         assert_eq!(result, "Catch-all for main.rs");
+    }
+
+    // -----------------------------------------------------------------------
+    // Retry helper tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_instructions_for_all_variants() {
+        use crate::ai::types::EditFormat;
+
+        let json_hint = format_instructions_for(&EditFormat::Json);
+        assert!(json_hint.contains("JSON"), "got: {json_hint}");
+
+        let cb_hint = format_instructions_for(&EditFormat::Codeblock);
+        assert!(cb_hint.contains("code block"), "got: {cb_hint}");
+
+        let raw_hint = format_instructions_for(&EditFormat::Raw);
+        assert!(!raw_hint.is_empty());
+
+        // Other variants use the generic fallback.
+        let lua_hint = format_instructions_for(&EditFormat::Lua("custom".to_string()));
+        assert!(!lua_hint.is_empty());
+    }
+
+    #[test]
+    fn build_retry_messages_openai_shape() {
+        let msgs = build_retry_messages("bad output", "please fix", AiProviderKind::OpenAi);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["content"], "bad output");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[1]["content"], "please fix");
+    }
+
+    #[test]
+    fn build_retry_messages_anthropic_shape() {
+        let msgs = build_retry_messages("bad output", "please fix", AiProviderKind::Anthropic);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0]["role"], "assistant");
+        // Anthropic wraps assistant content in a content block array.
+        let content = msgs[0]["content"].as_array().expect("should be array");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "bad output");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[1]["content"], "please fix");
+    }
+
+    #[test]
+    fn build_retry_messages_ollama_same_as_openai() {
+        let msgs = build_retry_messages("out", "fix", AiProviderKind::Ollama);
+        assert_eq!(msgs[0]["content"], "out");
+        // Ollama uses plain string content, same as OpenAI.
+        assert!(msgs[0]["content"].is_string());
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_with_different_format() {
+        // Verify the refactored function respects the explicit format parameter
+        // even when it differs from request.edit_format.
+        let profile = test_profile(AiProviderKind::OpenAi);
+        let prompts = HashMap::new();
+        let request = test_request(); // edit_format = Json
+
+        // Pass Codeblock as the explicit format — should get codeblock fallback, not JSON.
+        let result = resolve_edit_system_prompt(
+            &profile,
+            &prompts,
+            &HashMap::new(),
+            &request,
+            &crate::ai::types::EditFormat::Codeblock,
+        );
+        assert!(
+            !result.contains("JSON"),
+            "should use codeblock format, not JSON. got: {result}"
+        );
+    }
+
+    #[test]
+    fn extraction_feedback_for_invalid_json() {
+        use crate::ai::extract::extract_response;
+        use crate::ai::types::EditFormat;
+
+        let bad_response = "Sure! Here is the code:\nfn main() {}";
+        let result = extract_response(&EditFormat::Json, bad_response);
+        assert!(result.is_err(), "should fail to parse non-JSON response");
+
+        // Verify we can construct a meaningful feedback message from the error.
+        let err = result.unwrap_err();
+        let feedback = format!(
+            "Your response could not be parsed. Error: {}. Please respond with {}.",
+            err,
+            format_instructions_for(&EditFormat::Json),
+        );
+        assert!(feedback.contains("JSON"));
+    }
+
+    #[test]
+    fn extraction_feedback_for_missing_codeblock() {
+        use crate::ai::extract::extract_response;
+        use crate::ai::types::EditFormat;
+
+        let bad_response = "Here is the fix:\nfn main() { println!(\"hello\"); }";
+        let result = extract_response(&EditFormat::Codeblock, bad_response);
+        assert!(result.is_err(), "should fail without fenced code block");
+
+        let err = result.unwrap_err();
+        let feedback = format!(
+            "Your response could not be parsed. Error: {}. Please respond with {}.",
+            err,
+            format_instructions_for(&EditFormat::Codeblock),
+        );
+        assert!(feedback.contains("code block"));
     }
 }

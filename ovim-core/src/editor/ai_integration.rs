@@ -637,6 +637,7 @@ impl Editor {
                     provider: result.provider,
                     profile_name: result.profile_name.clone(),
                     model: result.model.clone(),
+                    retry_attempts: result.retry_attempts,
                 }),
                 Err(e) => {
                     // Fall back to raw extraction result with error logged
@@ -719,11 +720,19 @@ impl Editor {
             region.generated_text = replacement.clone();
             region.provider_label = format!("{}/{}", result.provider, result.model);
             region.profile_name = result.profile_name.clone();
-            region.reasoning_lines = if result.log_lines.is_empty() {
+            let mut lines = if result.log_lines.is_empty() {
                 vec!["generation completed".to_string()]
             } else {
                 result.log_lines.clone()
             };
+            if result.retry_attempts > 0 {
+                lines.push(format!(
+                    "extraction succeeded after {} retry attempt{}",
+                    result.retry_attempts,
+                    if result.retry_attempts == 1 { "" } else { "s" },
+                ));
+            }
+            region.reasoning_lines = lines;
             region.raw_output = Some(result.raw_output.clone());
             region.updated_at = Instant::now();
         }
@@ -1153,6 +1162,7 @@ mod tests {
             provider: AiProviderKind::Ollama,
             profile_name: "alpha".to_string(),
             model: "model".to_string(),
+            retry_attempts: 0,
         };
 
         editor
