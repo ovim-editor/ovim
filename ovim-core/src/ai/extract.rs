@@ -9,10 +9,7 @@ pub struct AiExtractedResponse {
     pub log_lines: Vec<String>,
 }
 
-pub fn extract_response(
-    format: &EditFormat,
-    raw_output: &str,
-) -> Result<AiExtractedResponse> {
+pub fn extract_response(format: &EditFormat, raw_output: &str) -> Result<AiExtractedResponse> {
     match format {
         EditFormat::Json => extract_json(raw_output),
         EditFormat::Codeblock => extract_codeblock(raw_output),
@@ -23,7 +20,11 @@ pub fn extract_response(
         }),
         EditFormat::ApplyPatch => Err(anyhow!("apply_patch edit format not yet implemented")),
         EditFormat::StrReplace => Err(anyhow!("str_replace edit format not yet implemented")),
-        EditFormat::Lua(name) => Err(anyhow!("lua:{} edit format not yet implemented", name)),
+        EditFormat::Lua(name) => Ok(AiExtractedResponse {
+            replacement: raw_output.to_string(),
+            new_import_statements: Vec::new(),
+            log_lines: vec![format!("lua:{} — deferred to main thread", name)],
+        }),
     }
 }
 
@@ -108,8 +109,7 @@ mod tests {
 
     #[test]
     fn json_extract_basic() {
-        let raw =
-            r#"{"replacement":"fn x() {}", "new_import_statements":["use std::fmt;"], "log":["done"]}"#;
+        let raw = r#"{"replacement":"fn x() {}", "new_import_statements":["use std::fmt;"], "log":["done"]}"#;
         let parsed = extract_response(&EditFormat::Json, raw).expect("json parse");
         assert_eq!(parsed.replacement, "fn x() {}");
         assert_eq!(parsed.new_import_statements, vec!["use std::fmt;"]);
@@ -137,5 +137,18 @@ mod tests {
         let raw = "hello";
         let parsed = extract_response(&EditFormat::Raw, raw).expect("raw parse");
         assert_eq!(parsed.replacement, "hello");
+    }
+
+    #[test]
+    fn lua_format_defers_extraction() {
+        let raw = "fn deferred() {}";
+        let parsed =
+            extract_response(&EditFormat::Lua("test".to_string()), raw).expect("lua deferred");
+        assert_eq!(parsed.replacement, raw, "should pass through raw text");
+        assert!(parsed.new_import_statements.is_empty());
+        assert!(
+            parsed.log_lines[0].contains("deferred"),
+            "log should mention deferral"
+        );
     }
 }

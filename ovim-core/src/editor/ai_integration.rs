@@ -1,6 +1,7 @@
 use super::ai_state::{AiEditRegion, AiRegionStatus, AiSelectionSnapshot, PendingAiJob};
 use super::Editor;
 use crate::ai::request_ai_edit;
+use crate::ai::AiExtractedResponse;
 use crate::edit::Edit;
 use crate::editor::lsp_state::HoverContentType;
 use crate::mode::Mode;
@@ -133,6 +134,7 @@ impl Editor {
         };
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
         let prompts = self.ai_state.config.prompts.clone();
+        let format_prompts = self.ai_state.config.format_prompts.clone();
 
         let edit_format = self.ai_state.edit_format.clone();
         let (request, mut prep_trace) =
@@ -171,7 +173,14 @@ impl Editor {
 
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = request_ai_edit(&profile, &request, &api_key_registry, &prompts).await;
+            let result = request_ai_edit(
+                &profile,
+                &request,
+                &api_key_registry,
+                &prompts,
+                &format_prompts,
+            )
+            .await;
             let clone_for_channel = match &result {
                 Ok(ok) => Ok(ok.clone()),
                 Err(err) => Err(anyhow!(err.to_string())),
@@ -453,6 +462,7 @@ impl Editor {
         };
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
         let prompts = self.ai_state.config.prompts.clone();
+        let format_prompts = self.ai_state.config.format_prompts.clone();
 
         let (request, mut prep_trace) =
             self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, &edit_format);
@@ -480,7 +490,14 @@ impl Editor {
 
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = request_ai_edit(&profile, &request, &api_key_registry, &prompts).await;
+            let result = request_ai_edit(
+                &profile,
+                &request,
+                &api_key_registry,
+                &prompts,
+                &format_prompts,
+            )
+            .await;
             let clone_for_channel = match &result {
                 Ok(ok) => Ok(ok.clone()),
                 Err(err) => Err(anyhow!(err.to_string())),
@@ -591,6 +608,36 @@ impl Editor {
             .copied()
             .ok_or_else(|| anyhow!("missing AI lock {}", lock_id))?;
 
+        // For Lua formats, run the extract function on the main thread.
+        let region_edit_format = self
+            .ai_state
+            .regions
+            .iter()
+            .find(|r| r.id == lock_id)
+            .map(|r| r.edit_format.clone());
+        let result = if let Some(crate::ai::EditFormat::Lua(ref name)) = region_edit_format {
+            match self.run_lua_format_extract(name, &result.raw_output) {
+                Ok(extracted) => std::borrow::Cow::Owned(crate::ai::AiJobResult {
+                    replacement: extracted.replacement,
+                    new_import_statements: extracted.new_import_statements,
+                    log_lines: extracted.log_lines,
+                    raw_output: result.raw_output.clone(),
+                    provider: result.provider,
+                    profile_name: result.profile_name.clone(),
+                    model: result.model.clone(),
+                }),
+                Err(e) => {
+                    // Fall back to raw extraction result with error logged
+                    let mut fallback = result.clone();
+                    fallback.log_lines = vec![format!("lua:{} extract failed: {}", name, e)];
+                    std::borrow::Cow::Owned(fallback)
+                }
+            }
+        } else {
+            std::borrow::Cow::Borrowed(result)
+        };
+        let result = &*result;
+
         self.buffer_mut().remove_ai_lock(lock_id);
 
         let mut top_text = String::new();
@@ -679,6 +726,92 @@ impl Editor {
         self.request_diagnostics_refresh();
         self.mark_dirty();
         Ok(())
+    }
+
+    #[cfg(feature = "lua")]
+    fn run_lua_format_extract(
+        &self,
+        format_name: &str,
+        raw_output: &str,
+    ) -> Result<AiExtractedResponse> {
+        let lua_ctx = self
+            .lua_context
+            .as_ref()
+            .ok_or_else(|| anyhow!("Lua not enabled — cannot use lua format"))?;
+        let lua = lua_ctx.lua();
+
+        let registry: mlua::Table = lua
+            .globals()
+            .get("_ovim_format_registry")
+            .map_err(|e| anyhow!("format registry not found: {}", e))?;
+        let format: mlua::Table = registry
+            .get(format_name)
+            .map_err(|e| anyhow!("format '{}' not registered: {}", format_name, e))?;
+        let extract_fn: mlua::Function = format
+            .get("extract")
+            .map_err(|e| anyhow!("format '{}' missing extract function: {}", format_name, e))?;
+
+        let result: mlua::Value = extract_fn
+            .call(raw_output)
+            .map_err(|e| anyhow!("extract function error: {}", e))?;
+
+        match result {
+            mlua::Value::String(s) => {
+                let replacement = s
+                    .to_str()
+                    .map_err(|e| anyhow!("extract returned invalid UTF-8: {}", e))?
+                    .to_string();
+                Ok(AiExtractedResponse {
+                    replacement,
+                    new_import_statements: Vec::new(),
+                    log_lines: vec![format!("lua:{} extract ok", format_name)],
+                })
+            }
+            mlua::Value::Table(t) => {
+                let replacement: String = t
+                    .get("replacement")
+                    .map_err(|_| anyhow!("extract table must have 'replacement' field"))?;
+                let imports: Vec<String> = t
+                    .get::<_, mlua::Table>("new_import_statements")
+                    .ok()
+                    .map(|tbl| {
+                        tbl.sequence_values::<String>()
+                            .filter_map(|r| r.ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let log: Vec<String> = t
+                    .get::<_, mlua::Table>("log")
+                    .ok()
+                    .map(|tbl| {
+                        tbl.sequence_values::<String>()
+                            .filter_map(|r| r.ok())
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![format!("lua:{} extract ok", format_name)]);
+                Ok(AiExtractedResponse {
+                    replacement,
+                    new_import_statements: imports,
+                    log_lines: log,
+                })
+            }
+            _ => Err(anyhow!(
+                "extract function must return string or table, got {:?}",
+                result.type_name()
+            )),
+        }
+    }
+
+    #[cfg(not(feature = "lua"))]
+    fn run_lua_format_extract(
+        &self,
+        format_name: &str,
+        _raw_output: &str,
+    ) -> Result<AiExtractedResponse> {
+        Err(anyhow!(
+            "lua:{} format requires Lua feature to be enabled",
+            format_name
+        ))
     }
 
     fn update_ai_region_failure(&mut self, lock_id: u64, message: String, status: AiRegionStatus) {

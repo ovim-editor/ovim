@@ -16,18 +16,25 @@ pub async fn request_ai_edit(
     request: &AiRequest,
     registry: &HashMap<String, ApiKeyConfig>,
     prompts: &HashMap<String, String>,
+    format_prompts: &HashMap<String, String>,
 ) -> Result<AiJobResult> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
         .context("failed to create AI HTTP client")?;
 
-    let system_prompt = resolve_edit_system_prompt(profile, prompts, request);
+    let system_prompt = resolve_edit_system_prompt(profile, prompts, format_prompts, request);
 
     let response_text = match profile.provider {
-        AiProviderKind::OpenAi => request_openai(&client, profile, request, &system_prompt, registry).await?,
-        AiProviderKind::Anthropic => request_anthropic(&client, profile, request, &system_prompt, registry).await?,
-        AiProviderKind::Ollama => request_ollama(&client, profile, request, &system_prompt, registry).await?,
+        AiProviderKind::OpenAi => {
+            request_openai(&client, profile, request, &system_prompt, registry).await?
+        }
+        AiProviderKind::Anthropic => {
+            request_anthropic(&client, profile, request, &system_prompt, registry).await?
+        }
+        AiProviderKind::Ollama => {
+            request_ollama(&client, profile, request, &system_prompt, registry).await?
+        }
     };
 
     let extracted = extract_response(&request.edit_format, &response_text)
@@ -51,11 +58,13 @@ pub async fn request_ai_edit(
 /// Resolve the system prompt for edit mode, following the priority chain:
 /// 1. `profile.edit_prompt` — per-profile override, interpolated
 /// 2. `prompts["edit"]` — global template, interpolated
-/// 3. `profile.system_prompt` — raw string, no interpolation (backward compat)
-/// 4. `system_prompt_for_edit_format()` — hardcoded fallback
+/// 3. `format_prompts[format_name]` — from format registry (Lua formats)
+/// 4. `profile.system_prompt` — raw string, no interpolation (backward compat)
+/// 5. `system_prompt_for_edit_format()` — hardcoded fallback
 fn resolve_edit_system_prompt(
     profile: &AiProfileConfig,
     prompts: &HashMap<String, String>,
+    format_prompts: &HashMap<String, String>,
     request: &AiRequest,
 ) -> String {
     let file = request.file_path.as_deref().unwrap_or("[No Name]");
@@ -73,6 +82,17 @@ fn resolve_edit_system_prompt(
 
     if let Some(template) = prompts.get("edit") {
         return interpolate(template, &vars);
+    }
+
+    // Format-specific prompt from vim.ai.formats.register()
+    let format_name = match &request.edit_format {
+        crate::ai::types::EditFormat::Lua(name) => Some(name.as_str()),
+        _ => None,
+    };
+    if let Some(name) = format_name {
+        if let Some(prompt) = format_prompts.get(name) {
+            return interpolate(prompt, &vars);
+        }
     }
 
     if let Some(ref sp) = profile.system_prompt {
@@ -168,11 +188,7 @@ fn provider_label(provider: AiProviderKind) -> &'static str {
 }
 
 /// Apply common optional params (temperature, max_tokens, tools) to a JSON body.
-fn apply_optional_params(
-    body: &mut Value,
-    profile: &AiProfileConfig,
-    tools: Option<&[Value]>,
-) {
+fn apply_optional_params(body: &mut Value, profile: &AiProfileConfig, tools: Option<&[Value]>) {
     if let Some(temp) = profile.temperature {
         match profile.provider {
             AiProviderKind::Ollama => {
@@ -344,14 +360,40 @@ pub async fn stream_ai_chat(
 
     match profile.provider {
         AiProviderKind::OpenAi => {
-            stream_openai_chat(&client, profile, messages, system_prompt, tools, tx, registry).await
+            stream_openai_chat(
+                &client,
+                profile,
+                messages,
+                system_prompt,
+                tools,
+                tx,
+                registry,
+            )
+            .await
         }
         AiProviderKind::Anthropic => {
-            stream_anthropic_chat(&client, profile, messages, system_prompt, tools, tx, registry)
-                .await
+            stream_anthropic_chat(
+                &client,
+                profile,
+                messages,
+                system_prompt,
+                tools,
+                tx,
+                registry,
+            )
+            .await
         }
         AiProviderKind::Ollama => {
-            stream_ollama_chat(&client, profile, messages, system_prompt, tools, tx, registry).await
+            stream_ollama_chat(
+                &client,
+                profile,
+                messages,
+                system_prompt,
+                tools,
+                tx,
+                registry,
+            )
+            .await
         }
     }
 }
@@ -470,8 +512,11 @@ async fn send_streaming(
     profile: &AiProfileConfig,
     body: &Value,
     registry: &HashMap<String, ApiKeyConfig>,
-) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>>
-{
+) -> Result<
+    std::pin::Pin<
+        Box<dyn futures_core::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>,
+    >,
+> {
     let url = provider_url(profile);
     let headers = provider_headers(profile, registry)?;
     let label = provider_label(profile.provider);
@@ -686,17 +731,18 @@ fn resolve_api_key_config(key_name: &str, config: &ApiKeyConfig) -> Result<Strin
         })?;
         let trimmed = content.trim().to_string();
         if trimmed.is_empty() {
-            anyhow::bail!("API key file '{}' for key '{}' is empty", file_path, key_name);
+            anyhow::bail!(
+                "API key file '{}' for key '{}' is empty",
+                file_path,
+                key_name
+            );
         }
         return Ok(trimmed);
     }
 
     // Should not reach here because setup_api_keys_api validates at least one is set,
     // but handle it defensively.
-    anyhow::bail!(
-        "API key '{}' has no env_var or file configured",
-        key_name
-    )
+    anyhow::bail!("API key '{}' has no env_var or file configured", key_name)
 }
 
 /// Read an environment variable, providing helpful diagnostics on failure.
@@ -940,7 +986,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn test_profile(provider: AiProviderKind) -> AiProfileConfig {
-        use crate::ai::types::{EditFormat, ProfileScope, AgentLoopConfig, ContextGatheringPolicy, RetryPolicy};
+        use crate::ai::types::{
+            AgentLoopConfig, ContextGatheringPolicy, EditFormat, ProfileScope, RetryPolicy,
+        };
         AiProfileConfig {
             name: "test".to_string(),
             provider,
@@ -1135,7 +1183,7 @@ mod tests {
         let prompts = HashMap::new();
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
         assert_eq!(result, "You are a rust expert.");
     }
 
@@ -1149,7 +1197,7 @@ mod tests {
         );
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
         assert_eq!(result, "Edit main.rs (rust)");
     }
 
@@ -1159,9 +1207,12 @@ mod tests {
         let prompts = HashMap::new();
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
         // Should get the default JSON edit format prompt
-        assert!(result.contains("JSON"), "expected JSON fallback, got: {result}");
+        assert!(
+            result.contains("JSON"),
+            "expected JSON fallback, got: {result}"
+        );
     }
 
     #[test]
@@ -1172,7 +1223,7 @@ mod tests {
         prompts.insert("edit".to_string(), "Global template".to_string());
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
         assert_eq!(result, "Profile override");
     }
 
@@ -1183,7 +1234,37 @@ mod tests {
         let prompts = HashMap::new();
         let request = test_request();
 
-        let result = resolve_edit_system_prompt(&profile, &prompts, &request);
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
         assert_eq!(result, "Custom raw prompt");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_format_prompt() {
+        let profile = test_profile(AiProviderKind::OpenAi);
+        let prompts = HashMap::new();
+        let mut format_prompts = HashMap::new();
+        format_prompts.insert(
+            "upper".to_string(),
+            "Return code as-is for {{language}}.".to_string(),
+        );
+        let mut request = test_request();
+        request.edit_format = crate::ai::types::EditFormat::Lua("upper".to_string());
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &format_prompts, &request);
+        assert_eq!(result, "Return code as-is for rust.");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_profile_wins_over_format() {
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.edit_prompt = Some("Profile wins".to_string());
+        let prompts = HashMap::new();
+        let mut format_prompts = HashMap::new();
+        format_prompts.insert("upper".to_string(), "Format prompt".to_string());
+        let mut request = test_request();
+        request.edit_format = crate::ai::types::EditFormat::Lua("upper".to_string());
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &format_prompts, &request);
+        assert_eq!(result, "Profile wins");
     }
 }
