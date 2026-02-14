@@ -525,8 +525,8 @@ fn test_close_brace_at_eof() {
 
     assert_eq!(test.buffer_content(), "para 1\n\npara 2\n");
 
-    // } motion goes to trailing newline (line 3, col 0)
-    test.assert_cursor(3, 0);
+    // No next paragraph — cursor stays on last line
+    test.assert_cursor(2, 0);
 }
 
 #[test]
@@ -550,8 +550,8 @@ fn test_close_brace_no_blank_lines() {
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
 
-    // } motion goes to trailing newline (line 3, col 0)
-    test.assert_cursor(3, 0);
+    // No blank lines — cursor stays on last line
+    test.assert_cursor(2, 0);
 }
 
 // ============================================================================
@@ -568,8 +568,8 @@ fn test_close_paren_at_eof() {
 
     assert_eq!(test.buffer_content(), "First. Second.\n");
 
-    // ) motion goes to trailing newline (line 1, col 0)
-    test.assert_cursor(1, 0);
+    // First ) from EOF wraps to (0,0), second ) finds "Second" at col 7
+    test.assert_cursor(0, 7);
 }
 
 #[test]

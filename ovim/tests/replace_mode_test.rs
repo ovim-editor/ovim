@@ -578,7 +578,7 @@ fn test_ctrl_u_delete_line() {
 
     // Ctrl-U deletes all text inserted before cursor on current line
     assert_eq!(test.buffer_content(), "hello\n");
-    test.assert_cursor(0, 12); // Cursor stays at position 12 after Esc
+    test.assert_cursor(0, 0); // Cursor at line start after Ctrl-U, stays after Esc
 }
 
 #[test]
