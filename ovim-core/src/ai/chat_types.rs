@@ -1,3 +1,4 @@
+use super::config::ChatContextConfig;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -352,6 +353,67 @@ impl Default for ChatFocus {
     }
 }
 
+/// Apply observation masking to a message list for API serialization.
+///
+/// Messages within the observation window (the N most recent turns) are
+/// kept verbatim. For older messages, Tool role content is replaced with
+/// the mask template. All messages stay in the list — only content changes.
+///
+/// "Turn" = one User message (+ any following assistant/tool messages).
+/// We count turns by counting User messages from the end.
+pub fn apply_observation_mask(
+    messages: &[ChatMessage],
+    config: &ChatContextConfig,
+) -> Vec<ChatMessage> {
+    if messages.is_empty() || config.observation_window == 0 {
+        return messages.to_vec();
+    }
+
+    // Find the boundary: the observation_window-th User message from the end.
+    let mut user_count = 0;
+    let mut boundary_index = 0; // messages at or after this index are within the window
+    for (i, msg) in messages.iter().enumerate().rev() {
+        if msg.role == ChatRole::User {
+            user_count += 1;
+            if user_count == config.observation_window {
+                boundary_index = i;
+                break;
+            }
+        }
+    }
+
+    // If we didn't find enough User messages, everything is within the window
+    if user_count < config.observation_window {
+        return messages.to_vec();
+    }
+
+    // Count turns for the mask template (turn 1 = first turn from the start)
+    let mut turn_number = 0;
+    messages
+        .iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            if msg.role == ChatRole::User {
+                turn_number += 1;
+            }
+            if i < boundary_index && msg.role == ChatRole::Tool {
+                let masked_content =
+                    config.mask_template.replace("{turn}", &turn_number.to_string());
+                ChatMessage {
+                    role: msg.role.clone(),
+                    content: masked_content,
+                    model: msg.model.clone(),
+                    timestamp: msg.timestamp,
+                    tool_calls: msg.tool_calls.clone(),
+                    tool_call_id: msg.tool_call_id.clone(),
+                }
+            } else {
+                msg.clone()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,5 +579,182 @@ mod tests {
         assert!(!opts.allow_edits);
         assert!(opts.system_prompt.is_none());
         assert!(opts.initial_message.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Observation masking tests
+    // -----------------------------------------------------------------------
+
+    fn make_user(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::User,
+            content: content.to_string(),
+            model: None,
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+
+    fn make_assistant(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: content.to_string(),
+            model: Some("m".to_string()),
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }
+    }
+
+    fn make_assistant_with_tools(content: &str, tc: Vec<ToolCallInfo>) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Assistant,
+            content: content.to_string(),
+            model: Some("m".to_string()),
+            timestamp: Instant::now(),
+            tool_calls: tc,
+            tool_call_id: None,
+        }
+    }
+
+    fn make_tool(id: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Tool,
+            content: content.to_string(),
+            model: None,
+            timestamp: Instant::now(),
+            tool_calls: vec![],
+            tool_call_id: Some(id.to_string()),
+        }
+    }
+
+    fn default_chat_config() -> ChatContextConfig {
+        ChatContextConfig::default()
+    }
+
+    #[test]
+    fn observation_mask_within_window() {
+        // With window=10 and only 2 turns, nothing should be masked
+        let msgs = vec![
+            make_user("q1"),
+            make_assistant_with_tools(
+                "let me check",
+                vec![ToolCallInfo {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({}),
+                }],
+            ),
+            make_tool("t1", "file contents here"),
+            make_assistant("done"),
+        ];
+        let config = default_chat_config();
+        let result = apply_observation_mask(&msgs, &config);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[2].content, "file contents here");
+    }
+
+    #[test]
+    fn observation_mask_old_tool_results() {
+        // window=1: only the last turn is kept verbatim
+        let msgs = vec![
+            make_user("q1"),
+            make_assistant_with_tools(
+                "",
+                vec![ToolCallInfo {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({}),
+                }],
+            ),
+            make_tool("t1", "old file contents"),
+            make_assistant("old answer"),
+            make_user("q2"),
+            make_assistant("new answer"),
+        ];
+        let config = ChatContextConfig {
+            observation_window: 1,
+            mask_template: "[output from turn {turn}]".to_string(),
+            max_context_tokens: 100_000,
+        };
+        let result = apply_observation_mask(&msgs, &config);
+        assert_eq!(result.len(), 6);
+        // Tool result in turn 1 should be masked
+        assert_eq!(result[2].content, "[output from turn 1]");
+        // Other messages should be preserved
+        assert_eq!(result[0].content, "q1");
+        assert_eq!(result[3].content, "old answer");
+        assert_eq!(result[5].content, "new answer");
+    }
+
+    #[test]
+    fn observation_mask_turn_counting() {
+        // 3 turns, window=2: only turn 1 gets masked
+        let msgs = vec![
+            // Turn 1
+            make_user("q1"),
+            make_assistant_with_tools(
+                "",
+                vec![ToolCallInfo {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({}),
+                }],
+            ),
+            make_tool("t1", "result 1"),
+            make_assistant("a1"),
+            // Turn 2
+            make_user("q2"),
+            make_assistant_with_tools(
+                "",
+                vec![ToolCallInfo {
+                    id: "t2".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({}),
+                }],
+            ),
+            make_tool("t2", "result 2"),
+            make_assistant("a2"),
+            // Turn 3
+            make_user("q3"),
+            make_assistant("a3"),
+        ];
+        let config = ChatContextConfig {
+            observation_window: 2,
+            mask_template: "[masked turn {turn}]".to_string(),
+            max_context_tokens: 100_000,
+        };
+        let result = apply_observation_mask(&msgs, &config);
+        // Turn 1's tool result (index 2) should be masked
+        assert_eq!(result[2].content, "[masked turn 1]");
+        // Turn 2's tool result (index 6) should NOT be masked (within window)
+        assert_eq!(result[6].content, "result 2");
+    }
+
+    #[test]
+    fn observation_mask_preserves_user_and_assistant() {
+        // Even old user and assistant messages are NOT masked — only tool results
+        let msgs = vec![
+            make_user("old question"),
+            make_assistant("old answer"),
+            make_user("new question"),
+            make_assistant("new answer"),
+        ];
+        let config = ChatContextConfig {
+            observation_window: 1,
+            mask_template: "[masked]".to_string(),
+            max_context_tokens: 100_000,
+        };
+        let result = apply_observation_mask(&msgs, &config);
+        assert_eq!(result[0].content, "old question");
+        assert_eq!(result[1].content, "old answer");
+    }
+
+    #[test]
+    fn observation_mask_empty() {
+        let config = default_chat_config();
+        let result = apply_observation_mask(&[], &config);
+        assert!(result.is_empty());
     }
 }

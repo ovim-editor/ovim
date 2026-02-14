@@ -177,6 +177,9 @@ impl Editor {
             api_key_registry,
             prompts,
             format_prompts,
+            project_context,
+            chat_context,
+            agent_loop,
         )) = bridge.take_ai_config_if_dirty()
         {
             // Merge Lua profiles (Lua wins over TOML on conflict)
@@ -206,6 +209,12 @@ impl Editor {
                     .format_prompts
                     .insert(format_name, prompt);
             }
+            // Project context, chat context, agent loop configs
+            self.ai_state.config.project_context = project_context;
+            self.ai_state.config.chat_context = chat_context;
+            // Store agent_loop as a global default; per-profile overrides
+            // are already handled in LuaProfileConfig::into_profile_config().
+            let _ = agent_loop; // reserved for future global agent_loop usage
             // Default profile
             if let Some(dp) = default_profile {
                 self.ai_state.config.default_profile = dp.clone();

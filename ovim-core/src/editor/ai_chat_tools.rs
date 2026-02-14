@@ -342,6 +342,13 @@ impl Editor {
             )
             .or_else(|| Some(self.build_chat_system_prompt(&profile)))
         };
+        // Append project context to system prompt
+        let project_ctx = crate::ai::project_context::load_project_context(
+            &self.ai_state.config.project_context,
+            self.buffers[self.current_buffer_index].file_path(),
+        );
+        let system_prompt = system_prompt
+            .map(|sp| crate::ai::append_project_context(&sp, &project_ctx));
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
 
@@ -349,6 +356,13 @@ impl Editor {
             .conversation()
             .map(|c| c.messages().to_vec())
             .unwrap_or_default();
+
+        // Apply observation masking — only the API-bound copy gets masked;
+        // the full conversation stays in ConversationTree for UI display.
+        let messages = crate::ai::chat_types::apply_observation_mask(
+            &messages,
+            &self.ai_state.config.chat_context,
+        );
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let tx_err = tx.clone();

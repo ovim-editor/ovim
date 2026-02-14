@@ -1,7 +1,7 @@
 //! `vim.ai.*` and `vim.api_keys.*` Lua API namespaces.
 
 use super::editor_bridge::{AiCommand, EditorBridge, LuaProfileConfig};
-use crate::ai::ApiKeyConfig;
+use crate::ai::{AgentLoopConfig, ApiKeyConfig, ChatContextConfig, ProjectContextConfig};
 use mlua::{Lua, Result, Table, Value};
 
 /// Build the `vim.ai` table and all sub-namespaces.
@@ -243,6 +243,25 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                     };
                     b.set_ai_default_profile(s);
                     Ok(())
+                } else if key == "project_context" || key == "chat" || key == "agent" {
+                    match key.as_str() {
+                        "project_context" => {
+                            let cfg = parse_project_context_table(&value)?;
+                            b.set_project_context(cfg);
+                        }
+                        "chat" => {
+                            let cfg = parse_chat_context_table(&value)?;
+                            b.set_chat_context(cfg);
+                        }
+                        "agent" => {
+                            let cfg = parse_agent_loop_table(&value)?;
+                            b.set_agent_loop(cfg);
+                        }
+                        _ => unreachable!(),
+                    }
+                    // Also rawset so Lua can read it back
+                    tbl.raw_set(key, value)?;
+                    Ok(())
                 } else {
                     // Allow setting other fields normally via rawset
                     tbl.raw_set(key, value)?;
@@ -342,4 +361,61 @@ fn parse_string_list(tbl: &Table, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Parse a Lua value (expected table) into ProjectContextConfig.
+fn parse_project_context_table(value: &Value) -> Result<ProjectContextConfig> {
+    let tbl = match value {
+        Value::Table(t) => t,
+        _ => return Err(mlua::Error::external("vim.ai.project_context must be a table")),
+    };
+    let mut cfg = ProjectContextConfig::default();
+    if let Ok(files) = tbl.get::<_, Table>("files") {
+        cfg.files = files
+            .sequence_values::<String>()
+            .filter_map(|r| r.ok())
+            .collect();
+    }
+    if let Ok(v) = tbl.get::<_, bool>("hierarchical") {
+        cfg.hierarchical = v;
+    }
+    if let Ok(v) = tbl.get::<_, usize>("budget") {
+        cfg.budget = v;
+    }
+    if let Ok(v) = tbl.get::<_, bool>("enabled") {
+        cfg.enabled = v;
+    }
+    Ok(cfg)
+}
+
+/// Parse a Lua value (expected table) into ChatContextConfig.
+fn parse_chat_context_table(value: &Value) -> Result<ChatContextConfig> {
+    let tbl = match value {
+        Value::Table(t) => t,
+        _ => return Err(mlua::Error::external("vim.ai.chat must be a table")),
+    };
+    let mut cfg = ChatContextConfig::default();
+    if let Ok(v) = tbl.get::<_, usize>("observation_window") {
+        cfg.observation_window = v;
+    }
+    if let Ok(v) = tbl.get::<_, String>("mask_template") {
+        cfg.mask_template = v;
+    }
+    if let Ok(v) = tbl.get::<_, usize>("max_context_tokens") {
+        cfg.max_context_tokens = v;
+    }
+    Ok(cfg)
+}
+
+/// Parse a Lua value (expected table) into AgentLoopConfig.
+fn parse_agent_loop_table(value: &Value) -> Result<AgentLoopConfig> {
+    let tbl = match value {
+        Value::Table(t) => t,
+        _ => return Err(mlua::Error::external("vim.ai.agent must be a table")),
+    };
+    let mut cfg = AgentLoopConfig::default();
+    if let Ok(v) = tbl.get::<_, u16>("max_tool_calls") {
+        cfg.max_tool_calls = v;
+    }
+    Ok(cfg)
 }
