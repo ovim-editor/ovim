@@ -246,6 +246,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Motion keys work in visual mode too
         KeyCode::Char('h') | KeyCode::Left => {
+            editor.set_visual_block_dollar(false);
             helpers::move_left(editor);
         }
         KeyCode::Char('j') | KeyCode::Down => {
@@ -255,24 +256,29 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::move_up(editor);
         }
         KeyCode::Char('l') | KeyCode::Right => {
+            editor.set_visual_block_dollar(false);
             helpers::move_right(editor);
         }
         KeyCode::Char('w') => {
+            editor.set_visual_block_dollar(false);
             let count = editor.effective_count();
             Motions::word_forward(editor.buffer_mut(), count);
             editor.clear_count();
         }
         KeyCode::Char('b') => {
+            editor.set_visual_block_dollar(false);
             let count = editor.effective_count();
             Motions::word_backward(editor.buffer_mut(), count);
             editor.clear_count();
         }
         KeyCode::Char('e') => {
+            editor.set_visual_block_dollar(false);
             let count = editor.effective_count();
             Motions::word_end_forward(editor.buffer_mut(), count);
             editor.clear_count();
         }
         KeyCode::Char('0') => {
+            editor.set_visual_block_dollar(false);
             // If there's already a count, treat this as a digit (e.g., "50j")
             // Otherwise, treat it as a motion to column 0
             if editor.count().is_some() {
@@ -283,16 +289,13 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Char('$') => {
             if editor.mode() == Mode::VisualBlock {
-                // In visual block mode, $ should extend to the end of the longest line in the selection
-                if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
-                    let mut max_len = 0;
-                    for line_idx in start_line..=end_line {
-                        if let Some(line) = editor.buffer().line(line_idx) {
-                            let line_len = line.trim_end_matches('\n').chars().count();
-                            max_len = max_len.max(line_len);
-                        }
-                    }
-                    let col = if max_len > 0 { max_len - 1 } else { 0 };
+                // Set "extend to end-of-line" flag so each line in the block
+                // is deleted/yanked to its own end, not to a fixed column.
+                editor.set_visual_block_dollar(true);
+                let line_idx = editor.buffer().cursor().line();
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    let line_len = line.trim_end_matches('\n').chars().count();
+                    let col = if line_len > 0 { line_len - 1 } else { 0 };
                     let cursor = editor.buffer_mut().cursor_mut();
                     cursor.set_col(col);
                     cursor.update_desired_col(usize::MAX);

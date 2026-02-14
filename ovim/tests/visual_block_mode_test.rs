@@ -47,7 +47,8 @@ fn test_ctrl_v_yank_paste_block() {
         test.buffer_content(),
         "hello world\ntest line\nfoo barhel\n"
     );
-    test.assert_cursor(2, 10);
+    // Cursor on last char of pasted text: "hel" at col 7, so last char at col 9
+    test.assert_cursor(2, 9);
 }
 
 #[test]
@@ -258,7 +259,7 @@ fn test_ctrl_v_yank_uppercase() {
     // Pastes first line of block ("HEL") at line 2, col 1 -> "THELEST"
     // Second block line ("WOR") is skipped (no line 3)
     assert_eq!(test.buffer_content(), "HELLO\nWORLD\nTHELEST\n");
-    test.assert_cursor(2, 4); // Cursor after pasted text (col 1 + 3 chars)
+    test.assert_cursor(2, 3); // Cursor on last pasted char 'L' (col 1 + 3 - 1)
 }
 
 #[test]
