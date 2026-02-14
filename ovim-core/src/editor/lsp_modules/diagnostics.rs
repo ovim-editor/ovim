@@ -150,8 +150,7 @@ impl Editor {
             }
             self.lsp_state.current_file_diagnostics = diagnostics;
             self.lsp_state.diagnostics_buffer_version = version_before;
-            self.lsp_state.diagnostics_lsp_version =
-                self.lsp_state.current_file_lsp_version;
+            self.lsp_state.diagnostics_lsp_version = self.lsp_state.current_file_lsp_version;
         } else {
             crate::log_debug!(
                 "diagnostics",
@@ -173,9 +172,7 @@ impl Editor {
         }
         // LSP version mismatch: a new document version was assigned (via did_change)
         // since diagnostics were cached — the server may not have processed it yet.
-        if self.lsp_state.diagnostics_lsp_version
-            != self.lsp_state.current_file_lsp_version
-        {
+        if self.lsp_state.diagnostics_lsp_version != self.lsp_state.current_file_lsp_version {
             return true;
         }
         false

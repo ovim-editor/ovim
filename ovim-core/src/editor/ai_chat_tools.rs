@@ -243,8 +243,8 @@ impl Editor {
         let buf = &self.buffers[self.current_buffer_index];
         let file_info = match buf.file_path() {
             Some(path) => {
-                let lang = crate::syntax::LanguageRegistry::get_lsp_language_id(path)
-                    .unwrap_or("unknown");
+                let lang =
+                    crate::syntax::LanguageRegistry::get_lsp_language_id(path).unwrap_or("unknown");
                 format!("Current file: {} ({})", path, lang)
             }
             None => "No file open.".to_string(),

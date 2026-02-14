@@ -384,11 +384,8 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     } else {
         1
     };
-    let left_used = mode_indicator.len()
-        + recording_len
-        + file.len()
-        + modified.len()
-        + branch_display.len();
+    let left_used =
+        mode_indicator.len() + recording_len + file.len() + modified.len() + branch_display.len();
     let right_used: usize = right_spans.iter().map(|s| s.content.len()).sum();
     let padding_len = (area.width as usize).saturating_sub(left_used + right_used);
 

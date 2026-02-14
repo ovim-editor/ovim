@@ -89,17 +89,13 @@ fn clamp_cursor(buffer: &mut Buffer) {
         buffer.cursor_mut().set_line(safe_line);
     }
     let line = buffer.cursor().line();
-    let line_text = buffer
-        .line(line)
-        .unwrap_or_default();
+    let line_text = buffer.line(line).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
     let cur_col = buffer.cursor().col();
     if line_len == 0 {
         buffer.cursor_mut().set_col(0);
     } else if cur_col >= line_len {
-        buffer
-            .cursor_mut()
-            .set_col(line_len.saturating_sub(1));
+        buffer.cursor_mut().set_col(line_len.saturating_sub(1));
     }
 }
 
@@ -118,9 +114,7 @@ fn assert_cursor_in_bounds(buffer: &Buffer, context: &str) -> Result<(), TestCas
         cursor.line(),
         line_count
     );
-    let line_text = buffer
-        .line(cursor.line())
-        .unwrap_or_default();
+    let line_text = buffer.line(cursor.line()).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
     prop_assert!(
         cursor.col() <= line_len,

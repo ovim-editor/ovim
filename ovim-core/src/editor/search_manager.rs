@@ -229,10 +229,9 @@ impl Editor {
 
                     if cursor_in_match {
                         // If cursor is within a match, select the current match
-                        if let Some((start_col, end_col)) = matches
-                            .iter()
-                            .find(|(start, end)| cursor_char_col >= *start && cursor_char_col < *end)
-                        {
+                        if let Some((start_col, end_col)) = matches.iter().find(|(start, end)| {
+                            cursor_char_col >= *start && cursor_char_col < *end
+                        }) {
                             // Convert char cols → grapheme for visual start and cursor
                             let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
                             let end_grapheme = char_to_grapheme_col(line_trimmed, end_col - 1);

@@ -478,8 +478,7 @@ impl Buffer {
         // Convert grapheme col → char col for find_number_at_or_after (char-based)
         let char_col = grapheme_to_char_col(line_text, grapheme_col);
 
-        let Some((start_col, end_col, number_str)) =
-            find_number_at_or_after(line_text, char_col)
+        let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, char_col)
         else {
             return;
         };

@@ -322,7 +322,10 @@ mod tests {
         for g in 0..grapheme_len {
             let char_col = grapheme_to_char_col(s, g);
             let back = char_to_grapheme_col(s, char_col);
-            assert_eq!(back, g, "roundtrip failed for grapheme {g}: char_col={char_col}");
+            assert_eq!(
+                back, g,
+                "roundtrip failed for grapheme {g}: char_col={char_col}"
+            );
         }
     }
 }

@@ -700,17 +700,16 @@ impl LanguageServer {
                 // OV-00155: Timeout cancels initialize_internal mid-execution,
                 // so its error handler never runs. Transition to Failed here to
                 // trigger cleanup of orphaned pending requests.
-                let msg = format!(
-                    "LSP initialization timed out after {:?}",
-                    init_timeout
-                );
+                let msg = format!("LSP initialization timed out after {:?}", init_timeout);
                 crate::lsp_error!(&self.log_prefix(), "{}", msg);
                 self.transition_to(ServerState::Failed {
                     error: msg.clone(),
                     at: Instant::now(),
                 })
                 .await;
-                Err(anyhow::anyhow!("{msg}. For large projects, this may take several minutes on first run."))
+                Err(anyhow::anyhow!(
+                    "{msg}. For large projects, this may take several minutes on first run."
+                ))
             }
         }
     }

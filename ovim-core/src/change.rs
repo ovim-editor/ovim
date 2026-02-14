@@ -34,9 +34,9 @@
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;
+use crate::editor::motions::Motions;
 use crate::repeat_action::RepeatAction;
 use crate::search::Search;
-use crate::editor::motions::Motions;
 use crate::textobjects::TextObjects;
 use anyhow::Result;
 
@@ -808,10 +808,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, replacement);
 
                 // Position cursor at end of inserted text (minus 1 for normal mode)
-                let end_pos = Self::calculate_end_position(
-                    (start_line, start_col),
-                    replacement,
-                );
+                let end_pos = Self::calculate_end_position((start_line, start_col), replacement);
                 let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
                 buffer.cursor_mut().set_position(end_pos.0, final_col);
             }

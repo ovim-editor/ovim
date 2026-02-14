@@ -46,9 +46,7 @@ impl Editor {
                 } else {
                     (target_related + max_iterations as usize - 1) / max_iterations as usize
                 };
-                let slice_radius = RELATED_SLICE_RADIUS
-                    .saturating_mul(2)
-                    .min(12);
+                let slice_radius = RELATED_SLICE_RADIUS.saturating_mul(2).min(12);
                 let mut seen_ranges = HashSet::new();
                 for iteration in 0..max_iterations {
                     let remaining = target_related.saturating_sub(pack.related_slices.len());
@@ -77,11 +75,7 @@ impl Editor {
                     }
                 }
             }
-            prune_context_pack_to_budget(
-                &mut pack,
-                profile.context.budget,
-                &mut trace,
-            );
+            prune_context_pack_to_budget(&mut pack, profile.context.budget, &mut trace);
             Some(pack)
         };
 

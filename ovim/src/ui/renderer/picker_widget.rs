@@ -589,10 +589,10 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     let is_live_grep = matches!(picker.mode(), crate::editor::PickerMode::LiveGrep);
 
     // Collect visible results first so we can disambiguate filenames across them
-    let visible_entries: Vec<(usize, &crate::editor::PickerResult)> =
-        (scroll_offset..total.min(scroll_offset + max_results))
-            .filter_map(|i| picker.filtered_result(i).map(|result| (i, result)))
-            .collect();
+    let visible_entries: Vec<(usize, &crate::editor::PickerResult)> = (scroll_offset
+        ..total.min(scroll_offset + max_results))
+        .filter_map(|i| picker.filtered_result(i).map(|result| (i, result)))
+        .collect();
 
     // For live grep: compute shortest unambiguous display names for duplicate filenames
     let disambiguated = if is_live_grep {

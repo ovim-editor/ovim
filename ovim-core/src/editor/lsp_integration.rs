@@ -927,8 +927,7 @@ impl Editor {
                 .await;
 
             // Track the current LSP document version (bumped immediately in did_change)
-            self.lsp_state.current_file_lsp_version =
-                lsp.get_document_version(&uri).await;
+            self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
 
             // Mark as sent AFTER sending and store the synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -1069,13 +1068,10 @@ impl Editor {
             let _ = lsp
                 .did_change_broadcast(uri.clone(), language_id, content.clone(), old_content)
                 .await;
-            let _ = lsp
-                .flush_pending_changes_broadcast(&uri, language_id)
-                .await;
+            let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
 
             // Track the LSP document version after flush
-            self.lsp_state.current_file_lsp_version =
-                lsp.get_document_version(&uri).await;
+            self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
 
             // Mark as sent and store synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
