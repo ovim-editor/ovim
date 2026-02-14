@@ -1,7 +1,7 @@
 use crate::ai::{
     default_api_key_env, infer_provider, parse_edit_format_str, parse_provider_str,
-    AgentLoopConfig, AiProfileConfig, ContextGatheringPolicy, DiagnosticScope, EditFormat,
-    FileScope, ProfileScope, RetryPolicy,
+    AgentLoopConfig, AiProfileConfig, ApiKeyConfig, ContextGatheringPolicy, DiagnosticScope,
+    EditFormat, FileScope, ProfileScope, RetryPolicy,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -33,6 +33,8 @@ struct EditorBridgeInner {
     ai_profiles: HashMap<String, LuaProfileConfig>,
     /// Pending AI commands from Lua
     ai_pending_commands: Vec<AiCommand>,
+    /// API key registry (name → config)
+    api_key_registry: HashMap<String, ApiKeyConfig>,
     /// Whether AI config has been modified since last sync
     ai_dirty: bool,
 }
@@ -145,11 +147,12 @@ impl LuaProfileConfig {
     }
 }
 
-/// Snapshot of AI config from Lua bridge: (contexts, default_profile, profiles).
+/// Snapshot of AI config from Lua bridge: (contexts, default_profile, profiles, api_key_registry).
 pub type AiConfigSnapshot = (
     HashMap<String, String>,
     Option<String>,
     HashMap<String, LuaProfileConfig>,
+    HashMap<String, ApiKeyConfig>,
 );
 
 /// Commands queued by Lua for the editor to process.
@@ -190,6 +193,7 @@ impl EditorBridge {
                 ai_default_profile: None,
                 ai_profiles: HashMap::new(),
                 ai_pending_commands: Vec::new(),
+                api_key_registry: HashMap::new(),
                 ai_dirty: false,
             })),
         }
@@ -362,6 +366,15 @@ impl EditorBridge {
         inner.ai_pending_commands.drain(..).collect()
     }
 
+    pub fn register_api_key(&self, name: String, config: ApiKeyConfig) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.api_key_registry.insert(name, config);
+        inner.ai_dirty = true;
+    }
+
     /// Returns AI config if it was modified since last call.
     /// Clears the dirty flag.
     pub fn take_ai_config_if_dirty(&self) -> Option<AiConfigSnapshot> {
@@ -377,6 +390,7 @@ impl EditorBridge {
             inner.ai_contexts.clone(),
             inner.ai_default_profile.clone(),
             inner.ai_profiles.clone(),
+            inner.api_key_registry.clone(),
         ))
     }
 

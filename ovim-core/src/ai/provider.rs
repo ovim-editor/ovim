@@ -2,16 +2,18 @@ use crate::ai::chat_types::StreamChunk;
 use crate::ai::config::{system_prompt_for_edit_format, AiProfileConfig};
 use crate::ai::extract::extract_response;
 use crate::ai::stream_parsers;
-use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest};
+use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest, ApiKeyConfig};
 use anyhow::{anyhow, Context, Result};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub async fn request_ai_edit(
     profile: &AiProfileConfig,
     request: &AiRequest,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<AiJobResult> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -19,9 +21,9 @@ pub async fn request_ai_edit(
         .context("failed to create AI HTTP client")?;
 
     let response_text = match profile.provider {
-        AiProviderKind::OpenAi => request_openai(&client, profile, request).await?,
-        AiProviderKind::Anthropic => request_anthropic(&client, profile, request).await?,
-        AiProviderKind::Ollama => request_ollama(&client, profile, request).await?,
+        AiProviderKind::OpenAi => request_openai(&client, profile, request, registry).await?,
+        AiProviderKind::Anthropic => request_anthropic(&client, profile, request, registry).await?,
+        AiProviderKind::Ollama => request_ollama(&client, profile, request, registry).await?,
     };
 
     let extracted = extract_response(&request.edit_format, &response_text)
@@ -54,13 +56,16 @@ fn provider_url(profile: &AiProfileConfig) -> String {
 }
 
 /// Build HTTP headers for the given provider (reads API key from env when needed).
-fn provider_headers(profile: &AiProfileConfig) -> Result<HeaderMap> {
+fn provider_headers(
+    profile: &AiProfileConfig,
+    registry: &HashMap<String, ApiKeyConfig>,
+) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     match profile.provider {
         AiProviderKind::OpenAi => {
-            let api_key = read_api_key(profile)?;
+            let api_key = read_api_key(profile, registry)?;
             headers.insert(
                 AUTHORIZATION,
                 HeaderValue::from_str(&format!("Bearer {api_key}"))
@@ -68,7 +73,7 @@ fn provider_headers(profile: &AiProfileConfig) -> Result<HeaderMap> {
             );
         }
         AiProviderKind::Anthropic => {
-            let api_key = read_api_key(profile)?;
+            let api_key = read_api_key(profile, registry)?;
             headers.insert(
                 "x-api-key",
                 HeaderValue::from_str(&api_key).context("invalid Anthropic API key")?,
@@ -148,9 +153,10 @@ async fn request_openai(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
     let url = provider_url(profile);
-    let headers = provider_headers(profile)?;
+    let headers = provider_headers(profile, registry)?;
 
     let sys = profile
         .system_prompt
@@ -188,9 +194,10 @@ async fn request_anthropic(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
     let url = provider_url(profile);
-    let headers = provider_headers(profile)?;
+    let headers = provider_headers(profile, registry)?;
 
     let sys = profile
         .system_prompt
@@ -226,9 +233,10 @@ async fn request_ollama(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
     let url = provider_url(profile);
-    let headers = provider_headers(profile)?;
+    let headers = provider_headers(profile, registry)?;
 
     let sys = profile
         .system_prompt
@@ -268,6 +276,7 @@ pub async fn stream_ai_chat(
     system_prompt: Option<&str>,
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<()> {
     // No timeout — streaming connections are long-lived.
     let client = reqwest::Client::builder()
@@ -276,13 +285,14 @@ pub async fn stream_ai_chat(
 
     match profile.provider {
         AiProviderKind::OpenAi => {
-            stream_openai_chat(&client, profile, messages, system_prompt, tools, tx).await
+            stream_openai_chat(&client, profile, messages, system_prompt, tools, tx, registry).await
         }
         AiProviderKind::Anthropic => {
-            stream_anthropic_chat(&client, profile, messages, system_prompt, tools, tx).await
+            stream_anthropic_chat(&client, profile, messages, system_prompt, tools, tx, registry)
+                .await
         }
         AiProviderKind::Ollama => {
-            stream_ollama_chat(&client, profile, messages, system_prompt, tools, tx).await
+            stream_ollama_chat(&client, profile, messages, system_prompt, tools, tx, registry).await
         }
     }
 }
@@ -400,10 +410,11 @@ async fn send_streaming(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     body: &Value,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>>
 {
     let url = provider_url(profile);
-    let headers = provider_headers(profile)?;
+    let headers = provider_headers(profile, registry)?;
     let label = provider_label(profile.provider);
 
     let response = client
@@ -435,6 +446,7 @@ async fn stream_openai_chat(
     system_prompt: Option<&str>,
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<()> {
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     let mut api_messages = Vec::new();
@@ -450,7 +462,7 @@ async fn stream_openai_chat(
     });
     apply_optional_params(&mut body, profile, tools);
 
-    let stream = send_streaming(client, profile, &body).await?;
+    let stream = send_streaming(client, profile, &body, registry).await?;
     stream_parsers::parse_openai_stream(stream, tx).await;
     Ok(())
 }
@@ -462,6 +474,7 @@ async fn stream_anthropic_chat(
     system_prompt: Option<&str>,
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<()> {
     let mut body = json!({
         "model": profile.model,
@@ -475,7 +488,7 @@ async fn stream_anthropic_chat(
     }
     apply_optional_params(&mut body, profile, tools);
 
-    let stream = send_streaming(client, profile, &body).await?;
+    let stream = send_streaming(client, profile, &body, registry).await?;
     stream_parsers::parse_anthropic_stream(stream, tx).await;
     Ok(())
 }
@@ -487,6 +500,7 @@ async fn stream_ollama_chat(
     system_prompt: Option<&str>,
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<()> {
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     let mut api_messages = Vec::new();
@@ -502,7 +516,7 @@ async fn stream_ollama_chat(
     });
     apply_optional_params(&mut body, profile, tools);
 
-    let stream = send_streaming(client, profile, &body).await?;
+    let stream = send_streaming(client, profile, &body, registry).await?;
     stream_parsers::parse_ollama_stream(stream, tx).await;
     Ok(())
 }
@@ -559,11 +573,25 @@ fn parse_ollama_content(value: &Value) -> Result<String> {
         .ok_or_else(|| anyhow!("missing message.content in Ollama response"))
 }
 
-fn read_api_key(profile: &AiProfileConfig) -> Result<String> {
-    // Resolve the env var name: use the profile's explicit setting, then fall back to
-    // the canonical default_api_key_env() for this provider.  Both the TOML and Lua
-    // config paths now also eagerly resolve the default, so api_key_env should be
-    // Some(...) for all non-Ollama profiles.  This runtime fallback is a safety net.
+fn read_api_key(
+    profile: &AiProfileConfig,
+    registry: &HashMap<String, ApiKeyConfig>,
+) -> Result<String> {
+    // If the profile references a named key in the registry, resolve it.
+    if let Some(key_name) = &profile.api_key {
+        let key_config = registry.get(key_name).ok_or_else(|| {
+            anyhow!(
+                "API key '{}' referenced by profile '{}' is not registered \
+                 (call vim.api_keys.register('{}', {{ env_var = ... }}))",
+                key_name,
+                profile.name,
+                key_name,
+            )
+        })?;
+        return resolve_api_key_config(key_name, key_config);
+    }
+
+    // Fallback: use api_key_env (existing behavior).
     let env_var_name: String = match &profile.api_key_env {
         Some(name) if !name.is_empty() => name.clone(),
         _ => super::config::default_api_key_env(profile.provider).ok_or_else(|| {
@@ -575,9 +603,46 @@ fn read_api_key(profile: &AiProfileConfig) -> Result<String> {
         })?,
     };
 
-    std::env::var(&env_var_name).with_context(|| {
-        // Diagnostic: show what AI-related env vars the process CAN see so the user
-        // can tell whether the variable is truly absent or just mis-named.
+    read_env_var_with_diagnostics(&env_var_name)
+}
+
+/// Resolve an API key from a registry entry: try env_var first, then file.
+fn resolve_api_key_config(key_name: &str, config: &ApiKeyConfig) -> Result<String> {
+    if let Some(ref env_var) = config.env_var {
+        if let Ok(val) = std::env::var(env_var) {
+            return Ok(val);
+        }
+        // If file is also set, fall through to try it.
+        if config.file.is_none() {
+            return read_env_var_with_diagnostics(env_var);
+        }
+    }
+
+    if let Some(ref file_path) = config.file {
+        let content = std::fs::read_to_string(file_path).with_context(|| {
+            format!(
+                "failed to read API key file '{}' for key '{}'",
+                file_path, key_name
+            )
+        })?;
+        let trimmed = content.trim().to_string();
+        if trimmed.is_empty() {
+            anyhow::bail!("API key file '{}' for key '{}' is empty", file_path, key_name);
+        }
+        return Ok(trimmed);
+    }
+
+    // Should not reach here because setup_api_keys_api validates at least one is set,
+    // but handle it defensively.
+    anyhow::bail!(
+        "API key '{}' has no env_var or file configured",
+        key_name
+    )
+}
+
+/// Read an environment variable, providing helpful diagnostics on failure.
+fn read_env_var_with_diagnostics(env_var_name: &str) -> Result<String> {
+    std::env::var(env_var_name).with_context(|| {
         let related: Vec<String> = std::env::vars()
             .filter(|(k, _)| {
                 k.contains("OPENAI")
@@ -911,5 +976,80 @@ mod tests {
         assert_eq!(content[1]["type"], "tool_use");
         assert_eq!(content[1]["id"], "toolu_1");
         assert_eq!(content[1]["name"], "read_file");
+    }
+
+    // -----------------------------------------------------------------------
+    // read_api_key / API key registry tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn api_key_registry_env_var() {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "test_key".to_string(),
+            ApiKeyConfig {
+                env_var: Some("OVIM_TEST_API_KEY_12345".to_string()),
+                file: None,
+            },
+        );
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.api_key = Some("test_key".to_string());
+
+        // Set the env var, read the key, then clean up.
+        std::env::set_var("OVIM_TEST_API_KEY_12345", "sk-secret");
+        let result = read_api_key(&profile, &registry);
+        std::env::remove_var("OVIM_TEST_API_KEY_12345");
+
+        assert_eq!(result.unwrap(), "sk-secret");
+    }
+
+    #[test]
+    fn api_key_registry_missing_name() {
+        let registry = HashMap::new(); // empty
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.api_key = Some("nonexistent".to_string());
+
+        let result = read_api_key(&profile, &registry);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("nonexistent"),
+            "error should mention the missing key name: {msg}"
+        );
+    }
+
+    #[test]
+    fn api_key_fallback_to_api_key_env() {
+        let registry = HashMap::new();
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.api_key = None;
+        profile.api_key_env = Some("OVIM_TEST_FALLBACK_KEY_67890".to_string());
+
+        std::env::set_var("OVIM_TEST_FALLBACK_KEY_67890", "sk-fallback");
+        let result = read_api_key(&profile, &registry);
+        std::env::remove_var("OVIM_TEST_FALLBACK_KEY_67890");
+
+        assert_eq!(result.unwrap(), "sk-fallback");
+    }
+
+    #[test]
+    fn api_key_registry_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_file = dir.path().join("api_key.txt");
+        std::fs::write(&key_file, "  sk-from-file  \n").unwrap();
+
+        let mut registry = HashMap::new();
+        registry.insert(
+            "file_key".to_string(),
+            ApiKeyConfig {
+                env_var: None,
+                file: Some(key_file.to_string_lossy().to_string()),
+            },
+        );
+        let mut profile = test_profile(AiProviderKind::OpenAi);
+        profile.api_key = Some("file_key".to_string());
+
+        let result = read_api_key(&profile, &registry);
+        assert_eq!(result.unwrap(), "sk-from-file");
     }
 }

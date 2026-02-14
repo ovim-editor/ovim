@@ -1,6 +1,7 @@
-//! `vim.ai.*` Lua API namespace.
+//! `vim.ai.*` and `vim.api_keys.*` Lua API namespaces.
 
 use super::editor_bridge::{AiCommand, EditorBridge, LuaProfileConfig};
+use crate::ai::ApiKeyConfig;
 use mlua::{Lua, Result, Table, Value};
 
 /// Build the `vim.ai` table and all sub-namespaces.
@@ -250,6 +251,29 @@ fn parse_lua_profile(tbl: &Table) -> Result<LuaProfileConfig> {
         retry_max: tbl.get::<_, u8>("retry_max").ok(),
         retry_fallback: tbl.get::<_, String>("retry_fallback").ok(),
     })
+}
+
+/// Build the `vim.api_keys` table.
+pub fn setup_api_keys_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
+    let api_keys = lua.create_table()?;
+
+    // vim.api_keys.register(name, { env_var?, file? })
+    let register = lua.create_function(move |_lua, (name, opts): (String, Table)| {
+        let config = ApiKeyConfig {
+            env_var: opts.get::<_, String>("env_var").ok(),
+            file: opts.get::<_, String>("file").ok(),
+        };
+        if config.env_var.is_none() && config.file.is_none() {
+            return Err(mlua::Error::external(
+                "vim.api_keys.register: must specify at least one of 'env_var' or 'file'",
+            ));
+        }
+        bridge.register_api_key(name, config);
+        Ok(())
+    })?;
+    api_keys.set("register", register)?;
+
+    Ok(api_keys)
 }
 
 /// Extract a string list from a Lua table field (returns empty vec on missing/invalid).
