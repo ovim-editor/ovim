@@ -57,10 +57,11 @@ pub async fn request_ai_edit(
 
 /// Resolve the system prompt for edit mode, following the priority chain:
 /// 1. `profile.edit_prompt` — per-profile override, interpolated
-/// 2. `prompts["edit"]` — global template, interpolated
-/// 3. `format_prompts[format_name]` — from format registry (Lua formats)
-/// 4. `profile.system_prompt` — raw string, no interpolation (backward compat)
-/// 5. `system_prompt_for_edit_format()` — hardcoded fallback
+/// 2. `prompts["selection_{format}"]` — per-format global template, interpolated
+/// 3. `prompts["edit"]` — catch-all global template, interpolated (backward compat)
+/// 4. `format_prompts[format_name]` — from format registry (Lua formats)
+/// 5. `profile.system_prompt` — raw string, no interpolation (backward compat)
+/// 6. `system_prompt_for_edit_format()` — hardcoded fallback
 fn resolve_edit_system_prompt(
     profile: &AiProfileConfig,
     prompts: &HashMap<String, String>,
@@ -80,6 +81,13 @@ fn resolve_edit_system_prompt(
         return interpolate(template, &vars);
     }
 
+    // Per-format prompt key: "selection_codeblock", "selection_json", etc.
+    let format_key = format!("selection_{}", request.edit_format);
+    if let Some(template) = prompts.get(&format_key) {
+        return interpolate(template, &vars);
+    }
+
+    // Catch-all "edit" key (backward compat)
     if let Some(template) = prompts.get("edit") {
         return interpolate(template, &vars);
     }
@@ -1266,5 +1274,35 @@ mod tests {
 
         let result = resolve_edit_system_prompt(&profile, &prompts, &format_prompts, &request);
         assert_eq!(result, "Profile wins");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_format_specific_key() {
+        let profile = test_profile(AiProviderKind::OpenAi);
+        let mut prompts = HashMap::new();
+        prompts.insert(
+            "selection_codeblock".to_string(),
+            "Codeblock prompt for {{language}}".to_string(),
+        );
+        // Also set a catch-all "edit" — should NOT be used
+        prompts.insert("edit".to_string(), "Generic edit prompt".to_string());
+        let mut request = test_request();
+        request.edit_format = crate::ai::types::EditFormat::Codeblock;
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        assert_eq!(result, "Codeblock prompt for rust");
+    }
+
+    #[test]
+    fn resolve_edit_system_prompt_edit_key_still_works() {
+        let profile = test_profile(AiProviderKind::OpenAi);
+        let mut prompts = HashMap::new();
+        // Only "edit" key, no format-specific key
+        prompts.insert("edit".to_string(), "Catch-all for {{file}}".to_string());
+        let mut request = test_request();
+        request.edit_format = crate::ai::types::EditFormat::Codeblock;
+
+        let result = resolve_edit_system_prompt(&profile, &prompts, &HashMap::new(), &request);
+        assert_eq!(result, "Catch-all for main.rs");
     }
 }
