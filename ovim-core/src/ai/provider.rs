@@ -1,5 +1,5 @@
 use crate::ai::chat_types::StreamChunk;
-use crate::ai::config::AiProfileConfig;
+use crate::ai::config::{system_prompt_for_extraction, AiProfileConfig};
 use crate::ai::extract::extract_response;
 use crate::ai::stream_parsers;
 use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest};
@@ -38,57 +38,130 @@ pub async fn request_ai_edit(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Per-provider helpers: URL, headers, common body params
+// ---------------------------------------------------------------------------
+
+/// Build the API endpoint URL for the given provider.
+fn provider_url(profile: &AiProfileConfig) -> String {
+    let (default_base, path) = match profile.provider {
+        AiProviderKind::OpenAi => ("https://api.openai.com/v1", "/chat/completions"),
+        AiProviderKind::Anthropic => ("https://api.anthropic.com", "/v1/messages"),
+        AiProviderKind::Ollama => ("http://127.0.0.1:11434", "/api/chat"),
+    };
+    let base = profile.base_url.as_deref().unwrap_or(default_base);
+    format!("{}{}", base.trim_end_matches('/'), path)
+}
+
+/// Build HTTP headers for the given provider (reads API key from env when needed).
+fn provider_headers(profile: &AiProfileConfig) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    match profile.provider {
+        AiProviderKind::OpenAi => {
+            let api_key = read_api_key(profile)?;
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {api_key}"))
+                    .context("invalid OpenAI API key")?,
+            );
+        }
+        AiProviderKind::Anthropic => {
+            let api_key = read_api_key(profile)?;
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_str(&api_key).context("invalid Anthropic API key")?,
+            );
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+        AiProviderKind::Ollama => {
+            // Ollama doesn't need authentication headers.
+        }
+    }
+    Ok(headers)
+}
+
+/// Provider label for error messages.
+fn provider_label(provider: AiProviderKind) -> &'static str {
+    match provider {
+        AiProviderKind::OpenAi => "OpenAI",
+        AiProviderKind::Anthropic => "Anthropic",
+        AiProviderKind::Ollama => "Ollama",
+    }
+}
+
+/// Apply common optional params (temperature, max_tokens, tools) to a JSON body.
+fn apply_optional_params(
+    body: &mut Value,
+    profile: &AiProfileConfig,
+    tools: Option<&[Value]>,
+) {
+    if let Some(temp) = profile.temperature {
+        match profile.provider {
+            AiProviderKind::Ollama => {
+                body["options"] = json!({ "temperature": temp });
+            }
+            _ => {
+                body["temperature"] = json!(temp);
+            }
+        }
+    }
+    if let Some(max_tokens) = profile.max_tokens {
+        // GPT-5+ models require max_completion_tokens instead of max_tokens.
+        let key = match profile.provider {
+            AiProviderKind::OpenAi => "max_completion_tokens",
+            _ => "max_tokens",
+        };
+        body[key] = json!(max_tokens);
+    }
+    if let Some(tools) = tools {
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Single-shot request functions (one user prompt → one response)
+// ---------------------------------------------------------------------------
+
 async fn request_openai(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
     request: &AiRequest,
 ) -> Result<String> {
-    let base_url = profile
-        .base_url
+    let url = provider_url(profile);
+    let headers = provider_headers(profile)?;
+
+    let sys = profile
+        .system_prompt
         .as_deref()
-        .unwrap_or("https://api.openai.com/v1");
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let api_key = read_api_key(profile)?;
+        .unwrap_or_else(|| system_prompt_for_extraction(request.extraction));
 
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {api_key}")).context("invalid OpenAI API key")?,
-    );
+    let mut messages = vec![json!({ "role": "system", "content": sys })];
+    messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
 
-    let mut messages = Vec::new();
-    if let Some(system_prompt) = &profile.system_prompt {
-        messages.push(json!({ "role": "system", "content": system_prompt }));
+    let mut body = json!({ "model": profile.model, "messages": messages });
+    // When expecting JSON, ask the API to enforce valid JSON output.
+    if request.extraction == crate::ai::types::ExtractionStrategy::Json {
+        body["response_format"] = json!({ "type": "json_object" });
     }
-    messages.push(json!({
-        "role": "user",
-        "content": build_user_prompt(request),
-    }));
+    apply_optional_params(&mut body, profile, None);
 
-    let mut body = json!({
-        "model": profile.model,
-        "messages": messages,
-    });
-    if let Some(temp) = profile.temperature {
-        body["temperature"] = json!(temp);
-    }
-    if let Some(max_tokens) = profile.max_tokens {
-        body["max_tokens"] = json!(max_tokens);
-    }
-
+    let label = provider_label(profile.provider);
     let value = client
         .post(url)
         .headers(headers)
         .json(&body)
         .send()
         .await
-        .context("OpenAI request failed")?
+        .with_context(|| format!("{label} request failed"))?
         .error_for_status()
-        .context("OpenAI returned error status")?
+        .with_context(|| format!("{label} returned error status"))?
         .json::<Value>()
         .await
-        .context("failed to decode OpenAI response")?;
+        .with_context(|| format!("failed to decode {label} response"))?;
 
     parse_openai_content(&value).context("invalid OpenAI response payload")
 }
@@ -98,59 +171,37 @@ async fn request_anthropic(
     profile: &AiProfileConfig,
     request: &AiRequest,
 ) -> Result<String> {
-    let base_url = profile
-        .base_url
-        .as_deref()
-        .unwrap_or("https://api.anthropic.com");
-    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
-    let api_key = read_api_key(profile)?;
+    let url = provider_url(profile);
+    let headers = provider_headers(profile)?;
 
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        "x-api-key",
-        HeaderValue::from_str(&api_key).context("invalid Anthropic API key")?,
-    );
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    let sys = profile
+        .system_prompt
+        .as_deref()
+        .unwrap_or_else(|| system_prompt_for_extraction(request.extraction));
 
     let mut body = json!({
         "model": profile.model,
         "max_tokens": profile.max_tokens.unwrap_or(2048),
-        "messages": [
-            {
-                "role": "user",
-                "content": build_user_prompt(request),
-            }
-        ]
+        "messages": [{ "role": "user", "content": build_user_prompt(request) }],
+        "system": sys,
     });
-    if let Some(system_prompt) = &profile.system_prompt {
-        body["system"] = json!(system_prompt);
-    }
-    if let Some(temp) = profile.temperature {
-        body["temperature"] = json!(temp);
-    }
+    apply_optional_params(&mut body, profile, None);
 
+    let label = provider_label(profile.provider);
     let value = client
         .post(url)
         .headers(headers)
         .json(&body)
         .send()
         .await
-        .context("Anthropic request failed")?
+        .with_context(|| format!("{label} request failed"))?
         .error_for_status()
-        .context("Anthropic returned error status")?
+        .with_context(|| format!("{label} returned error status"))?
         .json::<Value>()
         .await
-        .context("failed to decode Anthropic response")?;
+        .with_context(|| format!("failed to decode {label} response"))?;
 
-    let content = value
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|items| items.first())
-        .and_then(|entry| entry.get("text"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing content[0].text"))?;
-    Ok(content.to_string())
+    parse_anthropic_content(&value)
 }
 
 async fn request_ollama(
@@ -158,56 +209,35 @@ async fn request_ollama(
     profile: &AiProfileConfig,
     request: &AiRequest,
 ) -> Result<String> {
-    let base_url = profile
-        .base_url
+    let url = provider_url(profile);
+    let headers = provider_headers(profile)?;
+
+    let sys = profile
+        .system_prompt
         .as_deref()
-        .unwrap_or("http://127.0.0.1:11434");
-    let url = format!("{}/api/chat", base_url.trim_end_matches('/'));
+        .unwrap_or_else(|| system_prompt_for_extraction(request.extraction));
 
-    let mut body = json!({
-        "model": profile.model,
-        "stream": false,
-        "messages": [
-            {
-                "role": "system",
-                "content": profile.system_prompt.clone().unwrap_or_default(),
-            },
-            {
-                "role": "user",
-                "content": build_user_prompt(request),
-            }
-        ]
-    });
-    if profile.system_prompt.is_none() {
-        body["messages"] = json!([
-            {
-                "role": "user",
-                "content": build_user_prompt(request),
-            }
-        ]);
-    }
-    if let Some(temp) = profile.temperature {
-        body["options"] = json!({ "temperature": temp });
-    }
+    let mut messages = vec![json!({ "role": "system", "content": sys })];
+    messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
 
+    let mut body = json!({ "model": profile.model, "stream": false, "messages": messages });
+    apply_optional_params(&mut body, profile, None);
+
+    let label = provider_label(profile.provider);
     let value = client
         .post(url)
+        .headers(headers)
         .json(&body)
         .send()
         .await
-        .context("Ollama request failed")?
+        .with_context(|| format!("{label} request failed"))?
         .error_for_status()
-        .context("Ollama returned error status")?
+        .with_context(|| format!("{label} returned error status"))?
         .json::<Value>()
         .await
-        .context("failed to decode Ollama response")?;
+        .with_context(|| format!("failed to decode {label} response"))?;
 
-    let content = value
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("missing message.content"))?;
-    Ok(content.to_string())
+    parse_ollama_content(&value)
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +373,43 @@ fn chat_messages_to_anthropic_json(messages: &[super::chat_types::ChatMessage]) 
     result
 }
 
+// ---------------------------------------------------------------------------
+// Streaming chat functions (multi-turn → streamed response)
+// ---------------------------------------------------------------------------
+
+/// Send a streaming POST and return the pinned byte stream.
+async fn send_streaming(
+    client: &reqwest::Client,
+    profile: &AiProfileConfig,
+    body: &Value,
+) -> Result<std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>>
+{
+    let url = provider_url(profile);
+    let headers = provider_headers(profile)?;
+    let label = provider_label(profile.provider);
+
+    let response = client
+        .post(url)
+        .headers(headers)
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("{label} request failed"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        // Try to extract the error message from the JSON response body.
+        let detail = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(String::from))
+            .unwrap_or(body);
+        anyhow::bail!("{label} returned {status}: {detail}");
+    }
+
+    Ok(Box::pin(response.bytes_stream()))
+}
+
 async fn stream_openai_chat(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
@@ -351,20 +418,6 @@ async fn stream_openai_chat(
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
-    let base_url = profile
-        .base_url
-        .as_deref()
-        .unwrap_or("https://api.openai.com/v1");
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let api_key = read_api_key(profile)?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {api_key}")).context("invalid OpenAI API key")?,
-    );
-
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     let mut api_messages = Vec::new();
     if let Some(sp) = sys {
@@ -377,33 +430,10 @@ async fn stream_openai_chat(
         "messages": api_messages,
         "stream": true,
     });
-    if let Some(temp) = profile.temperature {
-        body["temperature"] = json!(temp);
-    }
-    if let Some(max_tokens) = profile.max_tokens {
-        body["max_tokens"] = json!(max_tokens);
-    }
-    if let Some(tools) = tools {
-        if !tools.is_empty() {
-            body["tools"] = json!(tools);
-        }
-    }
+    apply_optional_params(&mut body, profile, tools);
 
-    let response = client
-        .post(url)
-        .headers(headers)
-        .json(&body)
-        .send()
-        .await
-        .context("OpenAI request failed")?
-        .error_for_status()
-        .context("OpenAI returned error status")?;
-
-    use futures_core::Stream;
-    let byte_stream = response.bytes_stream();
-    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>> =
-        Box::pin(byte_stream);
-    stream_parsers::parse_openai_stream(pinned, tx).await;
+    let stream = send_streaming(client, profile, &body).await?;
+    stream_parsers::parse_openai_stream(stream, tx).await;
     Ok(())
 }
 
@@ -415,21 +445,6 @@ async fn stream_anthropic_chat(
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
-    let base_url = profile
-        .base_url
-        .as_deref()
-        .unwrap_or("https://api.anthropic.com");
-    let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
-    let api_key = read_api_key(profile)?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        "x-api-key",
-        HeaderValue::from_str(&api_key).context("invalid Anthropic API key")?,
-    );
-    headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-
     let mut body = json!({
         "model": profile.model,
         "max_tokens": profile.max_tokens.unwrap_or(2048),
@@ -440,30 +455,10 @@ async fn stream_anthropic_chat(
     if let Some(sp) = sys {
         body["system"] = json!(sp);
     }
-    if let Some(temp) = profile.temperature {
-        body["temperature"] = json!(temp);
-    }
-    if let Some(tools) = tools {
-        if !tools.is_empty() {
-            body["tools"] = json!(tools);
-        }
-    }
+    apply_optional_params(&mut body, profile, tools);
 
-    let response = client
-        .post(url)
-        .headers(headers)
-        .json(&body)
-        .send()
-        .await
-        .context("Anthropic request failed")?
-        .error_for_status()
-        .context("Anthropic returned error status")?;
-
-    use futures_core::Stream;
-    let byte_stream = response.bytes_stream();
-    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>> =
-        Box::pin(byte_stream);
-    stream_parsers::parse_anthropic_stream(pinned, tx).await;
+    let stream = send_streaming(client, profile, &body).await?;
+    stream_parsers::parse_anthropic_stream(stream, tx).await;
     Ok(())
 }
 
@@ -475,12 +470,6 @@ async fn stream_ollama_chat(
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
 ) -> Result<()> {
-    let base_url = profile
-        .base_url
-        .as_deref()
-        .unwrap_or("http://127.0.0.1:11434");
-    let url = format!("{}/api/chat", base_url.trim_end_matches('/'));
-
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     let mut api_messages = Vec::new();
     if let Some(sp) = sys {
@@ -493,31 +482,16 @@ async fn stream_ollama_chat(
         "stream": true,
         "messages": api_messages,
     });
-    if let Some(temp) = profile.temperature {
-        body["options"] = json!({ "temperature": temp });
-    }
-    if let Some(tools) = tools {
-        if !tools.is_empty() {
-            body["tools"] = json!(tools);
-        }
-    }
+    apply_optional_params(&mut body, profile, tools);
 
-    let response = client
-        .post(url)
-        .json(&body)
-        .send()
-        .await
-        .context("Ollama request failed")?
-        .error_for_status()
-        .context("Ollama returned error status")?;
-
-    use futures_core::Stream;
-    let byte_stream = response.bytes_stream();
-    let pinned: std::pin::Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>> =
-        Box::pin(byte_stream);
-    stream_parsers::parse_ollama_stream(pinned, tx).await;
+    let stream = send_streaming(client, profile, &body).await?;
+    stream_parsers::parse_ollama_stream(stream, tx).await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Response parsing helpers
+// ---------------------------------------------------------------------------
 
 fn parse_openai_content(value: &Value) -> Result<String> {
     let content = value
@@ -547,25 +521,64 @@ fn parse_openai_content(value: &Value) -> Result<String> {
     Err(anyhow!("unexpected OpenAI content type"))
 }
 
+fn parse_anthropic_content(value: &Value) -> Result<String> {
+    value
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|entry| entry.get("text"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("missing content[0].text in Anthropic response"))
+}
+
+fn parse_ollama_content(value: &Value) -> Result<String> {
+    value
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("missing message.content in Ollama response"))
+}
+
 fn read_api_key(profile: &AiProfileConfig) -> Result<String> {
-    let key_env = profile
-        .api_key_env
-        .as_deref()
-        .unwrap_or(match profile.provider {
-            AiProviderKind::OpenAi => "OPENAI_API_KEY",
-            AiProviderKind::Anthropic => "ANTHROPIC_API_KEY",
-            AiProviderKind::Ollama => "",
-        });
+    // Resolve the env var name: use the profile's explicit setting, then fall back to
+    // the canonical default_api_key_env() for this provider.  Both the TOML and Lua
+    // config paths now also eagerly resolve the default, so api_key_env should be
+    // Some(...) for all non-Ollama profiles.  This runtime fallback is a safety net.
+    let env_var_name: String = match &profile.api_key_env {
+        Some(name) if !name.is_empty() => name.clone(),
+        _ => super::config::default_api_key_env(profile.provider).ok_or_else(|| {
+            anyhow!(
+                "no API key environment variable configured for provider {} \
+                 (set api_key_env in your profile or export the default env var)",
+                profile.provider
+            )
+        })?,
+    };
 
-    if key_env.is_empty() {
-        return Err(anyhow!(
-            "missing api_key_env for provider {}",
-            profile.provider
-        ));
-    }
-
-    std::env::var(key_env).with_context(|| {
-        format!("environment variable {key_env} is not set (set it in your shell before launching ovim)")
+    std::env::var(&env_var_name).with_context(|| {
+        // Diagnostic: show what AI-related env vars the process CAN see so the user
+        // can tell whether the variable is truly absent or just mis-named.
+        let related: Vec<String> = std::env::vars()
+            .filter(|(k, _)| {
+                k.contains("OPENAI")
+                    || k.contains("ANTHROPIC")
+                    || k.contains("OVIM")
+                    || k.contains("API_KEY")
+            })
+            .map(|(k, _)| k)
+            .collect();
+        let hint = if related.is_empty() {
+            "no related env vars visible to this process (OPENAI/ANTHROPIC/OVIM/API_KEY)"
+                .to_string()
+        } else {
+            format!("env vars visible to process: {}", related.join(", "))
+        };
+        format!(
+            "environment variable {env_var_name} is not set — {hint}. \
+             Export it in your shell before launching ovim."
+        )
     })
 }
 
