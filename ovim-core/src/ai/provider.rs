@@ -17,6 +17,7 @@ pub async fn request_ai_edit(
     registry: &HashMap<String, ApiKeyConfig>,
     prompts: &HashMap<String, String>,
     format_prompts: &HashMap<String, String>,
+    project_context: &str,
 ) -> Result<AiJobResult> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -24,6 +25,7 @@ pub async fn request_ai_edit(
         .context("failed to create AI HTTP client")?;
 
     let system_prompt = resolve_edit_system_prompt(profile, prompts, format_prompts, request);
+    let system_prompt = append_project_context(&system_prompt, project_context);
 
     let response_text = match profile.provider {
         AiProviderKind::OpenAi => {
@@ -137,6 +139,15 @@ pub(crate) fn resolve_chat_system_prompt(
     }
 
     None
+}
+
+/// Append project context to a system prompt. Returns the original prompt
+/// unchanged when `project_context` is empty.
+pub(crate) fn append_project_context(system_prompt: &str, project_context: &str) -> String {
+    if project_context.is_empty() {
+        return system_prompt.to_string();
+    }
+    format!("{system_prompt}\n\n## Project Context\n{project_context}")
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 use crate::ai::{
     default_api_key_env, infer_provider, parse_edit_format_str, parse_provider_str,
-    AgentLoopConfig, AiProfileConfig, ApiKeyConfig, ContextGatheringPolicy, DiagnosticScope,
-    EditFormat, FileScope, ProfileScope, RetryPolicy,
+    AgentLoopConfig, AiProfileConfig, ApiKeyConfig, ChatContextConfig, ContextGatheringPolicy,
+    DiagnosticScope, EditFormat, FileScope, ProfileScope, ProjectContextConfig, RetryPolicy,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -39,6 +39,12 @@ struct EditorBridgeInner {
     ai_prompts: HashMap<String, String>,
     /// Format-specific prompts (format name → system prompt string)
     format_prompts: HashMap<String, String>,
+    /// Project context configuration from Lua
+    project_context: ProjectContextConfig,
+    /// Chat context configuration from Lua
+    chat_context: ChatContextConfig,
+    /// Agent loop configuration from Lua
+    agent_loop: AgentLoopConfig,
     /// Whether AI config has been modified since last sync
     ai_dirty: bool,
 }
@@ -152,7 +158,8 @@ impl LuaProfileConfig {
 }
 
 /// Snapshot of AI config from Lua bridge:
-/// (contexts, default_profile, profiles, api_key_registry, prompts, format_prompts).
+/// (contexts, default_profile, profiles, api_key_registry, prompts, format_prompts,
+///  project_context, chat_context, agent_loop).
 pub type AiConfigSnapshot = (
     HashMap<String, String>,
     Option<String>,
@@ -160,6 +167,9 @@ pub type AiConfigSnapshot = (
     HashMap<String, ApiKeyConfig>,
     HashMap<String, String>,
     HashMap<String, String>,
+    ProjectContextConfig,
+    ChatContextConfig,
+    AgentLoopConfig,
 );
 
 /// Commands queued by Lua for the editor to process.
@@ -203,6 +213,9 @@ impl EditorBridge {
                 api_key_registry: HashMap::new(),
                 ai_prompts: HashMap::new(),
                 format_prompts: HashMap::new(),
+                project_context: ProjectContextConfig::default(),
+                chat_context: ChatContextConfig::default(),
+                agent_loop: AgentLoopConfig::default(),
                 ai_dirty: false,
             })),
         }
@@ -410,6 +423,33 @@ impl EditorBridge {
         inner.ai_dirty = true;
     }
 
+    pub fn set_project_context(&self, config: ProjectContextConfig) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.project_context = config;
+        inner.ai_dirty = true;
+    }
+
+    pub fn set_chat_context(&self, config: ChatContextConfig) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.chat_context = config;
+        inner.ai_dirty = true;
+    }
+
+    pub fn set_agent_loop(&self, config: AgentLoopConfig) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.agent_loop = config;
+        inner.ai_dirty = true;
+    }
+
     /// Returns AI config if it was modified since last call.
     /// Clears the dirty flag.
     pub fn take_ai_config_if_dirty(&self) -> Option<AiConfigSnapshot> {
@@ -428,6 +468,9 @@ impl EditorBridge {
             inner.api_key_registry.clone(),
             inner.ai_prompts.clone(),
             inner.format_prompts.clone(),
+            inner.project_context.clone(),
+            inner.chat_context.clone(),
+            inner.agent_loop.clone(),
         ))
     }
 

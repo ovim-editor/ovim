@@ -35,6 +35,53 @@ pub struct AiProfileConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProjectContextConfig {
+    /// File names to search for (e.g. ".ovim.md", "AGENTS.md", "CLAUDE.md").
+    pub files: Vec<String>,
+    /// Walk from repo root down to file's directory, collecting all matches.
+    pub hierarchical: bool,
+    /// Budget in characters (rough proxy for tokens).
+    pub budget: usize,
+    /// Master switch.
+    pub enabled: bool,
+}
+
+impl Default for ProjectContextConfig {
+    fn default() -> Self {
+        Self {
+            files: vec![
+                ".ovim.md".to_string(),
+                "AGENTS.md".to_string(),
+                "CLAUDE.md".to_string(),
+            ],
+            hierarchical: true,
+            budget: 2000,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatContextConfig {
+    /// Number of recent turns whose tool results are kept verbatim.
+    pub observation_window: usize,
+    /// Template for masked tool results. `{turn}` is replaced with the turn number.
+    pub mask_template: String,
+    /// Max context tokens (deferred — not enforced yet).
+    pub max_context_tokens: usize,
+}
+
+impl Default for ChatContextConfig {
+    fn default() -> Self {
+        Self {
+            observation_window: 10,
+            mask_template: "[output from turn {turn}]".to_string(),
+            max_context_tokens: 100_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct AiConfig {
     pub default_profile: String,
     pub profiles: HashMap<String, AiProfileConfig>,
@@ -46,6 +93,10 @@ pub struct AiConfig {
     pub prompts: HashMap<String, String>,
     /// Format-specific system prompts registered via `vim.ai.formats.register()`.
     pub format_prompts: HashMap<String, String>,
+    /// Project context file loading configuration.
+    pub project_context: ProjectContextConfig,
+    /// Chat context management (observation masking).
+    pub chat_context: ChatContextConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +177,8 @@ impl Default for AiConfig {
             api_key_registry: HashMap::new(),
             prompts: HashMap::new(),
             format_prompts: HashMap::new(),
+            project_context: ProjectContextConfig::default(),
+            chat_context: ChatContextConfig::default(),
         }
     }
 }

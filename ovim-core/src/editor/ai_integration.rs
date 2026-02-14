@@ -171,6 +171,11 @@ impl Editor {
         self.ai_state.selected_region_id = Some(lock_id);
         self.ai_state.selection_hold_until_exit = false;
 
+        let project_ctx = crate::ai::project_context::load_project_context(
+            &self.ai_state.config.project_context,
+            self.buffers[self.current_buffer_index].file_path(),
+        );
+
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
             let result = request_ai_edit(
@@ -179,6 +184,7 @@ impl Editor {
                 &api_key_registry,
                 &prompts,
                 &format_prompts,
+                &project_ctx,
             )
             .await;
             let clone_for_channel = match &result {
@@ -485,6 +491,11 @@ impl Editor {
             region.updated_at = Instant::now();
         }
 
+        let project_ctx = crate::ai::project_context::load_project_context(
+            &self.ai_state.config.project_context,
+            self.buffers[self.current_buffer_index].file_path(),
+        );
+
         let job_id = self.ai_state.next_job_id;
         self.ai_state.next_job_id = self.ai_state.next_job_id.saturating_add(1);
 
@@ -496,6 +507,7 @@ impl Editor {
                 &api_key_registry,
                 &prompts,
                 &format_prompts,
+                &project_ctx,
             )
             .await;
             let clone_for_channel = match &result {
