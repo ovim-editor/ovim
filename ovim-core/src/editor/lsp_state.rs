@@ -12,7 +12,11 @@ pub enum HoverContentType {
     AiReasoning,
 }
 
-/// Per-document synchronisation state, keyed by canonical file path
+/// Per-document synchronisation state, keyed by canonical file path.
+///
+/// Debouncing is handled entirely by `LspManager::ChangeDebouncer` (single
+/// owner, 150 ms).  The editor side just tracks "dirty" / "sent" so it
+/// forwards content to the debouncer on the next tick.
 #[derive(Debug, Clone, Default)]
 pub struct DocumentSyncState {
     pub buffer_modified: bool,
@@ -20,18 +24,11 @@ pub struct DocumentSyncState {
     pub last_synced_content: Option<String>,
     /// Track whether we've sent didOpen for this document
     pub did_open_sent: bool,
-    /// Last time we sent didChange (for debouncing)
-    pub last_change_sent: Option<std::time::Instant>,
 }
 
 impl DocumentSyncState {
     pub fn mark_modified(&mut self) {
         self.buffer_modified = true;
-    }
-
-    pub fn mark_modified_force_send(&mut self) {
-        self.buffer_modified = true;
-        self.last_change_sent = None;
     }
 
     pub fn mark_saved(&mut self) {
@@ -42,21 +39,12 @@ impl DocumentSyncState {
         self.buffer_modified
     }
 
-    pub fn should_send_change(&self) -> bool {
-        // Debounce: only send if 150ms have passed since last send
-        match self.last_change_sent {
-            None => true,
-            Some(last) => last.elapsed().as_millis() >= 150,
-        }
-    }
-
     pub fn should_send_save(&self) -> bool {
         self.buffer_saved
     }
 
     pub fn mark_change_sent(&mut self, synced_content: String) {
         self.buffer_modified = false;
-        self.last_change_sent = Some(std::time::Instant::now());
         self.last_synced_content = Some(synced_content);
     }
 
@@ -237,6 +225,8 @@ pub struct LspState {
     pub hover_info: Option<String>,
     /// Scroll offset for hover window (line number)
     pub hover_scroll: usize,
+    /// Horizontal scroll offset for hover window (columns)
+    pub hover_h_scroll: usize,
     /// Cursor position when hover was triggered (line, col) - for positioning popup
     pub hover_position: Option<(usize, usize)>,
     /// Per-document sync state (tracked by canonical file path)
@@ -271,6 +261,15 @@ pub struct LspState {
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
     /// Buffer version when diagnostics were last cached — used to detect staleness
     pub diagnostics_buffer_version: usize,
+    /// LSP document version when diagnostics were last cached.
+    /// Together with `diagnostics_buffer_version`, provides full provenance:
+    /// diagnostics are only shown if BOTH the buffer version AND the LSP
+    /// version match their current values.  (OV-00161)
+    pub diagnostics_lsp_version: i32,
+    /// Current LSP document version for the active file.
+    /// Updated in `send_lsp_changes_if_modified` and `update_diagnostic_cache`.
+    /// Compared against `diagnostics_lsp_version` in rendering guards.
+    pub current_file_lsp_version: i32,
     /// Cached hover result to avoid redundant LSP requests
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP responses (each request type has its own slot)
@@ -296,6 +295,7 @@ impl LspState {
             lsp_action_retry_count: 0,
             hover_info: None,
             hover_scroll: 0,
+            hover_h_scroll: 0,
             hover_position: None,
             document_sync: HashMap::new(),
             lsp_status: String::new(),
@@ -313,6 +313,8 @@ impl LspState {
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             diagnostics_buffer_version: 0,
+            diagnostics_lsp_version: 0,
+            current_file_lsp_version: 0,
             hover_cache: None,
             pending_lsp_responses: PendingLspResponses::default(),
             pending_completion: None,

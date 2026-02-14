@@ -1727,7 +1727,7 @@ impl Editor {
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
     pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
-        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+        if self.diagnostics_cache_stale() {
             return (0, 0, 0, 0);
         }
         self.lsp_state.diagnostic_count

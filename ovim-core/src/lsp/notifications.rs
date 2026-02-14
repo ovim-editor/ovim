@@ -88,137 +88,9 @@ impl LspManager {
         Ok(())
     }
 
-    /// Internal method to send textDocument/didChange notification immediately
-    /// Supports both full and incremental sync
-    async fn send_did_change_immediate(
-        &self,
-        uri: Uri,
-        language_id: &str,
-        text: String,
-        old_text: Option<String>,
-    ) -> Result<()> {
-        // Get server reference
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
-
-        // Check if server supports incremental sync and we have old content
-        let supports_incremental = server.supports_incremental_sync().await;
-
-        let full_doc_size = text.len();
-        let content_changes = if supports_incremental && old_text.is_some() {
-            // Try incremental sync
-            if let Some(old) = old_text {
-                if let Some((range, new_text)) = compute_simple_diff(&old, &text) {
-                    // Log bandwidth savings
-                    let incremental_size = new_text.len();
-                    let reduction_ratio = if full_doc_size > 0 {
-                        full_doc_size as f64 / incremental_size.max(1) as f64
-                    } else {
-                        1.0
-                    };
-                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        crate::lsp_debug!(
-                            "LSP-SYNC",
-                            "Incremental: {} bytes (was {} bytes, {:.1}x reduction) | Range: {}:{}-{}:{} | File: {}",
-                            incremental_size,
-                            full_doc_size,
-                            reduction_ratio,
-                            range.start.line,
-                            range.start.character,
-                            range.end.line,
-                            range.end.character,
-                            uri.path()
-                        );
-                    }
-
-                    // Use incremental change
-                    vec![TextDocumentContentChangeEvent {
-                        range: Some(range),
-                        range_length: None, // Optional, we don't compute it
-                        text: new_text,
-                    }]
-                } else {
-                    // No changes detected or identical content
-                    if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                        crate::lsp_debug!(
-                            "LSP-SYNC",
-                            "No changes detected (identical content) | File: {}",
-                            uri.path()
-                        );
-                    }
-                    return Ok(());
-                }
-            } else {
-                // Fallback to full sync
-                if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                    crate::lsp_debug!(
-                        "LSP-SYNC",
-                        "Full sync (no old_text): {} bytes | File: {}",
-                        full_doc_size,
-                        uri.path()
-                    );
-                }
-                vec![TextDocumentContentChangeEvent {
-                    range: None,
-                    range_length: None,
-                    text,
-                }]
-            }
-        } else {
-            // Use full document sync
-            let reason = if !supports_incremental {
-                "server doesn't support incremental"
-            } else {
-                "no old_text provided"
-            };
-            if std::env::var("OVIM_LSP_DEBUG").is_ok() {
-                crate::lsp_debug!(
-                    "LSP-SYNC",
-                    "Full sync ({}): {} bytes | File: {}",
-                    reason,
-                    full_doc_size,
-                    uri.path()
-                );
-            }
-            vec![TextDocumentContentChangeEvent {
-                range: None,
-                range_length: None,
-                text,
-            }]
-        };
-
-        // OV-00150: Increment version and build params under lock, then release
-        // before sending to avoid blocking all document operations during I/O.
-        // Ordering is safe because this function is only called from
-        // flush_pending_changes() which processes URIs sequentially from the
-        // debounce channel — at most one pending flush per URI at a time.
-        let params = {
-            let mut versions = self.document_versions.lock().await;
-            let version = versions.entry(uri.clone()).or_insert(0);
-            *version += 1;
-            let current_version = *version;
-
-            DidChangeTextDocumentParams {
-                text_document: VersionedTextDocumentIdentifier {
-                    uri: uri.clone(),
-                    version: current_version,
-                },
-                content_changes,
-            }
-        }; // Lock released here, before I/O
-
-        crate::metrics::LSP_DIDCHANGE_TOTAL.inc();
-        server
-            .notify("textDocument/didChange", serde_json::to_value(params)?)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Like `send_did_change_immediate` but uses an explicit version instead of
-    /// auto-incrementing. Used by broadcast flush so all servers receive the same version.
+    /// Sends textDocument/didChange notification to a specific server with an
+    /// explicit version (pre-assigned by `did_change()`).
+    /// Supports both full and incremental sync.
     async fn send_did_change_with_version(
         &self,
         uri: Uri,
@@ -294,59 +166,68 @@ impl LspManager {
         Ok(())
     }
 
-    /// Flushes pending changes for a document (sends immediately)
-    /// BUG FIX: Added timeout to prevent indefinite blocking if LSP server hangs
+    /// Flushes pending changes for a document (sends immediately).
+    /// Uses the pre-assigned version from `did_change()`.
     pub async fn flush_pending_changes(&self, uri: &Uri) -> Result<()> {
         // Remove debouncer and get pending change
         if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
             let mut debouncer = debouncer_arc.lock().await;
             debouncer.cancel_timer(); // Cancel timer
 
-            // Send the pending change
+            // Send the pending change using the pre-assigned version
             let language_id = debouncer.language_id.clone();
             let text = debouncer.pending_text.clone();
             let old_text = debouncer.old_text.clone();
             let uri = debouncer.uri.clone();
+            let version = debouncer.pending_version;
             drop(debouncer); // Release lock before async call
 
-            // BUG FIX: Wrap send_did_change_immediate with timeout (5 seconds)
-            // If LSP server hangs, we don't want to block indefinitely
-            // This is critical for operations like hover/goto_definition that flush before requesting
             match tokio::time::timeout(
                 Duration::from_secs(5),
-                self.send_did_change_immediate(uri.clone(), &language_id, text, old_text),
+                self.send_did_change_with_version(
+                    uri.clone(),
+                    &language_id,
+                    text,
+                    old_text,
+                    version,
+                ),
             )
             .await
             {
                 Ok(Ok(())) => {
-                    // Success: change sent to LSP server
+                    // Record the version we successfully sent so that
+                    // set_diagnostics() can reject unversioned diagnostics
+                    // when unsent edits exist (OV-00162).
+                    let mut sent = self.last_sent_versions.lock().await;
+                    sent.insert(uri.clone(), version);
                 }
                 Ok(Err(e)) => {
-                    // LSP send failed (server might be down)
                     lsp_error!(
                         "Manager",
                         "Failed to flush changes for {}: {}",
                         uri.as_str(),
                         e
                     );
-                    // Don't propagate error - allow operation to continue with stale data
                 }
                 Err(_) => {
-                    // Timeout: LSP server is hanging
                     lsp_error!(
                         "Manager",
                         "Timeout flushing changes for {} (5s)",
                         uri.as_str()
                     );
-                    // Don't propagate error - allow operation to continue with stale data
                 }
             }
         }
         Ok(())
     }
 
-    /// Sends textDocument/didChange notification with debouncing
-    /// Coalesces rapid changes to reduce LSP traffic by ~1000x
+    /// Sends textDocument/didChange notification with debouncing.
+    /// Coalesces rapid changes to reduce LSP traffic by ~1000x.
+    ///
+    /// **Version is bumped immediately** (not on flush) so that stale
+    /// `publishDiagnostics` arriving during the debounce window are correctly
+    /// rejected by `set_diagnostics()`.  The assigned version is stored in the
+    /// debouncer and used when the flush finally sends the content (OV-00163).
     pub async fn did_change(
         &self,
         uri: Uri,
@@ -354,10 +235,16 @@ impl LspManager {
         text: String,
         old_text: Option<String>,
     ) -> Result<()> {
-        // Get or create debouncer for this document atomically to prevent race conditions.
-        // OV-00152: Don't clone text/old_text into the constructor — the move below
-        // overwrites pending_text anyway, so the clone was pure waste on every first
-        // keystroke after a flush.
+        // Bump the LSP document version immediately so that set_diagnostics()
+        // can reject stale diagnostics even before the debounce timer fires.
+        let assigned_version = {
+            let mut versions = self.document_versions.lock().await;
+            let v = versions.entry(uri.clone()).or_insert(0);
+            *v += 1;
+            *v
+        };
+
+        // Get or create debouncer for this document atomically.
         let debouncer_arc = self
             .change_debouncers
             .entry(uri.clone())
@@ -365,6 +252,7 @@ impl LspManager {
                 Arc::new(Mutex::new(ChangeDebouncer::new(
                     uri.clone(),
                     language_id.to_string(),
+                    assigned_version,
                 )))
             })
             .clone();
@@ -375,8 +263,9 @@ impl LspManager {
         // Cancel existing timer if any
         debouncer.cancel_timer();
 
-        // Update pending text and old text
+        // Update pending text, version, and old text
         debouncer.pending_text = text;
+        debouncer.pending_version = assigned_version;
         // Only set old_text if we don't already have it (first change after sync)
         if debouncer.old_text.is_none() {
             debouncer.old_text = old_text;
@@ -521,7 +410,11 @@ impl LspManager {
         self.did_change(uri, language_id, text, old_text).await
     }
 
-    /// Flushes pending changes and broadcasts to all servers for the language
+    /// Flushes pending changes and broadcasts to all servers for the language.
+    ///
+    /// Uses the version that was pre-assigned in `did_change()` rather than
+    /// re-incrementing.  This ensures the version in the didChange notification
+    /// matches what `set_diagnostics()` already uses for staleness checks.
     pub async fn flush_pending_changes_broadcast(
         &self,
         uri: &Uri,
@@ -535,18 +428,14 @@ impl LspManager {
             let text = debouncer.pending_text.clone();
             let old_text = debouncer.old_text.clone();
             let uri = debouncer.uri.clone();
+            // Use the version assigned in did_change() — already bumped in
+            // document_versions, no need to re-increment.
+            let version = debouncer.pending_version;
             drop(debouncer);
-
-            // Increment version once for the broadcast (all servers get same version)
-            let version = {
-                let mut versions = self.document_versions.lock().await;
-                let v = versions.entry(uri.clone()).or_insert(0);
-                *v += 1;
-                *v
-            };
 
             // Send to all servers for this language with the same version
             let server_ids = self.servers_for_language(language_id);
+            let mut any_sent = false;
             for sid in &server_ids {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
@@ -561,14 +450,12 @@ impl LspManager {
                 .await
                 {
                     Ok(Ok(())) => {
-                        // Success: change sent to server
+                        any_sent = true;
                     }
                     Ok(Err(e)) => {
-                        // LSP send failed (server might be down)
                         lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {}", sid, e);
                     }
                     Err(_) => {
-                        // Timeout: server is hanging
                         lsp_warn!(
                             "LSP-BROADCAST",
                             "Timeout flushing changes for server {} (5s)",
@@ -576,6 +463,10 @@ impl LspManager {
                         );
                     }
                 }
+            }
+            if any_sent {
+                let mut sent = self.last_sent_versions.lock().await;
+                sent.insert(uri.clone(), version);
             }
         }
         Ok(())

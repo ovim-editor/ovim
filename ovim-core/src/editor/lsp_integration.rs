@@ -282,6 +282,7 @@ impl Editor {
 
                 self.lsp_state.hover_info = Some(hover_text);
                 self.lsp_state.hover_scroll = 0;
+                self.lsp_state.hover_h_scroll = 0;
                 self.lsp_state.hover_position = Some((cursor_line, cursor_col));
                 self.lsp_state.hover_content_type =
                     crate::editor::lsp_state::HoverContentType::LspHover;
@@ -673,12 +674,16 @@ impl Editor {
     pub(crate) fn clear_lsp_state(&mut self) {
         self.lsp_state.hover_info = None;
         self.lsp_state.hover_scroll = 0;
+        self.lsp_state.hover_h_scroll = 0;
         self.lsp_state.available_code_actions.clear();
         self.lsp_state.available_completions.clear();
         self.lsp_state.pending_lsp_action = None;
         // Abort all pending LSP responses
         self.lsp_state.pending_lsp_responses.abort_all();
         self.lsp_state.hover_cache = None;
+        // Reset LSP version tracking (new file has its own version space)
+        self.lsp_state.diagnostics_lsp_version = 0;
+        self.lsp_state.current_file_lsp_version = 0;
         // OV-00157: Abort pending completion request on buffer switch
         if let Some(pending) = self.lsp_state.pending_completion.take() {
             pending.request.task.abort();
@@ -827,7 +832,7 @@ impl Editor {
 
     pub fn mark_buffer_modified_force_send(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
-            state.mark_modified_force_send();
+            state.mark_modified();
         }
     }
 
@@ -868,10 +873,13 @@ impl Editor {
         }
     }
 
-    /// Sends buffered text changes to LSP if modified (debounced)
+    /// Sends buffered text changes to LSP if modified.
     ///
-    /// This sends `didChange` notifications to the LSP server when the buffer has been modified.
-    /// Changes are debounced (150ms) to reduce LSP traffic during rapid typing.
+    /// Forwards the latest buffer content to LspManager on every tick where the
+    /// buffer is dirty.  Debouncing is handled entirely by LspManager's
+    /// `ChangeDebouncer` (single-owner, 150 ms).  The editor side no longer
+    /// adds its own 150 ms gate — that was causing a redundant double-debounce
+    /// (OV-00165).
     pub async fn send_lsp_changes_if_modified(&mut self) {
         let Some(ref lsp) = self.lsp_state.lsp_manager else {
             return;
@@ -887,17 +895,13 @@ impl Editor {
         };
 
         let state_key = file_path.to_string();
-        let mut should_send = false;
 
-        // Check if we should send changes (debouncing logic)
-        if let Some(state) = self.lsp_state.document_sync.get(&state_key) {
-            if !state.did_open_sent {
-                return; // Don't send didChange before didOpen
-            }
-            if state.is_modified() && state.should_send_change() {
-                should_send = true;
-            }
-        }
+        // Check if we need to send — only guard is didOpen + modified
+        let should_send = self
+            .lsp_state
+            .document_sync
+            .get(&state_key)
+            .is_some_and(|state| state.did_open_sent && state.is_modified());
 
         if should_send {
             // Get buffer content BEFORE we update the state
@@ -919,8 +923,12 @@ impl Editor {
 
             // Send the didChange notification to all servers for this language
             let _ = lsp
-                .did_change_broadcast(uri, language_id, content.clone(), old_content)
+                .did_change_broadcast(uri.clone(), language_id, content.clone(), old_content)
                 .await;
+
+            // Track the current LSP document version (bumped immediately in did_change)
+            self.lsp_state.current_file_lsp_version =
+                lsp.get_document_version(&uri).await;
 
             // Mark as sent AFTER sending and store the synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
@@ -1056,10 +1064,18 @@ impl Editor {
                 .get(&state_key)
                 .and_then(|state| state.last_synced_content.clone());
 
-            // Send the didChange notification immediately (bypass debouncing) to all servers
+            // Queue the change (bumps document version immediately) then flush
+            // the debouncer so the server receives it without waiting 150ms.
             let _ = lsp
-                .did_change_broadcast(uri, language_id, content.clone(), old_content)
+                .did_change_broadcast(uri.clone(), language_id, content.clone(), old_content)
                 .await;
+            let _ = lsp
+                .flush_pending_changes_broadcast(&uri, language_id)
+                .await;
+
+            // Track the LSP document version after flush
+            self.lsp_state.current_file_lsp_version =
+                lsp.get_document_version(&uri).await;
 
             // Mark as sent and store synced content
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
