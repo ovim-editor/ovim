@@ -203,8 +203,8 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let line_start = before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
     let col: usize = input[line_start..safe_cursor].chars().count();
 
-    // First line has ">> " prefix (3 chars + 1 border = 4), continuation lines have "   " (3 + 1 = 4)
-    let prefix_len = 4u16;
+    // First line has "│ >> " prefix (border + space + prompt = 5), continuation lines same width
+    let prefix_len = 5u16;
     let x = main_area
         .x
         .saturating_add(prefix_len)

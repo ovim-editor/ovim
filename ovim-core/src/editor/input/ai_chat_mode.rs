@@ -196,6 +196,18 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
             }
         }
+        // Ctrl-U — scroll up half page
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.message_scroll = chat.message_scroll.saturating_add(10);
+            }
+        }
+        // Ctrl-D — scroll down half page
+        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.message_scroll = chat.message_scroll.saturating_sub(10);
+            }
+        }
         KeyCode::Enter => {
             let node_ids = editor
                 .conversation()
