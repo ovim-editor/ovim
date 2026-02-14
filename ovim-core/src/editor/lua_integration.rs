@@ -61,19 +61,26 @@ impl Editor {
 
     /// Reloads Lua configuration
     pub fn reload_lua_config(&mut self) -> Result<String> {
-        if let Some(ref mut context) = self.lua_context {
-            context.reload_config()?;
-            // Process any commands that were queued
-            if let Some(ref bridge) = self.editor_bridge {
-                let commands = bridge.drain_commands();
-                for cmd in commands {
-                    InputHandler::execute_command_string(self, &cmd)?;
-                }
+        let Some(ref mut context) = self.lua_context else {
+            return Ok("Lua not enabled".to_string());
+        };
+        context.reload_config()?;
+
+        // Process any commands that were queued during reload
+        if let Some(ref bridge) = self.editor_bridge {
+            let commands = bridge.drain_commands();
+            for cmd in commands {
+                InputHandler::execute_command_string(self, &cmd)?;
             }
-            Ok("Configuration reloaded".to_string())
-        } else {
-            Ok("Lua not enabled".to_string())
         }
+        // Sync AI config (profiles, contexts, default_profile) registered from Lua.
+        // Without this, profiles defined in the reloaded config wouldn't take effect
+        // until the next event loop tick called process_lua_commands().
+        if let Some(ref bridge) = self.editor_bridge {
+            let bridge = bridge.clone();
+            self.sync_ai_config_from_bridge(&bridge);
+        }
+        Ok("Configuration reloaded".to_string())
     }
 
     /// Syncs the current editor state to the Lua bridge

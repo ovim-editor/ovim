@@ -130,6 +130,13 @@ impl AiConfig {
                 context_policy.enable_pruning = value;
             }
 
+            // Eagerly resolve api_key_env: if the user didn't set one in TOML,
+            // fill in the provider default (e.g. "ANTHROPIC_API_KEY").  This matches
+            // what the Lua path does in LuaProfileConfig::into_profile_config().
+            let api_key_env = profile
+                .api_key_env
+                .or_else(|| default_api_key_env(profile.provider));
+
             cfg.profiles.insert(
                 name.clone(),
                 AiProfileConfig {
@@ -137,7 +144,7 @@ impl AiConfig {
                     provider: profile.provider,
                     model: profile.model,
                     base_url: profile.base_url,
-                    api_key_env: profile.api_key_env,
+                    api_key_env,
                     temperature: profile.temperature,
                     max_tokens: profile.max_tokens,
                     system_prompt: profile.system_prompt,
@@ -209,4 +216,20 @@ fn config_path() -> PathBuf {
 
 fn default_system_prompt() -> &'static str {
     "You are an editing agent. Return JSON: {\"replacement\": string, \"top_insertions\": string[], \"log\": string[]}. Only include valid JSON."
+}
+
+/// Returns a system prompt appropriate for the given extraction strategy.
+/// Used as a fallback when a profile has no explicit system prompt.
+pub fn system_prompt_for_extraction(strategy: ExtractionStrategy) -> &'static str {
+    match strategy {
+        ExtractionStrategy::Json => {
+            "You are a code editing assistant. Return your response as JSON with the schema: {\"replacement\": string, \"top_insertions\": string[], \"log\": string[]}. Only output valid JSON, no explanation."
+        }
+        ExtractionStrategy::Codeblock => {
+            "You are a code editing assistant. Return ONLY the replacement code inside a single fenced code block (```). Do not include any explanation outside the code block."
+        }
+        ExtractionStrategy::Raw => {
+            "You are a code editing assistant. Return ONLY the replacement code with no explanation, no markdown, no code fences."
+        }
+    }
 }

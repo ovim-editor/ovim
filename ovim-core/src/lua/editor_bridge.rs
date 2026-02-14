@@ -72,6 +72,13 @@ impl LuaProfileConfig {
             network: self.scope_network,
         };
 
+        let edit_format = self.edit_format.unwrap_or_else(|| "codeblock".to_string());
+        let extraction = match edit_format.as_str() {
+            "codeblock" => ExtractionStrategy::Codeblock,
+            "raw" => ExtractionStrategy::Raw,
+            _ => ExtractionStrategy::Json,
+        };
+
         AiProfileConfig {
             name,
             provider,
@@ -81,7 +88,7 @@ impl LuaProfileConfig {
             temperature: self.temperature,
             max_tokens: self.max_tokens,
             system_prompt: self.system_prompt,
-            extraction: ExtractionStrategy::Raw,
+            extraction,
             context_policy: ContextPolicy::default(),
             tools: self.tools,
             scope,
@@ -89,7 +96,7 @@ impl LuaProfileConfig {
                 Some("tools") => EditMode::Tools,
                 _ => EditMode::Format,
             },
-            edit_format: self.edit_format.unwrap_or_else(|| "codeblock".to_string()),
+            edit_format,
         }
     }
 }

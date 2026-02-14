@@ -1487,6 +1487,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             } else if is_mapclear_command(command) {
                 handle_mapclear_command(editor, command)
             // Handle :session start/stop/list commands
+            } else if command == "ai status" || command == "ai env" {
+                handle_ai_status(editor)
             } else if command == "session" || command.starts_with("session ") {
                 handle_session_command(editor, command)
             // Handle :! shell command execution
@@ -1812,6 +1814,86 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
 /// `:session start NAME` — writes a session file so external tools can discover this instance
 /// `:session stop` — deletes the session file (API server keeps running for internal use)
 /// `:session` or `:session list` — shows active sessions
+/// `:ai status` / `:ai env` — show active AI profile and env var diagnostics.
+fn handle_ai_status(editor: &mut Editor) -> CommandResult {
+    let config = &editor.ai_state.config;
+    let active = &editor.ai_state.active_profile;
+
+    let mut lines = Vec::new();
+    lines.push(format!("**AI Configuration**"));
+    lines.push(format!("Active profile: {}", active));
+    lines.push(format!("Default profile: {}", config.default_profile));
+    lines.push(format!("Profiles: {}", config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")));
+
+    // Show context mappings
+    if !config.contexts.is_empty() {
+        let ctx_str: Vec<String> = config.contexts.iter().map(|(k, v)| format!("{}→{}", k, v)).collect();
+        lines.push(format!("Contexts: {}", ctx_str.join(", ")));
+    }
+
+    lines.push(String::new());
+
+    // Show details for active profile
+    if let Some(profile) = config.resolve_profile(active) {
+        lines.push(format!("**Profile '{}' details:**", active));
+        lines.push(format!("  Provider: {}", profile.provider));
+        lines.push(format!("  Model: {}", profile.model));
+        if let Some(ref url) = profile.base_url {
+            lines.push(format!("  Base URL: {}", url));
+        }
+        lines.push(format!("  Extraction: {}", profile.extraction));
+        lines.push(format!("  Edit mode: {:?}", profile.edit_mode));
+
+        // Environment variable check
+        let env_name = profile.api_key_env.as_deref().unwrap_or("(none)");
+        lines.push(format!("  API key env var: {}", env_name));
+        if let Some(ref name) = profile.api_key_env {
+            match std::env::var(name) {
+                Ok(val) => {
+                    let masked = if val.len() > 8 {
+                        format!("{}...{}", &val[..4], &val[val.len()-4..])
+                    } else {
+                        "****".to_string()
+                    };
+                    lines.push(format!("  Env var status: SET ({})", masked));
+                }
+                Err(_) => {
+                    lines.push(format!("  Env var status: NOT SET"));
+                }
+            }
+        }
+    } else {
+        lines.push(format!("Active profile '{}' not found!", active));
+    }
+
+    // Show all AI-related env vars visible to this process
+    lines.push(String::new());
+    lines.push("**AI-related env vars visible to process:**".to_string());
+    let mut found_any = false;
+    for (key, val) in std::env::vars() {
+        if key.contains("OPENAI") || key.contains("ANTHROPIC") || key.contains("OVIM") || key.contains("API_KEY") {
+            let masked = if val.len() > 8 {
+                format!("{}...{}", &val[..4], &val[val.len()-4..])
+            } else {
+                "****".to_string()
+            };
+            lines.push(format!("  {} = {}", key, masked));
+            found_any = true;
+        }
+    }
+    if !found_any {
+        lines.push("  (none found matching OPENAI/ANTHROPIC/OVIM/API_KEY)".to_string());
+    }
+
+    let message = lines.join("\n");
+    editor.set_hover_info(message);
+    CommandResult::Success(SuccessResponse {
+        success: true,
+        message: None,
+        line_count: None,
+    })
+}
+
 fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
     use crate::session::SessionInfo;
 
