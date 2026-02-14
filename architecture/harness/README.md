@@ -7,11 +7,18 @@ selection, bigger than prompt engineering.
 ## What This Folder Covers
 
 ```
-README.md            ← You are here. Overview and principles.
-edit-pipeline.md     ← The full request/response pipeline.
-format-strategy.md   ← Which edit format for which model × context.
-routing.md           ← How tasks route to models, configs, and strategies.
+README.md              <- You are here. Overview and principles.
+builtin-sketch.lua     <- The full harness policy in Lua. Design source of truth.
+roadmap.md             <- Implementation roadmap: 7 phases from current to sketch.
+api-design.md          <- API design rationale (building blocks, decisions, tradeoffs).
+edit-pipeline.md       <- Reference: the 8-stage request/response pipeline.
+format-strategy.md     <- Reference: edit format research and strategy.
+routing.md             <- Reference: routing levels and cost model.
 ```
+
+**Start with `builtin-sketch.lua`.** It's the complete policy definition
+that exercises every building block. The other docs provide research
+context and architectural rationale.
 
 ## Why "Harness"
 
@@ -26,7 +33,41 @@ to 68.3% on the same model. The harness matters as much as the model.
 
 ## Core Principles
 
-### 1. Match complexity to task
+### 1. Lua is the policy, Rust is the engine
+
+Lua decides WHAT to do: which model, which prompt, which format, which
+key. Rust does HOW: HTTP, streaming, parsing, matching, rope operations.
+
+The built-in Lua file (`builtin.lua`) ships inside the binary via
+`include_str!()`. It runs before the user's init.lua. Everything in it
+can be overridden.
+
+### 2. Five building blocks
+
+| Block | What it is | Lua API |
+|-------|-----------|---------|
+| **API Keys** | Named key configs (env_var/file) | `vim.api_keys.register()` |
+| **Prompts** | Named system prompt strings | `vim.ai.prompts` table |
+| **Formats** | Extensible edit format engines | `vim.ai.formats.register()` |
+| **Context Policies** | How much context to gather | `vim.ai.context_policies` table |
+| **Profiles** | Model + params + format + context | `vim.ai.profiles.register()` |
+
+Plus two configuration surfaces:
+
+| Config | What it is | Lua API |
+|--------|-----------|---------|
+| **Contexts** | Action -> profile mapping | `vim.ai.contexts.{name}` |
+| **Chat** | Observation masking config | `vim.ai.chat` table |
+| **Agent** | Safety rails for tool loops | `vim.ai.agent` table |
+
+### 3. Batteries included, overridable at every layer
+
+A user who never writes init.lua gets a working local Ollama setup. A
+user who sets `OVIM_OPENAI_API_KEY` and adds three lines to init.lua
+gets a tuned OpenAI experience. A power user can replace extraction
+engines with Lua functions or register entirely new edit formats.
+
+### 4. Match complexity to task
 
 Selection edits are simple. Chat-driven refactors are complex. The harness
 should give each the right amount of machinery:
@@ -37,21 +78,7 @@ should give each the right amount of machinery:
 | Chat edit | low/medium | provider-adaptive | 24,000+ tokens | Layered fallback |
 | Chat explanation | medium/high | freeform text | Full window | N/A |
 
-### 2. Universal defaults, provider-specific optimization
-
-Codeblock extraction works everywhere. It's the safe default. But GPT
-models perform measurably better with apply_patch, and Claude models are
-trained on str_replace. The harness should use provider-optimal formats
-when available and fall back to universal formats otherwise.
-
-### 3. Fail fast, fail informatively
-
-When an edit fails to parse or match, the error message should tell the
-model (on retry) or the user (on display) exactly what went wrong.
-"No match found" is useless. "No match for old_str. Closest match is
-line 42: `let x = process(...)`" is recoverable.
-
-### 4. Context is a budget, not a firehose
+### 5. Context is a budget, not a firehose
 
 Every token competes for the model's attention. Research shows context rot
 degrades quality as volume increases. The harness should:
@@ -59,56 +86,107 @@ degrades quality as volume increases. The harness should:
 - Prune aggressively when the budget is tight
 - Use observation masking (not summarization) for chat history
 
-### 5. The edit format is not the extraction strategy
+### 6. Formats are extensible
 
-Ovim has three extraction strategies (Json, Codeblock, Raw) that determine
-how the model's output is parsed. The edit format is what the model is
-asked to produce. These are related but separable:
+Built-in formats (codeblock, json, raw, apply_patch, str_replace) are
+implemented in Rust for performance. But anyone can register a new format
+in Lua — hashline ships this way, and researchers can experiment with
+novel formats without recompiling ovim.
 
-```
-System prompt: "Return code in a fenced block"  ← edit format instruction
-Extraction:     find first ```...``` block       ← parsing strategy
-Application:    replace selection with extracted  ← edit application
-```
-
-The format instruction must match the extraction strategy. A mismatch
-(asking for JSON but extracting codeblock) is a common failure mode.
-
-## Current State
-
-Ovim's harness today:
+## Architecture Snapshot
 
 ```
-User selects text → enters AiPrompt mode → types instruction
-    ↓
-Profile resolved (from contexts config or default)
-    ↓
-Context pack built:
-  - Selected text
-  - ±6 lines surrounding window
-  - LSP symbols (≤12)
-  - LSP diagnostics (≤12)
-  - Related slices (Hybrid/ReactOnly modes)
-  - Pruned to token budget
-    ↓
-Prompt constructed:
-  - System prompt (per extraction strategy)
-  - User prompt (instruction + context)
-    ↓
-API call (OpenAI/Anthropic/Ollama)
-  - Provider-specific body format
-  - response_format: json_object (if Json extraction)
-  - max_completion_tokens (OpenAI) / max_tokens (others)
-    ↓
-Response extracted (Json / Codeblock / Raw)
-    ↓
-Edit applied:
-  - Delete old selection
-  - Insert replacement
-  - Insert top_insertions (imports)
-  - Normalize indentation
-  - Push undo entry
+┌─────────────────────────────────────────────────────────┐
+│ Lua VM                                                   │
+│                                                          │
+│  vim.api_keys.register()   → bridge.api_key_registry     │
+│  vim.ai.prompts = {}       → (read during sync)          │
+│  vim.ai.formats.register() → bridge.format_registry      │
+│  vim.ai.context_policies   → (plain tables, by reference) │
+│  vim.ai.setup() / profiles → bridge.ai_profiles          │
+│  vim.ai.chat = {}          → (read during sync)          │
+│  vim.ai.agent = {}         → (read during sync)          │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│ EditorBridge (Mutex) — sync cycle each tick               │
+│                                                          │
+│  profiles      → ai_state.config.profiles                │
+│  contexts      → ai_state.config.contexts                │
+│  api_keys      → ai_state.api_key_registry               │
+│  prompts       → ai_state.prompt_templates               │
+│  formats       → ai_state.format_registry                │
+│  chat config   → ai_state.chat_context_config            │
+│  agent config  → ai_state.agent_loop_config              │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│ AiState (snapshot, read by async tasks)                   │
+│                                                          │
+│  Request path: profile → context → prompt → API call     │
+│  Response path: extract → match → apply → syntax check   │
+│  Retry path: error feedback → re-call → fallback format  │
+│                                                          │
+│  Never touches the Lua VM.                               │
+└─────────────────────────────────────────────────────────┘
 ```
+
+## Key Design Decisions
+
+### Context as inline table, not registry
+
+Context policies are plain Lua tables on the profile. No registry
+indirection. Users extend builtins naturally with `vim.tbl_extend()`.
+The pre-defined policies (`fast`, `hybrid`, `full`) are just tables
+in `vim.ai.context_policies` that profiles reference directly.
+
+### Per-profile prompt overrides
+
+Different models need different prompts. A 7B local model needs terse,
+imperative instructions. A frontier model benefits from detailed anti-
+elision guidance. Profiles carry `edit_prompt`, `chat_prompt`, and
+`chat_edit_prompt` fields that override the global prompt resolution
+chain when set.
+
+### Provider-adaptive chat edit formats
+
+Each model family gets the edit format it was trained on:
+- OpenAI: `apply_patch` (post-trained on this format)
+- Anthropic: `str_replace` (Claude Code's native format)
+- Ollama: `codeblock` (safest for local models)
+
+When `chat_edit_format` is omitted, the harness infers the right format
+from the provider. Codeblock is the universal fallback.
+
+### Hashline as a Lua-implemented format
+
+Hashline (from "The Harness Problem" research) ships as a registered
+Lua format rather than a Rust built-in. This demonstrates the format
+extensibility system and lets researchers iterate on the format without
+recompiling. Lua does the parsing; Rust does the buffer application.
+
+### Observation masking for chat
+
+Based on JetBrains research (Dec 2025): observation masking beats LLM
+summarization for coding agents — 52% cheaper, 2.6% better solve rates.
+Old tool outputs are replaced with placeholders in the API serialization.
+The full conversation is always kept in memory for display.
+
+### Agent limits as safety rails
+
+`max_tool_calls = 50` is a hard ceiling to prevent runaway loops, not a
+tuning knob. The ideal is cost-based limits (future work). The agent
+should run until done, bounded by spend, not by arbitrary iteration counts.
+
+### Project context files (.ovim.md, AGENTS.md, CLAUDE.md)
+
+AutoPrompter (Google, 2025) found that 27% of failed edits succeed when
+augmented with missing codebase context. Project context files provide
+persistent, structured, project-specific knowledge — conventions,
+architecture, constraints — that the model can't infer from code alone.
+
+ovim supports `.ovim.md` (ovim-specific), `AGENTS.md` (provider-agnostic),
+and `CLAUDE.md` (widely adopted). Files are loaded hierarchically from
+the current directory up to the repo root, with deeper files taking
+priority. Content is budget-aware and injected into the system prompt.
 
 ## Research Foundation
 
@@ -117,7 +195,7 @@ The architecture in this folder is grounded in:
 - **Diff-XYZ** (Dec 2025): search-replace is the best format for large
   models; no single format dominates universally.
 - **The Harness Problem** (Feb 2026): format alone swings success rates
-  10×; avoid line numbers; delimit old vs new clearly.
+  10x; avoid line numbers; delimit old vs new clearly. Hashline format.
 - **Building Effective Agents** (Anthropic, Dec 2024): start simple, add
   complexity only when needed. Five composable patterns.
 - **Context Engineering** (Anthropic, 2025): Write/Select/Compress/Isolate.
