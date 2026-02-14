@@ -44,6 +44,8 @@ pub struct AiConfig {
     pub api_key_registry: HashMap<String, ApiKeyConfig>,
     /// Global prompt templates (e.g. "edit", "chat") with `{{variable}}` interpolation.
     pub prompts: HashMap<String, String>,
+    /// Format-specific system prompts registered via `vim.ai.formats.register()`.
+    pub format_prompts: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +125,7 @@ impl Default for AiConfig {
             contexts: HashMap::new(),
             api_key_registry: HashMap::new(),
             prompts: HashMap::new(),
+            format_prompts: HashMap::new(),
         }
     }
 }
@@ -141,10 +144,12 @@ impl AiConfig {
 
         let mut cfg = Self::default();
         for (name, profile) in parsed.profiles {
-            let edit_format = parse_edit_format_str(
-                profile.edit_format.as_deref().unwrap_or("json"),
-            );
-            let chat_edit_format = profile.chat_edit_format.as_deref().map(parse_edit_format_str);
+            let edit_format =
+                parse_edit_format_str(profile.edit_format.as_deref().unwrap_or("json"));
+            let chat_edit_format = profile
+                .chat_edit_format
+                .as_deref()
+                .map(parse_edit_format_str);
 
             let diagnostics = match profile.diagnostics.as_deref() {
                 Some("file") => DiagnosticScope::File,

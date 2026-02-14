@@ -8,6 +8,10 @@ use mlua::{Lua, Result, Table, Value};
 pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
     let ai = lua.create_table()?;
 
+    // Global table for Lua-side format registrations (keeps function refs alive).
+    lua.globals()
+        .set("_ovim_format_registry", lua.create_table()?)?;
+
     // vim.ai.setup(opts)
     {
         let b = bridge.clone();
@@ -160,7 +164,7 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
         ai.set("prompts", prompts)?;
     }
 
-    // Stubs: vim.ai.models.register, vim.ai.tools.register, vim.ai.edit_formats.register
+    // Stubs: vim.ai.models.register, vim.ai.tools.register
     {
         let models = lua.create_table()?;
         let models_register = lua.create_function(|_lua, (_name, _opts): (String, Table)| {
@@ -174,12 +178,38 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
         let tools_register = lua.create_function(|_lua, (_name, _opts): (String, Table)| Ok(()))?;
         tools.set("register", tools_register)?;
         ai.set("tools", tools)?;
+    }
 
-        let edit_formats = lua.create_table()?;
-        let edit_formats_register =
-            lua.create_function(|_lua, (_name, _opts): (String, Table)| Ok(()))?;
-        edit_formats.set("register", edit_formats_register)?;
-        ai.set("edit_formats", edit_formats)?;
+    // vim.ai.formats.register(name, opts) — real implementation
+    {
+        let formats_table = lua.create_table()?;
+
+        let b = bridge.clone();
+        let register = lua.create_function(move |lua, (name, opts): (String, Table)| {
+            // Validate that opts.extract exists and is a function
+            let _extract: mlua::Function = opts.get("extract").map_err(|_| {
+                mlua::Error::external(format!(
+                    "vim.ai.formats.register('{}', ...) requires an 'extract' function",
+                    name
+                ))
+            })?;
+
+            // Store full opts table (including function refs) in Lua-side global
+            let registry: Table = lua.globals().get("_ovim_format_registry")?;
+            registry.set(name.as_str(), opts.clone())?;
+
+            // If opts.prompt is a string, sync to bridge for system prompt resolution
+            if let Ok(prompt) = opts.get::<_, String>("prompt") {
+                b.register_format_prompt(name, prompt);
+            }
+
+            Ok(())
+        })?;
+        formats_table.set("register", register)?;
+
+        ai.set("formats", formats_table.clone())?;
+        // Keep edit_formats as alias for backward compat
+        ai.set("edit_formats", formats_table)?;
     }
 
     // Metatable for vim.ai itself — handles default_profile as a virtual field.

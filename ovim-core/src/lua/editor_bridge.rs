@@ -37,6 +37,8 @@ struct EditorBridgeInner {
     api_key_registry: HashMap<String, ApiKeyConfig>,
     /// Global prompt templates (e.g. "edit" → template string)
     ai_prompts: HashMap<String, String>,
+    /// Format-specific prompts (format name → system prompt string)
+    format_prompts: HashMap<String, String>,
     /// Whether AI config has been modified since last sync
     ai_dirty: bool,
 }
@@ -149,12 +151,14 @@ impl LuaProfileConfig {
     }
 }
 
-/// Snapshot of AI config from Lua bridge: (contexts, default_profile, profiles, api_key_registry, prompts).
+/// Snapshot of AI config from Lua bridge:
+/// (contexts, default_profile, profiles, api_key_registry, prompts, format_prompts).
 pub type AiConfigSnapshot = (
     HashMap<String, String>,
     Option<String>,
     HashMap<String, LuaProfileConfig>,
     HashMap<String, ApiKeyConfig>,
+    HashMap<String, String>,
     HashMap<String, String>,
 );
 
@@ -198,6 +202,7 @@ impl EditorBridge {
                 ai_pending_commands: Vec::new(),
                 api_key_registry: HashMap::new(),
                 ai_prompts: HashMap::new(),
+                format_prompts: HashMap::new(),
                 ai_dirty: false,
             })),
         }
@@ -396,6 +401,15 @@ impl EditorBridge {
         inner.ai_prompts.get(name).cloned()
     }
 
+    pub fn register_format_prompt(&self, name: String, prompt: String) {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.format_prompts.insert(name, prompt);
+        inner.ai_dirty = true;
+    }
+
     /// Returns AI config if it was modified since last call.
     /// Clears the dirty flag.
     pub fn take_ai_config_if_dirty(&self) -> Option<AiConfigSnapshot> {
@@ -413,6 +427,7 @@ impl EditorBridge {
             inner.ai_profiles.clone(),
             inner.api_key_registry.clone(),
             inner.ai_prompts.clone(),
+            inner.format_prompts.clone(),
         ))
     }
 
