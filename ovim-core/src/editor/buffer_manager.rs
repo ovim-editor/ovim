@@ -300,7 +300,7 @@ impl Editor {
         if let Some(file_path) = buffer.file_path().map(|s| s.to_string()) {
             let state = self.lsp_state.document_sync.entry(file_path).or_default();
             state.did_open_sent = true;
-            state.mark_modified_force_send();
+            state.mark_modified();
         }
 
         if buffer_index == self.current_buffer_index {

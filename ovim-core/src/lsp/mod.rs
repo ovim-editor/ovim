@@ -105,16 +105,23 @@ pub(crate) struct ChangeDebouncer {
 
     /// Timer handle for the debounce delay
     timer_handle: Option<JoinHandle<()>>,
+
+    /// LSP document version assigned when the change was received.
+    /// Bumped immediately in `did_change()` so stale diagnostics can be
+    /// rejected before the debounce timer fires.  Used by flush instead of
+    /// re-incrementing.
+    pending_version: i32,
 }
 
 impl ChangeDebouncer {
-    fn new(uri: Uri, language_id: String) -> Self {
+    fn new(uri: Uri, language_id: String, version: i32) -> Self {
         Self {
             uri,
             language_id,
             pending_text: String::new(),
             old_text: None,
             timer_handle: None,
+            pending_version: version,
         }
     }
 
@@ -147,8 +154,14 @@ pub struct LspManager {
     /// Avoids calling merge_diagnostics() 2-3x per tick under lock.
     merged_diagnostics_cache: Mutex<HashMap<Uri, Vec<Diagnostic>>>,
 
-    /// Document versions for change tracking
+    /// Document versions for change tracking (bumped immediately in did_change)
     document_versions: Mutex<HashMap<Uri, i32>>,
+
+    /// Last version that was actually *sent* to the server via didChange.
+    /// Used to detect when unversioned diagnostics are stale: if
+    /// `last_sent < document_versions[uri]`, there are unsent edits and any
+    /// unversioned diagnostics must have been computed against old content.
+    last_sent_versions: Mutex<HashMap<Uri, i32>>,
 
     /// Channel for receiving notifications from language servers (bounded to prevent memory issues)
     notification_tx: mpsc::Sender<LspNotification>,
@@ -220,6 +233,7 @@ impl LspManager {
             diagnostics: Mutex::new(HashMap::new()),
             merged_diagnostics_cache: Mutex::new(HashMap::new()),
             document_versions: Mutex::new(HashMap::new()),
+            last_sent_versions: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
             change_debouncers: DashMap::new(),
@@ -625,23 +639,46 @@ impl LspManager {
         );
         crate::metrics::LSP_DIAGNOSTICS_TOTAL.inc();
 
-        // Reject diagnostics computed for a document version older than the current one.
-        // This prevents stale diagnostics from appearing at wrong positions after edits.
-        if let Some(diag_version) = version {
+        // Reject stale diagnostics — two cases:
+        //
+        // (a) Server sent a version: drop if version < document_versions[uri].
+        //     Since did_change() now bumps document_versions *immediately*,
+        //     this catches diagnostics arriving during the debounce window.
+        //
+        // (b) Server omitted version (None): drop if we have unsent edits
+        //     (last_sent_versions[uri] < document_versions[uri]).  The server
+        //     can only have seen up to last_sent, so its diagnostics cannot
+        //     reflect pending content.  (OV-00162)
+        {
             let versions = self.document_versions.lock().await;
             if let Some(&current_version) = versions.get(&uri) {
-                if diag_version < current_version {
-                    crate::lsp_debug!(
-                        "DIAGNOSTICS",
-                        "Dropping stale diagnostics: server={} diag_version={} current_doc_version={}",
-                        server_id,
-                        diag_version,
-                        current_version
-                    );
-                    return;
+                if let Some(diag_version) = version {
+                    if diag_version < current_version {
+                        crate::lsp_debug!(
+                            "DIAGNOSTICS",
+                            "Dropping stale diagnostics: server={} diag_version={} current_doc_version={}",
+                            server_id,
+                            diag_version,
+                            current_version
+                        );
+                        return;
+                    }
+                } else {
+                    // No version from server — check if we have unsent edits
+                    let sent = self.last_sent_versions.lock().await;
+                    let last_sent = sent.get(&uri).copied().unwrap_or(0);
+                    if last_sent < current_version {
+                        crate::lsp_debug!(
+                            "DIAGNOSTICS",
+                            "Dropping unversioned diagnostics (unsent edits): server={} last_sent={} current={}",
+                            server_id,
+                            last_sent,
+                            current_version
+                        );
+                        return;
+                    }
                 }
             }
-            // Lock released here before acquiring diagnostics lock
         }
 
         let mut diags = self.diagnostics.lock().await;
@@ -709,6 +746,13 @@ impl LspManager {
     pub async fn get_document_version(&self, uri: &Uri) -> i32 {
         let versions = self.document_versions.lock().await;
         versions.get(uri).copied().unwrap_or(0)
+    }
+
+    /// Gets the last version that was actually sent to the LSP server via didChange.
+    /// Returns 0 if no version has been sent yet.
+    pub async fn get_last_sent_version(&self, uri: &Uri) -> i32 {
+        let sent = self.last_sent_versions.lock().await;
+        sent.get(uri).copied().unwrap_or(0)
     }
 
     /// Increments the version of a document

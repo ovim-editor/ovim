@@ -21,6 +21,15 @@ impl Editor {
         if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Some(uri) = uri_from_file_path(file_path) {
+                    // OV-00161: Skip caching if there are unsent edits
+                    let doc_version = lsp.get_document_version(&uri).await;
+                    let last_sent = lsp.get_last_sent_version(&uri).await;
+                    self.lsp_state.current_file_lsp_version = doc_version;
+                    if last_sent < doc_version {
+                        self.lsp_state.diagnostics_refresh_requested = true;
+                        return;
+                    }
+
                     // Snapshot buffer version BEFORE async fetch — if the buffer
                     // changes during the fetch, the stamp won't match and the
                     // display-side staleness check will hide them.
@@ -42,9 +51,10 @@ impl Editor {
                         }
                     }
                     self.lsp_state.diagnostic_count = (errors, warnings, info, hints);
-                    // Cache full diagnostic list
+                    // Cache full diagnostic list with version provenance
                     self.lsp_state.current_file_diagnostics = diagnostics;
                     self.lsp_state.diagnostics_buffer_version = version_before;
+                    self.lsp_state.diagnostics_lsp_version = doc_version;
                     return;
                 }
             }
@@ -69,13 +79,38 @@ impl Editor {
         let count = if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
                 if let Some(uri) = crate::lsp::uri_from_file_path(file_path) {
+                    // OV-00161: Check for unsent edits.  If the document version
+                    // has been bumped (in did_change) but the flush hasn't happened
+                    // yet, the diagnostics in the DashMap are from an older content
+                    // version.  Defer the cache update so we don't stamp stale
+                    // diagnostics with the current buffer version.
+                    let doc_version = lsp.get_document_version(&uri).await;
+                    let last_sent = lsp.get_last_sent_version(&uri).await;
+                    if last_sent < doc_version {
+                        crate::log_debug!(
+                            "diagnostics",
+                            "update_diagnostic_cache: deferring (unsent edits: last_sent={} doc_version={})",
+                            last_sent,
+                            doc_version
+                        );
+                        // Ensure we retry on the next tick
+                        self.lsp_state.diagnostics_refresh_requested = true;
+                        // Still update current_file_lsp_version so the rendering
+                        // guard correctly hides stale cached diagnostics.
+                        self.lsp_state.current_file_lsp_version = doc_version;
+                        return;
+                    }
+
                     let c = lsp.count_diagnostics(&uri).await;
                     crate::log_debug!(
                         "diagnostics",
-                        "update_diagnostic_cache: uri={} count={:?}",
+                        "update_diagnostic_cache: uri={} count={:?} doc_version={}",
                         uri.as_str(),
-                        c
+                        c,
+                        doc_version
                     );
+                    // Store LSP version provenance alongside count
+                    self.lsp_state.current_file_lsp_version = doc_version;
                     c
                 } else {
                     crate::log_debug!(
@@ -98,18 +133,6 @@ impl Editor {
         // Reset badge dismissal if counts changed
         self.on_diagnostic_counts_changed(count.0, count.1);
 
-        // Also update the full diagnostics list for inline display
-        // Re-create URI to verify it matches what we used for counting
-        let query_uri = self
-            .buffer()
-            .file_path()
-            .and_then(crate::lsp::uri_from_file_path);
-        crate::log_debug!(
-            "diagnostics",
-            "update_diagnostic_cache: query_uri for get={:?}",
-            query_uri.as_ref().map(|u| u.as_str())
-        );
-
         if let Some(diagnostics) = self.get_current_file_diagnostics().await {
             crate::log_debug!(
                 "diagnostics",
@@ -127,6 +150,8 @@ impl Editor {
             }
             self.lsp_state.current_file_diagnostics = diagnostics;
             self.lsp_state.diagnostics_buffer_version = version_before;
+            self.lsp_state.diagnostics_lsp_version =
+                self.lsp_state.current_file_lsp_version;
         } else {
             crate::log_debug!(
                 "diagnostics",
@@ -140,11 +165,25 @@ impl Editor {
         self.record_diagnostic_query_duration(duration);
     }
 
+    /// Returns true if the cached diagnostics are stale (buffer or LSP version mismatch).
+    pub(crate) fn diagnostics_cache_stale(&self) -> bool {
+        // Buffer version mismatch: buffer was edited since diagnostics were cached.
+        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+            return true;
+        }
+        // LSP version mismatch: a new document version was assigned (via did_change)
+        // since diagnostics were cached — the server may not have processed it yet.
+        if self.lsp_state.diagnostics_lsp_version
+            != self.lsp_state.current_file_lsp_version
+        {
+            return true;
+        }
+        false
+    }
+
     /// Get diagnostics for a specific line from cached diagnostics
     pub fn diagnostics_for_line(&self, line: usize) -> Vec<&lsp_types::Diagnostic> {
-        // Don't return diagnostics cached for a different buffer version —
-        // they may point to wrong line/column positions after edits.
-        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+        if self.diagnostics_cache_stale() {
             return Vec::new();
         }
         let result: Vec<_> = self
@@ -172,7 +211,7 @@ impl Editor {
 
     /// Get the current diagnostic at the cursor position
     pub fn current_diagnostic(&self) -> Option<String> {
-        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+        if self.diagnostics_cache_stale() {
             return None;
         }
         let line = self.buffer().cursor().line();
@@ -186,7 +225,7 @@ impl Editor {
 
     /// Get the total number of diagnostics
     pub fn diagnostic_count(&self) -> usize {
-        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+        if self.diagnostics_cache_stale() {
             return 0;
         }
         let diagnostics = &self.lsp_state.current_file_diagnostics;
@@ -195,7 +234,7 @@ impl Editor {
 
     /// Get all diagnostics for the current file
     pub fn all_diagnostics(&self) -> &[lsp_types::Diagnostic] {
-        if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
+        if self.diagnostics_cache_stale() {
             return &[];
         }
         &self.lsp_state.current_file_diagnostics
