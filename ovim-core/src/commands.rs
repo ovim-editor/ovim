@@ -1841,8 +1841,7 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
         if let Some(ref url) = profile.base_url {
             lines.push(format!("  Base URL: {}", url));
         }
-        lines.push(format!("  Extraction: {}", profile.extraction));
-        lines.push(format!("  Edit mode: {:?}", profile.edit_mode));
+        lines.push(format!("  Edit format: {}", profile.edit_format));
 
         // Environment variable check
         let env_name = profile.api_key_env.as_deref().unwrap_or("(none)");

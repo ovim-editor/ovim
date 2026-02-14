@@ -1,6 +1,7 @@
 use crate::ai::{
-    default_api_key_env, infer_provider, parse_provider_str, AiProfileConfig, ContextPolicy,
-    EditMode, ExtractionStrategy, FileScope, ProfileScope,
+    default_api_key_env, infer_provider, parse_edit_format_str, parse_provider_str,
+    AgentLoopConfig, AiProfileConfig, ContextGatheringPolicy, DiagnosticScope, EditFormat,
+    FileScope, ProfileScope, RetryPolicy,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -42,6 +43,7 @@ pub struct LuaProfileConfig {
     pub model: String,
     pub provider: Option<String>,
     pub base_url: Option<String>,
+    pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
@@ -50,8 +52,22 @@ pub struct LuaProfileConfig {
     pub scope: Option<String>,
     pub scope_shell: bool,
     pub scope_network: bool,
-    pub edit_mode: Option<String>,
     pub edit_format: Option<String>,
+    pub chat_edit_format: Option<String>,
+    pub context_surrounding_lines: Option<u16>,
+    pub context_symbols: Option<u16>,
+    pub context_diagnostics: Option<String>,
+    pub context_related_slices: Option<bool>,
+    pub context_budget: Option<usize>,
+    pub max_tool_calls: Option<u16>,
+    pub edit_prompt: Option<String>,
+    pub chat_prompt: Option<String>,
+    pub chat_edit_prompt: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub verbosity: Option<String>,
+    pub syntax_check: Option<bool>,
+    pub retry_max: Option<u8>,
+    pub retry_fallback: Option<String>,
 }
 
 impl LuaProfileConfig {
@@ -72,11 +88,34 @@ impl LuaProfileConfig {
             network: self.scope_network,
         };
 
-        let edit_format = self.edit_format.unwrap_or_else(|| "codeblock".to_string());
-        let extraction = match edit_format.as_str() {
-            "codeblock" => ExtractionStrategy::Codeblock,
-            "raw" => ExtractionStrategy::Raw,
-            _ => ExtractionStrategy::Json,
+        let edit_format = self
+            .edit_format
+            .as_deref()
+            .map(parse_edit_format_str)
+            .unwrap_or(EditFormat::Codeblock);
+
+        let chat_edit_format = self.chat_edit_format.as_deref().map(parse_edit_format_str);
+
+        let diagnostics = match self.context_diagnostics.as_deref() {
+            Some("file") => DiagnosticScope::File,
+            _ => DiagnosticScope::Overlapping,
+        };
+
+        let context = ContextGatheringPolicy {
+            surrounding_lines: self.context_surrounding_lines.unwrap_or(6),
+            symbols: self.context_symbols.unwrap_or(12),
+            diagnostics,
+            related_slices: self.context_related_slices.unwrap_or(true),
+            budget: self.context_budget.unwrap_or(8_000),
+        };
+
+        let agent_loop = AgentLoopConfig {
+            max_tool_calls: self.max_tool_calls.unwrap_or(50),
+        };
+
+        let retry = RetryPolicy {
+            max: self.retry_max.unwrap_or(0),
+            fallback: self.retry_fallback,
         };
 
         AiProfileConfig {
@@ -84,19 +123,24 @@ impl LuaProfileConfig {
             provider,
             model: self.model,
             base_url: self.base_url,
+            api_key: self.api_key,
             api_key_env: self.api_key_env.or_else(|| default_api_key_env(provider)),
             temperature: self.temperature,
             max_tokens: self.max_tokens,
             system_prompt: self.system_prompt,
-            extraction,
-            context_policy: ContextPolicy::default(),
+            edit_format,
+            chat_edit_format,
+            context,
+            agent_loop,
             tools: self.tools,
             scope,
-            edit_mode: match self.edit_mode.as_deref() {
-                Some("tools") => EditMode::Tools,
-                _ => EditMode::Format,
-            },
-            edit_format,
+            edit_prompt: self.edit_prompt,
+            chat_prompt: self.chat_prompt,
+            chat_edit_prompt: self.chat_edit_prompt,
+            reasoning_effort: self.reasoning_effort,
+            verbosity: self.verbosity,
+            syntax_check: self.syntax_check,
+            retry,
         }
     }
 }
@@ -171,7 +215,6 @@ impl EditorBridge {
 
     /// Queue a command to be executed on the editor
     pub fn execute_command(&self, command: String) -> Result<()> {
-        // Handle mutex poisoning gracefully by recovering the guard
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -182,7 +225,6 @@ impl EditorBridge {
 
     /// Update the cached cursor position
     pub fn update_cursor(&self, line: usize, column: usize) {
-        // Handle mutex poisoning gracefully by recovering the guard
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -192,7 +234,6 @@ impl EditorBridge {
 
     /// Get the current cursor position
     pub fn get_cursor(&self) -> Option<(usize, usize)> {
-        // Handle mutex poisoning gracefully by recovering the guard
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -202,7 +243,6 @@ impl EditorBridge {
 
     /// Update the cached buffer content
     pub fn update_buffer(&self, content: String) {
-        // Handle mutex poisoning gracefully by recovering the guard
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -212,7 +252,6 @@ impl EditorBridge {
 
     /// Get the current buffer content
     pub fn get_buffer(&self) -> Option<String> {
-        // Handle mutex poisoning gracefully by recovering the guard
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -222,7 +261,6 @@ impl EditorBridge {
 
     /// Update the cached mode
     pub fn update_mode(&self, mode: String) {
-        // Handle mutex poisoning gracefully by recovering the guard
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -232,7 +270,6 @@ impl EditorBridge {
 
     /// Get the current mode
     pub fn get_mode(&self) -> Option<String> {
-        // Handle mutex poisoning gracefully by recovering the guard
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -242,7 +279,6 @@ impl EditorBridge {
 
     /// Get all pending commands and clear the queue
     pub fn drain_commands(&self) -> Vec<String> {
-        // Handle mutex poisoning gracefully by recovering the guard
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -252,7 +288,6 @@ impl EditorBridge {
 
     /// Get a specific line from the buffer
     pub fn get_line(&self, line: usize) -> Option<String> {
-        // Handle mutex poisoning gracefully by recovering the guard
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -347,7 +382,6 @@ impl EditorBridge {
 
     /// Get the number of lines in the buffer
     pub fn get_line_count(&self) -> usize {
-        // Handle mutex poisoning gracefully by recovering the guard
         let inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),

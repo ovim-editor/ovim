@@ -23,7 +23,7 @@ impl Editor {
             return false;
         };
         self.ai_state.active_profile = profile_name.to_string();
-        self.ai_state.extraction = profile.extraction;
+        self.ai_state.edit_format = profile.edit_format.clone();
         self.set_lsp_status(format!(
             "AI profile: {} ({}/{})",
             profile_name, profile.provider, profile.model
@@ -132,9 +132,9 @@ impl Editor {
             return Ok(());
         };
 
-        let extraction = self.ai_state.extraction;
+        let edit_format = self.ai_state.edit_format.clone();
         let (request, mut prep_trace) =
-            self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, extraction);
+            self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, &edit_format);
         prep_trace.push("waiting for model response...".to_string());
 
         let lock_id = self.ai_state.next_lock_id;
@@ -158,7 +158,7 @@ impl Editor {
             generated_text: String::new(),
             profile_name: profile_name.clone(),
             provider_label: provider_label.clone(),
-            extraction,
+            edit_format,
             reasoning_lines: prep_trace,
             raw_output: None,
             created_at: now,
@@ -301,8 +301,8 @@ impl Editor {
         let mut message = String::new();
         message.push_str("**AI Edit Details**\n");
         message.push_str(&format!(
-            "- profile: {}\n- provider/model: {}\n- extraction: {}\n- status: {:?}\n\n",
-            region.profile_name, region.provider_label, region.extraction, region.status
+            "- profile: {}\n- provider/model: {}\n- edit_format: {}\n- status: {:?}\n\n",
+            region.profile_name, region.provider_label, region.edit_format, region.status
         ));
         message.push_str("**Prompt**\n");
         message.push_str(&region.prompt);
@@ -425,7 +425,7 @@ impl Editor {
         let end_char = self.ai_state.regions[region_idx].end_char;
         let prompt = self.ai_state.regions[region_idx].prompt.clone();
         let profile_name = self.ai_state.regions[region_idx].profile_name.clone();
-        let extraction = self.ai_state.regions[region_idx].extraction;
+        let edit_format = self.ai_state.regions[region_idx].edit_format.clone();
 
         let selected_text = self
             .slice_text_by_chars(start_char, end_char)
@@ -451,7 +451,7 @@ impl Editor {
         };
 
         let (request, mut prep_trace) =
-            self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, extraction);
+            self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, &edit_format);
         prep_trace.push("retrying with same prompt...".to_string());
 
         // Replace tracking lock with blocking lock while generation is in flight.
@@ -590,8 +590,8 @@ impl Editor {
         self.buffer_mut().remove_ai_lock(lock_id);
 
         let mut top_text = String::new();
-        if !result.top_insertions.is_empty() {
-            top_text = result.top_insertions.join("\n");
+        if !result.new_import_statements.is_empty() {
+            top_text = result.new_import_statements.join("\n");
             if !top_text.ends_with('\n') {
                 top_text.push('\n');
             }
@@ -906,7 +906,7 @@ mod tests {
     use super::{
         normalize_generated_replacement, remap_abs_char_through_edits, AiRegionStatus, Editor,
     };
-    use crate::ai::{AiJobResult, AiProviderKind, ExtractionStrategy};
+    use crate::ai::{AiJobResult, AiProviderKind, EditFormat};
     use crate::edit::Edit;
     use std::time::Instant;
 
@@ -986,7 +986,7 @@ mod tests {
             generated_text: String::new(),
             profile_name: "alpha".to_string(),
             provider_label: "ollama/model".to_string(),
-            extraction: ExtractionStrategy::Json,
+            edit_format: EditFormat::Json,
             reasoning_lines: vec![],
             raw_output: None,
             created_at: now,
@@ -998,7 +998,7 @@ mod tests {
 
         let result = AiJobResult {
             replacement: "b\n".to_string(),
-            top_insertions: vec!["// head".to_string()],
+            new_import_statements: vec!["// head".to_string()],
             log_lines: vec![],
             raw_output: "{}".to_string(),
             provider: AiProviderKind::Ollama,

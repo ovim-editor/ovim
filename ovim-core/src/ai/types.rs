@@ -55,13 +55,6 @@ impl Default for ProfileScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EditMode {
-    #[default]
-    Format,
-    Tools,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {
@@ -81,111 +74,89 @@ impl std::fmt::Display for AiProviderKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtractionStrategy {
-    Json,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditFormat {
     Codeblock,
+    Json,
     Raw,
+    ApplyPatch,
+    StrReplace,
+    Lua(String),
 }
 
-impl std::fmt::Display for ExtractionStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = match self {
-            Self::Json => "json",
-            Self::Codeblock => "codeblock",
-            Self::Raw => "raw",
-        };
-        write!(f, "{value}")
-    }
-}
-
-impl Default for ExtractionStrategy {
+impl Default for EditFormat {
     fn default() -> Self {
         Self::Json
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CapabilityTier {
-    Small,
-    Mid,
-    Frontier,
-}
-
-impl Default for CapabilityTier {
-    fn default() -> Self {
-        Self::Mid
+impl std::fmt::Display for EditFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Codeblock => "codeblock",
+            Self::Json => "json",
+            Self::Raw => "raw",
+            Self::ApplyPatch => "apply_patch",
+            Self::StrReplace => "str_replace",
+            Self::Lua(name) => return write!(f, "lua:{name}"),
+        };
+        write!(f, "{value}")
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMode {
-    FastPath,
-    Hybrid,
-    ReactOnly,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiagnosticScope {
+    #[default]
+    Overlapping,
+    File,
 }
 
-impl Default for AgentMode {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextGatheringPolicy {
+    pub surrounding_lines: u16,
+    pub symbols: u16,
+    pub diagnostics: DiagnosticScope,
+    pub related_slices: bool,
+    pub budget: usize,
+}
+
+impl Default for ContextGatheringPolicy {
     fn default() -> Self {
-        Self::Hybrid
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ContextPolicy {
-    pub tier: CapabilityTier,
-    pub mode: AgentMode,
-    pub context_budget_tokens: usize,
-    pub max_tool_calls: u16,
-    pub max_iterations: u8,
-    pub retrieval_k: u16,
-    pub callgraph_hops: u8,
-    pub enable_pruning: bool,
-}
-
-impl ContextPolicy {
-    pub fn for_tier(tier: CapabilityTier) -> Self {
-        match tier {
-            CapabilityTier::Small => Self {
-                tier,
-                mode: AgentMode::FastPath,
-                context_budget_tokens: 2_500,
-                max_tool_calls: 10,
-                max_iterations: 2,
-                retrieval_k: 6,
-                callgraph_hops: 1,
-                enable_pruning: true,
-            },
-            CapabilityTier::Mid => Self {
-                tier,
-                mode: AgentMode::Hybrid,
-                context_budget_tokens: 8_000,
-                max_tool_calls: 20,
-                max_iterations: 4,
-                retrieval_k: 12,
-                callgraph_hops: 2,
-                enable_pruning: true,
-            },
-            CapabilityTier::Frontier => Self {
-                tier,
-                mode: AgentMode::Hybrid,
-                context_budget_tokens: 24_000,
-                max_tool_calls: 36,
-                max_iterations: 6,
-                retrieval_k: 20,
-                callgraph_hops: 3,
-                enable_pruning: true,
-            },
+        Self {
+            surrounding_lines: 6,
+            symbols: 12,
+            diagnostics: DiagnosticScope::Overlapping,
+            related_slices: true,
+            budget: 8_000,
         }
     }
 }
 
-impl Default for ContextPolicy {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLoopConfig {
+    pub max_tool_calls: u16,
+}
+
+impl Default for AgentLoopConfig {
     fn default() -> Self {
-        Self::for_tier(CapabilityTier::default())
+        Self {
+            max_tool_calls: 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryPolicy {
+    pub max: u8,
+    pub fallback: Option<String>,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max: 0,
+            fallback: None,
+        }
     }
 }
 
@@ -232,14 +203,14 @@ pub struct AiRequest {
     pub selected_text: String,
     pub language_id: Option<String>,
     pub file_path: Option<String>,
-    pub extraction: ExtractionStrategy,
+    pub edit_format: EditFormat,
     pub context_pack: Option<AiContextPack>,
 }
 
 #[derive(Debug, Clone)]
 pub struct AiJobResult {
     pub replacement: String,
-    pub top_insertions: Vec<String>,
+    pub new_import_statements: Vec<String>,
     pub log_lines: Vec<String>,
     pub raw_output: String,
     pub provider: AiProviderKind,

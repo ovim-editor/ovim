@@ -1,5 +1,5 @@
 use crate::ai::chat_types::StreamChunk;
-use crate::ai::config::{system_prompt_for_extraction, AiProfileConfig};
+use crate::ai::config::{system_prompt_for_edit_format, AiProfileConfig};
 use crate::ai::extract::extract_response;
 use crate::ai::stream_parsers;
 use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest};
@@ -24,12 +24,12 @@ pub async fn request_ai_edit(
         AiProviderKind::Ollama => request_ollama(&client, profile, request).await?,
     };
 
-    let extracted = extract_response(request.extraction, &response_text)
+    let extracted = extract_response(&request.edit_format, &response_text)
         .context("failed to extract AI response")?;
 
     Ok(AiJobResult {
         replacement: extracted.replacement,
-        top_insertions: extracted.top_insertions,
+        new_import_statements: extracted.new_import_statements,
         log_lines: extracted.log_lines,
         raw_output: response_text,
         provider: profile.provider,
@@ -137,14 +137,14 @@ async fn request_openai(
     let sys = profile
         .system_prompt
         .as_deref()
-        .unwrap_or_else(|| system_prompt_for_extraction(request.extraction));
+        .unwrap_or_else(|| system_prompt_for_edit_format(&request.edit_format));
 
     let mut messages = vec![json!({ "role": "system", "content": sys })];
     messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
 
     let mut body = json!({ "model": profile.model, "messages": messages });
     // When expecting JSON, ask the API to enforce valid JSON output.
-    if request.extraction == crate::ai::types::ExtractionStrategy::Json {
+    if request.edit_format == crate::ai::types::EditFormat::Json {
         body["response_format"] = json!({ "type": "json_object" });
     }
     apply_optional_params(&mut body, profile, None);
@@ -177,7 +177,7 @@ async fn request_anthropic(
     let sys = profile
         .system_prompt
         .as_deref()
-        .unwrap_or_else(|| system_prompt_for_extraction(request.extraction));
+        .unwrap_or_else(|| system_prompt_for_edit_format(&request.edit_format));
 
     let mut body = json!({
         "model": profile.model,
@@ -215,7 +215,7 @@ async fn request_ollama(
     let sys = profile
         .system_prompt
         .as_deref()
-        .unwrap_or_else(|| system_prompt_for_extraction(request.extraction));
+        .unwrap_or_else(|| system_prompt_for_edit_format(&request.edit_format));
 
     let mut messages = vec![json!({ "role": "system", "content": sys })];
     messages.push(json!({ "role": "user", "content": build_user_prompt(request) }));
@@ -589,10 +589,9 @@ fn build_user_prompt(request: &AiRequest) -> String {
         "Edit the selected text based on the instruction.\n\
 Instruction:\n{}\n\n\
 File: {}\n\
-Language: {}\n\
-Extraction strategy: {}\n\n\
+Language: {}\n\n\
 Selected text:\n```{}\n{}\n```",
-        request.prompt, file_path, language, request.extraction, language, request.selected_text
+        request.prompt, file_path, language, language, request.selected_text
     );
 
     if let Some(context_pack) = &request.context_pack {

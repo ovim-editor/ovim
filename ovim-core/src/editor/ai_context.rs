@@ -1,13 +1,16 @@
 use super::ai_state::AiSelectionSnapshot;
 use super::Editor;
-use crate::ai::{AiContextPack, CodeSlice, DiagnosticFact, SymbolFact};
-
-const SURROUNDING_WINDOW_LINES: usize = 6;
-const MAX_SYMBOL_FACTS: usize = 16;
+use crate::ai::{
+    AiContextPack, CodeSlice, ContextGatheringPolicy, DiagnosticFact, DiagnosticScope, SymbolFact,
+};
 
 impl Editor {
     /// Builds a compact AI context pack around the selected region.
-    pub(crate) fn build_ai_context_pack(&self, selection: &AiSelectionSnapshot) -> AiContextPack {
+    pub(crate) fn build_ai_context_pack(
+        &self,
+        selection: &AiSelectionSnapshot,
+        context: &ContextGatheringPolicy,
+    ) -> AiContextPack {
         let file_path = self.buffer().file_path().map(ToString::to_string);
         let language = file_path
             .as_deref()
@@ -27,10 +30,10 @@ impl Editor {
 
         let start_line = selection
             .start_line
-            .saturating_sub(SURROUNDING_WINDOW_LINES);
+            .saturating_sub(context.surrounding_lines as usize);
         let end_line = selection
             .end_line
-            .saturating_add(SURROUNDING_WINDOW_LINES)
+            .saturating_add(context.surrounding_lines as usize)
             .min(line_count.saturating_sub(1));
 
         let surrounding_content = collect_lines(self, start_line, end_line);
@@ -48,6 +51,9 @@ impl Editor {
             .current_file_diagnostics
             .iter()
             .filter(|diag| {
+                if context.diagnostics == DiagnosticScope::File {
+                    return true;
+                }
                 let diag_start = diag.range.start.line as usize;
                 let diag_end = diag.range.end.line as usize;
                 diag_end >= selection.start_line && diag_start <= selection.end_line
@@ -76,7 +82,7 @@ impl Editor {
                 character: symbol.range.start.character,
                 path: file_path.clone(),
             });
-            if symbol_facts.len() >= MAX_SYMBOL_FACTS {
+            if symbol_facts.len() >= context.symbols as usize {
                 break;
             }
         }

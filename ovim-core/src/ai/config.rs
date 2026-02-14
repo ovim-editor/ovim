@@ -1,6 +1,6 @@
 use crate::ai::types::{
-    AgentMode, AiProviderKind, CapabilityTier, ContextPolicy, EditMode, ExtractionStrategy,
-    ProfileScope, PROFILE_LOCAL,
+    AgentLoopConfig, AiProviderKind, ContextGatheringPolicy, DiagnosticScope, EditFormat,
+    ProfileScope, RetryPolicy, PROFILE_LOCAL,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -14,16 +14,24 @@ pub struct AiProfileConfig {
     pub provider: AiProviderKind,
     pub model: String,
     pub base_url: Option<String>,
+    pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub system_prompt: Option<String>,
-    pub extraction: ExtractionStrategy,
-    pub context_policy: ContextPolicy,
+    pub edit_format: EditFormat,
+    pub chat_edit_format: Option<EditFormat>,
+    pub context: ContextGatheringPolicy,
+    pub agent_loop: AgentLoopConfig,
     pub tools: Vec<String>,
     pub scope: ProfileScope,
-    pub edit_mode: EditMode,
-    pub edit_format: String,
+    pub edit_prompt: Option<String>,
+    pub chat_prompt: Option<String>,
+    pub chat_edit_prompt: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub verbosity: Option<String>,
+    pub syntax_check: Option<bool>,
+    pub retry: RetryPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -46,19 +54,27 @@ struct AiTomlProfile {
     provider: AiProviderKind,
     model: String,
     base_url: Option<String>,
+    api_key: Option<String>,
     api_key_env: Option<String>,
     temperature: Option<f32>,
     max_tokens: Option<u32>,
     system_prompt: Option<String>,
-    extraction: Option<ExtractionStrategy>,
-    capability_tier: Option<CapabilityTier>,
-    agent_mode: Option<AgentMode>,
-    context_budget_tokens: Option<usize>,
+    edit_format: Option<String>,
+    chat_edit_format: Option<String>,
+    surrounding_lines: Option<u16>,
+    symbols: Option<u16>,
+    diagnostics: Option<String>,
+    related_slices: Option<bool>,
+    context_budget: Option<usize>,
     max_tool_calls: Option<u16>,
-    max_iterations: Option<u8>,
-    retrieval_k: Option<u16>,
-    callgraph_hops: Option<u8>,
-    enable_pruning: Option<bool>,
+    reasoning_effort: Option<String>,
+    verbosity: Option<String>,
+    syntax_check: Option<bool>,
+    retry_max: Option<u8>,
+    retry_fallback: Option<String>,
+    edit_prompt: Option<String>,
+    chat_prompt: Option<String>,
+    chat_edit_prompt: Option<String>,
 }
 
 impl Default for AiConfig {
@@ -71,16 +87,29 @@ impl Default for AiConfig {
                 provider: AiProviderKind::Ollama,
                 model: "qwen2.5-coder:7b".to_string(),
                 base_url: Some("http://127.0.0.1:11434".to_string()),
+                api_key: None,
                 api_key_env: None,
                 temperature: Some(0.2),
                 max_tokens: Some(2048),
                 system_prompt: Some(default_system_prompt().to_string()),
-                extraction: ExtractionStrategy::Json,
-                context_policy: ContextPolicy::for_tier(CapabilityTier::Small),
+                edit_format: EditFormat::Json,
+                chat_edit_format: None,
+                context: ContextGatheringPolicy {
+                    budget: 2_500,
+                    related_slices: false,
+                    symbols: 6,
+                    ..ContextGatheringPolicy::default()
+                },
+                agent_loop: AgentLoopConfig::default(),
                 tools: vec![],
                 scope: ProfileScope::default(),
-                edit_mode: EditMode::Format,
-                edit_format: "codeblock".to_string(),
+                edit_prompt: None,
+                chat_prompt: None,
+                chat_edit_prompt: None,
+                reasoning_effort: None,
+                verbosity: None,
+                syntax_check: None,
+                retry: RetryPolicy::default(),
             },
         );
 
@@ -106,33 +135,35 @@ impl AiConfig {
 
         let mut cfg = Self::default();
         for (name, profile) in parsed.profiles {
-            let mut context_policy =
-                ContextPolicy::for_tier(profile.capability_tier.unwrap_or_default());
-            if let Some(mode) = profile.agent_mode {
-                context_policy.mode = mode;
-            }
-            if let Some(value) = profile.context_budget_tokens {
-                context_policy.context_budget_tokens = value;
-            }
-            if let Some(value) = profile.max_tool_calls {
-                context_policy.max_tool_calls = value;
-            }
-            if let Some(value) = profile.max_iterations {
-                context_policy.max_iterations = value;
-            }
-            if let Some(value) = profile.retrieval_k {
-                context_policy.retrieval_k = value;
-            }
-            if let Some(value) = profile.callgraph_hops {
-                context_policy.callgraph_hops = value;
-            }
-            if let Some(value) = profile.enable_pruning {
-                context_policy.enable_pruning = value;
-            }
+            let edit_format = parse_edit_format_str(
+                profile.edit_format.as_deref().unwrap_or("json"),
+            );
+            let chat_edit_format = profile.chat_edit_format.as_deref().map(parse_edit_format_str);
+
+            let diagnostics = match profile.diagnostics.as_deref() {
+                Some("file") => DiagnosticScope::File,
+                _ => DiagnosticScope::Overlapping,
+            };
+
+            let context = ContextGatheringPolicy {
+                surrounding_lines: profile.surrounding_lines.unwrap_or(6),
+                symbols: profile.symbols.unwrap_or(12),
+                diagnostics,
+                related_slices: profile.related_slices.unwrap_or(true),
+                budget: profile.context_budget.unwrap_or(8_000),
+            };
+
+            let agent_loop = AgentLoopConfig {
+                max_tool_calls: profile.max_tool_calls.unwrap_or(50),
+            };
+
+            let retry = RetryPolicy {
+                max: profile.retry_max.unwrap_or(0),
+                fallback: profile.retry_fallback,
+            };
 
             // Eagerly resolve api_key_env: if the user didn't set one in TOML,
-            // fill in the provider default (e.g. "ANTHROPIC_API_KEY").  This matches
-            // what the Lua path does in LuaProfileConfig::into_profile_config().
+            // fill in the provider default (e.g. "ANTHROPIC_API_KEY").
             let api_key_env = profile
                 .api_key_env
                 .or_else(|| default_api_key_env(profile.provider));
@@ -144,16 +175,24 @@ impl AiConfig {
                     provider: profile.provider,
                     model: profile.model,
                     base_url: profile.base_url,
+                    api_key: profile.api_key,
                     api_key_env,
                     temperature: profile.temperature,
                     max_tokens: profile.max_tokens,
                     system_prompt: profile.system_prompt,
-                    extraction: profile.extraction.unwrap_or(ExtractionStrategy::Json),
-                    context_policy,
+                    edit_format,
+                    chat_edit_format,
+                    context,
+                    agent_loop,
                     tools: vec![],
                     scope: ProfileScope::default(),
-                    edit_mode: EditMode::Format,
-                    edit_format: "codeblock".to_string(),
+                    edit_prompt: profile.edit_prompt,
+                    chat_prompt: profile.chat_prompt,
+                    chat_edit_prompt: profile.chat_edit_prompt,
+                    reasoning_effort: profile.reasoning_effort,
+                    verbosity: profile.verbosity,
+                    syntax_check: profile.syntax_check,
+                    retry,
                 },
             );
         }
@@ -171,6 +210,24 @@ impl AiConfig {
 
     pub fn resolve_profile(&self, name: &str) -> Option<&AiProfileConfig> {
         self.profiles.get(name)
+    }
+}
+
+/// Parse a string into an EditFormat enum.
+pub fn parse_edit_format_str(s: &str) -> EditFormat {
+    match s {
+        "codeblock" => EditFormat::Codeblock,
+        "json" => EditFormat::Json,
+        "raw" => EditFormat::Raw,
+        "apply_patch" => EditFormat::ApplyPatch,
+        "str_replace" => EditFormat::StrReplace,
+        other => {
+            if let Some(name) = other.strip_prefix("lua:") {
+                EditFormat::Lua(name.to_string())
+            } else {
+                EditFormat::Lua(other.to_string())
+            }
+        }
     }
 }
 
@@ -215,20 +272,23 @@ fn config_path() -> PathBuf {
 }
 
 fn default_system_prompt() -> &'static str {
-    "You are an editing agent. Return JSON: {\"replacement\": string, \"top_insertions\": string[], \"log\": string[]}. Only include valid JSON."
+    "You are an editing agent. Return JSON: {\"replacement\": string, \"new_import_statements\": string[], \"log\": string[]}. Only include valid JSON."
 }
 
-/// Returns a system prompt appropriate for the given extraction strategy.
+/// Returns a system prompt appropriate for the given edit format.
 /// Used as a fallback when a profile has no explicit system prompt.
-pub fn system_prompt_for_extraction(strategy: ExtractionStrategy) -> &'static str {
-    match strategy {
-        ExtractionStrategy::Json => {
-            "You are a code editing assistant. Return your response as JSON with the schema: {\"replacement\": string, \"top_insertions\": string[], \"log\": string[]}. Only output valid JSON, no explanation."
+pub fn system_prompt_for_edit_format(format: &EditFormat) -> &'static str {
+    match format {
+        EditFormat::Json => {
+            "You are a code editing assistant. Return your response as JSON with the schema: {\"replacement\": string, \"new_import_statements\": string[], \"log\": string[]}. Only output valid JSON, no explanation."
         }
-        ExtractionStrategy::Codeblock => {
+        EditFormat::Codeblock => {
             "You are a code editing assistant. Return ONLY the replacement code inside a single fenced code block (```). Do not include any explanation outside the code block."
         }
-        ExtractionStrategy::Raw => {
+        EditFormat::Raw => {
+            "You are a code editing assistant. Return ONLY the replacement code with no explanation, no markdown, no code fences."
+        }
+        EditFormat::ApplyPatch | EditFormat::StrReplace | EditFormat::Lua(_) => {
             "You are a code editing assistant. Return ONLY the replacement code with no explanation, no markdown, no code fences."
         }
     }
