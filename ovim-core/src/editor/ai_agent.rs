@@ -1,8 +1,6 @@
 use super::ai_state::AiSelectionSnapshot;
 use super::Editor;
-use crate::ai::{
-    AgentMode, AiContextPack, AiProfileConfig, AiRequest, CodeSlice, ExtractionStrategy,
-};
+use crate::ai::{AiContextPack, AiProfileConfig, AiRequest, CodeSlice, EditFormat};
 use std::collections::HashSet;
 
 const RELATED_SLICE_RADIUS: usize = 2;
@@ -10,14 +8,14 @@ const MAX_ITERATIONS_CAP: u8 = 3;
 const TOKEN_ESTIMATE_CHAR_DIVISOR: usize = 4;
 
 impl Editor {
-    /// Builds an AI request using the profile's agent mode and context policy.
+    /// Builds an AI request using the profile's context policy and edit format.
     /// Returns request plus trace lines describing the local planning steps.
     pub(crate) fn build_ai_request_for_selection(
         &self,
         profile: &AiProfileConfig,
         prompt: String,
         selection: &AiSelectionSnapshot,
-        extraction: ExtractionStrategy,
+        edit_format: &EditFormat,
     ) -> (AiRequest, Vec<String>) {
         let file_path = self.buffer().file_path().map(ToString::to_string);
         let language_id = file_path
@@ -26,77 +24,62 @@ impl Editor {
             .map(ToString::to_string);
 
         let mut trace = vec![format!(
-            "agent mode={:?} tier={:?} budget={}t",
-            profile.context_policy.mode,
-            profile.context_policy.tier,
-            profile.context_policy.context_budget_tokens
+            "context: surrounding={}  symbols={}  related_slices={}  budget={}t",
+            profile.context.surrounding_lines,
+            profile.context.symbols,
+            profile.context.related_slices,
+            profile.context.budget,
         )];
-        trace.push(format!(
-            "policy: retrieval_k={} max_iterations={} max_tool_calls={} hops={} pruning={}",
-            profile.context_policy.retrieval_k,
-            profile.context_policy.max_iterations,
-            profile.context_policy.max_tool_calls,
-            profile.context_policy.callgraph_hops,
-            profile.context_policy.enable_pruning
-        ));
 
-        let context_pack = if profile.context_policy.context_budget_tokens == 0 {
+        let context_pack = if profile.context.budget == 0 {
             trace.push("context disabled by profile policy".to_string());
             None
         } else {
-            let mut pack = self.build_ai_context_pack(selection);
-            match profile.context_policy.mode {
-                AgentMode::FastPath => {
-                    trace.push("fast-path: selection + local window".to_string());
-                }
-                AgentMode::Hybrid | AgentMode::ReactOnly => {
-                    let max_iterations = profile
-                        .context_policy
-                        .max_iterations
-                        .min(MAX_ITERATIONS_CAP)
-                        .max(1);
-                    let target_related = profile.context_policy.retrieval_k as usize;
-                    let per_iteration_target = if target_related == 0 {
-                        0
-                    } else {
-                        (target_related + max_iterations as usize - 1) / max_iterations as usize
-                    };
-                    let slice_radius = RELATED_SLICE_RADIUS
-                        .saturating_mul(profile.context_policy.callgraph_hops.max(1) as usize)
-                        .min(12);
-                    let mut seen_ranges = HashSet::new();
-                    for iteration in 0..max_iterations {
-                        let remaining = target_related.saturating_sub(pack.related_slices.len());
-                        if remaining == 0 {
-                            break;
-                        }
-                        let iteration_target = remaining.min(per_iteration_target.max(1));
-                        let added = self.expand_related_slices(
-                            &mut pack.related_slices,
-                            &file_path,
-                            &language_id,
-                            selection,
-                            iteration_target,
-                            slice_radius,
-                            &mut seen_ranges,
-                        );
-                        trace.push(format!(
-                            "iteration {}: expanded {} related slices (target {} radius {})",
-                            iteration + 1,
-                            added,
-                            iteration_target,
-                            slice_radius
-                        ));
-                        if added == 0 {
-                            break;
-                        }
+            let mut pack = self.build_ai_context_pack(selection, &profile.context);
+            if !profile.context.related_slices {
+                trace.push("fast-path: selection + local window".to_string());
+            } else {
+                let max_iterations = MAX_ITERATIONS_CAP;
+                let target_related = profile.context.symbols as usize;
+                let per_iteration_target = if target_related == 0 {
+                    0
+                } else {
+                    (target_related + max_iterations as usize - 1) / max_iterations as usize
+                };
+                let slice_radius = RELATED_SLICE_RADIUS
+                    .saturating_mul(2)
+                    .min(12);
+                let mut seen_ranges = HashSet::new();
+                for iteration in 0..max_iterations {
+                    let remaining = target_related.saturating_sub(pack.related_slices.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    let iteration_target = remaining.min(per_iteration_target.max(1));
+                    let added = self.expand_related_slices(
+                        &mut pack.related_slices,
+                        &file_path,
+                        &language_id,
+                        selection,
+                        iteration_target,
+                        slice_radius,
+                        &mut seen_ranges,
+                    );
+                    trace.push(format!(
+                        "iteration {}: expanded {} related slices (target {} radius {})",
+                        iteration + 1,
+                        added,
+                        iteration_target,
+                        slice_radius
+                    ));
+                    if added == 0 {
+                        break;
                     }
                 }
             }
             prune_context_pack_to_budget(
                 &mut pack,
-                profile.context_policy.context_budget_tokens,
-                profile.context_policy.enable_pruning,
+                profile.context.budget,
                 &mut trace,
             );
             Some(pack)
@@ -108,7 +91,7 @@ impl Editor {
                 selected_text: selection.selected_text.clone(),
                 language_id,
                 file_path,
-                extraction,
+                edit_format: edit_format.clone(),
                 context_pack,
             },
             trace,
@@ -237,20 +220,11 @@ fn trim_last_content_line(content: &mut String) -> bool {
 fn prune_context_pack_to_budget(
     pack: &mut AiContextPack,
     budget_tokens: usize,
-    enable_pruning: bool,
     trace: &mut Vec<String>,
 ) {
     let mut estimated = estimate_context_pack_tokens(pack);
     if estimated <= budget_tokens {
         trace.push(format!("context estimate {}t within budget", estimated));
-        return;
-    }
-
-    if !enable_pruning {
-        trace.push(format!(
-            "context estimate {}t exceeds budget {}t (pruning disabled)",
-            estimated, budget_tokens
-        ));
         return;
     }
 

@@ -172,7 +172,7 @@ impl Editor {
             .as_ref()
             .and_then(|c| c.opts.profile.as_ref())
             .and_then(|p| self.ai_state.config.resolve_profile(p))
-            .map(|p| p.context_policy.max_iterations)
+            .map(|p| (p.agent_loop.max_tool_calls / 10).min(255) as u8)
             .unwrap_or(4);
 
         if iterations >= max_iterations {

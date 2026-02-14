@@ -291,7 +291,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                     .profile
                     .as_ref()
                     .and_then(|p| editor.ai_state.config.resolve_profile(p))
-                    .map(|p| p.context_policy.max_iterations)
+                    .map(|p| (p.agent_loop.max_tool_calls / 10).min(255) as u8)
                     .unwrap_or(4);
                 let iter_text = format!(" \u{26A1}{}/{} ", chat.tool_iterations, max_iter);
                 right_spans.push(Span::styled(
@@ -933,8 +933,8 @@ pub fn render_ai_prompt_line(
 
     if let Some(row) = rows.first() {
         let header = format!(
-            " AI Edit  profile: {}  extraction: {}  • Enter submit • Esc cancel • Tab/Shift-Tab switch model",
-            editor.ai_state.active_profile, editor.ai_state.extraction
+            " AI Edit  profile: {}  format: {}  • Enter submit • Esc cancel • Tab/Shift-Tab switch model",
+            editor.ai_state.active_profile, editor.ai_state.edit_format
         );
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(

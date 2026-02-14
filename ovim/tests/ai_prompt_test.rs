@@ -3,9 +3,40 @@ mod helpers;
 use helpers::EditorTest;
 use ovim::editor::handle_mouse_event;
 use ovim::mode::Mode;
-use ovim_core::ai::{AiProfileConfig, AiProviderKind, ContextPolicy, ExtractionStrategy};
+use ovim_core::ai::{
+    AgentLoopConfig, AiProfileConfig, AiProviderKind, ContextGatheringPolicy, EditFormat,
+    RetryPolicy,
+};
 use ovim_core::{KeyCode, MouseButton, MouseEvent, MouseEventKind, Rect};
 use std::time::Instant;
+
+/// Helper to build a test profile with common defaults.
+fn test_profile(name: &str, provider: AiProviderKind, model: &str) -> AiProfileConfig {
+    AiProfileConfig {
+        name: name.to_string(),
+        provider,
+        model: model.to_string(),
+        base_url: None,
+        api_key: None,
+        api_key_env: None,
+        temperature: None,
+        max_tokens: None,
+        system_prompt: None,
+        edit_format: EditFormat::Json,
+        chat_edit_format: None,
+        context: ContextGatheringPolicy::default(),
+        agent_loop: AgentLoopConfig::default(),
+        tools: vec![],
+        scope: ovim_core::ai::ProfileScope::default(),
+        edit_prompt: None,
+        chat_prompt: None,
+        chat_edit_prompt: None,
+        reasoning_effort: None,
+        verbosity: None,
+        syntax_check: None,
+        retry: RetryPolicy::default(),
+    }
+}
 
 fn generated_region(
     id: u64,
@@ -25,7 +56,7 @@ fn generated_region(
         generated_text: generated_text.to_string(),
         profile_name: "alpha".to_string(),
         provider_label: "ollama/model-a".to_string(),
-        extraction: ExtractionStrategy::Json,
+        edit_format: EditFormat::Json,
         reasoning_lines: vec!["reason".to_string()],
         raw_output: Some("{\"replacement\":\"earth\"}".to_string()),
         created_at: now,
@@ -201,25 +232,13 @@ async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
 
     test.editor.ai_state.active_profile = "test".to_string();
     test.editor.ai_state.config.profiles.clear();
-    test.editor.ai_state.config.profiles.insert(
-        "test".to_string(),
-        AiProfileConfig {
-            name: "test".to_string(),
-            provider: AiProviderKind::OpenAi,
-            model: "gpt-4o-mini".to_string(),
-            base_url: None,
-            api_key_env: Some("OVIM_TEST_AI_KEY_MISSING".to_string()),
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Json,
-            context_policy: ContextPolicy::default(),
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
+    let mut profile = test_profile("test", AiProviderKind::OpenAi, "gpt-4o-mini");
+    profile.api_key_env = Some("OVIM_TEST_AI_KEY_MISSING".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("test".to_string(), profile);
 
     test.keys("vll<Space>");
     test.type_text("replace with short word");
@@ -231,7 +250,7 @@ async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
     assert!(test.editor.ai_state.regions[0]
         .reasoning_lines
         .iter()
-        .any(|line| line.contains("agent mode=")));
+        .any(|line| line.contains("context:")));
     assert!(test.editor.ai_state.regions[0]
         .reasoning_lines
         .iter()
@@ -244,38 +263,24 @@ async fn test_ai_prompt_submit_applies_context_budget_trace() {
 
     test.editor.ai_state.active_profile = "budget".to_string();
     test.editor.ai_state.config.profiles.clear();
-    let mut context_policy = ContextPolicy::default();
-    context_policy.context_budget_tokens = 1;
-    context_policy.retrieval_k = 6;
-    context_policy.max_iterations = 3;
-    context_policy.callgraph_hops = 2;
-    context_policy.enable_pruning = true;
-    test.editor.ai_state.config.profiles.insert(
-        "budget".to_string(),
-        AiProfileConfig {
-            name: "budget".to_string(),
-            provider: AiProviderKind::OpenAi,
-            model: "gpt-4o-mini".to_string(),
-            base_url: None,
-            api_key_env: Some("OVIM_TEST_AI_KEY_MISSING".to_string()),
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Json,
-            context_policy,
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
+    let mut profile = test_profile("budget", AiProviderKind::OpenAi, "gpt-4o-mini");
+    profile.api_key_env = Some("OVIM_TEST_AI_KEY_MISSING".to_string());
+    profile.context = ContextGatheringPolicy {
+        budget: 1,
+        ..ContextGatheringPolicy::default()
+    };
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("budget".to_string(), profile);
 
     test.keys("vll<Space>");
     test.type_text("rewrite");
     test.press_enter();
 
     let trace = &test.editor.ai_state.regions[0].reasoning_lines;
-    assert!(trace.iter().any(|line| line.contains("policy:")));
+    assert!(trace.iter().any(|line| line.contains("context:")));
     assert!(trace
         .iter()
         .any(|line| line.contains("context pruning applied")));
@@ -288,58 +293,35 @@ async fn test_ai_prompt_submit_applies_context_budget_trace() {
 fn test_ai_prompt_keyboard_model_picker_cycles_profiles() {
     let mut test = EditorTest::new("hello world\n");
     test.editor.ai_state.config.profiles.clear();
-    test.editor.ai_state.config.profiles.insert(
-        "alpha".to_string(),
-        AiProfileConfig {
-            name: "alpha".to_string(),
-            provider: AiProviderKind::Ollama,
-            model: "model-a".to_string(),
-            base_url: Some("http://127.0.0.1:11434".to_string()),
-            api_key_env: None,
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Json,
-            context_policy: ContextPolicy::default(),
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
-    test.editor.ai_state.config.profiles.insert(
-        "beta".to_string(),
-        AiProfileConfig {
-            name: "beta".to_string(),
-            provider: AiProviderKind::Ollama,
-            model: "model-b".to_string(),
-            base_url: Some("http://127.0.0.1:11434".to_string()),
-            api_key_env: None,
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Codeblock,
-            context_policy: ContextPolicy::default(),
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
+    let mut alpha = test_profile("alpha", AiProviderKind::Ollama, "model-a");
+    alpha.base_url = Some("http://127.0.0.1:11434".to_string());
+    alpha.edit_format = EditFormat::Json;
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("alpha".to_string(), alpha);
+
+    let mut beta = test_profile("beta", AiProviderKind::Ollama, "model-b");
+    beta.base_url = Some("http://127.0.0.1:11434".to_string());
+    beta.edit_format = EditFormat::Codeblock;
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("beta".to_string(), beta);
+
     test.editor.ai_state.active_profile = "alpha".to_string();
-    test.editor.ai_state.extraction = ExtractionStrategy::Json;
+    test.editor.ai_state.edit_format = EditFormat::Json;
 
     test.keys("vll<Space>");
     test.press_key(KeyCode::Tab);
     assert_eq!(test.editor.ai_state.active_profile, "beta");
-    assert_eq!(
-        test.editor.ai_state.extraction,
-        ExtractionStrategy::Codeblock
-    );
+    assert_eq!(test.editor.ai_state.edit_format, EditFormat::Codeblock);
 
     test.press_key(KeyCode::BackTab);
     assert_eq!(test.editor.ai_state.active_profile, "alpha");
-    assert_eq!(test.editor.ai_state.extraction, ExtractionStrategy::Json);
+    assert_eq!(test.editor.ai_state.edit_format, EditFormat::Json);
 
     test.press_key(KeyCode::Down);
     assert_eq!(test.editor.ai_state.active_profile, "beta");
@@ -351,46 +333,26 @@ fn test_ai_prompt_keyboard_model_picker_cycles_profiles() {
 fn test_ai_prompt_mouse_model_picker_selects_profile() {
     let mut test = EditorTest::new("hello world\n");
     test.editor.ai_state.config.profiles.clear();
-    test.editor.ai_state.config.profiles.insert(
-        "alpha".to_string(),
-        AiProfileConfig {
-            name: "alpha".to_string(),
-            provider: AiProviderKind::Ollama,
-            model: "model-a".to_string(),
-            base_url: Some("http://127.0.0.1:11434".to_string()),
-            api_key_env: None,
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Json,
-            context_policy: ContextPolicy::default(),
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
-    test.editor.ai_state.config.profiles.insert(
-        "beta".to_string(),
-        AiProfileConfig {
-            name: "beta".to_string(),
-            provider: AiProviderKind::Ollama,
-            model: "model-b".to_string(),
-            base_url: Some("http://127.0.0.1:11434".to_string()),
-            api_key_env: None,
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Codeblock,
-            context_policy: ContextPolicy::default(),
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
+    let mut alpha = test_profile("alpha", AiProviderKind::Ollama, "model-a");
+    alpha.base_url = Some("http://127.0.0.1:11434".to_string());
+    alpha.edit_format = EditFormat::Json;
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("alpha".to_string(), alpha);
+
+    let mut beta = test_profile("beta", AiProviderKind::Ollama, "model-b");
+    beta.base_url = Some("http://127.0.0.1:11434".to_string());
+    beta.edit_format = EditFormat::Codeblock;
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("beta".to_string(), beta);
+
     test.editor.ai_state.active_profile = "alpha".to_string();
-    test.editor.ai_state.extraction = ExtractionStrategy::Json;
+    test.editor.ai_state.edit_format = EditFormat::Json;
 
     test.keys("vll<Space>");
     test.editor.render_cache.ai_prompt_model_hitboxes = vec![
@@ -425,10 +387,7 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
     .expect("mouse click should be handled");
 
     assert_eq!(test.editor.ai_state.active_profile, "beta");
-    assert_eq!(
-        test.editor.ai_state.extraction,
-        ExtractionStrategy::Codeblock
-    );
+    assert_eq!(test.editor.ai_state.edit_format, EditFormat::Codeblock);
 }
 
 #[test]
@@ -558,25 +517,13 @@ fn test_ctrl_e_shows_ai_reasoning_for_selected_region() {
 async fn test_ctrl_space_retries_generation_for_selected_region() {
     let mut test = EditorTest::new("hello earth\n");
     test.editor.ai_state.config.profiles.clear();
-    test.editor.ai_state.config.profiles.insert(
-        "alpha".to_string(),
-        AiProfileConfig {
-            name: "alpha".to_string(),
-            provider: AiProviderKind::OpenAi,
-            model: "gpt-4o-mini".to_string(),
-            base_url: None,
-            api_key_env: Some("OVIM_TEST_AI_KEY_MISSING".to_string()),
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-            extraction: ExtractionStrategy::Json,
-            context_policy: ContextPolicy::default(),
-            tools: vec![],
-            scope: ovim_core::ai::ProfileScope::default(),
-            edit_mode: ovim_core::ai::EditMode::default(),
-            edit_format: "codeblock".to_string(),
-        },
-    );
+    let mut profile = test_profile("alpha", AiProviderKind::OpenAi, "gpt-4o-mini");
+    profile.api_key_env = Some("OVIM_TEST_AI_KEY_MISSING".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("alpha".to_string(), profile);
 
     test.editor
         .ai_state
@@ -597,7 +544,7 @@ async fn test_ctrl_space_retries_generation_for_selected_region() {
     assert!(test.editor.ai_state.regions[0]
         .reasoning_lines
         .iter()
-        .any(|line| line.contains("agent mode=")));
+        .any(|line| line.contains("context:")));
     assert!(test.editor.ai_state.regions[0]
         .reasoning_lines
         .iter()

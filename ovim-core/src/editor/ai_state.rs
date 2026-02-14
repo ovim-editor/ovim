@@ -1,6 +1,6 @@
 use crate::ai::chat_types::ConversationTree;
 use crate::ai::tools::ToolRegistry;
-use crate::ai::{AiConfig, AiJobResult, ExtractionStrategy, PROFILE_LOCAL};
+use crate::ai::{AiConfig, AiJobResult, EditFormat, PROFILE_LOCAL};
 use crate::mode::Mode;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -52,7 +52,7 @@ pub struct AiEditRegion {
     pub generated_text: String,
     pub profile_name: String,
     pub provider_label: String,
-    pub extraction: ExtractionStrategy,
+    pub edit_format: EditFormat,
     pub reasoning_lines: Vec<String>,
     pub raw_output: Option<String>,
     pub created_at: Instant,
@@ -78,7 +78,7 @@ pub struct AiState {
     pub selected_region_id: Option<u64>,
     pub selection_hold_until_exit: bool,
     pub active_profile: String,
-    pub extraction: ExtractionStrategy,
+    pub edit_format: EditFormat,
     pub next_lock_id: u64,
     pub next_job_id: u64,
     pub last_observed_buffer_version: usize,
@@ -98,9 +98,9 @@ impl Default for AiState {
         } else {
             PROFILE_LOCAL.to_string()
         };
-        let extraction = config
+        let edit_format = config
             .resolve_profile(&default_profile)
-            .map(|profile| profile.extraction)
+            .map(|profile| profile.edit_format.clone())
             .unwrap_or_default();
 
         // Initialize default contexts if empty
@@ -121,7 +121,7 @@ impl Default for AiState {
             selected_region_id: None,
             selection_hold_until_exit: false,
             active_profile: default_profile,
-            extraction,
+            edit_format,
             next_lock_id: 1,
             next_job_id: 1,
             last_observed_buffer_version: 0,

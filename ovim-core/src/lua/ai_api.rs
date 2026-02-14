@@ -206,10 +206,25 @@ fn parse_lua_profile(tbl: &Table) -> Result<LuaProfileConfig> {
         .get::<_, String>("model")
         .map_err(|_| mlua::Error::external("profile must have a 'model' field"))?;
 
+    // Read optional context sub-table fields
+    let (ctx_surrounding_lines, ctx_symbols, ctx_diagnostics, ctx_related_slices, ctx_budget) =
+        if let Ok(ctx) = tbl.get::<_, Table>("context") {
+            (
+                ctx.get::<_, u16>("surrounding_lines").ok(),
+                ctx.get::<_, u16>("symbols").ok(),
+                ctx.get::<_, String>("diagnostics").ok(),
+                ctx.get::<_, bool>("related_slices").ok(),
+                ctx.get::<_, usize>("budget").ok(),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+
     Ok(LuaProfileConfig {
         model,
         provider: tbl.get::<_, String>("provider").ok(),
         base_url: tbl.get::<_, String>("base_url").ok(),
+        api_key: tbl.get::<_, String>("api_key").ok(),
         api_key_env: tbl.get::<_, String>("api_key_env").ok(),
         temperature: tbl.get::<_, f32>("temperature").ok(),
         max_tokens: tbl.get::<_, u32>("max_tokens").ok(),
@@ -218,8 +233,22 @@ fn parse_lua_profile(tbl: &Table) -> Result<LuaProfileConfig> {
         scope: tbl.get::<_, String>("scope").ok(),
         scope_shell: tbl.get::<_, bool>("scope_shell").unwrap_or(false),
         scope_network: tbl.get::<_, bool>("scope_network").unwrap_or(false),
-        edit_mode: tbl.get::<_, String>("edit_mode").ok(),
         edit_format: tbl.get::<_, String>("edit_format").ok(),
+        chat_edit_format: tbl.get::<_, String>("chat_edit_format").ok(),
+        context_surrounding_lines: ctx_surrounding_lines,
+        context_symbols: ctx_symbols,
+        context_diagnostics: ctx_diagnostics,
+        context_related_slices: ctx_related_slices,
+        context_budget: ctx_budget,
+        max_tool_calls: tbl.get::<_, u16>("max_tool_calls").ok(),
+        edit_prompt: tbl.get::<_, String>("edit_prompt").ok(),
+        chat_prompt: tbl.get::<_, String>("chat_prompt").ok(),
+        chat_edit_prompt: tbl.get::<_, String>("chat_edit_prompt").ok(),
+        reasoning_effort: tbl.get::<_, String>("reasoning_effort").ok(),
+        verbosity: tbl.get::<_, String>("verbosity").ok(),
+        syntax_check: tbl.get::<_, bool>("syntax_check").ok(),
+        retry_max: tbl.get::<_, u8>("retry_max").ok(),
+        retry_fallback: tbl.get::<_, String>("retry_fallback").ok(),
     })
 }
 
