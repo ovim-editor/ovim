@@ -1,6 +1,6 @@
 use crate::ai::chat_types::StreamChunk;
 use crate::ai::config::{system_prompt_for_edit_format, AiProfileConfig};
-use crate::ai::extract::extract_response;
+use crate::ai::extract::extract_and_check_elision;
 use crate::ai::prompt::interpolate;
 use crate::ai::stream_parsers;
 use crate::ai::types::{AiJobResult, AiProviderKind, AiRequest, ApiKeyConfig};
@@ -84,8 +84,21 @@ pub async fn request_ai_edit(
             }
         };
 
-        match extract_response(&current_format, &response_text) {
-            Ok(extracted) => {
+        match extract_and_check_elision(&current_format, &response_text) {
+            Ok((extracted, elision)) if !elision.is_empty() && attempt < retry_max => {
+                // Elision detected, still have retries — re-prompt with anti-elision instructions.
+                let feedback = format!(
+                    "Your response contained placeholders that omit code: {}. \
+                     You MUST provide the complete replacement. Do not abbreviate with \
+                     comments like '// ... rest' or '// remaining unchanged'. Output every line.",
+                    elision.join("; "),
+                );
+                let retry_msgs = build_retry_messages(&response_text, &feedback, profile.provider);
+                extra_messages.extend(retry_msgs);
+                last_error = Some(anyhow!("elision detected"));
+            }
+            Ok((extracted, elision)) => {
+                // Clean result, or retries exhausted — accept with optional warning.
                 return Ok(AiJobResult {
                     replacement: extracted.replacement,
                     new_import_statements: extracted.new_import_statements,
@@ -95,6 +108,7 @@ pub async fn request_ai_edit(
                     profile_name: profile.name.clone(),
                     model: profile.model.clone(),
                     retry_attempts: attempt,
+                    elision_markers: elision,
                 });
             }
             Err(e) if attempt < retry_max => {
