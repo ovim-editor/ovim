@@ -316,6 +316,7 @@ impl Editor {
         let (line, col) = self.abs_char_to_line_col(region.start_char);
         self.lsp_state.hover_info = Some(message);
         self.lsp_state.hover_scroll = 0;
+        self.lsp_state.hover_h_scroll = 0;
         self.lsp_state.hover_position = Some((line, col));
         self.lsp_state.hover_content_type = HoverContentType::AiReasoning;
         self.set_mode(Mode::HoverPreview);
