@@ -420,6 +420,7 @@ fn set_cursor_position(
     editor: &mut Editor,
     ctx: &OverlayContext,
     command_chunk: Rect,
+    chat_area: Option<Rect>,
 ) {
     let layout = ctx.layout;
     let viewport_start = ctx.viewport_start;
@@ -485,11 +486,10 @@ fn set_cursor_position(
             (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::AiChat {
-        // Recompute chat area for cursor positioning
-        let allow_edits = editor.ai_chat_allow_edits();
-        let (_, chat_rect) = super::ai_chat::compute_chat_split(layout.buffer_area, allow_edits);
-        if let Some((cx, cy)) = super::ai_chat::chat_cursor_info(editor, chat_rect) {
-            frame.set_cursor_position((cx, cy));
+        if let Some(chat_rect) = chat_area {
+            if let Some((cx, cy)) = super::ai_chat::chat_cursor_info(editor, chat_rect) {
+                frame.set_cursor_position((cx, cy));
+            }
         }
     } else if editor.mode() == crate::mode::Mode::AiPrompt {
         if !editor.render_cache.ai_prompt_input_rows.is_empty() {
@@ -821,6 +821,10 @@ impl Renderer {
         // Render chat panel (if in AiChat mode)
         if let Some(chat_area) = areas.chat_area {
             super::ai_chat::render_chat_panel(frame, editor, chat_area);
+            editor.render_cache.last_chat_area =
+                Some(crate::key_convert::convert_ratatui_rect(chat_area));
+        } else {
+            editor.render_cache.last_chat_area = None;
         }
 
         // Render status + overlays + cursor
@@ -830,7 +834,7 @@ impl Renderer {
             viewport_start,
         };
         render_overlays(frame, editor, &theme, &ctx, areas.command_chunk);
-        set_cursor_position(frame, editor, &ctx, areas.command_chunk);
+        set_cursor_position(frame, editor, &ctx, areas.command_chunk, areas.chat_area);
     }
 
     /// Renders the editor state to the terminal

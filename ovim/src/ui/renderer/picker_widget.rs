@@ -499,6 +499,70 @@ fn build_highlighted_spans(
     spans
 }
 
+/// For a list of file paths, compute the shortest unambiguous display names.
+/// Unique basenames stay as-is; duplicates get parent directories prepended until
+/// distinguishable (e.g., "Dashboard/index.tsx" vs "Settings/index.tsx").
+/// Results from the same file (identical paths) keep just the basename since
+/// line numbers already distinguish them.
+fn disambiguate_filenames(paths: &[&str]) -> Vec<String> {
+    let n = paths.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    // Split each path into reversed components: [filename, parent, grandparent, ...]
+    let components: Vec<Vec<&str>> = paths
+        .iter()
+        .map(|p| p.trim_end_matches('/').rsplit('/').collect())
+        .collect();
+
+    // depth[i] = how many path components to show for path i (start with 1 = basename only)
+    let mut depth = vec![1usize; n];
+
+    loop {
+        // Build display name for each path at its current depth
+        let names: Vec<String> = (0..n)
+            .map(|i| {
+                let comps = &components[i];
+                let d = depth[i].min(comps.len());
+                let mut parts: Vec<&str> = comps[..d].to_vec();
+                parts.reverse();
+                parts.join("/")
+            })
+            .collect();
+
+        // Find groups with identical display names
+        let mut groups: std::collections::HashMap<&str, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, name) in names.iter().enumerate() {
+            groups.entry(name.as_str()).or_default().push(i);
+        }
+
+        // Increase depth for groups that are ambiguous (same name, different files)
+        let mut changed = false;
+        for indices in groups.values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+            // Skip if all entries point to the same file — line numbers distinguish them
+            let first = paths[indices[0]];
+            if indices.iter().all(|&i| paths[i] == first) {
+                continue;
+            }
+            for &i in indices {
+                if depth[i] < components[i].len() {
+                    depth[i] += 1;
+                    changed = true;
+                }
+            }
+        }
+
+        if !changed {
+            return names;
+        }
+    }
+}
+
 /// Renders the picker results list
 /// Returns the scroll offset used for rendering (needed for mouse hit-testing).
 fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area: Rect) -> usize {
@@ -524,14 +588,27 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
 
     let is_live_grep = matches!(picker.mode(), crate::editor::PickerMode::LiveGrep);
 
-    let visible_results: Vec<Line> = (scroll_offset..total.min(scroll_offset + max_results))
-        .filter_map(|i| {
-            picker
-                .filtered_result(i)
-                .map(|result| (i - scroll_offset, i, result))
-        })
-        .map(|(idx, actual_idx, result)| {
-            let _ = idx; // used only for position within visible window
+    // Collect visible results first so we can disambiguate filenames across them
+    let visible_entries: Vec<(usize, &crate::editor::PickerResult)> =
+        (scroll_offset..total.min(scroll_offset + max_results))
+            .filter_map(|i| picker.filtered_result(i).map(|result| (i, result)))
+            .collect();
+
+    // For live grep: compute shortest unambiguous display names for duplicate filenames
+    let disambiguated = if is_live_grep {
+        let paths: Vec<&str> = visible_entries
+            .iter()
+            .map(|(_, r)| r.location.as_str())
+            .collect();
+        disambiguate_filenames(&paths)
+    } else {
+        Vec::new()
+    };
+
+    let visible_results: Vec<Line> = visible_entries
+        .iter()
+        .enumerate()
+        .map(|(vis_idx, &(actual_idx, ref result))| {
             let is_selected = actual_idx == selected_idx;
 
             let max_display_len = result_width.saturating_sub(5);
@@ -598,12 +675,8 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                         Modifier::empty()
                     };
 
-                    // Extract just the filename (basename) from the absolute path
-                    let basename = std::path::Path::new(&result.location)
-                        .file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_else(|| result.location.clone());
-
+                    // Use disambiguated name (adds parent dirs for duplicate basenames)
+                    let display_name = &disambiguated[vis_idx];
                     let line_num = format!(":{}", result.line + 1);
 
                     let filename_style = Style::default()
@@ -615,12 +688,12 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
                         .bg(bg_color)
                         .add_modifier(bold);
 
-                    spans.push(Span::styled(basename.clone(), filename_style));
+                    spans.push(Span::styled(display_name.clone(), filename_style));
                     spans.push(Span::styled(line_num.clone(), linenum_style));
                     spans.push(Span::styled("  ", Style::default().bg(bg_color)));
 
                     // Truncate content to fit remaining width
-                    let location_len = basename.chars().count() + line_num.chars().count();
+                    let location_len = display_name.chars().count() + line_num.chars().count();
                     let used = icon.chars().count() + prefix.chars().count() + location_len + 2;
                     let content_max = result_width.saturating_sub(used);
                     let truncated_content: String = content.chars().take(content_max).collect();

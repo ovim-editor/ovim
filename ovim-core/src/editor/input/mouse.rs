@@ -15,8 +15,8 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<()> 
             handle_left_drag(editor, event.column, event.row)
         }
         MouseEventKind::Up(MouseButton::Left) => handle_left_release(editor),
-        MouseEventKind::ScrollUp => handle_scroll(editor, true),
-        MouseEventKind::ScrollDown => handle_scroll(editor, false),
+        MouseEventKind::ScrollUp => handle_scroll(editor, true, event.row),
+        MouseEventKind::ScrollDown => handle_scroll(editor, false, event.row),
         MouseEventKind::Down(MouseButton::Middle) => {
             handle_middle_click(editor, event.column, event.row)
         }
@@ -282,7 +282,7 @@ fn handle_left_release(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
-fn handle_scroll(editor: &mut Editor, up: bool) -> Result<()> {
+fn handle_scroll(editor: &mut Editor, up: bool, row: u16) -> Result<()> {
     const SCROLL_LINES: usize = 3;
 
     // In picker mode, scroll the picker results
@@ -298,6 +298,22 @@ fn handle_scroll(editor: &mut Editor, up: bool) -> Result<()> {
             editor.mark_picker_selection_changed();
         }
         return Ok(());
+    }
+
+    // In AiChat mode, scroll the chat message history if the mouse is over the chat area
+    if editor.mode() == Mode::AiChat {
+        if let Some(chat_rect) = editor.render_cache.last_chat_area {
+            if row >= chat_rect.y && row < chat_rect.y + chat_rect.height {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
+                    if up {
+                        chat.message_scroll = chat.message_scroll.saturating_add(SCROLL_LINES);
+                    } else {
+                        chat.message_scroll = chat.message_scroll.saturating_sub(SCROLL_LINES);
+                    }
+                }
+                return Ok(());
+            }
+        }
     }
 
     // In wrap mode, scroll by visual rows instead of logical lines.
