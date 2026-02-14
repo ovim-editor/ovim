@@ -367,7 +367,11 @@ fn parse_string_list(tbl: &Table, key: &str) -> Vec<String> {
 fn parse_project_context_table(value: &Value) -> Result<ProjectContextConfig> {
     let tbl = match value {
         Value::Table(t) => t,
-        _ => return Err(mlua::Error::external("vim.ai.project_context must be a table")),
+        _ => {
+            return Err(mlua::Error::external(
+                "vim.ai.project_context must be a table",
+            ))
+        }
     };
     let mut cfg = ProjectContextConfig::default();
     if let Ok(files) = tbl.get::<_, Table>("files") {

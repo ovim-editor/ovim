@@ -215,7 +215,7 @@ impl Editor {
             // Store agent_loop as a global default; per-profile overrides
             // are already handled in LuaProfileConfig::into_profile_config().
             let _ = agent_loop; // reserved for future global agent_loop usage
-            // Default profile
+                                // Default profile
             if let Some(dp) = default_profile {
                 self.ai_state.config.default_profile = dp.clone();
                 self.ai_state.active_profile = dp;
