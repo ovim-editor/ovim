@@ -134,6 +134,32 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
         ai.set("profiles", profiles_table)?;
     }
 
+    // vim.ai.prompts — metatable with __index/__newindex
+    {
+        let prompts = lua.create_table()?;
+        let meta = lua.create_table()?;
+
+        let b = bridge.clone();
+        let index = lua.create_function(move |lua, (_, key): (Value, String)| {
+            match b.get_ai_prompt(&key) {
+                Some(v) => Ok(Value::String(lua.create_string(&v)?)),
+                None => Ok(Value::Nil),
+            }
+        })?;
+        meta.set("__index", index)?;
+
+        let b = bridge.clone();
+        let newindex =
+            lua.create_function(move |_lua, (_, key, value): (Value, String, String)| {
+                b.set_ai_prompt(key, value);
+                Ok(())
+            })?;
+        meta.set("__newindex", newindex)?;
+
+        prompts.set_metatable(Some(meta));
+        ai.set("prompts", prompts)?;
+    }
+
     // Stubs: vim.ai.models.register, vim.ai.tools.register, vim.ai.edit_formats.register
     {
         let models = lua.create_table()?;

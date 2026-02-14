@@ -132,6 +132,7 @@ impl Editor {
             return Ok(());
         };
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
+        let prompts = self.ai_state.config.prompts.clone();
 
         let edit_format = self.ai_state.edit_format.clone();
         let (request, mut prep_trace) =
@@ -170,7 +171,7 @@ impl Editor {
 
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = request_ai_edit(&profile, &request, &api_key_registry).await;
+            let result = request_ai_edit(&profile, &request, &api_key_registry, &prompts).await;
             let clone_for_channel = match &result {
                 Ok(ok) => Ok(ok.clone()),
                 Err(err) => Err(anyhow!(err.to_string())),
@@ -451,6 +452,7 @@ impl Editor {
             return Ok(true);
         };
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
+        let prompts = self.ai_state.config.prompts.clone();
 
         let (request, mut prep_trace) =
             self.build_ai_request_for_selection(&profile, prompt.clone(), &selection, &edit_format);
@@ -478,7 +480,7 @@ impl Editor {
 
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = request_ai_edit(&profile, &request, &api_key_registry).await;
+            let result = request_ai_edit(&profile, &request, &api_key_registry, &prompts).await;
             let clone_for_channel = match &result {
                 Ok(ok) => Ok(ok.clone()),
                 Err(err) => Err(anyhow!(err.to_string())),
