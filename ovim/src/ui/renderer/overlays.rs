@@ -13,8 +13,9 @@ use super::layout::OverlayContext;
 
 /// Renders hover information as a floating window positioned near the cursor
 ///
-/// In preview mode: renders markdown, any key dismisses
-/// In navigate mode: shows raw text, scrollable
+/// Both modes are scrollable (j/k vertical, h/l horizontal):
+/// - Preview mode: styled markdown rendering
+/// - Navigate mode: raw text view (K from preview to switch)
 #[allow(clippy::too_many_arguments)]
 pub fn render_hover_window(
     frame: &mut Frame,
@@ -32,14 +33,18 @@ pub fn render_hover_window(
     let buffer_area = layout.buffer_area;
     use super::markdown::{colors, parse_markdown, render_markdown};
 
+    let h_scroll = editor.hover_h_scroll();
+
     const MIN_WIDTH: u16 = 30;
-    const MAX_WIDTH: u16 = 80;
     const MIN_HEIGHT: u16 = 3;
-    const MAX_HEIGHT: u16 = 15;
+
+    // Adaptive max dimensions: use up to 80% of available space, but cap at sane limits.
+    let max_width = (buffer_area.width * 4 / 5).max(MIN_WIDTH).min(120);
+    let max_height = (buffer_area.height * 4 / 5).max(MIN_HEIGHT).min(40);
 
     // Parse markdown for preview mode
     let elements = parse_markdown(hover_text);
-    let rendered_lines = render_markdown(&elements, MAX_WIDTH as usize, Some(theme));
+    let rendered_lines = render_markdown(&elements, max_width as usize, Some(theme));
     let total_lines = if is_preview {
         rendered_lines.len()
     } else {
@@ -63,11 +68,11 @@ pub fn render_hover_window(
     };
 
     let window_width = (content_width as u16 + 4)
-        .clamp(MIN_WIDTH, MAX_WIDTH)
+        .clamp(MIN_WIDTH, max_width)
         .min(buffer_area.width.saturating_sub(4));
 
     let window_height = (total_lines as u16 + 2)
-        .clamp(MIN_HEIGHT, MAX_HEIGHT)
+        .clamp(MIN_HEIGHT, max_height)
         .min(buffer_area.height.saturating_sub(2));
 
     // Calculate cursor screen position
@@ -136,13 +141,28 @@ pub fn render_hover_window(
     let max_scroll = total_lines.saturating_sub(content_height);
     let clamped_scroll = scroll_offset.min(max_scroll);
 
-    // Create title based on content type
+    let scrollable = total_lines > content_height;
+
+    // Create title based on content type and scrollability
     let title = match (is_preview, content_type) {
+        (true, crate::editor::HoverContentType::Diagnostic) if scrollable => {
+            format!(" Diagnostic {}/{} ", clamped_scroll + 1, total_lines)
+        }
         (true, crate::editor::HoverContentType::Diagnostic) => " Diagnostic ".to_string(),
         (true, crate::editor::HoverContentType::BlameInfo) => " Blame ".to_string(),
+        (true, crate::editor::HoverContentType::AiReasoning) if scrollable => {
+            format!(" AI reasoning {}/{} ", clamped_scroll + 1, total_lines)
+        }
         (true, crate::editor::HoverContentType::AiReasoning) => " AI reasoning ".to_string(),
-        (true, crate::editor::HoverContentType::LspHover) => " K: navigate ".to_string(),
-        (false, _) if total_lines > content_height => {
+        (true, _) if scrollable => {
+            format!(
+                " {}/{} j/k:scroll q:close ",
+                clamped_scroll + 1,
+                total_lines
+            )
+        }
+        (true, _) => " q:close K:raw ".to_string(),
+        (false, _) if scrollable => {
             format!(
                 " {}/{} j/k:scroll q:close ",
                 clamped_scroll + 1,
@@ -154,7 +174,7 @@ pub fn render_hover_window(
 
     // Render content based on mode
     if is_preview {
-        // Render styled markdown
+        // Render styled markdown with scroll support
         let visible_lines: Vec<ratatui::text::Line> = rendered_lines
             .into_iter()
             .skip(clamped_scroll)
@@ -163,6 +183,7 @@ pub fn render_hover_window(
 
         let paragraph = Paragraph::new(visible_lines)
             .style(Style::default().bg(colors::BG))
+            .scroll((0, h_scroll as u16))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -179,7 +200,7 @@ pub fn render_hover_window(
         frame.render_widget(ratatui::widgets::Clear, window_area);
         frame.render_widget(paragraph, window_area);
     } else {
-        // Render raw text (navigate mode)
+        // Render raw text (navigate mode) — no wrapping, uses h/l for horizontal scroll
         let all_lines: Vec<&str> = hover_text.lines().collect();
         let visible_lines: Vec<String> = all_lines
             .iter()
@@ -196,6 +217,7 @@ pub fn render_hover_window(
                     .bg(Color::Rgb(30, 30, 40))
                     .fg(Color::Rgb(230, 230, 230)),
             )
+            .scroll((0, h_scroll as u16))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -207,8 +229,7 @@ pub fn render_hover_window(
                             .fg(Color::Rgb(137, 180, 250))
                             .add_modifier(Modifier::BOLD),
                     ),
-            )
-            .wrap(ratatui::widgets::Wrap { trim: false });
+            );
 
         frame.render_widget(ratatui::widgets::Clear, window_area);
         frame.render_widget(paragraph, window_area);

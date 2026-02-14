@@ -29,6 +29,7 @@ impl Editor {
     pub fn clear_hover(&mut self) {
         self.lsp_state.hover_info = None;
         self.lsp_state.hover_scroll = 0;
+        self.lsp_state.hover_h_scroll = 0;
     }
 
     /// Set hover info directly (used for command output display)
@@ -36,6 +37,7 @@ impl Editor {
     pub fn set_hover_info(&mut self, info: String) {
         self.lsp_state.hover_info = Some(info);
         self.lsp_state.hover_scroll = 0;
+        self.lsp_state.hover_h_scroll = 0;
         self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
         self.mode = crate::mode::Mode::HoverPreview;
         self.mark_dirty();
@@ -61,6 +63,23 @@ impl Editor {
     /// Scroll hover window up
     pub fn scroll_hover_up(&mut self, lines: usize) {
         self.lsp_state.hover_scroll = self.lsp_state.hover_scroll.saturating_sub(lines);
+    }
+
+    /// Get hover horizontal scroll position
+    pub fn hover_h_scroll(&self) -> usize {
+        self.lsp_state.hover_h_scroll
+    }
+
+    /// Scroll hover window right
+    pub fn scroll_hover_right(&mut self, cols: usize) {
+        if self.lsp_state.hover_info.is_some() {
+            self.lsp_state.hover_h_scroll = self.lsp_state.hover_h_scroll.saturating_add(cols);
+        }
+    }
+
+    /// Scroll hover window left
+    pub fn scroll_hover_left(&mut self, cols: usize) {
+        self.lsp_state.hover_h_scroll = self.lsp_state.hover_h_scroll.saturating_sub(cols);
     }
 
     /// Implementation of hover request
@@ -95,6 +114,7 @@ impl Editor {
                 crate::lsp_info!("LSP-HOVER", "Cache HIT");
                 self.lsp_state.hover_info = Some(cache.hover_text.clone());
                 self.lsp_state.hover_scroll = 0;
+                self.lsp_state.hover_h_scroll = 0;
                 self.lsp_state.hover_position = Some((cursor_line, cursor_col));
                 self.lsp_state.hover_content_type =
                     crate::editor::lsp_state::HoverContentType::LspHover;
