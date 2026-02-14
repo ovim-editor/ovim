@@ -26,7 +26,9 @@ impl Editor {
             self.sync_lua_bridge(&bridge);
             // Set up vim API with bridge
             crate::lua::setup_vim_api(context.lua(), bridge.clone())?;
-            // Try to load config
+            // Load built-in defaults (runs before user config)
+            context.load_builtin()?;
+            // Try to load user config
             match context.load_config() {
                 Ok(true) => {
                     // Config loaded successfully - process any commands that were queued

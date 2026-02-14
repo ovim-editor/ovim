@@ -59,6 +59,15 @@ impl LuaContext {
         Ok(())
     }
 
+    /// Loads the built-in defaults (builtin.lua) that ship with the binary.
+    /// Runs once before the user's init.lua. Sets up API keys, prompts,
+    /// context policies, and profiles so ovim works out-of-the-box.
+    pub fn load_builtin(&self) -> Result<()> {
+        const BUILTIN: &str = include_str!("builtin.lua");
+        self.lua.load(BUILTIN).set_name("[builtin]").exec()?;
+        Ok(())
+    }
+
     /// Loads configuration from standard locations
     pub fn load_config(&mut self) -> Result<bool> {
         if self.config_loaded {

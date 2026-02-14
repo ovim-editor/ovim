@@ -39,6 +39,52 @@ pub fn setup_vim_api(lua: &Lua, bridge: EditorBridge) -> Result<()> {
     let ai = crate::lua::ai_api::setup_ai_api(lua, bridge.clone())?;
     vim.set("ai", ai)?;
 
+    // Create vim.tbl_extend(behavior, ...)
+    let tbl_extend = lua.create_function(
+        |lua, (behavior, tables): (String, mlua::MultiValue)| {
+            let result = lua.create_table()?;
+            for val in tables {
+                let tbl = match val {
+                    Value::Table(t) => t,
+                    _ => {
+                        return Err(mlua::Error::external(
+                            "vim.tbl_extend: all arguments after behavior must be tables",
+                        ))
+                    }
+                };
+                for pair in tbl.pairs::<Value, Value>() {
+                    let (k, v) = pair?;
+                    match behavior.as_str() {
+                        "force" => {
+                            result.set(k, v)?;
+                        }
+                        "keep" => {
+                            if result.get::<_, Value>(k.clone())?.is_nil() {
+                                result.set(k, v)?;
+                            }
+                        }
+                        "error" => {
+                            if !result.get::<_, Value>(k.clone())?.is_nil() {
+                                return Err(mlua::Error::external(
+                                    "vim.tbl_extend: duplicate key with behavior 'error'",
+                                ));
+                            }
+                            result.set(k, v)?;
+                        }
+                        _ => {
+                            return Err(mlua::Error::external(format!(
+                                "vim.tbl_extend: invalid behavior '{}' (expected 'force', 'keep', or 'error')",
+                                behavior
+                            )))
+                        }
+                    }
+                }
+            }
+            Ok(result)
+        },
+    )?;
+    vim.set("tbl_extend", tbl_extend)?;
+
     // Set vim as a global
     lua.globals().set("vim", vim)?;
 
