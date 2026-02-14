@@ -222,6 +222,8 @@ pub struct AiJobResult {
     pub model: String,
     /// Number of retry attempts before extraction succeeded (0 = first attempt).
     pub retry_attempts: u8,
+    /// Elision markers detected in the replacement text (empty = clean).
+    pub elision_markers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -638,6 +638,7 @@ impl Editor {
                     profile_name: result.profile_name.clone(),
                     model: result.model.clone(),
                     retry_attempts: result.retry_attempts,
+                    elision_markers: result.elision_markers.clone(),
                 }),
                 Err(e) => {
                     // Fall back to raw extraction result with error logged
@@ -730,6 +731,12 @@ impl Editor {
                     "extraction succeeded after {} retry attempt{}",
                     result.retry_attempts,
                     if result.retry_attempts == 1 { "" } else { "s" },
+                ));
+            }
+            if !result.elision_markers.is_empty() {
+                lines.push(format!(
+                    "warning: possible elision detected — {}",
+                    result.elision_markers.join("; "),
                 ));
             }
             region.reasoning_lines = lines;
@@ -1163,6 +1170,7 @@ mod tests {
             profile_name: "alpha".to_string(),
             model: "model".to_string(),
             retry_attempts: 0,
+            elision_markers: vec![],
         };
 
         editor
