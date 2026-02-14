@@ -139,9 +139,7 @@ pub struct AgentLoopConfig {
 
 impl Default for AgentLoopConfig {
     fn default() -> Self {
-        Self {
-            max_tool_calls: 50,
-        }
+        Self { max_tool_calls: 50 }
     }
 }
 

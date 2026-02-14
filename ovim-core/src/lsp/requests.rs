@@ -1498,7 +1498,10 @@ impl LspManager {
             return Ok(None);
         }
 
-        Ok(parse_lsp_response(result, "textDocument/semanticTokens/full"))
+        Ok(parse_lsp_response(
+            result,
+            "textDocument/semanticTokens/full",
+        ))
     }
 
     /// Requests semantic tokens for a range within the document
@@ -1550,7 +1553,10 @@ impl LspManager {
             return Ok(None);
         }
 
-        Ok(parse_lsp_response(result, "textDocument/semanticTokens/range"))
+        Ok(parse_lsp_response(
+            result,
+            "textDocument/semanticTokens/range",
+        ))
     }
 
     /// Gets the semantic tokens legend from a server's capabilities

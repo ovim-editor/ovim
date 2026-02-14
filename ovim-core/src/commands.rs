@@ -1823,11 +1823,23 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
     lines.push(format!("**AI Configuration**"));
     lines.push(format!("Active profile: {}", active));
     lines.push(format!("Default profile: {}", config.default_profile));
-    lines.push(format!("Profiles: {}", config.profiles.keys().cloned().collect::<Vec<_>>().join(", ")));
+    lines.push(format!(
+        "Profiles: {}",
+        config
+            .profiles
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
 
     // Show context mappings
     if !config.contexts.is_empty() {
-        let ctx_str: Vec<String> = config.contexts.iter().map(|(k, v)| format!("{}→{}", k, v)).collect();
+        let ctx_str: Vec<String> = config
+            .contexts
+            .iter()
+            .map(|(k, v)| format!("{}→{}", k, v))
+            .collect();
         lines.push(format!("Contexts: {}", ctx_str.join(", ")));
     }
 
@@ -1850,7 +1862,7 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
             match std::env::var(name) {
                 Ok(val) => {
                     let masked = if val.len() > 8 {
-                        format!("{}...{}", &val[..4], &val[val.len()-4..])
+                        format!("{}...{}", &val[..4], &val[val.len() - 4..])
                     } else {
                         "****".to_string()
                     };
@@ -1870,9 +1882,13 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
     lines.push("**AI-related env vars visible to process:**".to_string());
     let mut found_any = false;
     for (key, val) in std::env::vars() {
-        if key.contains("OPENAI") || key.contains("ANTHROPIC") || key.contains("OVIM") || key.contains("API_KEY") {
+        if key.contains("OPENAI")
+            || key.contains("ANTHROPIC")
+            || key.contains("OVIM")
+            || key.contains("API_KEY")
+        {
             let masked = if val.len() > 8 {
-                format!("{}...{}", &val[..4], &val[val.len()-4..])
+                format!("{}...{}", &val[..4], &val[val.len() - 4..])
             } else {
                 "****".to_string()
             };

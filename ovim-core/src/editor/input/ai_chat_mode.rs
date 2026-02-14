@@ -146,8 +146,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     // First line — navigate to message history
                     chat.focus = ChatFocus::MessageHistory;
                 } else {
-                    chat.input_cursor =
-                        move_cursor_vertical(&chat.input, chat.input_cursor, -1);
+                    chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, -1);
                 }
             }
         }
@@ -158,8 +157,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     // Last line — navigate to model selector
                     chat.focus = ChatFocus::ModelSelector;
                 } else {
-                    chat.input_cursor =
-                        move_cursor_vertical(&chat.input, chat.input_cursor, 1);
+                    chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, 1);
                 }
             }
         }

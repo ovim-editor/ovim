@@ -540,10 +540,7 @@ fn render_chat_bubble(
         let spans = vec![
             Span::styled(" ".repeat(indent), pad_style),
             Span::styled("│ ", border_style),
-            Span::styled(
-                format!("{}{}", hint, " ".repeat(padding)),
-                hint_style,
-            ),
+            Span::styled(format!("{}{}", hint, " ".repeat(padding)), hint_style),
             Span::styled(" │", border_style),
             Span::styled(
                 " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
@@ -659,10 +656,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
         let padding = content_width + prompt_len;
         let line = Line::from(vec![
             Span::styled("│ ", border_style),
-            Span::styled(
-                " ".repeat(padding),
-                Style::default().bg(BG_INPUT),
-            ),
+            Span::styled(" ".repeat(padding), Style::default().bg(BG_INPUT)),
             Span::styled(" │", border_style),
         ]);
         frame.render_widget(

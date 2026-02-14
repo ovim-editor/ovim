@@ -22,7 +22,7 @@ fn test_tilde_skips_emoji_advances_past_it() {
     t.assert_cursor(0, 0);
     t.keys("~");
     assert_eq!(t.cursor(), (0, 1)); // cursor on emoji (grapheme 1)
-    // 'a' → 'A', emoji and 'b' unchanged
+                                    // 'a' → 'A', emoji and 'b' unchanged
     assert!(t.buffer_content().starts_with("A👨‍👩‍👧‍👦b"));
 }
 
