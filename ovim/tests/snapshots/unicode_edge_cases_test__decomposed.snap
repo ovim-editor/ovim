@@ -1,10 +1,11 @@
 ---
-source: tests/unicode_edge_cases_test.rs
+source: ovim/tests/unicode_edge_cases_test.rs
+assertion_line: 540
 expression: test2.snapshot_state()
 ---
 Mode: Normal
-Cursor: 0:4
+Cursor: 0:3
 Lines: 1
 
 Buffer:
-cafe[́]
+caf[e]́
