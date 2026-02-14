@@ -36,6 +36,7 @@ use crate::buffer::Buffer;
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 use crate::search::Search;
+use crate::editor::motions::Motions;
 use crate::textobjects::TextObjects;
 use anyhow::Result;
 
@@ -786,23 +787,33 @@ impl Change {
                 }
             }
             Self::ChangeWord { replacement, .. } => {
-                // Find word at current cursor and replace it
-                if let Some(range) = TextObjects::inner_word(buffer) {
-                    buffer.delete_range(
-                        range.start_line,
-                        range.start_col,
-                        range.end_line,
-                        range.end_col,
-                    );
-                    buffer.insert_text_at(range.start_line, range.start_col, replacement);
-                    // Position cursor at end of inserted text (minus 1 for normal mode)
-                    let end_pos = Self::calculate_end_position(
-                        (range.start_line, range.start_col),
-                        replacement,
-                    );
-                    let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                    buffer.cursor_mut().set_position(end_pos.0, final_col);
-                }
+                // Replicate cw (ce) semantics: delete from cursor to word end, then insert
+                let start_line = buffer.cursor().line();
+                let start_col = buffer.cursor().col();
+
+                // Move cursor to word end (ce motion)
+                Motions::word_end_forward_prefer_current(buffer, 1);
+
+                let end_line = buffer.cursor().line();
+                let line_len = if let Some(line) = buffer.line(end_line) {
+                    line.trim_end_matches('\n').chars().count()
+                } else {
+                    0
+                };
+                let end_col = (buffer.cursor().col() + 1).min(line_len);
+
+                // Restore cursor to start and delete the range
+                buffer.cursor_mut().set_position(start_line, start_col);
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.insert_text_at(start_line, start_col, replacement);
+
+                // Position cursor at end of inserted text (minus 1 for normal mode)
+                let end_pos = Self::calculate_end_position(
+                    (start_line, start_col),
+                    replacement,
+                );
+                let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
+                buffer.cursor_mut().set_position(end_pos.0, final_col);
             }
             Self::ReplaceMode { replacements, .. } => {
                 // Replay the entire replacement sequence at current cursor

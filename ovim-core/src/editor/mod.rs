@@ -28,7 +28,7 @@ mod lua_integration;
 mod macros;
 mod mark_jump;
 mod marks;
-mod motions;
+pub(crate) mod motions;
 mod navigation_state;
 pub mod nucleo_matcher;
 mod operators;

@@ -559,7 +559,12 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
             });
 
             let (last_pasted_line, last_text_char_count) = last_paste_info;
-            let new_col = paste_col + last_text_char_count;
+            // Position cursor on last character of pasted text
+            let new_col = if last_text_char_count > 0 {
+                paste_col + last_text_char_count - 1
+            } else {
+                paste_col
+            };
             editor
                 .buffer_mut()
                 .cursor_mut()
@@ -747,7 +752,12 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             });
 
             let (last_pasted_line, last_text_char_count) = last_paste_info;
-            let new_col = paste_col + last_text_char_count;
+            // Position cursor on last character of pasted text
+            let new_col = if last_text_char_count > 0 {
+                paste_col + last_text_char_count - 1
+            } else {
+                paste_col
+            };
             editor
                 .buffer_mut()
                 .cursor_mut()
@@ -1111,6 +1121,7 @@ pub fn clamp_cursor_to_buffer(editor: &mut Editor) {
 /// This should be called whenever exiting visual mode to ensure the selection is saved
 pub fn exit_visual_mode_to_normal(editor: &mut Editor) {
     editor.save_last_visual_selection();
+    editor.set_visual_block_dollar(false);
     editor.clear_visual_start();
     editor.set_mode(Mode::Normal);
 }

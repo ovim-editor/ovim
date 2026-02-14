@@ -81,6 +81,15 @@ impl Editor {
         self.visual.visual_block_insert_state
     }
 
+    /// Returns true when `$` was pressed in visual block mode (extend to EOL).
+    pub fn visual_block_dollar(&self) -> bool {
+        self.visual.visual_block_dollar
+    }
+
+    pub fn set_visual_block_dollar(&mut self, val: bool) {
+        self.visual.visual_block_dollar = val;
+    }
+
     /// Gets the visual selection range (start and end positions)
     /// Returns ((start_line, start_col), (end_line, end_col))
     /// Note: For VisualBlock, this returns the corners of the rectangle
@@ -120,20 +129,17 @@ impl Editor {
                     // Block mode: return corners of rectangle
                     // Normalize so start_line <= end_line and start_col <= end_col
 
-                    // NOTE (Bug 6): Visual block on ragged lines
-                    // Current behavior: If a line is shorter than the block column, we extend
-                    // the block to include whatever characters exist on that line. This matches
-                    // Vim's behavior - visual block selections on ragged lines are clamped to
-                    // the actual line length. Operations like delete/yank handle short lines
-                    // correctly by operating only on the characters that exist.
-
                     let (min_line, max_line) = if start.0 <= end.0 {
                         (start.0, end.0)
                     } else {
                         (end.0, start.0)
                     };
 
-                    let (min_col, max_col) = if start.1 <= end.1 {
+                    let (min_col, max_col) = if self.visual.visual_block_dollar {
+                        // `$` was pressed: extend each line to its own EOL.
+                        // Use usize::MAX - 1 as sentinel (avoids +1 overflow in callers).
+                        (start.1.min(end.1), usize::MAX - 1)
+                    } else if start.1 <= end.1 {
                         (start.1, end.1)
                     } else {
                         (end.1, start.1)

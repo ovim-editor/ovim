@@ -18,6 +18,10 @@ pub struct VisualContext {
 
     /// Last visual selection (start, end, mode) for `gv` command
     pub last_visual_selection: Option<VisualSelection>,
+
+    /// True when `$` was pressed in visual block mode — means "extend each
+    /// line to its own end-of-line" rather than a fixed column.
+    pub visual_block_dollar: bool,
 }
 
 impl VisualContext {
@@ -26,6 +30,7 @@ impl VisualContext {
             visual_start: None,
             visual_block_insert_state: None,
             last_visual_selection: None,
+            visual_block_dollar: false,
         }
     }
 }
