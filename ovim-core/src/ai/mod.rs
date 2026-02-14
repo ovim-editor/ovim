@@ -17,7 +17,7 @@ pub use provider::{request_ai_edit, stream_ai_chat};
 pub use scope::{Capabilities, RequiredScope, ScopeContext};
 pub use tools::{ToolDefinition, ToolRegistry, ToolResult};
 pub use types::{
-    AgentLoopConfig, AiContextPack, AiJobResult, AiProviderKind, AiRequest, BufferLock,
-    CodeSlice, ContextGatheringPolicy, DiagnosticFact, DiagnosticScope, EditFormat, FileScope,
-    ProfileScope, RetryPolicy, SymbolFact, PROFILE_LOCAL,
+    AgentLoopConfig, AiContextPack, AiJobResult, AiProviderKind, AiRequest, ApiKeyConfig,
+    BufferLock, CodeSlice, ContextGatheringPolicy, DiagnosticFact, DiagnosticScope, EditFormat,
+    FileScope, ProfileScope, RetryPolicy, SymbolFact, PROFILE_LOCAL,
 };

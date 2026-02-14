@@ -197,6 +197,12 @@ pub struct AiContextPack {
     pub related_slices: Vec<CodeSlice>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ApiKeyConfig {
+    pub env_var: Option<String>,
+    pub file: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AiRequest {
     pub prompt: String,

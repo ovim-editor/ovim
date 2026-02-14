@@ -168,7 +168,9 @@ impl Editor {
 
     /// Sync AI config (profiles, contexts, default_profile) from Lua bridge.
     fn sync_ai_config_from_bridge(&mut self, bridge: &crate::lua::EditorBridge) {
-        if let Some((contexts, default_profile, profiles)) = bridge.take_ai_config_if_dirty() {
+        if let Some((contexts, default_profile, profiles, api_key_registry)) =
+            bridge.take_ai_config_if_dirty()
+        {
             // Merge Lua profiles (Lua wins over TOML on conflict)
             for (name, lua_profile) in profiles {
                 let profile = lua_profile.into_profile_config(name.clone());
@@ -177,6 +179,13 @@ impl Editor {
             // Merge contexts
             for (ctx_name, profile_name) in contexts {
                 self.ai_state.config.contexts.insert(ctx_name, profile_name);
+            }
+            // Merge API key registry
+            for (key_name, key_config) in api_key_registry {
+                self.ai_state
+                    .config
+                    .api_key_registry
+                    .insert(key_name, key_config);
             }
             // Default profile
             if let Some(dp) = default_profile {

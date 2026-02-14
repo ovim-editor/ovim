@@ -1,6 +1,6 @@
 use crate::ai::types::{
-    AgentLoopConfig, AiProviderKind, ContextGatheringPolicy, DiagnosticScope, EditFormat,
-    ProfileScope, RetryPolicy, PROFILE_LOCAL,
+    AgentLoopConfig, AiProviderKind, ApiKeyConfig, ContextGatheringPolicy, DiagnosticScope,
+    EditFormat, ProfileScope, RetryPolicy, PROFILE_LOCAL,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -40,6 +40,8 @@ pub struct AiConfig {
     pub profiles: HashMap<String, AiProfileConfig>,
     /// Maps context names ("chat", "selection", "query") to profile names.
     pub contexts: HashMap<String, String>,
+    /// Named API key sources (env var or file).
+    pub api_key_registry: HashMap<String, ApiKeyConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +119,7 @@ impl Default for AiConfig {
             default_profile: PROFILE_LOCAL.to_string(),
             profiles,
             contexts: HashMap::new(),
+            api_key_registry: HashMap::new(),
         }
     }
 }

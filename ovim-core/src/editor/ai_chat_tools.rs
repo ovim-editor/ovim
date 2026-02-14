@@ -326,6 +326,7 @@ impl Editor {
                 .unwrap_or_else(|| self.build_chat_system_prompt(&profile)),
         );
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
+        let api_key_registry = self.ai_state.config.api_key_registry.clone();
 
         let messages: Vec<ChatMessage> = self
             .conversation()
@@ -346,6 +347,7 @@ impl Editor {
                 system_prompt.as_deref(),
                 tools_ref,
                 tx.clone(),
+                &api_key_registry,
             )
             .await
             {
