@@ -201,6 +201,12 @@ pub fn render_tab_bar(frame: &mut Frame, editor: &Editor, theme: &Theme, area: R
 
 /// Renders the status line
 pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) {
+    // Review mode: compact single-line indicator
+    if editor.ai_chat_review_mode() {
+        render_review_mode_status(frame, editor, theme, area);
+        return;
+    }
+
     let mode = editor.mode();
     let buffer = editor.buffer();
     let cursor = buffer.cursor();
@@ -285,15 +291,15 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         ));
 
         if let Some(chat) = editor.ai_state.chat.as_ref() {
-            if chat.tool_iterations > 0 {
-                let max_iter = chat
+            if chat.tool_call_count > 0 {
+                let max_calls = chat
                     .opts
                     .profile
                     .as_ref()
                     .and_then(|p| editor.ai_state.config.resolve_profile(p))
-                    .map(|p| (p.agent_loop.max_tool_calls / 10).min(255) as u8)
-                    .unwrap_or(4);
-                let iter_text = format!(" \u{26A1}{}/{} ", chat.tool_iterations, max_iter);
+                    .map(|p| p.agent_loop.max_tool_calls)
+                    .unwrap_or(50);
+                let iter_text = format!(" \u{26A1}{}/{} ", chat.tool_call_count, max_calls);
                 right_spans.push(Span::styled(
                     iter_text,
                     Style::default().fg(Color::Yellow).bg(status_bg),
@@ -1066,6 +1072,57 @@ pub fn render_ai_prompt_line(
     }
 
     layout
+}
+
+/// Renders a compact review mode status line.
+fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, area: Rect) {
+    let accent_bg = ui_color(theme, UiGroup::TabActiveBg);
+    let accent_fg = ui_color(theme, UiGroup::TabActiveFg);
+    let status_bg = ui_color(theme, UiGroup::StatusLineBackground);
+    let status_fg = ui_color(theme, UiGroup::StatusLineForeground);
+
+    let edit_count = editor
+        .ai_chat_state()
+        .map(|c| c.agent_edits.total_edit_count())
+        .unwrap_or(0);
+    let file_count = editor
+        .ai_chat_state()
+        .map(|c| c.agent_edits.edited_buffer_count())
+        .unwrap_or(0);
+
+    let mode_span = Span::styled(
+        " REVIEW ",
+        Style::default()
+            .fg(accent_fg)
+            .bg(accent_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let info = format!(
+        " {} edit{} in {} file{} ",
+        edit_count,
+        if edit_count == 1 { "" } else { "s" },
+        file_count,
+        if file_count == 1 { "" } else { "s" },
+    );
+    let hints = " ]a/[a navigate | <C-r> chat | u undo ";
+
+    let w = area.width as usize;
+    let used = 8 + info.chars().count() + hints.len();
+
+    let info_span = Span::styled(info, Style::default().fg(status_fg).bg(status_bg));
+    let hints_span = Span::styled(
+        hints,
+        Style::default()
+            .fg(Color::DarkGray)
+            .bg(status_bg)
+            .add_modifier(Modifier::DIM),
+    );
+    let gap = w.saturating_sub(used);
+    let gap_span = Span::styled(" ".repeat(gap), Style::default().bg(status_bg));
+
+    let line = Line::from(vec![mode_span, info_span, gap_span, hints_span]);
+    frame.render_widget(Paragraph::new(vec![line]), area);
 }
 
 #[cfg(test)]

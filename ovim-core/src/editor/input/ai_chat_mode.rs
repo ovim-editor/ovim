@@ -7,6 +7,33 @@ use std::time::Duration;
 const DOUBLE_ESC_THRESHOLD: Duration = Duration::from_millis(300);
 
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    // --- Review mode: delegate most keys to normal mode ---
+    let review_mode = editor
+        .ai_state
+        .chat
+        .as_ref()
+        .map(|c| c.review_mode)
+        .unwrap_or(false);
+
+    if review_mode {
+        // <C-r> toggles back to chat
+        if key_event.code == KeyCode::Char('r')
+            && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.review_mode = false;
+            }
+            return Ok(());
+        }
+        // Esc closes chat entirely from review mode
+        if key_event.code == KeyCode::Esc {
+            editor.close_ai_chat();
+            return Ok(());
+        }
+        // Everything else delegates to normal mode handling
+        return super::normal::handle_normal_mode(editor, key_event);
+    }
+
     let focus = editor.ai_chat_focus();
 
     // --- Global keys (all zones) ---
@@ -16,6 +43,20 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
 
     if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::CONTROL) {
         editor.close_ai_chat();
+        return Ok(());
+    }
+
+    // <C-r> toggles review mode
+    if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(Modifiers::CONTROL) {
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.review_mode = true;
+        }
+        return Ok(());
+    }
+
+    // <C-y> copies conversation to clipboard
+    if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL) {
+        editor.copy_ai_chat_conversation();
         return Ok(());
     }
 

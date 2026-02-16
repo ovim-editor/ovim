@@ -539,10 +539,18 @@ fn build_gutter_line(
         "  ".to_string()
     };
 
-    // Diagnostic signs take priority over git signs
+    // Diagnostic signs take priority over agent edits > git signs
+    let buf_idx = editor.current_buffer_index();
+    let is_agent_edit = editor
+        .ai_chat_state()
+        .map(|c| c.agent_edits.is_line_modified(buf_idx, line_idx))
+        .unwrap_or(false);
+
     let (sign_text, sign_color) = if !line_diagnostics.is_empty() {
         let severity = line_diagnostics[0].severity;
         get_diagnostic_sign_style(severity)
+    } else if is_agent_edit {
+        ("▎ ", Color::Rgb(82, 139, 255))
     } else {
         let git_status = buffer.git_status().get_line_status(line_idx);
         get_git_sign_style(git_status)

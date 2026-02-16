@@ -123,13 +123,26 @@ impl Editor {
     /// Pushes a recorded undo entry without setting the repeat register.
     /// Use for compound operations (join, case change, indent) where the
     /// dot-repeat change is set separately.
+    ///
+    /// If an AI chat undo group is active, the change is stamped with the group ID
+    /// so that `u` undoes the entire agent turn at once.
     pub fn push_recorded_undo(
         &mut self,
         edits: Vec<Edit>,
         cursor_before: Position,
         cursor_after: Position,
     ) {
-        let change = Change::recorded(edits, cursor_before, cursor_after);
+        let group_id = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.current_undo_group);
+
+        let change = if let Some(gid) = group_id {
+            Change::recorded_grouped(edits, cursor_before, cursor_after, gid)
+        } else {
+            Change::recorded(edits, cursor_before, cursor_after)
+        };
         let cm = self.buffer_mut().change_manager_mut();
         cm.last_edit_position = Some(cursor_before);
         cm.undo_stack.push(change);

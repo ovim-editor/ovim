@@ -524,6 +524,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.goto_prev_diagnostic();
             editor.clear_count();
         }
+        ('[', KeyCode::Char('a')) => {
+            editor.goto_agent_edit(false);
+            editor.clear_count();
+        }
 
         // =====================================================================
         // ']' - Section/bracket forward navigation
@@ -560,6 +564,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (']', KeyCode::Char('d')) => {
             editor.goto_next_diagnostic();
+            editor.clear_count();
+        }
+        (']', KeyCode::Char('a')) => {
+            editor.goto_agent_edit(true);
             editor.clear_count();
         }
 

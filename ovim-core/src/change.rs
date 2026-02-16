@@ -182,6 +182,9 @@ pub enum Change {
         edits: Vec<Edit>,
         cursor_before: Position,
         cursor_after: Position,
+        /// Optional group ID for undo grouping (e.g., agent turns).
+        /// Multiple Recorded changes with the same group_id are undone together.
+        undo_group_id: Option<u64>,
     },
 }
 
@@ -292,6 +295,30 @@ impl Change {
             edits,
             cursor_before,
             cursor_after,
+            undo_group_id: None,
+        }
+    }
+
+    /// Creates a Recorded change with an undo group ID for grouped undo.
+    pub fn recorded_grouped(
+        edits: Vec<Edit>,
+        cursor_before: Position,
+        cursor_after: Position,
+        group_id: u64,
+    ) -> Self {
+        Self::Recorded {
+            edits,
+            cursor_before,
+            cursor_after,
+            undo_group_id: Some(group_id),
+        }
+    }
+
+    /// Returns the undo group ID if this is a grouped Recorded change.
+    pub fn undo_group_id(&self) -> Option<u64> {
+        match self {
+            Self::Recorded { undo_group_id, .. } => *undo_group_id,
+            _ => None,
         }
     }
 
@@ -1188,11 +1215,28 @@ impl ChangeManager {
         self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
     }
 
-    /// Undoes the last change
+    /// Undoes the last change. If the change has an undo_group_id, keeps
+    /// popping changes with the same group ID so one `u` undoes the whole group.
     pub fn undo(&mut self, buffer: &mut Buffer) -> bool {
         if let Some(change) = self.undo_stack.pop() {
+            let group_id = change.undo_group_id();
             change.undo(buffer);
             self.redo_stack.push(change);
+
+            // If this change was part of a group, undo all remaining changes in the group
+            if let Some(gid) = group_id {
+                while self
+                    .undo_stack
+                    .last()
+                    .and_then(|c| c.undo_group_id())
+                    == Some(gid)
+                {
+                    let grouped = self.undo_stack.pop().unwrap();
+                    grouped.undo(buffer);
+                    self.redo_stack.push(grouped);
+                }
+            }
+
             true
         } else {
             false
