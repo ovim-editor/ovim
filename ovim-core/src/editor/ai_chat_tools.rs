@@ -4,8 +4,8 @@ use crate::ai::stream_ai_chat;
 use crate::ai::tools::builtins::{self, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{SideEffect, ToolResult};
-use crate::ai::FileScope;
 use anyhow::Result;
+use std::sync::Arc;
 
 use super::ai_chat_state::PendingAiChatJob;
 use super::Editor;
@@ -42,9 +42,10 @@ impl Editor {
             allow_mutations: allow_edits,
         };
 
-        // If edits not allowed, restrict to read-only (File scope max)
+        // If edits not allowed, disable shell but keep file_scope at profile level
+        // so read-only project tools (search_project, list_files, read_file_at_path)
+        // remain available.
         if !allow_edits {
-            caps.file_scope = std::cmp::min(caps.file_scope, FileScope::File);
             caps.shell = false;
         }
 
@@ -96,6 +97,17 @@ impl Editor {
         let current_file = buf.file_path().map(std::path::PathBuf::from);
         let project_root = std::env::current_dir().ok();
 
+        // Snapshot all open buffers so read_file_at_path can read
+        // in-memory content instead of potentially stale disk files.
+        let mut open_buffers = std::collections::HashMap::new();
+        for b in &self.buffers {
+            if let Some(p) = b.file_path() {
+                let path = std::path::Path::new(p);
+                let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                open_buffers.insert(key, b.rope().to_string());
+            }
+        }
+
         ToolExecutionContext {
             buffer_content,
             file_path,
@@ -107,6 +119,7 @@ impl Editor {
                 project_root,
             },
             capabilities: self.build_chat_capabilities(),
+            open_buffers,
         }
     }
 
@@ -140,10 +153,16 @@ impl Editor {
             .get(&tc.name)
             .map(|t| t.side_effect)
         {
-            Some(SideEffect::Read) => {
-                let ctx = self.build_tool_execution_context();
-                self.execute_tool_call(tc, &ctx)
-            }
+            Some(SideEffect::Read) => match tc.name.as_str() {
+                "document_symbols" | "hover" | "goto_definition" => {
+                    self.execute_lsp_tool(&tc.name, &tc.arguments)
+                }
+                _ => {
+                    let ctx = self.build_tool_execution_context();
+                    self.execute_tool_call(tc, &ctx)
+                }
+            },
+            Some(SideEffect::Navigation) => self.execute_navigation_tool(&tc.name, &tc.arguments),
             Some(SideEffect::Mutation) => self.execute_mutation_tool(&tc.name, &tc.arguments),
             Some(SideEffect::External) => {
                 ToolResult::Error("external tools not yet supported".into())
@@ -160,22 +179,22 @@ impl Editor {
         content: String,
         model_name: &str,
     ) -> bool {
-        let iterations = self
+        let used = self
             .ai_state
             .chat
             .as_ref()
-            .map(|c| c.tool_iterations)
+            .map(|c| c.tool_call_count)
             .unwrap_or(0);
-        let max_iterations = self
+        let max_tool_calls = self
             .ai_state
             .chat
             .as_ref()
             .and_then(|c| c.opts.profile.as_ref())
             .and_then(|p| self.ai_state.config.resolve_profile(p))
-            .map(|p| (p.agent_loop.max_tool_calls / 10).min(255) as u8)
-            .unwrap_or(4);
+            .map(|p| p.agent_loop.max_tool_calls)
+            .unwrap_or(50);
 
-        if iterations >= max_iterations {
+        if used >= max_tool_calls {
             // Hit limit — commit what we have and stop
             if !content.is_empty() {
                 if let Some(conv) = self.conversation_mut() {
@@ -187,6 +206,15 @@ impl Editor {
             }
             self.clear_streaming_state();
             return true;
+        }
+
+        // Set up undo group for this tool call batch
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            if chat.current_undo_group.is_none() {
+                let gid = chat.next_undo_group_id;
+                chat.next_undo_group_id += 1;
+                chat.current_undo_group = Some(gid);
+            }
         }
 
         // 1. Commit content + tool_calls as assistant message
@@ -210,9 +238,9 @@ impl Editor {
             }
         }
 
-        // 3. Increment iterations
+        // 3. Count actual tool calls used
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.tool_iterations += 1;
+            chat.tool_call_count = chat.tool_call_count.saturating_add(tool_calls.len() as u16);
         }
 
         // 4. Start new streaming request
@@ -229,6 +257,248 @@ impl Editor {
         true
     }
 
+    // -----------------------------------------------------------------
+    // Editor state context (injected into system prompt)
+    // -----------------------------------------------------------------
+
+    /// Build a structured editor state block for the system prompt.
+    ///
+    /// Assembles context in priority order within `budget_chars`:
+    /// file info, cursor, enclosing scope, selection, viewport code, diagnostics.
+    pub(crate) fn build_editor_state_context(&self, budget_chars: usize) -> String {
+        let buf = &self.buffers[self.current_buffer_index];
+        let mut out = String::with_capacity(budget_chars.min(16384));
+        let mut remaining = budget_chars;
+
+        out.push_str("## Editor state\n\n");
+        remaining = remaining.saturating_sub(out.len());
+
+        // --- File info (always) ---
+        let file_info = match buf.file_path() {
+            Some(path) => {
+                let lang = crate::syntax::LanguageRegistry::get_lsp_language_id(path)
+                    .unwrap_or("unknown");
+                let total_lines = buf.rope().len_lines();
+                let modified = if buf.is_modified() { ", modified" } else { "" };
+                format!(
+                    "File: {} ({}) — {} lines{}\n",
+                    path, lang, total_lines, modified
+                )
+            }
+            None => {
+                out.push_str("No file open.\n");
+                return out;
+            }
+        };
+        out.push_str(&file_info);
+        remaining = remaining.saturating_sub(file_info.len());
+
+        // --- Cursor position (always) ---
+        let cursor = buf.cursor();
+        let cursor_line = format!("Cursor: line {}, col {}\n", cursor.line() + 1, cursor.col() + 1);
+        out.push_str(&cursor_line);
+        remaining = remaining.saturating_sub(cursor_line.len());
+
+        // --- Enclosing scope (if LSP symbols available) ---
+        if let Some(sym) = find_enclosing_symbol(
+            &self.lsp_state.available_document_symbols,
+            cursor.line() as u32,
+        ) {
+            let kind = symbol_kind_label(sym.kind);
+            let start = sym.range.start.line + 1;
+            let end = sym.range.end.line + 1;
+            let scope_line = format!("Enclosing: {} {} (lines {}-{})\n", kind, sym.name, start, end);
+            if scope_line.len() <= remaining {
+                out.push_str(&scope_line);
+                remaining = remaining.saturating_sub(scope_line.len());
+            }
+        }
+
+        // --- Selection (if any, high priority) ---
+        if let Some(sel) = &self.ai_state.active_selection {
+            let sel_header = format!(
+                "\n### Selection (lines {}-{})\n",
+                sel.start_line + 1,
+                sel.end_line + 1,
+            );
+            let sel_text = &sel.selected_text;
+            let sel_block = format!("{}{}\n", sel_header, sel_text);
+            if sel_block.len() <= remaining {
+                out.push_str(&sel_block);
+                remaining = remaining.saturating_sub(sel_block.len());
+            }
+        }
+
+        // --- Viewport code (main budget consumer) ---
+        let rope = buf.rope();
+        let total_lines = rope.len_lines();
+        let vp_start = self.viewport.scroll_offset;
+        let vp_height = self.viewport.viewport_height.max(1);
+        let vp_end = (vp_start + vp_height).min(total_lines);
+
+        if vp_start < vp_end && remaining > 100 {
+            // Calculate line number width for formatting
+            let num_width = format!("{}", vp_end).len();
+
+            // Estimate how many lines we can fit in the remaining budget
+            // Reserve some space for the header and diagnostics (~200 chars)
+            let code_budget = remaining.saturating_sub(200);
+            let mut code_lines = Vec::new();
+            let mut code_len = 0;
+
+            // If viewport is too large for budget, center on cursor
+            let (render_start, render_end) = if vp_start <= cursor.line() && cursor.line() < vp_end
+            {
+                (vp_start, vp_end)
+            } else {
+                // Cursor outside viewport (shouldn't happen often) — use viewport as-is
+                (vp_start, vp_end)
+            };
+
+            let mut truncated_before = 0usize;
+            let mut truncated_after = 0usize;
+
+            for line_idx in render_start..render_end {
+                let line_content = rope.line(line_idx).to_string();
+                // Trim trailing newline from ropey line
+                let line_content = line_content.trim_end_matches('\n');
+                let formatted = format!("{:>width$} | {}\n", line_idx + 1, line_content, width = num_width);
+                if code_len + formatted.len() > code_budget {
+                    truncated_after = render_end - line_idx;
+                    break;
+                }
+                code_len += formatted.len();
+                code_lines.push(formatted);
+            }
+
+            // If we couldn't fit from the start, center on cursor
+            if truncated_after > 0 && cursor.line() >= render_start {
+                // Try centering on cursor
+                let half = code_lines.len() / 2;
+                let cursor_offset = cursor.line().saturating_sub(render_start);
+                if cursor_offset > half {
+                    let skip = cursor_offset - half;
+                    truncated_before = skip;
+                    code_lines = code_lines[skip..].to_vec();
+                }
+            }
+
+            let header = format!(
+                "\n### Visible code (lines {}-{})\n",
+                render_start + 1 + truncated_before,
+                render_start + truncated_before + code_lines.len(),
+            );
+            if header.len() + code_len <= remaining {
+                out.push_str(&header);
+                if truncated_before > 0 {
+                    out.push_str(&format!(
+                        "[... {} more lines above ...]\n",
+                        truncated_before
+                    ));
+                }
+                for line in &code_lines {
+                    out.push_str(line);
+                }
+                if truncated_after > 0 {
+                    out.push_str(&format!(
+                        "[... {} more lines below ...]\n",
+                        truncated_after
+                    ));
+                }
+                remaining = remaining.saturating_sub(header.len() + code_len);
+            }
+        }
+
+        // --- Diagnostics on visible lines (if budget remains) ---
+        if remaining > 50 {
+            let diags = self.all_diagnostics();
+            let vp_diags: Vec<_> = diags
+                .iter()
+                .filter(|d| {
+                    let line = d.range.start.line as usize;
+                    line >= vp_start && line < vp_end
+                })
+                .collect();
+
+            if !vp_diags.is_empty() {
+                let mut diag_section = format!(
+                    "\n### Diagnostics ({} on visible lines)\n",
+                    vp_diags.len()
+                );
+                for d in &vp_diags {
+                    let severity = match d.severity {
+                        Some(lsp_types::DiagnosticSeverity::ERROR) => "Error",
+                        Some(lsp_types::DiagnosticSeverity::WARNING) => "Warning",
+                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => "Info",
+                        Some(lsp_types::DiagnosticSeverity::HINT) => "Hint",
+                        _ => "Unknown",
+                    };
+                    let line = format!(
+                        "Line {}: [{}] {}\n",
+                        d.range.start.line + 1,
+                        severity,
+                        d.message,
+                    );
+                    if diag_section.len() + line.len() > remaining {
+                        break;
+                    }
+                    diag_section.push_str(&line);
+                }
+                out.push_str(&diag_section);
+            }
+        }
+
+        out
+    }
+
+    // -----------------------------------------------------------------
+    // LSP tool dispatch
+    // -----------------------------------------------------------------
+
+    /// Execute an LSP-backed tool (document_symbols, hover, goto_definition).
+    pub(crate) fn execute_lsp_tool(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> ToolResult {
+        let buf = &self.buffers[self.current_buffer_index];
+        let Some(file_path) = buf.file_path() else {
+            return ToolResult::Error("No file open.".to_string());
+        };
+        let language_id = crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            .unwrap_or("unknown")
+            .to_string();
+        let Some(uri) = crate::lsp::uri_from_file_path(file_path) else {
+            return ToolResult::Error(format!("Cannot create URI for path: {}", file_path));
+        };
+
+        let lsp = match &self.lsp_state.lsp_manager {
+            Some(lsp) => Arc::clone(lsp),
+            None => {
+                // Fall back to cached data for document_symbols
+                if name == "document_symbols" {
+                    return format_document_symbols_cached(
+                        &self.lsp_state.available_document_symbols,
+                    );
+                }
+                return ToolResult::Error(
+                    "LSP not available. The language server is not running for this file."
+                        .to_string(),
+                );
+            }
+        };
+
+        // Clone cached symbols for fallback
+        let cached_symbols = self.lsp_state.available_document_symbols.clone();
+
+        match name {
+            "document_symbols" => handle_lsp_document_symbols(lsp, uri, language_id, cached_symbols),
+            "hover" => handle_lsp_hover(lsp, uri, language_id, args),
+            "goto_definition" => handle_lsp_goto_definition(lsp, uri, language_id, args),
+            _ => ToolResult::Error(format!("unknown LSP tool: {name}")),
+        }
+    }
+
     /// Build a context-aware system prompt for chat mode.
     ///
     /// This ensures the model responds in natural language instead of falling
@@ -240,16 +510,6 @@ impl Editor {
             .tool_registry
             .tools_for_profile(profile, &caps);
 
-        let buf = &self.buffers[self.current_buffer_index];
-        let file_info = match buf.file_path() {
-            Some(path) => {
-                let lang =
-                    crate::syntax::LanguageRegistry::get_lsp_language_id(path).unwrap_or("unknown");
-                format!("Current file: {} ({})", path, lang)
-            }
-            None => "No file open.".to_string(),
-        };
-
         let allow_edits = self
             .ai_state
             .chat
@@ -258,21 +518,30 @@ impl Editor {
             .unwrap_or(false);
 
         let mut prompt = String::from(
-            "You are a coding assistant inside the ovim editor.\n\
-             Respond in natural language. Do NOT return raw JSON.\n",
+            "You are an expert developer embedded in the ovim code editor.\n\
+             Respond in natural language. Do NOT return raw JSON.\n\n",
         );
 
+        // Group tools by purpose
         if !tools.is_empty() {
+            prompt.push_str("## Available tools\n\n");
+
             let read_tools: Vec<&str> = tools
                 .iter()
                 .filter(|t| t.side_effect == SideEffect::Read)
                 .map(|t| t.name.as_str())
                 .collect();
             if !read_tools.is_empty() {
-                prompt.push_str(&format!(
-                    "You have read tools: {}. Use them when the user asks about code.\n",
-                    read_tools.join(", ")
-                ));
+                prompt.push_str(&format!("Read: {}\n", read_tools.join(", ")));
+            }
+
+            let nav_tools: Vec<&str> = tools
+                .iter()
+                .filter(|t| t.side_effect == SideEffect::Navigation)
+                .map(|t| t.name.as_str())
+                .collect();
+            if !nav_tools.is_empty() {
+                prompt.push_str(&format!("Navigate: {}\n", nav_tools.join(", ")));
             }
 
             if allow_edits {
@@ -282,15 +551,22 @@ impl Editor {
                     .map(|t| t.name.as_str())
                     .collect();
                 if !mutation_tools.is_empty() {
-                    prompt.push_str(&format!(
-                        "You can edit files using: {}.\n",
-                        mutation_tools.join(", ")
-                    ));
+                    prompt.push_str(&format!("Edit: {}\n", mutation_tools.join(", ")));
                 }
             }
+
+            prompt.push_str(
+                "\n## How to work\n\n\
+                 - The visible code is shown in \"Editor state\" below. Do NOT call read_file for those lines.\n\
+                 - Use read_file only for lines outside the visible range or other files.\n\
+                 - Explore FIRST: When asked about a project, start with list_files, then read key files.\n\
+                 - Show, don't just tell: Use open_file to navigate to relevant code and select_text to highlight specific regions.\n\
+                 - Read before write: Always read relevant code before making edits. Never assume file contents.\n\
+                 - Verify after edit: After editing, use read_diagnostics to check for new errors.\n\
+                 - Bottom-up editing: When making multiple edits to the same file, edit from bottom to top so line numbers remain valid.\n\n",
+            );
         }
 
-        prompt.push_str(&file_info);
         prompt
     }
 
@@ -349,6 +625,9 @@ impl Editor {
         );
         let system_prompt =
             system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx));
+        // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
+        let editor_state = self.build_editor_state_context(8000);
+        let system_prompt = system_prompt.map(|sp| format!("{sp}\n\n{editor_state}"));
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
 
@@ -425,5 +704,278 @@ impl Editor {
             chat.streaming_thinking = None;
             chat.message_scroll = 0;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Free functions: enclosing symbol, symbol kind labels, LSP tool handlers
+// ---------------------------------------------------------------------------
+
+/// Walk a hierarchical `DocumentSymbol` tree to find the deepest symbol
+/// whose range contains `cursor_line`.
+pub(crate) fn find_enclosing_symbol(
+    symbols: &[lsp_types::DocumentSymbol],
+    cursor_line: u32,
+) -> Option<&lsp_types::DocumentSymbol> {
+    let mut best: Option<&lsp_types::DocumentSymbol> = None;
+
+    for sym in symbols {
+        let range = &sym.range;
+        if cursor_line >= range.start.line && cursor_line <= range.end.line {
+            // This symbol contains the cursor. Check if it's more specific than current best.
+            let is_tighter = best
+                .map(|b| {
+                    let b_span = b.range.end.line - b.range.start.line;
+                    let s_span = range.end.line - range.start.line;
+                    s_span < b_span
+                })
+                .unwrap_or(true);
+            if is_tighter {
+                best = Some(sym);
+            }
+            // Recurse into children for a tighter match
+            if let Some(children) = &sym.children {
+                if let Some(child) = find_enclosing_symbol(children, cursor_line) {
+                    let child_span = child.range.end.line - child.range.start.line;
+                    let best_span = best.map(|b| b.range.end.line - b.range.start.line).unwrap_or(u32::MAX);
+                    if child_span < best_span {
+                        best = Some(child);
+                    }
+                }
+            }
+        }
+    }
+
+    best
+}
+
+/// Human-readable label for an LSP SymbolKind.
+fn symbol_kind_label(kind: lsp_types::SymbolKind) -> &'static str {
+    match kind {
+        lsp_types::SymbolKind::FILE => "File",
+        lsp_types::SymbolKind::MODULE => "Module",
+        lsp_types::SymbolKind::NAMESPACE => "Namespace",
+        lsp_types::SymbolKind::PACKAGE => "Package",
+        lsp_types::SymbolKind::CLASS => "Class",
+        lsp_types::SymbolKind::METHOD => "Method",
+        lsp_types::SymbolKind::PROPERTY => "Property",
+        lsp_types::SymbolKind::FIELD => "Field",
+        lsp_types::SymbolKind::CONSTRUCTOR => "Constructor",
+        lsp_types::SymbolKind::ENUM => "Enum",
+        lsp_types::SymbolKind::INTERFACE => "Interface",
+        lsp_types::SymbolKind::FUNCTION => "Function",
+        lsp_types::SymbolKind::VARIABLE => "Variable",
+        lsp_types::SymbolKind::CONSTANT => "Constant",
+        lsp_types::SymbolKind::STRUCT => "Struct",
+        lsp_types::SymbolKind::ENUM_MEMBER => "EnumMember",
+        lsp_types::SymbolKind::TYPE_PARAMETER => "TypeParameter",
+        _ => "Symbol",
+    }
+}
+
+/// Format a hierarchical symbol tree for the `document_symbols` tool output.
+fn format_symbol_tree(symbols: &[lsp_types::DocumentSymbol], indent: usize, out: &mut String) {
+    for sym in symbols {
+        let kind = symbol_kind_label(sym.kind);
+        let prefix = "  ".repeat(indent);
+        out.push_str(&format!(
+            "{}{} {} (lines {}-{})\n",
+            prefix,
+            kind,
+            sym.name,
+            sym.range.start.line + 1,
+            sym.range.end.line + 1,
+        ));
+        if let Some(children) = &sym.children {
+            format_symbol_tree(children, indent + 1, out);
+        }
+    }
+}
+
+/// Format cached document symbols (used when LSP is unavailable).
+fn format_document_symbols_cached(symbols: &[lsp_types::DocumentSymbol]) -> ToolResult {
+    if symbols.is_empty() {
+        return ToolResult::Success(
+            "No document symbols available. The language server may not be running \
+             or hasn't finished indexing yet."
+                .to_string(),
+        );
+    }
+    let mut out = String::from("Document symbols (cached):\n");
+    format_symbol_tree(symbols, 0, &mut out);
+    ToolResult::Success(out)
+}
+
+/// Extract 1-indexed line/column from tool args, converting to 0-indexed.
+fn extract_position(args: &serde_json::Value) -> Result<(u32, u32), String> {
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "'line' parameter is required (1-indexed)".to_string())?;
+    let col = args
+        .get("column")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "'column' parameter is required (1-indexed)".to_string())?;
+    if line == 0 {
+        return Err("'line' must be >= 1".to_string());
+    }
+    if col == 0 {
+        return Err("'column' must be >= 1".to_string());
+    }
+    Ok(((line - 1) as u32, (col - 1) as u32))
+}
+
+fn handle_lsp_document_symbols(
+    lsp: Arc<crate::lsp::LspManager>,
+    uri: lsp_types::Uri,
+    language_id: String,
+    cached_symbols: Vec<lsp_types::DocumentSymbol>,
+) -> ToolResult {
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            lsp.document_symbols(&uri, &language_id).await
+        })
+    });
+
+    match result {
+        Ok(symbols) if !symbols.is_empty() => {
+            let mut out = String::from("Document symbols:\n");
+            format_symbol_tree(&symbols, 0, &mut out);
+            ToolResult::Success(out)
+        }
+        Ok(_) => {
+            // Live LSP returned empty — fall back to cached
+            format_document_symbols_cached(&cached_symbols)
+        }
+        Err(_) => {
+            // LSP request failed — fall back to cached
+            format_document_symbols_cached(&cached_symbols)
+        }
+    }
+}
+
+fn handle_lsp_hover(
+    lsp: Arc<crate::lsp::LspManager>,
+    uri: lsp_types::Uri,
+    language_id: String,
+    args: &serde_json::Value,
+) -> ToolResult {
+    let (line, col) = match extract_position(args) {
+        Ok(pos) => pos,
+        Err(e) => return ToolResult::Error(e),
+    };
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(async { lsp.hover(&uri, line, col, &language_id).await })
+    });
+
+    match result {
+        Ok(Some(content)) => ToolResult::Success(content),
+        Ok(None) => ToolResult::Success(
+            "No hover information available at this position.".to_string(),
+        ),
+        Err(e) => ToolResult::Error(format!("LSP hover failed: {e}")),
+    }
+}
+
+fn handle_lsp_goto_definition(
+    lsp: Arc<crate::lsp::LspManager>,
+    uri: lsp_types::Uri,
+    language_id: String,
+    args: &serde_json::Value,
+) -> ToolResult {
+    let (line, col) = match extract_position(args) {
+        Ok(pos) => pos,
+        Err(e) => return ToolResult::Error(e),
+    };
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current()
+            .block_on(async { lsp.goto_definition(&uri, line, col, &language_id).await })
+    });
+
+    match result {
+        Ok(Some(location)) => {
+            let path = crate::lsp::uri_to_file_path(&location.uri)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| location.uri.as_str().to_string());
+            let def_line = location.range.start.line + 1;
+            let def_col = location.range.start.character + 1;
+            ToolResult::Success(format!(
+                "Definition found: {}:{} (col {})",
+                path, def_line, def_col
+            ))
+        }
+        Ok(None) => ToolResult::Success(
+            "No definition found at this position.".to_string(),
+        ),
+        Err(e) => ToolResult::Error(format!("LSP goto_definition failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_symbol(
+        name: &str,
+        kind: lsp_types::SymbolKind,
+        start_line: u32,
+        end_line: u32,
+        children: Option<Vec<lsp_types::DocumentSymbol>>,
+    ) -> lsp_types::DocumentSymbol {
+        #[allow(deprecated)]
+        lsp_types::DocumentSymbol {
+            name: name.to_string(),
+            detail: None,
+            kind,
+            tags: None,
+            deprecated: None,
+            range: lsp_types::Range {
+                start: lsp_types::Position::new(start_line, 0),
+                end: lsp_types::Position::new(end_line, 0),
+            },
+            selection_range: lsp_types::Range {
+                start: lsp_types::Position::new(start_line, 0),
+                end: lsp_types::Position::new(start_line, 10),
+            },
+            children,
+        }
+    }
+
+    #[test]
+    fn find_enclosing_symbol_finds_deepest() {
+        let symbols = vec![make_symbol(
+            "MyStruct",
+            lsp_types::SymbolKind::STRUCT,
+            10,
+            50,
+            Some(vec![
+                make_symbol("new", lsp_types::SymbolKind::FUNCTION, 15, 25, None),
+                make_symbol("update", lsp_types::SymbolKind::FUNCTION, 30, 45, None),
+            ]),
+        )];
+
+        // Cursor inside `new` function
+        let result = find_enclosing_symbol(&symbols, 20);
+        assert_eq!(result.unwrap().name, "new");
+
+        // Cursor inside `update` function
+        let result = find_enclosing_symbol(&symbols, 35);
+        assert_eq!(result.unwrap().name, "update");
+
+        // Cursor inside struct but outside any function
+        let result = find_enclosing_symbol(&symbols, 48);
+        assert_eq!(result.unwrap().name, "MyStruct");
+
+        // Cursor outside all symbols
+        let result = find_enclosing_symbol(&symbols, 5);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_enclosing_symbol_empty() {
+        assert!(find_enclosing_symbol(&[], 10).is_none());
     }
 }

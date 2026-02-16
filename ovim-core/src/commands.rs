@@ -904,6 +904,16 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 line_count: None,
             })
         }
+        "clearaedits" => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.agent_edits.clear();
+            }
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Agent edit markers cleared.".to_string()),
+                line_count: None,
+            })
+        }
         _ => {
             // Handle :tabnew <filename>, :tabe <filename>, :tabedit <filename>
             if let Some(raw_filename) = command

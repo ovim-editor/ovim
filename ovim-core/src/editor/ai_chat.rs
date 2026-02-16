@@ -1,5 +1,5 @@
 use crate::ai::chat_types::{
-    ChatFocus, ChatMessage, ChatOpts, ConversationTree, NodeId, StreamChunk, ToolCallInfo,
+    ChatFocus, ChatMessage, ChatOpts, ChatRole, ConversationTree, NodeId, StreamChunk, ToolCallInfo,
 };
 use crate::mode::Mode;
 use anyhow::Result;
@@ -34,7 +34,9 @@ impl Editor {
 
         // Send initial message if provided and conversation is empty
         let initial = opts.initial_message.clone();
-        let chat = AiChatState::new(opts, buffer_id, mode_before);
+        let buffer_clean = !self.buffer().is_modified();
+        let mut chat = AiChatState::new(opts, buffer_id, mode_before);
+        chat.buffer_was_clean_at_chat_start = buffer_clean;
         self.ai_state.chat = Some(chat);
         self.set_mode(Mode::AiChat);
 
@@ -87,7 +89,7 @@ impl Editor {
         chat.input_cursor = 0;
         chat.waiting = true;
         chat.message_scroll = 0;
-        chat.tool_iterations = 0;
+        chat.tool_call_count = 0;
 
         // Spawn the streaming request
         if let Err(e) = self.spawn_streaming_request() {
@@ -216,6 +218,11 @@ impl Editor {
                         if let Some(conv) = self.conversation_mut() {
                             conv.append_assistant_message(content, model_name.clone());
                         }
+                    }
+
+                    // Clear undo group (agent turn is done)
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.current_undo_group = None;
                     }
 
                     self.clear_streaming_state();
@@ -490,6 +497,32 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Jump to the next/previous agent edit in the current buffer.
+    pub fn goto_agent_edit(&mut self, forward: bool) {
+        let buf_idx = self.current_buffer_index;
+        let cursor_line = self.buffer().cursor().line();
+
+        let target = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.agent_edits.next_edit_boundary(buf_idx, cursor_line, forward));
+
+        if let Some(line) = target {
+            self.buffer_mut().cursor_mut().set_position(line, 0);
+            self.center_cursor_in_viewport();
+        }
+    }
+
+    /// Whether review mode is active.
+    pub fn ai_chat_review_mode(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.review_mode)
+            .unwrap_or(false)
+    }
+
     /// Whether the tree panel sidebar is open.
     pub fn ai_chat_tree_panel_open(&self) -> bool {
         self.ai_state
@@ -509,12 +542,38 @@ impl Editor {
     }
 
     // -----------------------------------------------------------------
+    // Copy conversation
+    // -----------------------------------------------------------------
+
+    /// Format the current conversation as plain text and copy to clipboard.
+    pub fn copy_ai_chat_conversation(&mut self) {
+        let messages = self.ai_chat_messages().to_vec();
+        if messages.is_empty() {
+            return;
+        }
+
+        let mut output = String::new();
+        for msg in &messages {
+            let role = match msg.role {
+                ChatRole::User => "You",
+                ChatRole::Assistant => msg.model.as_deref().unwrap_or("Assistant"),
+                ChatRole::Thinking => "Thinking",
+                ChatRole::Error => "Error",
+                ChatRole::Tool => "Tool",
+            };
+            output.push_str(&format!("### {}\n\n{}\n\n", role, msg.content));
+        }
+
+        self.registers.set_clipboard(output);
+    }
+
+    // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
 
     pub(crate) fn ai_chat_conversation_key(&self) -> (usize, String) {
         if let Some(chat) = &self.ai_state.chat {
-            (chat.active_buffer_id, chat.opts.name.clone())
+            (chat.origin_buffer_id, chat.opts.name.clone())
         } else {
             (self.current_buffer_index, "chat".to_string())
         }

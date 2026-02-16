@@ -12,7 +12,7 @@ use ratatui::{
 // Colors (pub(crate) so conversation_tree can reuse them)
 // ---------------------------------------------------------------------------
 
-pub(crate) const BG_PANEL: Color = Color::Rgb(20, 23, 30);
+pub(crate) const BG_PANEL: Color = Color::Reset;
 const BG_INPUT: Color = Color::Rgb(28, 33, 42);
 
 const BORDER_USER: Color = Color::Cyan;
@@ -30,24 +30,27 @@ pub(crate) const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
 // Layout
 // ---------------------------------------------------------------------------
 
-/// Split content area into buffer (top) and chat panel (bottom).
+/// Split content area into buffer (left) and chat panel (right).
 pub fn compute_chat_split(content_area: Rect, allow_edits: bool) -> (Rect, Rect) {
-    let total = content_area.height;
-    let chat_pct = if allow_edits { 60 } else { 40 };
-    let chat_height = (total * chat_pct / 100).max(8).min(total.saturating_sub(3));
-    let buffer_height = total.saturating_sub(chat_height);
+    let total = content_area.width;
+    let chat_pct: u16 = if allow_edits { 40 } else { 35 };
+    let min_chat = 30u16;
+    let min_buffer = 40u16;
+
+    let chat_width = (total * chat_pct / 100).max(min_chat).min(total.saturating_sub(min_buffer));
+    let buffer_width = total.saturating_sub(chat_width);
 
     let buffer_rect = Rect {
         x: content_area.x,
         y: content_area.y,
-        width: content_area.width,
-        height: buffer_height,
+        width: buffer_width,
+        height: content_area.height,
     };
     let chat_rect = Rect {
-        x: content_area.x,
-        y: content_area.y + buffer_height,
-        width: content_area.width,
-        height: chat_height,
+        x: content_area.x + buffer_width,
+        y: content_area.y,
+        width: chat_width,
+        height: content_area.height,
     };
     (buffer_rect, chat_rect)
 }
@@ -63,17 +66,6 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
-
-    // Fill background
-    let bg_lines: Vec<Line> = (0..chat_area.height)
-        .map(|_| {
-            Line::from(Span::styled(
-                " ".repeat(chat_area.width as usize),
-                Style::default().bg(BG_PANEL),
-            ))
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(bg_lines), chat_area);
 
     // Split for tree panel if open
     let tree_open = editor.ai_chat_tree_panel_open();
@@ -103,12 +95,13 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
 
     // Layout: [message_history | input_bar(dynamic) | model_selector(1)]
     let model_bar_height = 1u16;
-    let input_lines = editor
-        .ai_state
-        .chat
-        .as_ref()
-        .map(|c| c.input_line_count())
-        .unwrap_or(1);
+    let input_content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
+    let input_lines = if input_content_width > 0 {
+        let input_text = editor.ai_chat_input();
+        word_wrap(input_text, input_content_width).len()
+    } else {
+        1
+    };
     let input_height = (1 + input_lines as u16).min(6); // border + content, max ~5 lines
     let min_chrome = model_bar_height + input_height;
 
@@ -178,13 +171,11 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
         chat_area
     };
 
-    let input_lines = editor
-        .ai_state
-        .chat
-        .as_ref()
-        .map(|c| c.input_line_count())
-        .unwrap_or(1);
-    let input_height = (1 + input_lines as u16).min(6);
+    let content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
+    let input = editor.ai_chat_input();
+    let wrapped = word_wrap(input, content_width.max(1));
+    let input_line_count = wrapped.len();
+    let input_height = (1 + input_line_count as u16).min(6);
     let min_chrome = input_height + 1; // input + model(1)
     if main_area.height <= min_chrome {
         return None;
@@ -194,14 +185,26 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let input_y = main_area.y + messages_height;
 
     let cursor_byte = editor.ai_chat_input_cursor();
-    let input = editor.ai_chat_input();
     let safe_cursor = cursor_byte.min(input.len());
 
-    // Find which line the cursor is on and column within that line
-    let before_cursor = &input[..safe_cursor];
-    let cursor_line = before_cursor.matches('\n').count();
-    let line_start = before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let col: usize = input[line_start..safe_cursor].chars().count();
+    // Map cursor byte offset to wrapped line and column.
+    // Walk through the wrapped lines, consuming characters from the input.
+    let before_cursor: usize = input[..safe_cursor].chars().count();
+    let mut chars_consumed = 0usize;
+    let mut cursor_line = 0usize;
+    let mut col = 0usize;
+    for (i, wline) in wrapped.iter().enumerate() {
+        let wline_chars = wline.chars().count();
+        if chars_consumed + wline_chars >= before_cursor {
+            cursor_line = i;
+            col = before_cursor - chars_consumed;
+            break;
+        }
+        chars_consumed += wline_chars;
+        // Account for whitespace/newline consumed between wrapped lines
+        // word_wrap consumes spaces/newlines as separators
+        cursor_line = i + 1;
+    }
 
     // First line has "│ >> " prefix (border + space + prompt = 5), continuation lines same width
     let prefix_len = 5u16;
@@ -401,9 +404,12 @@ fn render_chat_bubble(
     is_thinking_expanded: bool,
     child_count: usize,
 ) -> Vec<Line<'static>> {
-    let max_bubble_width = (panel_width * 3 / 4)
-        .max(20)
-        .min(panel_width.saturating_sub(4));
+    let max_bubble_width = if panel_width < 60 {
+        // Narrow panel: use full width minus minimal padding
+        panel_width.saturating_sub(2)
+    } else {
+        (panel_width * 3 / 4).max(20).min(panel_width.saturating_sub(4))
+    };
     let inner_width = max_bubble_width.saturating_sub(4); // borders + padding
 
     let border_color = if is_selected {
@@ -619,15 +625,12 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
         input
     };
 
-    let input_lines: Vec<&str> = if display_input.is_empty() {
-        vec![""]
-    } else {
-        display_input.split('\n').collect()
-    };
+    // Word-wrap the input so long lines are visible
+    let wrapped_lines = word_wrap(display_input, content_width);
 
-    for (row_idx, line_text) in input_lines.iter().enumerate().take(content_rows) {
-        let truncated: String = line_text.chars().take(content_width).collect();
-        let padding = content_width.saturating_sub(truncated.chars().count());
+    for (row_idx, line_text) in wrapped_lines.iter().enumerate().take(content_rows) {
+        let display: String = line_text.chars().take(content_width).collect();
+        let padding = content_width.saturating_sub(display.chars().count());
 
         let row_prefix = if row_idx == 0 { prompt } else { "   " };
 
@@ -637,7 +640,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
                 row_prefix,
                 Style::default().fg(Color::Rgb(82, 139, 255)).bg(BG_INPUT),
             ),
-            Span::styled(format!("{}{}", truncated, " ".repeat(padding)), input_style),
+            Span::styled(format!("{}{}", display, " ".repeat(padding)), input_style),
             Span::styled(" │", border_style),
         ]);
         frame.render_widget(
@@ -652,7 +655,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     }
 
     // Fill remaining content rows with empty bordered lines
-    for row_idx in input_lines.len()..content_rows {
+    for row_idx in wrapped_lines.len()..content_rows {
         let padding = content_width + prompt_len;
         let line = Line::from(vec![
             Span::styled("│ ", border_style),
@@ -740,9 +743,9 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     // Hints at right
     let allow_edits = editor.ai_chat_allow_edits();
     let hint = if allow_edits {
-        " [Enter send] [Esc\u{00d7}2 close] "
+        " [Enter send] [C-y copy] [Esc\u{00d7}2 close] "
     } else {
-        " [?] [Enter send] [Esc\u{00d7}2 close] "
+        " [?] [Enter send] [C-y copy] [Esc\u{00d7}2 close] "
     };
     let hint_w = hint.chars().count();
     if used_width + hint_w < w {
