@@ -1,4 +1,5 @@
 use crate::editor::Editor;
+use crate::syntax::Theme;
 use ovim_core::ai::chat_types::{ChatFocus, ChatMessage, ChatRole};
 use ratatui::{
     layout::Rect,
@@ -62,7 +63,7 @@ fn tree_panel_width(chat_width: u16) -> u16 {
 }
 
 /// Render the full chat panel.
-pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
+pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect, theme: &Theme) {
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -132,7 +133,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect) {
         height: model_bar_height,
     };
 
-    render_message_history(frame, editor, messages_area);
+    render_message_history(frame, editor, messages_area, theme);
     render_text_input(frame, editor, input_area);
     render_model_selector_bar(frame, editor, model_area);
 
@@ -223,7 +224,7 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
 // Message History
 // ---------------------------------------------------------------------------
 
-fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
+fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect, theme: &Theme) {
     let messages = editor.ai_chat_messages();
     if messages.is_empty() {
         // Empty state
@@ -282,6 +283,7 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
             allow_edits,
             is_thinking_expanded,
             child_count,
+            theme,
         );
         for line in bubble_lines {
             rendered_lines.push((line, false));
@@ -314,6 +316,7 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
                 allow_edits,
                 true,
                 0,
+                theme,
             );
             for line in bubble_lines {
                 rendered_lines.push((line, false));
@@ -341,7 +344,7 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect) {
                 tool_call_id: None,
             };
             let bubble_lines =
-                render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false, 0);
+                render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false, 0, theme);
             for line in bubble_lines {
                 rendered_lines.push((line, false));
             }
@@ -403,6 +406,7 @@ fn render_chat_bubble(
     allow_edits: bool,
     is_thinking_expanded: bool,
     child_count: usize,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
     let max_bubble_width = if panel_width < 60 {
         // Narrow panel: use full width minus minimal padding
@@ -512,8 +516,37 @@ fn render_chat_bubble(
             ),
         ];
         lines.push(Line::from(spans));
+    } else if message.role == ChatRole::Assistant {
+        // Markdown-rendered content for assistant messages
+        let md_elements =
+            super::markdown::parse_markdown(&message.content);
+        let md_lines =
+            super::markdown::render_markdown(&md_elements, inner_width, Some(theme));
+        for md_line in &md_lines {
+            // Wrap each markdown line's spans into the bubble chrome.
+            // First, compute the display width of the spans.
+            let content_spans = styled_word_wrap_line(md_line, inner_width);
+            for row_spans in content_spans {
+                let row_width: usize = row_spans.iter().map(|s| s.content.chars().count()).sum();
+                let padding = inner_width.saturating_sub(row_width);
+                let mut spans = vec![
+                    Span::styled(" ".repeat(indent), pad_style),
+                    Span::styled("│ ", border_style),
+                ];
+                spans.extend(row_spans);
+                if padding > 0 {
+                    spans.push(Span::styled(" ".repeat(padding), pad_style));
+                }
+                spans.push(Span::styled(" │", border_style));
+                spans.push(Span::styled(
+                    " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
+                    pad_style,
+                ));
+                lines.push(Line::from(spans));
+            }
+        }
     } else {
-        // Full content (expanded thinking or any other role)
+        // Plain text for thinking, user, error, tool messages
         let display_content = if message.role == ChatRole::Thinking {
             format!("▾ {}", message.content)
         } else {
@@ -792,6 +825,86 @@ fn render_waiting_indicator(frame: &mut Frame, messages_area: Rect) {
             height: 1,
         },
     );
+}
+
+// ---------------------------------------------------------------------------
+// Styled Word Wrap
+// ---------------------------------------------------------------------------
+
+/// Wraps a styled `Line` (multi-span) into rows fitting within `max_width`.
+/// Preserves the style of each span across line breaks.
+fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'static>>> {
+    if max_width == 0 {
+        return vec![line
+            .spans
+            .iter()
+            .map(|s| Span::styled(s.content.to_string(), s.style))
+            .collect()];
+    }
+
+    // Flatten spans into (char, Style) pairs for uniform processing
+    let mut chars_with_style: Vec<(char, Style)> = Vec::new();
+    for span in &line.spans {
+        for c in span.content.chars() {
+            chars_with_style.push((c, span.style));
+        }
+    }
+
+    if chars_with_style.is_empty() {
+        return vec![vec![]];
+    }
+
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut current_row: Vec<Span<'static>> = Vec::new();
+    let mut current_width = 0usize;
+    let mut current_text = String::new();
+    let mut current_style = chars_with_style[0].1;
+
+    for &(ch, style) in &chars_with_style {
+        if ch == '\n' {
+            // Flush current span and start new row
+            if !current_text.is_empty() {
+                current_row.push(Span::styled(current_text.clone(), current_style));
+                current_text.clear();
+            }
+            rows.push(std::mem::take(&mut current_row));
+            current_width = 0;
+            current_style = style;
+            continue;
+        }
+
+        // Check if we need to wrap
+        if current_width >= max_width {
+            if !current_text.is_empty() {
+                current_row.push(Span::styled(current_text.clone(), current_style));
+                current_text.clear();
+            }
+            rows.push(std::mem::take(&mut current_row));
+            current_width = 0;
+        }
+
+        // Style change within the same row
+        if style != current_style && !current_text.is_empty() {
+            current_row.push(Span::styled(current_text.clone(), current_style));
+            current_text.clear();
+        }
+        current_style = style;
+        current_text.push(ch);
+        current_width += 1;
+    }
+
+    // Flush remaining
+    if !current_text.is_empty() {
+        current_row.push(Span::styled(current_text, current_style));
+    }
+    if !current_row.is_empty() {
+        rows.push(current_row);
+    }
+
+    if rows.is_empty() {
+        rows.push(vec![]);
+    }
+    rows
 }
 
 // ---------------------------------------------------------------------------

@@ -343,10 +343,12 @@ impl RegisterManager {
         let mut result = Vec::new();
 
         // Helper to truncate content for display
-        fn truncate(s: &str, max_len: usize) -> String {
+        fn truncate(s: &str, max_chars: usize) -> String {
             let s = s.replace('\n', "^J");
-            if s.len() > max_len {
-                format!("{}...", &s[..max_len])
+            let char_count = s.chars().count();
+            if char_count > max_chars {
+                let truncated: String = s.chars().take(max_chars).collect();
+                format!("{}...", truncated)
             } else {
                 s
             }

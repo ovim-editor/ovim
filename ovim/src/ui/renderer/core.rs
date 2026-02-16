@@ -824,7 +824,7 @@ impl Renderer {
 
         // Render chat panel (if in AiChat mode)
         if let Some(chat_area) = areas.chat_area {
-            super::ai_chat::render_chat_panel(frame, editor, chat_area);
+            super::ai_chat::render_chat_panel(frame, editor, chat_area, &theme);
             editor.render_cache.last_chat_area =
                 Some(crate::key_convert::convert_ratatui_rect(chat_area));
         } else {
