@@ -38,7 +38,9 @@ pub fn compute_chat_split(content_area: Rect, allow_edits: bool) -> (Rect, Rect)
     let min_chat = 30u16;
     let min_buffer = 40u16;
 
-    let chat_width = (total * chat_pct / 100).max(min_chat).min(total.saturating_sub(min_buffer));
+    let chat_width = (total * chat_pct / 100)
+        .max(min_chat)
+        .min(total.saturating_sub(min_buffer));
     let buffer_width = total.saturating_sub(chat_width);
 
     let buffer_rect = Rect {
@@ -99,7 +101,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect, th
     let input_content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
     let input_lines = if input_content_width > 0 {
         let input_text = editor.ai_chat_input();
-        word_wrap(input_text, input_content_width).len()
+        wrap_input_rows(input_text, input_content_width, editor.options.tab_width).len()
     } else {
         1
     };
@@ -174,8 +176,9 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
 
     let content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
     let input = editor.ai_chat_input();
-    let wrapped = word_wrap(input, content_width.max(1));
-    let input_line_count = wrapped.len();
+    let tab_width = editor.options.tab_width;
+    let wrapped_rows = wrap_input_rows(input, content_width.max(1), tab_width);
+    let input_line_count = wrapped_rows.len();
     let input_height = (1 + input_line_count as u16).min(6);
     let min_chrome = input_height + 1; // input + model(1)
     if main_area.height <= min_chrome {
@@ -187,25 +190,8 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
 
     let cursor_byte = editor.ai_chat_input_cursor();
     let safe_cursor = cursor_byte.min(input.len());
-
-    // Map cursor byte offset to wrapped line and column.
-    // Walk through the wrapped lines, consuming characters from the input.
-    let before_cursor: usize = input[..safe_cursor].chars().count();
-    let mut chars_consumed = 0usize;
-    let mut cursor_line = 0usize;
-    let mut col = 0usize;
-    for (i, wline) in wrapped.iter().enumerate() {
-        let wline_chars = wline.chars().count();
-        if chars_consumed + wline_chars >= before_cursor {
-            cursor_line = i;
-            col = before_cursor - chars_consumed;
-            break;
-        }
-        chars_consumed += wline_chars;
-        // Account for whitespace/newline consumed between wrapped lines
-        // word_wrap consumes spaces/newlines as separators
-        cursor_line = i + 1;
-    }
+    let (cursor_line, col) =
+        input_cursor_row_col(input, safe_cursor, content_width.max(1), tab_width);
 
     // First line has "│ >> " prefix (border + space + prompt = 5), continuation lines same width
     let prefix_len = 5u16;
@@ -343,8 +329,15 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect, theme:
                 tool_calls: vec![],
                 tool_call_id: None,
             };
-            let bubble_lines =
-                render_chat_bubble(&streaming_msg, panel_width, false, allow_edits, false, 0, theme);
+            let bubble_lines = render_chat_bubble(
+                &streaming_msg,
+                panel_width,
+                false,
+                allow_edits,
+                false,
+                0,
+                theme,
+            );
             for line in bubble_lines {
                 rendered_lines.push((line, false));
             }
@@ -412,7 +405,9 @@ fn render_chat_bubble(
         // Narrow panel: use full width minus minimal padding
         panel_width.saturating_sub(2)
     } else {
-        (panel_width * 3 / 4).max(20).min(panel_width.saturating_sub(4))
+        (panel_width * 3 / 4)
+            .max(20)
+            .min(panel_width.saturating_sub(4))
     };
     let inner_width = max_bubble_width.saturating_sub(4); // borders + padding
 
@@ -518,10 +513,8 @@ fn render_chat_bubble(
         lines.push(Line::from(spans));
     } else if message.role == ChatRole::Assistant {
         // Markdown-rendered content for assistant messages
-        let md_elements =
-            super::markdown::parse_markdown(&message.content);
-        let md_lines =
-            super::markdown::render_markdown(&md_elements, inner_width, Some(theme));
+        let md_elements = super::markdown::parse_markdown(&message.content);
+        let md_lines = super::markdown::render_markdown(&md_elements, inner_width, Some(theme));
         for md_line in &md_lines {
             // Wrap each markdown line's spans into the bubble chrome.
             // First, compute the display width of the spans.
@@ -658,12 +651,13 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
         input
     };
 
-    // Word-wrap the input so long lines are visible
-    let wrapped_lines = word_wrap(display_input, content_width);
+    // Wrap input without collapsing whitespace so cursor mapping stays accurate.
+    let wrapped_rows = wrap_input_rows(display_input, content_width, editor.options.tab_width);
 
-    for (row_idx, line_text) in wrapped_lines.iter().enumerate().take(content_rows) {
-        let display: String = line_text.chars().take(content_width).collect();
-        let padding = content_width.saturating_sub(display.chars().count());
+    for (row_idx, (start, end)) in wrapped_rows.iter().enumerate().take(content_rows) {
+        let display = &display_input[*start..*end];
+        let display_width = crate::display::display_width(display, editor.options.tab_width);
+        let padding = content_width.saturating_sub(display_width);
 
         let row_prefix = if row_idx == 0 { prompt } else { "   " };
 
@@ -673,7 +667,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
                 row_prefix,
                 Style::default().fg(Color::Rgb(82, 139, 255)).bg(BG_INPUT),
             ),
-            Span::styled(format!("{}{}", display, " ".repeat(padding)), input_style),
+            Span::styled(format!("{display}{}", " ".repeat(padding)), input_style),
             Span::styled(" │", border_style),
         ]);
         frame.render_widget(
@@ -688,7 +682,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     }
 
     // Fill remaining content rows with empty bordered lines
-    for row_idx in wrapped_lines.len()..content_rows {
+    for row_idx in wrapped_rows.len()..content_rows {
         let padding = content_width + prompt_len;
         let line = Line::from(vec![
             Span::styled("│ ", border_style),
@@ -911,6 +905,101 @@ fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'sta
 // Word Wrap
 // ---------------------------------------------------------------------------
 
+/// Wrap input text into byte ranges per visible row without collapsing spaces.
+/// Newlines force row breaks and are not included in row ranges.
+fn wrap_input_rows(text: &str, max_width: usize, tab_width: usize) -> Vec<(usize, usize)> {
+    if text.is_empty() {
+        return vec![(0, 0)];
+    }
+
+    let mut rows = Vec::new();
+    let mut row_start = 0usize;
+    let row_width = max_width.max(1);
+
+    while row_start < text.len() {
+        let mut row_end = row_start;
+        let mut row_display = 0usize;
+        let mut consumed_newline = false;
+
+        for (rel_idx, ch) in text[row_start..].char_indices() {
+            let byte_idx = row_start + rel_idx;
+
+            if ch == '\n' {
+                consumed_newline = true;
+                row_end = byte_idx;
+                break;
+            }
+
+            let ch_width = if ch == '\t' {
+                let tab_width = tab_width.max(1);
+                tab_width - (row_display % tab_width)
+            } else {
+                crate::display::char_display_width(ch)
+            };
+
+            if row_end > row_start && row_display + ch_width > row_width {
+                break;
+            }
+
+            row_display += ch_width;
+            row_end = byte_idx + ch.len_utf8();
+        }
+
+        if row_end == row_start {
+            match text[row_start..].chars().next() {
+                Some('\n') => {
+                    rows.push((row_start, row_start));
+                    row_start += 1;
+                    continue;
+                }
+                Some(ch) => {
+                    // Always make progress even for very narrow widths / wide chars.
+                    row_end = row_start + ch.len_utf8();
+                }
+                None => break,
+            }
+        }
+
+        rows.push((row_start, row_end));
+        row_start = if consumed_newline {
+            row_end + 1
+        } else {
+            row_end
+        };
+    }
+
+    if text.ends_with('\n') {
+        rows.push((text.len(), text.len()));
+    }
+
+    if rows.is_empty() {
+        rows.push((0, 0));
+    }
+    rows
+}
+
+/// Map an input cursor byte offset to wrapped (row, display_col).
+fn input_cursor_row_col(
+    text: &str,
+    cursor_byte: usize,
+    max_width: usize,
+    tab_width: usize,
+) -> (usize, usize) {
+    let rows = wrap_input_rows(text, max_width, tab_width);
+    let safe_cursor = cursor_byte.min(text.len());
+
+    for (row_idx, (start, end)) in rows.iter().enumerate() {
+        if safe_cursor <= *end {
+            let col = crate::display::display_width(&text[*start..safe_cursor], tab_width);
+            return (row_idx, col);
+        }
+    }
+
+    let (start, end) = rows.last().copied().unwrap_or((0, 0));
+    let col = crate::display::display_width(&text[start..end], tab_width);
+    (rows.len().saturating_sub(1), col)
+}
+
 fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![text.to_string()];
@@ -965,6 +1054,35 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{input_cursor_row_col, wrap_input_rows};
+
+    #[test]
+    fn wrap_input_rows_preserves_trailing_space() {
+        let input = "abc ";
+        let rows = wrap_input_rows(input, 20, 4);
+        assert_eq!(rows, vec![(0, 4)]);
+        assert_eq!(&input[rows[0].0..rows[0].1], "abc ");
+    }
+
+    #[test]
+    fn cursor_stays_on_same_row_after_trailing_space() {
+        let input = "abc ";
+        let (row, col) = input_cursor_row_col(input, input.len(), 20, 4);
+        assert_eq!(row, 0);
+        assert_eq!(col, 4);
+    }
+
+    #[test]
+    fn cursor_moves_to_next_row_after_newline() {
+        let input = "abc\n";
+        let (row, col) = input_cursor_row_col(input, input.len(), 20, 4);
+        assert_eq!(row, 1);
+        assert_eq!(col, 0);
+    }
 }
 
 fn center_text(text: &str, width: usize) -> String {
