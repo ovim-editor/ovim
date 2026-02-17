@@ -88,6 +88,22 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Motions::last_non_blank(editor.buffer_mut());
             editor.clear_count();
         }
+        ('g', KeyCode::Char('0')) => {
+            move_to_screen_line_boundary(editor, ScreenLineTarget::Start)?;
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('^')) => {
+            move_to_screen_line_boundary(editor, ScreenLineTarget::FirstNonBlank)?;
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('$')) => {
+            move_to_screen_line_boundary(editor, ScreenLineTarget::End)?;
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('m')) => {
+            move_to_screen_line_boundary(editor, ScreenLineTarget::Middle)?;
+            editor.clear_count();
+        }
         ('g', KeyCode::Char('u')) => {
             editor.set_pending_operator(Operator::Lowercase);
         }
@@ -128,11 +144,24 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_mode(Mode::Insert);
         }
         ('g', KeyCode::Char(';')) => {
-            // g; - jump to last edit position
-            if let Some(pos) = editor.last_edit_position() {
+            // g; - jump to older changelist position
+            let count = editor.effective_count();
+            if let Some(pos) = editor.jump_change_older(count) {
                 editor.buffer_mut().cursor_mut().set_position(pos.0, pos.1);
             }
             editor.clear_count();
+        }
+        ('g', KeyCode::Char(',')) => {
+            // g, - jump to newer changelist position
+            let count = editor.effective_count();
+            if let Some(pos) = editor.jump_change_newer(count) {
+                editor.buffer_mut().cursor_mut().set_position(pos.0, pos.1);
+            }
+            editor.clear_count();
+        }
+        ('g', KeyCode::Char('\'')) => {
+            // g' - linewise jump to mark; reuse existing '\'' pending handler
+            editor.set_pending_command('\'');
         }
         ('g', KeyCode::Char('t')) => {
             // gt - go to next tab
@@ -691,6 +720,92 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
         }
         _ => {} // Other operators not supported with gn/gN
     }
+    Ok(())
+}
+
+enum ScreenLineTarget {
+    Start,
+    FirstNonBlank,
+    End,
+    Middle,
+}
+
+fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -> Result<()> {
+    let cursor = editor.buffer().cursor();
+    let line_idx = cursor.line();
+    let char_col = cursor.col();
+
+    // Without wrap map, g0/g^/g$/gm reduce to logical line semantics.
+    if !editor.options.wrap || editor.wrap_map().is_none() {
+        let line_text = editor
+            .buffer()
+            .line(line_idx)
+            .map(|l| l.trim_end_matches('\n').to_string())
+            .unwrap_or_default();
+        let len = line_text.chars().count();
+        let target_col = match target {
+            ScreenLineTarget::Start => 0,
+            ScreenLineTarget::FirstNonBlank => line_text
+                .chars()
+                .position(|c| !c.is_whitespace())
+                .unwrap_or(0),
+            ScreenLineTarget::End => len.saturating_sub(1),
+            ScreenLineTarget::Middle => len.saturating_sub(1) / 2,
+        };
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line_idx, target_col);
+        return Ok(());
+    }
+
+    let wrap_map = match editor.wrap_map() {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+    let tab_width = editor.options.tab_width;
+    let wrap_width = wrap_map.wrap_width().max(1);
+
+    let line_text = editor
+        .buffer()
+        .line(line_idx)
+        .map(|l| l.trim_end_matches('\n').to_string())
+        .unwrap_or_default();
+    let line_disp_width: usize = line_text
+        .chars()
+        .map(crate::display::char_display_width)
+        .sum();
+    let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+    let (_visual_row, sub_line) = wrap_map.cursor_to_visual(line_idx, disp_col, &line_text);
+
+    let screen_start = sub_line * wrap_width;
+    let screen_end_exclusive = ((sub_line + 1) * wrap_width).min(line_disp_width.max(1));
+    let screen_end = screen_end_exclusive.saturating_sub(1);
+
+    let target_disp_col = match target {
+        ScreenLineTarget::Start => screen_start,
+        ScreenLineTarget::End => screen_end,
+        ScreenLineTarget::Middle => screen_start + (screen_end.saturating_sub(screen_start) / 2),
+        ScreenLineTarget::FirstNonBlank => {
+            let mut col = screen_start;
+            while col < screen_end_exclusive {
+                let char_idx = crate::display::display_col_to_char_col(&line_text, col, tab_width);
+                let ch = line_text.chars().nth(char_idx).unwrap_or(' ');
+                if !ch.is_whitespace() {
+                    break;
+                }
+                col += 1;
+            }
+            col.min(screen_end)
+        }
+    };
+
+    let target_col =
+        crate::display::display_col_to_char_col(&line_text, target_disp_col, tab_width);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(line_idx, target_col);
     Ok(())
 }
 

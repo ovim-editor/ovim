@@ -144,7 +144,7 @@ impl Editor {
             Change::recorded(edits, cursor_before, cursor_after)
         };
         let cm = self.buffer_mut().change_manager_mut();
-        cm.last_edit_position = Some(cursor_before);
+        cm.note_edit_position(cursor_before);
         cm.undo_stack.push(change);
         cm.redo_stack.clear();
         // Ensure LSP is notified of buffer changes — callers that use record()
@@ -190,6 +190,20 @@ impl Editor {
     /// Returns the last position where an edit occurred (for g; navigation).
     pub fn last_edit_position(&self) -> Option<Position> {
         self.buffer().change_manager().last_edit_position
+    }
+
+    /// Jump to older changelist position (g;).
+    pub fn jump_change_older(&mut self, count: usize) -> Option<Position> {
+        self.buffer_mut()
+            .change_manager_mut()
+            .jump_change_older(count)
+    }
+
+    /// Jump to newer changelist position (g,).
+    pub fn jump_change_newer(&mut self, count: usize) -> Option<Position> {
+        self.buffer_mut()
+            .change_manager_mut()
+            .jump_change_newer(count)
     }
 
     /// Updates the . register with the last inserted text
