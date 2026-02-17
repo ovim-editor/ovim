@@ -153,6 +153,31 @@ pub struct AutoInstallConfig {
 
     /// Version constraint (e.g., ">=1.0.0")
     pub version: Option<String>,
+
+    /// Auto-install policy for this language server.
+    #[serde(default)]
+    pub policy: AutoInstallPolicy,
+
+    /// Allow automatic install attempts in headless mode.
+    #[serde(default)]
+    pub allow_headless: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoInstallPolicy {
+    /// Never auto-install automatically.
+    ManualOnly,
+    /// Auto-install only when the LSP command is missing.
+    AutoOnMissing,
+    /// Auto-install when missing, and attempt one repair on known startup failures.
+    AutoOnMissingOrKnownFailure,
+}
+
+impl Default for AutoInstallPolicy {
+    fn default() -> Self {
+        Self::AutoOnMissing
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -167,7 +192,15 @@ pub enum InstallMethod {
 
     /// Install via npm
     Npm {
-        package: String,
+        /// Deprecated single-package field (kept for backward compatibility).
+        #[serde(default)]
+        package: Option<String>,
+        /// Packages to install in one command.
+        #[serde(default)]
+        packages: Vec<String>,
+        /// Binary name to verify after install (defaults to first package).
+        #[serde(default)]
+        bin: Option<String>,
         #[serde(default)]
         global: bool,
     },
@@ -213,6 +246,41 @@ pub struct LanguageRegistry {
 
     /// Language ID → indices into `companions` vec
     companions_by_language: HashMap<String, Vec<usize>>,
+}
+
+impl InstallMethod {
+    /// Returns the list of npm packages to install for this method.
+    pub fn npm_packages(&self) -> Vec<String> {
+        match self {
+            InstallMethod::Npm {
+                package, packages, ..
+            } => {
+                let mut out = Vec::new();
+                if let Some(pkg) = package {
+                    if !pkg.is_empty() {
+                        out.push(pkg.clone());
+                    }
+                }
+                for pkg in packages {
+                    if !pkg.is_empty() && !out.contains(pkg) {
+                        out.push(pkg.clone());
+                    }
+                }
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Returns the expected npm binary name for verification.
+    pub fn npm_bin(&self) -> Option<String> {
+        match self {
+            InstallMethod::Npm { bin, .. } => {
+                bin.clone().or_else(|| self.npm_packages().first().cloned())
+            }
+            _ => None,
+        }
+    }
 }
 
 impl LanguageRegistry {

@@ -54,8 +54,10 @@ pub async fn attempt_auto_install(
     config: &AutoInstallConfig,
 ) -> InstallResult {
     match &config.method {
-        InstallMethod::Npm { package, global } => {
-            install_via_npm(language_name, package, *global).await
+        InstallMethod::Npm { global, .. } => {
+            let packages = config.method.npm_packages();
+            let bin = config.method.npm_bin();
+            install_via_npm(language_name, &packages, bin.as_deref(), *global).await
         }
         InstallMethod::Cargo { package } => install_via_cargo(language_name, package).await,
         InstallMethod::Github {
@@ -77,7 +79,24 @@ pub async fn attempt_auto_install(
 /// 4. Package not found → Failed with package name check
 ///
 /// Each failure mode gets a specific, actionable error message.
-async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> InstallResult {
+async fn install_via_npm(
+    _language_name: &str,
+    packages: &[String],
+    bin: Option<&str>,
+    global: bool,
+) -> InstallResult {
+    if packages.is_empty() {
+        return InstallResult::Failed("No npm packages configured for auto-install.".to_string());
+    }
+
+    let package_list = packages.join(" ");
+    let verify_bin = bin.unwrap_or_else(|| packages.first().map(String::as_str).unwrap_or(""));
+    if verify_bin.is_empty() {
+        return InstallResult::Failed(
+            "No npm binary configured for auto-install verification.".to_string(),
+        );
+    }
+
     // Step 1: Check if npm is available
     let npm_check = Command::new("npm").arg("--version").output();
 
@@ -92,16 +111,16 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
     }
 
     // Step 2: Construct npm install command
-    let mut args = vec!["install"];
+    let mut args = vec!["install".to_string()];
     if global {
-        args.push("-g");
+        args.push("-g".to_string());
     }
-    args.push(package);
+    args.extend(packages.iter().cloned());
 
     ovim_core::lsp_info!(
         "AutoInstall",
         "Installing {} via npm: npm {}",
-        package,
+        package_list,
         args.join(" ")
     );
 
@@ -139,7 +158,7 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
                  mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global\n     \
                  Then add to PATH: export PATH=~/.npm-global/bin:$PATH\n  \
                  3. Use a version manager like nvm",
-                package
+                package_list
             ));
         }
 
@@ -151,8 +170,8 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
 
         if stderr.contains("404") || stderr.contains("not found") {
             return InstallResult::Failed(format!(
-                "Package '{}' not found in npm registry. Check package name.",
-                package
+                "One or more npm packages were not found: '{}'. Check package names.",
+                package_list
             ));
         }
 
@@ -164,22 +183,23 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
     }
 
     // Step 6: Verify installation succeeded
-    let install_path = verify_npm_installation(package, global).await;
+    let install_path = verify_npm_installation(verify_bin, global).await;
 
     match install_path {
         Some(path) => {
             ovim_core::lsp_info!(
                 "AutoInstall",
-                "Successfully installed {} at {}",
-                package,
+                "Successfully installed {} (binary: {}) at {}",
+                package_list,
+                verify_bin,
                 path.display()
             );
             InstallResult::Success(path)
         }
         None => InstallResult::Failed(format!(
-            "Installation appeared to succeed, but {} was not found in PATH. \
+            "Installation appeared to succeed, but '{}' was not found in PATH. \
              You may need to restart your shell or update PATH manually.",
-            package
+            verify_bin
         )),
     }
 }
@@ -193,9 +213,9 @@ async fn install_via_npm(_language_name: &str, package: &str, global: bool) -> I
 /// - User's npm prefix is misconfigured
 ///
 /// We check common locations as fallback.
-async fn verify_npm_installation(package: &str, global: bool) -> Option<PathBuf> {
-    // Try `which <package>` first (checks PATH)
-    if let Ok(output) = Command::new("which").arg(package).output() {
+async fn verify_npm_installation(binary: &str, global: bool) -> Option<PathBuf> {
+    // Try `which <binary>` first (checks PATH)
+    if let Ok(output) = Command::new("which").arg(binary).output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -207,10 +227,10 @@ async fn verify_npm_installation(package: &str, global: bool) -> Option<PathBuf>
     // Fallback: Check common npm global install locations
     if global {
         let candidates = vec![
-            dirs::home_dir().map(|h| h.join(".npm-global/bin").join(package)),
-            dirs::home_dir().map(|h| h.join(".nvm/current/bin").join(package)),
-            Some(PathBuf::from(format!("/usr/local/bin/{}", package))),
-            Some(PathBuf::from(format!("/opt/homebrew/bin/{}", package))),
+            dirs::home_dir().map(|h| h.join(".npm-global/bin").join(binary)),
+            dirs::home_dir().map(|h| h.join(".nvm/current/bin").join(binary)),
+            Some(PathBuf::from(format!("/usr/local/bin/{}", binary))),
+            Some(PathBuf::from(format!("/opt/homebrew/bin/{}", binary))),
         ];
 
         for candidate in candidates.into_iter().flatten() {
