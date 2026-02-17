@@ -203,7 +203,7 @@ fn main() {}
 /// Test file path is preserved for LSP
 #[test]
 fn test_file_path_for_lsp() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
 
     // Set a file path
     test.set_file_path("/tmp/test.rs".to_string());
@@ -218,7 +218,7 @@ fn test_file_path_for_lsp() {
 #[test]
 fn test_lsp_file_type_detection() {
     // Rust file
-    let mut test_rs = EditorTest::empty();
+    let mut test_rs = EditorTest::new("");
     test_rs.set_file_path("/tmp/test.rs".to_string());
     assert!(test_rs
         .editor
@@ -228,7 +228,7 @@ fn test_lsp_file_type_detection() {
         .ends_with("/tmp/test.rs"));
 
     // JavaScript file
-    let mut test_js = EditorTest::empty();
+    let mut test_js = EditorTest::new("");
     test_js.set_file_path("/tmp/test.js".to_string());
     assert!(test_js
         .editor
@@ -238,7 +238,7 @@ fn test_lsp_file_type_detection() {
         .ends_with("/tmp/test.js"));
 
     // Python file
-    let mut test_py = EditorTest::empty();
+    let mut test_py = EditorTest::new("");
     test_py.set_file_path("/tmp/test.py".to_string());
     assert!(test_py
         .editor

@@ -3,8 +3,11 @@
 /// These tests reproduce the reported issue: "When I `j` to the bottom of the
 /// buffer and type `zb` it 'scrolls up' by one"
 mod helpers;
+#[path = "helpers/viewport_assertions.rs"]
+mod viewport_assertions;
 
-use helpers::{EditorTest, ViewportAssertion};
+use helpers::EditorTest;
+use viewport_assertions::ViewportAssertion;
 
 #[test]
 fn test_zb_at_end_of_file() {

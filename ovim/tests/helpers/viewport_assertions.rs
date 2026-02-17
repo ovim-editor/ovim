@@ -5,6 +5,10 @@ pub struct ViewportAssertion<'a> {
     editor: &'a Editor,
 }
 
+#[allow(
+    dead_code,
+    reason = "Viewport helpers are consumed by specific viewport-focused tests, not by every target that includes this module."
+)]
 impl<'a> ViewportAssertion<'a> {
     pub fn new(editor: &'a Editor) -> Self {
         Self { editor }

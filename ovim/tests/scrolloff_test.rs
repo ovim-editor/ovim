@@ -1,7 +1,10 @@
-/// Tests for scrolloff behavior
 mod helpers;
+/// Tests for scrolloff behavior
+#[path = "helpers/viewport_assertions.rs"]
+mod viewport_assertions;
 
-use helpers::{EditorTest, ViewportAssertion};
+use helpers::EditorTest;
+use viewport_assertions::ViewportAssertion;
 
 #[test]
 fn test_scrolloff_maintains_margin_when_scrolling() {

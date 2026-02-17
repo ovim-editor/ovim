@@ -6,22 +6,91 @@
 //!
 //! Run with: `cargo test --test lsp_diagnostics_initial_load_test -- --ignored`
 
-mod lsp_test_utils;
-
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::process::{Child, Command, Stdio};
 
 #[derive(Debug, Deserialize)]
 struct DiagnosticCounts {
     errors: usize,
-    warnings: usize,
-    info: usize,
-    hints: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct DiagnosticsInfo {
     counts: DiagnosticCounts,
+}
+
+struct DiagnosticSession {
+    port: u16,
+    session_name: String,
+    process: Child,
+}
+
+impl DiagnosticSession {
+    async fn start(file_path: &str) -> Result<Self> {
+        let session_name = format!("diag_test_{}", rand::random::<u32>());
+        let process = Command::new("./target/release/ovim")
+            .arg(file_path)
+            .arg("--headless")
+            .arg("--session")
+            .arg(&session_name)
+            .env("OVIM_LSP_DEBUG", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("Failed to start ovim")?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let session_path = if cfg!(target_os = "macos") {
+            format!(
+                "{}/Library/Caches/ovim/sessions/{}.json",
+                std::env::var("HOME").unwrap(),
+                session_name
+            )
+        } else {
+            format!(
+                "{}/.cache/ovim/sessions/{}.json",
+                std::env::var("HOME").unwrap(),
+                session_name
+            )
+        };
+
+        #[derive(Debug, Deserialize)]
+        struct SessionInfo {
+            port: u16,
+        }
+
+        let session_json =
+            std::fs::read_to_string(&session_path).context("Failed to read session file")?;
+        let info: SessionInfo =
+            serde_json::from_str(&session_json).context("Failed to parse session info")?;
+
+        Ok(Self {
+            port: info.port,
+            session_name,
+            process,
+        })
+    }
+
+    async fn cleanup(mut self) -> Result<()> {
+        let _ = self.process.kill();
+        let session_path = if cfg!(target_os = "macos") {
+            format!(
+                "{}/Library/Caches/ovim/sessions/{}.json",
+                std::env::var("HOME").unwrap(),
+                self.session_name
+            )
+        } else {
+            format!(
+                "{}/.cache/ovim/sessions/{}.json",
+                std::env::var("HOME").unwrap(),
+                self.session_name
+            )
+        };
+        let _ = std::fs::remove_file(session_path);
+        Ok(())
+    }
 }
 
 #[tokio::test]
@@ -58,7 +127,7 @@ edition = "2021"
         .to_string_lossy()
         .to_string();
 
-    let session = lsp_test_utils::OvimTestSession::start(&file_path).await?;
+    let session = DiagnosticSession::start(&file_path).await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://127.0.0.1:{}/diagnostics", session.port);

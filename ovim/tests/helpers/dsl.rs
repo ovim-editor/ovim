@@ -1,4 +1,4 @@
-use super::EditorTest;
+use crate::helpers::EditorTest;
 use ovim::mode::Mode;
 
 #[derive(Debug, Clone)]
@@ -16,6 +16,10 @@ pub fn run_editor_test_case(given: Fixture, keys: &str, expect: Fixture) {
     assert_editor_matches_fixture(&test, &expect);
 }
 
+#[allow(
+    dead_code,
+    reason = "Used by editor_test! multi-step fixtures in specific test targets."
+)]
 pub fn run_editor_test_steps(given: Fixture, steps: Vec<(&'static str, Fixture)>) {
     let mut test = build_editor_from_fixture(&given);
     for (keys, expect) in steps {

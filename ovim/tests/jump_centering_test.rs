@@ -1,10 +1,13 @@
+mod helpers;
 /// Tests for cursor centering after jumps (LSP, marks, jump list)
 ///
 /// These tests verify that jumps (as opposed to incremental movements)
 /// center the cursor in the viewport, matching Vim/Neovim behavior.
-mod helpers;
+#[path = "helpers/viewport_assertions.rs"]
+mod viewport_assertions;
 
-use helpers::{EditorTest, ViewportAssertion};
+use helpers::EditorTest;
+use viewport_assertions::ViewportAssertion;
 
 #[test]
 fn test_mark_jump_centers_cursor() {

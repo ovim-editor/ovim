@@ -1,235 +1,6 @@
-pub mod dsl;
-pub mod test_session;
-mod viewport_assertions;
-
-pub use test_session::TestSession;
-#[allow(unused_imports)]
-pub use viewport_assertions::ViewportAssertion;
-
 use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
-
-#[macro_export]
-macro_rules! editor_test {
-    (
-        given { $( $given_line:literal )+ }
-        keys $keys:literal
-        expect $expect_mode:ident { $( $expect_line:literal )+ }
-        $(,)?
-    ) => {{
-        let given_pairs: &[&str] = &[ $( $given_line ),+ ];
-        let expect_pairs: &[&str] = &[ $( $expect_line ),+ ];
-        let given_fixture =
-            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::Normal, given_pairs);
-        let expect_fixture =
-            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::$expect_mode, expect_pairs);
-        $crate::helpers::dsl::run_editor_test_case(given_fixture, $keys, expect_fixture);
-    }};
-
-    (
-        given { $( $given_line:literal )+ }
-        when $keys:literal
-        expect $expect_mode:ident { $( $expect_line:literal )+ }
-        $(,)?
-    ) => {{
-        $crate::editor_test! {
-            given { $( $given_line )+ }
-            keys $keys
-            expect $expect_mode { $( $expect_line )+ }
-        }
-    }};
-
-    (
-        given { $( $given_line:literal )+ }
-        $(
-            keys $step_keys:literal
-            expect $step_mode:ident { $( $step_line:literal )+ }
-        )+
-        $(,)?
-    ) => {{
-        let given_pairs: &[&str] = &[ $( $given_line ),+ ];
-        let given_fixture =
-            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::Normal, given_pairs);
-
-        let steps: Vec<(&'static str, $crate::helpers::dsl::Fixture)> = vec![
-            $(
-                {
-                    let expect_pairs: &[&str] = &[ $( $step_line ),+ ];
-                    let expect_fixture = $crate::helpers::dsl::fixture_from_pairs(
-                        ::ovim::mode::Mode::$step_mode,
-                        expect_pairs,
-                    );
-                    ($step_keys, expect_fixture)
-                }
-            ),+
-        ];
-
-        $crate::helpers::dsl::run_editor_test_steps(given_fixture, steps);
-    }};
-
-    (
-        given $given_mode:ident { $( $given_line:literal ),* $(,)? }
-        keys $keys:literal
-        expect $expect_mode:ident { $( $expect_line:literal ),* $(,)? }
-        $(,)?
-    ) => {{
-        let given_pairs: &[&str] = &[ $( $given_line ),* ];
-        let expect_pairs: &[&str] = &[ $( $expect_line ),* ];
-        let given_fixture =
-            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::$given_mode, given_pairs);
-        let expect_fixture =
-            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::$expect_mode, expect_pairs);
-        $crate::helpers::dsl::run_editor_test_case(given_fixture, $keys, expect_fixture);
-    }};
-
-    (
-        given $given_mode:ident { $( $given_line:literal ),* $(,)? }
-        when $keys:literal
-        expect $expect_mode:ident { $( $expect_line:literal ),* $(,)? }
-        $(,)?
-    ) => {{
-        $crate::editor_test! {
-            given $given_mode { $( $given_line ),* }
-            keys $keys
-            expect $expect_mode { $( $expect_line ),* }
-        }
-    }};
-
-    (
-        given $given_mode:ident { $( $given_line:literal ),* $(,)? }
-        $(
-            keys $step_keys:literal
-            expect $step_mode:ident { $( $step_line:literal ),* $(,)? }
-        )+
-        $(,)?
-    ) => {{
-        let given_pairs: &[&str] = &[ $( $given_line ),* ];
-        let given_fixture =
-            $crate::helpers::dsl::fixture_from_pairs(::ovim::mode::Mode::$given_mode, given_pairs);
-
-        let steps: Vec<(&'static str, $crate::helpers::dsl::Fixture)> = vec![
-            $(
-                {
-                    let expect_pairs: &[&str] = &[ $( $step_line ),* ];
-                    let expect_fixture = $crate::helpers::dsl::fixture_from_pairs(
-                        ::ovim::mode::Mode::$step_mode,
-                        expect_pairs,
-                    );
-                    ($step_keys, expect_fixture)
-                }
-            ),+
-        ];
-
-        $crate::helpers::dsl::run_editor_test_steps(given_fixture, steps);
-    }};
-}
-
-pub fn normalize_keys_for_test(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        match c {
-            '\n' | '\r' => out.push_str("<Enter>"),
-            '\t' => out.push_str("<Tab>"),
-            '\\' => match chars.peek().copied() {
-                Some('n') => {
-                    chars.next();
-                    out.push_str("<Enter>");
-                }
-                Some('r') => {
-                    chars.next();
-                    out.push_str("<Enter>");
-                }
-                Some('t') => {
-                    chars.next();
-                    out.push_str("<Tab>");
-                }
-                Some('"') => {
-                    chars.next();
-                    out.push('"');
-                }
-                Some('\\') => {
-                    chars.next();
-                    out.push('\\');
-                }
-                _ => out.push('\\'),
-            },
-            _ => out.push(c),
-        }
-    }
-
-    out
-}
-
-pub fn unescape_expected_for_test(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-
-        match chars.peek().copied() {
-            Some('n') => {
-                chars.next();
-                out.push('\n');
-            }
-            Some('r') => {
-                chars.next();
-                out.push('\n');
-            }
-            Some('t') => {
-                chars.next();
-                out.push('\t');
-            }
-            Some('"') => {
-                chars.next();
-                out.push('"');
-            }
-            Some('\\') => {
-                chars.next();
-                out.push('\\');
-            }
-            _ => out.push('\\'),
-        }
-    }
-
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-
-    out
-}
-
-#[macro_export]
-macro_rules! key_test {
-    ( $(setup $setup:expr;)* when $when:expr; then $then:expr $(;)?) => {{
-        let mut test = $crate::helpers::EditorTest::empty();
-        $(
-            let setup_keys = $crate::helpers::normalize_keys_for_test($setup);
-            test.keys(&setup_keys);
-        )*
-        let keys = $crate::helpers::normalize_keys_for_test($when);
-        test.keys(&keys);
-        let expected = $crate::helpers::unescape_expected_for_test($then);
-        assert_eq!(test.buffer_content(), expected);
-    }};
-    (given $given:expr; $(setup $setup:expr;)* when $when:expr; then $then:expr $(;)?) => {{
-        let mut test = $crate::helpers::EditorTest::new($given);
-        $(
-            let setup_keys = $crate::helpers::normalize_keys_for_test($setup);
-            test.keys(&setup_keys);
-        )*
-        let keys = $crate::helpers::normalize_keys_for_test($when);
-        test.keys(&keys);
-        let expected = $crate::helpers::unescape_expected_for_test($then);
-        assert_eq!(test.buffer_content(), expected);
-    }};
-}
 
 /// Declarative flow tests for stateful edge cases where fixture-only assertions
 /// are not enough (AI locks, async apply state, undo-depth checks).
@@ -280,6 +51,10 @@ pub struct EditorTest {
     pub editor: Editor,
 }
 
+#[allow(
+    dead_code,
+    reason = "Shared test utility methods are used across many test targets, but not every target references each method."
+)]
 impl EditorTest {
     /// Create a new test with initial buffer content
     pub fn new(content: &str) -> Self {
@@ -289,11 +64,6 @@ impl EditorTest {
         // is shared global state that causes flaky cross-test contamination.
         editor.options.clipboard = String::new();
         Self { editor }
-    }
-
-    /// Create a new test with empty buffer
-    pub fn empty() -> Self {
-        Self::new("")
     }
 
     /// Press a character key
@@ -458,11 +228,6 @@ impl EditorTest {
         )
     }
 
-    /// Get a minimal snapshot with just buffer content (no cursor markers)
-    pub fn snapshot_buffer(&self) -> String {
-        self.buffer_content()
-    }
-
     /// Get snapshot with buffer and cursor position (but no visual markers)
     pub fn snapshot_buffer_and_cursor(&self) -> String {
         let cursor = self.editor.buffer().cursor();
@@ -507,16 +272,6 @@ impl EditorTest {
             "Expected {} lines, got {}",
             count,
             self.editor.buffer().line_count()
-        );
-    }
-
-    /// Assert specific line content
-    pub fn assert_line(&self, line_idx: usize, expected: &str) {
-        let actual = self.editor.buffer().line(line_idx).unwrap_or_default();
-        assert_eq!(
-            actual, expected,
-            "Line {} mismatch:\nExpected: {:?}\nGot: {:?}",
-            line_idx, expected, actual
         );
     }
 

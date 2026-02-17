@@ -15,7 +15,7 @@ use ovim::mode::Mode;
 
 #[test]
 fn test_undo_after_change_find_does_not_corrupt_buffer() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
 
     // iHello good world<CR><CR><Esc>
     test.keys("i")

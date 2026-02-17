@@ -222,7 +222,7 @@ fn test_o_with_tabs_indentation() {
 
 #[test]
 fn test_o_empty_file() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
 
     test.press('o').type_text("first line").press_esc();
 
@@ -302,7 +302,7 @@ fn test_O_with_indentation() {
 
 #[test]
 fn test_O_empty_file() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
 
     test.press('O').type_text("first line").press_esc();
 
