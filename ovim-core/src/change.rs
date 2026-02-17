@@ -1225,12 +1225,7 @@ impl ChangeManager {
 
             // If this change was part of a group, undo all remaining changes in the group
             if let Some(gid) = group_id {
-                while self
-                    .undo_stack
-                    .last()
-                    .and_then(|c| c.undo_group_id())
-                    == Some(gid)
-                {
+                while self.undo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
                     let grouped = self.undo_stack.pop().unwrap();
                     grouped.undo(buffer);
                     self.redo_stack.push(grouped);

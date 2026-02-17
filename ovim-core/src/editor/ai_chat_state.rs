@@ -1,6 +1,17 @@
 use crate::ai::chat_types::{ChatFocus, ChatOpts, NodeId, StreamChunk, ToolCallInfo};
 use crate::mode::Mode;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+/// A paused tool call that requires explicit user approval to access
+/// paths outside the active git repository root.
+pub struct PendingToolApproval {
+    pub tool_call: ToolCallInfo,
+    pub remaining_tool_calls: Vec<ToolCallInfo>,
+    pub model_name: String,
+    pub requested_path: PathBuf,
+    pub approval_root: PathBuf,
+}
 
 pub struct AiChatState {
     pub opts: ChatOpts,
@@ -43,6 +54,10 @@ pub struct AiChatState {
     pub streaming_tool_calls: Vec<ToolCallInfo>,
     /// Number of individual tool calls executed in current turn.
     pub tool_call_count: u16,
+    /// Paused tool call awaiting user approval for outside-repo access.
+    pub pending_tool_approval: Option<PendingToolApproval>,
+    /// Session-scoped roots explicitly approved for outside-repo tool access.
+    pub approved_external_roots: Vec<PathBuf>,
     /// Tracks which lines each agent turn modified, per buffer.
     pub agent_edits: AgentEditTracker,
     /// Whether the buffer was clean when chat opened (for auto-save guard).
@@ -84,6 +99,8 @@ impl AiChatState {
             tree_panel_cursor: 0,
             streaming_tool_calls: Vec::new(),
             tool_call_count: 0,
+            pending_tool_approval: None,
+            approved_external_roots: Vec::new(),
             agent_edits: AgentEditTracker::new(),
             buffer_was_clean_at_chat_start: false,
             review_mode: false,

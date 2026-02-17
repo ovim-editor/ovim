@@ -319,8 +319,7 @@ mod tests {
 
     #[test]
     fn test_extract_and_check_elision_with_markers() {
-        let raw =
-            r#"{"replacement":"fn x() {\n    // ... rest of code\n}", "log":["done"]}"#;
+        let raw = r#"{"replacement":"fn x() {\n    // ... rest of code\n}", "log":["done"]}"#;
         let (extracted, elision) =
             extract_and_check_elision(&EditFormat::Json, raw).expect("should parse");
         assert!(!extracted.replacement.is_empty());
