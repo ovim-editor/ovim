@@ -1320,7 +1320,10 @@ impl Editor {
             chat.pending_tool_approval = None;
             chat.streaming_content = None;
             chat.streaming_thinking = None;
-            chat.message_scroll = 0;
+            if chat.message_follow_latest {
+                chat.message_scroll = 0;
+                chat.message_scroll_base_total_rows = None;
+            }
         }
     }
 }
