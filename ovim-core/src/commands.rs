@@ -186,8 +186,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 });
             }
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                let old_path = Some(path.clone());
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
+                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
+                        editor.handle_file_path_transition_after_save(old_path, new_path);
                         if editor.options.blame {
                             editor.buffer_mut().load_git_blame();
                         }
@@ -217,8 +220,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         "w!" | "write!" => {
             // Force write even if read-only
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                let old_path = Some(path.clone());
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
+                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
+                        editor.handle_file_path_transition_after_save(old_path, new_path);
                         if editor.options.blame {
                             editor.buffer_mut().load_git_blame();
                         }
@@ -255,8 +261,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 });
             }
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                let old_path = Some(path.clone());
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
+                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
+                        editor.handle_file_path_transition_after_save(old_path, new_path);
                         editor.mark_saved();
                         editor.mark_buffer_saved(); // Mark for LSP didSave notification
                         editor.quit();
@@ -279,8 +288,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         "wq!" => {
             // Force write even if read-only
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                let old_path = Some(path.clone());
                 match editor.buffer_mut().save_as(&path) {
                     Ok(_) => {
+                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
+                        editor.handle_file_path_transition_after_save(old_path, new_path);
                         editor.buffer_mut().set_read_only(false);
                         editor.mark_saved();
                         editor.mark_buffer_saved();
@@ -987,6 +999,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 .strip_prefix("w ")
                 .or_else(|| command.strip_prefix("write "))
             {
+                let old_path = editor.buffer().file_path().map(|s| s.to_string());
                 let filename = match expand_tilde(raw_filename) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
@@ -997,6 +1010,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 };
                 match editor.buffer_mut().save_as(&filename) {
                     Ok(_) => {
+                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
+                        editor.handle_file_path_transition_after_save(old_path, new_path);
                         if editor.options.blame {
                             editor.buffer_mut().load_git_blame();
                         }

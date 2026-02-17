@@ -20,7 +20,8 @@ impl Editor {
     pub async fn update_diagnostics(&mut self) {
         if let Some(lsp) = &self.lsp_state.lsp_manager {
             if let Some(file_path) = self.buffer().file_path() {
-                if let Some(uri) = uri_from_file_path(file_path) {
+                let file_path = file_path.to_string();
+                if let Some(uri) = uri_from_file_path(&file_path) {
                     // OV-00161: Skip caching if there are unsent edits
                     let doc_version = lsp.get_document_version(&uri).await;
                     let last_sent = lsp.get_last_sent_version(&uri).await;
@@ -54,12 +55,14 @@ impl Editor {
                     // Cache full diagnostic list with version provenance
                     self.lsp_state.current_file_diagnostics = diagnostics;
                     self.lsp_state.diagnostics_buffer_version = version_before;
+                    self.lsp_state.diagnostics_file_path = Some(file_path);
                     self.lsp_state.diagnostics_lsp_version = doc_version;
                     return;
                 }
             }
         }
         self.lsp_state.current_file_diagnostics.clear();
+        self.lsp_state.diagnostics_file_path = None;
     }
 
     /// Get total diagnostic count (errors, warnings, info, hints) from cached diagnostics
@@ -150,6 +153,7 @@ impl Editor {
             }
             self.lsp_state.current_file_diagnostics = diagnostics;
             self.lsp_state.diagnostics_buffer_version = version_before;
+            self.lsp_state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
             self.lsp_state.diagnostics_lsp_version = self.lsp_state.current_file_lsp_version;
         } else {
             crate::log_debug!(
@@ -158,6 +162,7 @@ impl Editor {
                 count
             );
             self.lsp_state.current_file_diagnostics.clear();
+            self.lsp_state.diagnostics_file_path = None;
         }
 
         let duration = start.elapsed().as_micros() as u64;
@@ -166,6 +171,25 @@ impl Editor {
 
     /// Returns true if the cached diagnostics are stale (buffer or LSP version mismatch).
     pub(crate) fn diagnostics_cache_stale(&self) -> bool {
+        // File path mismatch: diagnostics were cached for a different file.
+        let current_path = self.buffer().file_path();
+        if self.lsp_state.diagnostics_file_path.as_deref() != current_path {
+            return true;
+        }
+
+        // If this document has local edits not yet sent to LSP, any cached diagnostics
+        // are potentially for older content and must be hidden.
+        if let Some(file_path) = self.buffer().file_path() {
+            if self
+                .lsp_state
+                .document_sync
+                .get(file_path)
+                .is_some_and(|state| state.is_modified())
+            {
+                return true;
+            }
+        }
+
         // Buffer version mismatch: buffer was edited since diagnostics were cached.
         if self.lsp_state.diagnostics_buffer_version != self.buffer().version() {
             return true;

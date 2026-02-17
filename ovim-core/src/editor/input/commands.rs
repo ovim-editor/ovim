@@ -1543,12 +1543,16 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         // :w <filename> or :write <filename> - save as
         let parts: Vec<&str> = command.split_whitespace().collect();
         if parts.len() >= 2 {
+            let old_path = editor.buffer().file_path().map(|s| s.to_string());
             let filename = parts[1..].join(" ");
             editor.buffer_mut().save_as(&filename)?;
+            let new_path = editor.buffer().file_path().map(|s| s.to_string());
+            editor.handle_file_path_transition_after_save(old_path, new_path);
             if editor.options.blame {
                 editor.buffer_mut().load_git_blame();
             }
             editor.mark_saved();
+            editor.mark_buffer_saved();
         }
         return Ok(());
     }

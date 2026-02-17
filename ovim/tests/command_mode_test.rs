@@ -117,6 +117,30 @@ async fn test_command_write_expands_tilde_path() {
     fs::remove_file(&expanded_path).ok();
 }
 
+/// Test :w <filename> requests diagnostics refresh after path transition (save-as)
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_command_write_as_requests_diagnostics_refresh() {
+    let file_name = format!("ovim_test_write_as_{}.txt", unique_test_id());
+    let path = std::env::temp_dir().join(file_name);
+    let path_str = path.to_string_lossy().to_string();
+
+    let mut test = EditorTest::new("content\n");
+    // Seed stale diagnostics to ensure save-as path transition invalidates them.
+    test.editor
+        .set_test_diagnostics(vec![lsp_types::Diagnostic::default()]);
+
+    test.press(':');
+    test.type_text(&format!("w {}", path_str));
+    test.press_enter();
+
+    assert!(
+        test.editor.take_diagnostics_refresh_request(),
+        "Expected save-as to request diagnostics refresh"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
 /// Test :wq command
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_command_write_quit() {

@@ -108,17 +108,17 @@ impl Editor {
             return;
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(|p| p.to_string()) else {
             return;
         };
 
-        let uri = match uri_from_file_path(file_path) {
+        let uri = match uri_from_file_path(&file_path) {
             Some(u) => u,
             None => return,
         };
 
         // Get language_id from file extension
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => return,
         };
@@ -684,6 +684,7 @@ impl Editor {
         // Reset LSP version tracking (new file has its own version space)
         self.lsp_state.diagnostics_lsp_version = 0;
         self.lsp_state.current_file_lsp_version = 0;
+        self.lsp_state.diagnostics_file_path = None;
         // OV-00157: Abort pending completion request on buffer switch
         if let Some(pending) = self.lsp_state.pending_completion.take() {
             pending.request.task.abort();
@@ -827,6 +828,7 @@ impl Editor {
         if !self.lsp_state.current_file_diagnostics.is_empty() {
             self.lsp_state.current_file_diagnostics.clear();
             self.lsp_state.diagnostic_count = (0, 0, 0, 0);
+            self.lsp_state.diagnostics_file_path = None;
         }
     }
 
@@ -844,7 +846,30 @@ impl Editor {
     pub fn clear_and_refresh_diagnostics(&mut self) {
         self.lsp_state.current_file_diagnostics.clear();
         self.lsp_state.diagnostic_count = (0, 0, 0, 0);
+        self.lsp_state.diagnostics_file_path = None;
         self.lsp_state.diagnostics_refresh_requested = true;
+    }
+
+    /// Handle LSP/diagnostics state when current buffer path changes (e.g. :w newfile).
+    pub fn handle_file_path_transition_after_save(
+        &mut self,
+        old_path: Option<String>,
+        new_path: Option<String>,
+    ) {
+        if old_path == new_path {
+            return;
+        }
+
+        if let Some(old) = old_path {
+            self.lsp_state.document_sync.remove(&old);
+            self.lsp_state.pending_did_close_file = Some(old);
+        }
+        if let Some(newp) = &new_path {
+            self.lsp_state.document_sync.remove(newp);
+        }
+
+        self.lsp_state.needs_lsp_init = true;
+        self.clear_and_refresh_diagnostics();
     }
 
     pub fn take_diagnostics_refresh_request(&mut self) -> bool {
@@ -908,7 +933,8 @@ impl Editor {
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            let language_id =
+                match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
             {
                 Some(id) => id,
                 None => return,
@@ -937,15 +963,11 @@ impl Editor {
 
     /// Sends didSave notification to LSP if needed
     pub async fn send_lsp_save_if_needed(&mut self) {
-        let Some(ref lsp) = self.lsp_state.lsp_manager else {
+        let Some(file_path) = self.buffer().file_path().map(|p| p.to_string()) else {
             return;
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
-            return;
-        };
-
-        let uri = match uri_from_file_path(file_path) {
+        let uri = match uri_from_file_path(&file_path) {
             Some(u) => u,
             None => return,
         };
@@ -961,24 +983,38 @@ impl Editor {
         }
 
         if should_send {
+            // Ensure didOpen/didChange state for this URI before sending didSave.
+            self.ensure_lsp_document_synced().await;
+
             // Get buffer content BEFORE we update the state
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
+            let language_id =
+                match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
             {
                 Some(id) => id,
                 None => return,
             };
 
-            // Send the didSave notification to all servers for this language
-            let _ = lsp
-                .did_save_broadcast(uri, language_id, Some(content))
-                .await;
+            let Some(ref lsp) = self.lsp_state.lsp_manager else {
+                return;
+            };
 
-            // Mark as sent AFTER sending
-            let state = self.lsp_state.document_sync.entry(state_key).or_default();
-            state.mark_save_sent();
+            // Send the didSave notification to all servers for this language
+            match lsp
+                .did_save_broadcast(uri, language_id, Some(content))
+                .await
+            {
+                Ok(()) => {
+                    // Mark as sent AFTER successful send
+                    let state = self.lsp_state.document_sync.entry(state_key).or_default();
+                    state.mark_save_sent();
+                }
+                Err(e) => {
+                    crate::lsp_warn!("LSP", "didSave failed for {}: {}", file_path, e);
+                }
+            }
         }
     }
 
