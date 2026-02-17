@@ -44,6 +44,17 @@ pub struct ToolCallInfo {
     pub arguments: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSummaryKind {
+    Read,
+    Navigation,
+    Mutation,
+    Search,
+    Diagnostics,
+    Other,
+    Error,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: ChatRole,
