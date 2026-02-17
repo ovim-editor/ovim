@@ -57,6 +57,16 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
+    // Scroll buffer viewport while chat is open.
+    if key_event.code == KeyCode::PageUp {
+        editor.scroll_page_up();
+        return Ok(());
+    }
+    if key_event.code == KeyCode::PageDown {
+        editor.scroll_page_down();
+        return Ok(());
+    }
+
     if editor.ai_chat_has_pending_no_repo_folder_approval() {
         if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL)
         {
@@ -272,21 +282,35 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     match key_event.code {
         KeyCode::Up | KeyCode::Char('k') => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
+                if chat.message_follow_latest {
+                    chat.message_follow_latest = false;
+                    chat.message_scroll_base_total_rows = None;
+                }
                 chat.message_scroll = chat.message_scroll.saturating_add(1);
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 if chat.message_scroll == 0 {
+                    chat.message_follow_latest = true;
+                    chat.message_scroll_base_total_rows = None;
                     chat.focus = ChatFocus::TextInput;
                 } else {
                     chat.message_scroll = chat.message_scroll.saturating_sub(1);
+                    if chat.message_scroll == 0 {
+                        chat.message_follow_latest = true;
+                        chat.message_scroll_base_total_rows = None;
+                    }
                 }
             }
         }
         // Ctrl-U — scroll up half page
         KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
+                if chat.message_follow_latest {
+                    chat.message_follow_latest = false;
+                    chat.message_scroll_base_total_rows = None;
+                }
                 chat.message_scroll = chat.message_scroll.saturating_add(10);
             }
         }
@@ -294,6 +318,10 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.message_scroll = chat.message_scroll.saturating_sub(10);
+                if chat.message_scroll == 0 {
+                    chat.message_follow_latest = true;
+                    chat.message_scroll_base_total_rows = None;
+                }
             }
         }
         KeyCode::Enter => {

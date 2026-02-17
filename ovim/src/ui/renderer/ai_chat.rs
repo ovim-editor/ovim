@@ -65,7 +65,7 @@ fn tree_panel_width(chat_width: u16) -> u16 {
 }
 
 /// Render the full chat panel.
-pub fn render_chat_panel(frame: &mut Frame, editor: &Editor, chat_area: Rect, theme: &Theme) {
+pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -210,7 +210,7 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
 // Message History
 // ---------------------------------------------------------------------------
 
-fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect, theme: &Theme) {
+fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, theme: &Theme) {
     let messages = editor.ai_chat_messages();
     if messages.is_empty() {
         // Empty state
@@ -372,11 +372,13 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect, theme:
         }
     }
 
-    // Display from bottom of area, scrolled
+    // Display from bottom of area. While pinned, keep viewport stable even
+    // when new streaming rows are appended.
     let visible_rows = area.height as usize;
     let total = rendered_lines.len();
-    let start = total.saturating_sub(visible_rows + scroll);
-    let end = total.saturating_sub(scroll).min(total);
+    let effective_scroll = compute_effective_history_scroll(editor, total);
+    let start = total.saturating_sub(visible_rows + effective_scroll);
+    let end = total.saturating_sub(effective_scroll).min(total);
 
     for (row_idx, line_idx) in (start..end).enumerate() {
         if row_idx >= visible_rows {
@@ -390,6 +392,33 @@ fn render_message_history(frame: &mut Frame, editor: &Editor, area: Rect, theme:
         };
         frame.render_widget(Paragraph::new(vec![rendered_lines[line_idx].0.clone()]), r);
     }
+}
+
+fn compute_effective_history_scroll(editor: &mut Editor, total_rows: usize) -> usize {
+    let Some(chat) = editor.ai_state.chat.as_mut() else {
+        return 0;
+    };
+
+    if total_rows == 0 {
+        chat.message_scroll_base_total_rows = Some(0);
+        return 0;
+    }
+
+    if chat.message_follow_latest || chat.message_scroll == 0 {
+        chat.message_follow_latest = true;
+        chat.message_scroll_base_total_rows = Some(total_rows);
+        return 0;
+    }
+
+    let base = chat
+        .message_scroll_base_total_rows
+        .get_or_insert(total_rows);
+    if total_rows < *base {
+        *base = total_rows;
+    }
+    let growth_since_pin = total_rows.saturating_sub(*base);
+    let effective = chat.message_scroll.saturating_add(growth_since_pin);
+    effective.min(total_rows.saturating_sub(1))
 }
 
 fn render_chat_bubble(
@@ -810,9 +839,9 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     } else if pending_tool_approval {
         " [C-y allow once] [C-a allow session] [C-n deny] "
     } else if allow_edits {
-        " [Enter send] [C-y copy] [Esc\u{00d7}2 close] "
+        " [Enter send] [PgUp/PgDn scroll code] [C-y copy] [Esc\u{00d7}2 close] "
     } else {
-        " [?] [Enter send] [C-y copy] [Esc\u{00d7}2 close] "
+        " [?] [Enter send] [PgUp/PgDn scroll code] [C-y copy] [Esc\u{00d7}2 close] "
     };
     let hint_w = hint.chars().count();
     if used_width + hint_w < w {

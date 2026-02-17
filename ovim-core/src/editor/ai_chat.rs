@@ -90,6 +90,8 @@ impl Editor {
         chat.input_cursor = 0;
         chat.waiting = true;
         chat.message_scroll = 0;
+        chat.message_follow_latest = true;
+        chat.message_scroll_base_total_rows = None;
         chat.tool_call_count = 0;
         chat.pending_tool_approval = None;
 

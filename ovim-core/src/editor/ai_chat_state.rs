@@ -28,6 +28,15 @@ pub struct AiChatState {
     pub focus: ChatFocus,
     /// Scroll offset in message history (0 = bottom, increases = older).
     pub message_scroll: usize,
+    /// Whether message history should stay pinned to latest output.
+    ///
+    /// When false, the viewport is pinned to a stable row anchor while
+    /// streaming continues.
+    pub message_follow_latest: bool,
+    /// Total rendered chat rows when pinning started.
+    ///
+    /// Used to keep the viewport stable while new rows are appended.
+    pub message_scroll_base_total_rows: Option<usize>,
     /// Whether assistant can suggest edits.
     pub allow_edits: bool,
     /// Waiting for AI response.
@@ -88,6 +97,8 @@ impl AiChatState {
             input_cursor: 0,
             focus: ChatFocus::TextInput,
             message_scroll: 0,
+            message_follow_latest: true,
+            message_scroll_base_total_rows: None,
             allow_edits,
             waiting: false,
             pending_job: None,
