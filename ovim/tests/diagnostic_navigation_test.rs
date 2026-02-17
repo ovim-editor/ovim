@@ -115,3 +115,58 @@ fn test_show_diagnostic_at_cursor_chooses_nearest_on_line() {
     let hover = test.editor.hover_info().unwrap_or_default();
     assert!(hover.contains("near pendingCount"));
 }
+
+#[test]
+fn test_show_diagnostic_at_cursor_hides_stale_diagnostics_while_unsent_edits_exist() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut test = EditorTest::new("console.log(pendingCount);\n");
+    test.set_file_path(path);
+
+    // Seed cached diagnostics, then mark document modified without sending to LSP.
+    test.editor
+        .set_test_diagnostics(vec![make_diagnostic(0, 12, "stale diagnostic")]);
+    test.editor.mark_buffer_modified();
+    // set_test_diagnostics only mutates the diagnostic list, so add one back
+    // after mark_buffer_modified() cleared stale caches.
+    test.editor
+        .set_test_diagnostics(vec![make_diagnostic(0, 12, "stale diagnostic")]);
+
+    test.set_cursor(0, 12);
+    test.editor.show_diagnostic_at_cursor();
+
+    assert_eq!(test.editor.mode(), ovim::mode::Mode::Normal);
+    assert_eq!(test.editor.lsp_status(), "No diagnostics at cursor");
+}
+
+#[test]
+fn test_show_diagnostic_at_cursor_hides_diagnostics_after_file_path_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let file1 = dir.path().join("a.rs");
+    let file2 = dir.path().join("b.rs");
+    std::fs::write(&file1, "let x = bad();\n").unwrap();
+    std::fs::write(&file2, "let y = ok();\n").unwrap();
+
+    let file1 = std::fs::canonicalize(&file1)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let file2 = std::fs::canonicalize(&file2)
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let mut test = EditorTest::new("let x = bad();\n");
+    test.set_file_path(file1);
+    test.editor
+        .set_test_diagnostics(vec![make_diagnostic(0, 8, "old file diagnostic")]);
+
+    // Simulate path reassociation (e.g. save-as) without refreshing diagnostics.
+    test.set_file_path(file2);
+    test.set_cursor(0, 8);
+    test.editor.show_diagnostic_at_cursor();
+
+    assert_eq!(test.editor.mode(), ovim::mode::Mode::Normal);
+    assert_eq!(test.editor.lsp_status(), "No diagnostics at cursor");
+}

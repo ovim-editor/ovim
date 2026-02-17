@@ -261,6 +261,9 @@ pub struct LspState {
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
     /// Buffer version when diagnostics were last cached — used to detect staleness
     pub diagnostics_buffer_version: usize,
+    /// File path when diagnostics were last cached.
+    /// Prevents showing diagnostics from a previous file after save-as/path swaps.
+    pub diagnostics_file_path: Option<String>,
     /// LSP document version when diagnostics were last cached.
     /// Together with `diagnostics_buffer_version`, provides full provenance:
     /// diagnostics are only shown if BOTH the buffer version AND the LSP
@@ -313,6 +316,7 @@ impl LspState {
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             diagnostics_buffer_version: 0,
+            diagnostics_file_path: None,
             diagnostics_lsp_version: 0,
             current_file_lsp_version: 0,
             hover_cache: None,

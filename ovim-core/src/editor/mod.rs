@@ -1890,6 +1890,7 @@ impl Editor {
     /// Inject diagnostics for testing diagnostic navigation
     pub fn set_test_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
         self.lsp_state.current_file_diagnostics = diagnostics;
+        self.lsp_state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
     }
 }
 
