@@ -1,6 +1,7 @@
 use crate::ai::chat_types::ConversationTree;
 use crate::ai::tools::ToolRegistry;
 use crate::ai::{AiConfig, AiJobResult, EditFormat, PROFILE_LOCAL};
+use crate::buffer::BufferId;
 use crate::mode::Mode;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -85,8 +86,8 @@ pub struct AiState {
     pub last_observed_buffer_version: usize,
     /// Active chat session state (None when chat is closed).
     pub chat: Option<super::ai_chat_state::AiChatState>,
-    /// Persistent conversations keyed by (buffer_id, conversation_name).
-    pub conversations: HashMap<(usize, String), ConversationTree>,
+    /// Persistent conversations keyed by (stable_buffer_id, conversation_name).
+    pub conversations: HashMap<(BufferId, String), ConversationTree>,
     /// Registry of all available tools.
     pub tool_registry: ToolRegistry,
     /// Whether we've already asked for no-repo folder access in this process session.

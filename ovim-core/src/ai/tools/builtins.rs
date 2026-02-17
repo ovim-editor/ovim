@@ -844,7 +844,7 @@ pub(crate) fn open_file_def() -> ToolDefinition {
             to examine a file in context. Path is relative to project root."
             .to_string(),
         required_scope: RequiredScope {
-            file_scope: FileScope::Project,
+            file_scope: FileScope::File,
             shell: false,
             network: false,
         },

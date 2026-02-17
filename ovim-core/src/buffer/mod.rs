@@ -18,9 +18,20 @@ use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
 use crate::GitStatus;
 use ropey::Rope;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+pub type BufferId = u64;
+
+static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_buffer_id() -> BufferId {
+    NEXT_BUFFER_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Represents a text buffer using a Rope data structure for efficient editing
 pub struct Buffer {
+    /// Stable identity for this buffer, preserved across index shifts.
+    id: BufferId,
     /// The rope data structure holding the text content
     pub(super) rope: Rope,
     /// The current cursor position
@@ -76,6 +87,7 @@ impl Buffer {
     /// Creates a new empty buffer
     pub fn new() -> Self {
         Self {
+            id: next_buffer_id(),
             rope: Rope::new(),
             cursor: Cursor::new(0, 0),
             modified: false,
@@ -170,6 +182,7 @@ impl Buffer {
         }
 
         Self {
+            id: next_buffer_id(),
             rope,
             cursor: Cursor::new(0, 0),
             modified: false,
@@ -194,6 +207,11 @@ impl Buffer {
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
         }
+    }
+
+    /// Stable identity for this buffer.
+    pub fn id(&self) -> BufferId {
+        self.id
     }
 
     /// Gets the line ending style for this buffer
@@ -781,34 +799,28 @@ impl Buffer {
 
     /// Undoes the last change
     pub fn undo(&mut self) -> bool {
-        // Pop change from undo stack
-        if let Some(change) = self.change_manager.undo_stack.pop() {
-            // Apply the undo
-            change.undo(self);
-            // Push to redo stack
-            self.change_manager.redo_stack.push(change);
+        // Route through ChangeManager so grouped undo behavior stays centralized.
+        let mut change_manager = std::mem::take(&mut self.change_manager);
+        let did_undo = change_manager.undo(self);
+        self.change_manager = change_manager;
+        if did_undo {
             self.validate_cursor_position();
-            true
-        } else {
-            false
         }
+        did_undo
     }
 
     /// Redoes the next change
     pub fn redo(&mut self) -> bool {
-        // Pop change from redo stack
-        if let Some(change) = self.change_manager.redo_stack.pop() {
-            // Re-apply the change
-            change.apply(self);
-            // Push to undo stack
-            self.change_manager.undo_stack.push(change);
-            // Validate cursor position (apply may restore insert-mode cursor_after
-            // which can be past end of line in normal mode)
+        // Route through ChangeManager so grouped redo behavior stays centralized.
+        let mut change_manager = std::mem::take(&mut self.change_manager);
+        let did_redo = change_manager.redo(self);
+        self.change_manager = change_manager;
+        if did_redo {
+            // apply may restore insert-mode cursor_after which can be past end
+            // of line in normal mode.
             self.validate_cursor_position();
-            true
-        } else {
-            false
         }
+        did_redo
     }
 }
 
@@ -1138,5 +1150,48 @@ mod tests {
             }
         );
         assert_eq!(buf.rope().to_string(), "hello\n");
+    }
+
+    #[test]
+    fn test_grouped_undo_redo_replays_as_single_step() {
+        let mut buf = Buffer::new_from_str("abc\n");
+
+        // Apply two edits that belong to the same undo group.
+        buf.insert_text_at(0, 0, "X");
+        buf.insert_text_at(0, 1, "Y");
+        assert_eq!(buf.rope().to_string(), "XYabc\n");
+
+        let change1 = crate::change::Change::recorded_grouped(
+            vec![crate::edit::Edit::Insert {
+                offset: 0,
+                text: "X".to_string(),
+            }],
+            (0, 0),
+            (0, 1),
+            42,
+        );
+        let change2 = crate::change::Change::recorded_grouped(
+            vec![crate::edit::Edit::Insert {
+                offset: 1,
+                text: "Y".to_string(),
+            }],
+            (0, 1),
+            (0, 2),
+            42,
+        );
+        buf.change_manager_mut().undo_stack.push(change1);
+        buf.change_manager_mut().undo_stack.push(change2);
+
+        // One undo should revert both grouped edits.
+        assert!(buf.undo());
+        assert_eq!(buf.rope().to_string(), "abc\n");
+        assert_eq!(buf.change_manager().undo_stack.len(), 0);
+        assert_eq!(buf.change_manager().redo_stack.len(), 2);
+
+        // One redo should restore both grouped edits.
+        assert!(buf.redo());
+        assert_eq!(buf.rope().to_string(), "XYabc\n");
+        assert_eq!(buf.change_manager().undo_stack.len(), 2);
+        assert_eq!(buf.change_manager().redo_stack.len(), 0);
     }
 }

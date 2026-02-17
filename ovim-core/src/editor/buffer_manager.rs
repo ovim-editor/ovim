@@ -1,7 +1,7 @@
 //! Multi-buffer management, file loading, and buffer switching
 
 use super::Editor;
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, BufferId};
 use anyhow::Result;
 
 impl Editor {
@@ -13,6 +13,19 @@ impl Editor {
     /// Gets a buffer by ID (index)
     pub fn get_buffer(&self, id: usize) -> Option<&Buffer> {
         self.buffers.get(id)
+    }
+
+    /// Finds the current index for a stable buffer ID.
+    pub fn find_buffer_index_by_id(&self, buffer_id: BufferId) -> Option<usize> {
+        self.buffers
+            .iter()
+            .position(|buffer| buffer.id() == buffer_id)
+    }
+
+    /// Gets a buffer by stable buffer ID.
+    pub fn get_buffer_by_id(&self, buffer_id: BufferId) -> Option<&Buffer> {
+        let idx = self.find_buffer_index_by_id(buffer_id)?;
+        self.buffers.get(idx)
     }
 
     /// Gets a mutable reference to the current buffer

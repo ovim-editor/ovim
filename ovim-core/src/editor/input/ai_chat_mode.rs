@@ -7,10 +7,12 @@ use std::time::Duration;
 const DOUBLE_ESC_THRESHOLD: Duration = Duration::from_millis(300);
 
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
-    // --- Review mode: delegate most keys to normal mode ---
+    // --- Review mode: explicit allowlist only (no normal-mode delegation) ---
     let review_mode = editor.ai_chat_review_mode();
 
     if review_mode {
+        let pending_work = editor.ai_chat_has_pending_work();
+
         // <C-r> toggles back to chat
         if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(Modifiers::CONTROL)
         {
@@ -26,16 +28,35 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             return Ok(());
         }
         if key_event.code == KeyCode::Enter {
+            if pending_work {
+                editor.set_lsp_status(
+                    "AI work is still pending. Wait before accepting review.".to_string(),
+                );
+                return Ok(());
+            }
             editor.ai_chat_accept_review();
             return Ok(());
         }
         // Esc closes chat entirely from review mode
         if key_event.code == KeyCode::Esc {
+            if pending_work {
+                editor.set_lsp_status(
+                    "AI work is still pending. Wait before closing chat.".to_string(),
+                );
+                return Ok(());
+            }
             editor.close_ai_chat();
             return Ok(());
         }
-        // Everything else delegates to normal mode handling
-        return super::normal::handle_normal_mode(editor, key_event);
+        if key_event.code == KeyCode::PageUp {
+            editor.scroll_page_up();
+            return Ok(());
+        }
+        if key_event.code == KeyCode::PageDown {
+            editor.scroll_page_down();
+            return Ok(());
+        }
+        return Ok(());
     }
 
     let focus = editor.ai_chat_focus();
@@ -484,5 +505,58 @@ fn move_cursor_vertical(input: &str, cursor: usize, direction: i8) -> usize {
                 next_line_start + byte_offset
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::chat_types::ChatOpts;
+
+    fn open_test_chat(editor: &mut Editor) {
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+    }
+
+    #[test]
+    fn review_mode_ignores_unmapped_keys() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        editor.ai_chat_enter_review_mode();
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('i'), Modifiers::NONE),
+        )
+        .expect("handle key");
+
+        assert!(editor.ai_chat_review_mode());
+        assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
+    }
+
+    #[test]
+    fn review_mode_blocks_accept_and_close_while_pending() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let buffer_id = editor.buffer().id();
+        editor.ai_chat_enter_review_mode();
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.waiting = true;
+            chat.agent_edits.record_edit(buffer_id, 0, 0);
+        }
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+            .expect("enter");
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
+            .expect("esc");
+
+        let chat = editor.ai_state.chat.as_ref().expect("chat");
+        assert!(chat.view_mode == crate::editor::ai_chat_state::ChatViewMode::ReviewFocused);
+        assert_eq!(chat.agent_edits.total_edit_count(), 1);
     }
 }

@@ -25,6 +25,7 @@ This directory documents the design of ovim's AI subsystem: an integrated conver
 | [conversation-tree.md](conversation-tree.md) | Branching conversation data model, fork/replay |
 | [lua-api.md](lua-api.md) | `vim.ai.*` API surface, plugin authoring patterns |
 | [provider-layer.md](provider-layer.md) | Multi-turn streaming, edit modes, format extraction |
+| [workflows.md](workflows.md) | Declarative agent workflow engine plan (YAML + MiniJinja) |
 
 ## Resolution Chain
 

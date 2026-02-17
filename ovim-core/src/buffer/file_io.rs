@@ -99,6 +99,7 @@ impl Buffer {
         };
 
         let mut buffer = Self {
+            id: super::next_buffer_id(),
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, 0),
             modified: false,
