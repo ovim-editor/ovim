@@ -1323,7 +1323,7 @@ impl Editor {
             if chat.viewport.follow_latest {
                 chat.viewport.row_scroll_from_bottom = 0;
                 chat.viewport.pinned_base_total_rows = None;
-                chat.history.cursor_offset_from_latest = 0;
+                chat.history.selected_node_id = None;
             }
         }
     }

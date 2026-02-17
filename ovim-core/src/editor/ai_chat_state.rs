@@ -35,14 +35,16 @@ impl Default for ChatViewportState {
 
 /// Selection state for message-history interactions.
 pub struct ChatHistoryState {
-    /// Selected message offset from latest message (0 = latest).
-    pub cursor_offset_from_latest: usize,
+    /// Selected node in the active branch, if any.
+    ///
+    /// Using node identity keeps selection stable when new messages append.
+    pub selected_node_id: Option<NodeId>,
 }
 
 impl Default for ChatHistoryState {
     fn default() -> Self {
         Self {
-            cursor_offset_from_latest: 0,
+            selected_node_id: None,
         }
     }
 }

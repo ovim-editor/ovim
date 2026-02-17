@@ -243,9 +243,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
 
     let allow_edits = editor.ai_chat_allow_edits();
     let focus = editor.ai_chat_focus();
-    let selected_offset = editor
-        .ai_chat_history_cursor_offset()
-        .min(messages.len().saturating_sub(1));
+    let selected_idx = editor.ai_chat_history_selected_index();
     let panel_width = area.width as usize;
 
     // Get node IDs for active branch (parallel to messages)
@@ -258,8 +256,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
     let mut message_row_spans: Vec<(usize, usize)> = Vec::with_capacity(messages.len());
     for (idx, msg) in messages.iter().enumerate() {
-        let is_selected = focus == ChatFocus::MessageHistory
-            && idx == messages.len().saturating_sub(1 + selected_offset);
+        let is_selected = focus == ChatFocus::MessageHistory && Some(idx) == selected_idx;
 
         // Look up NodeId for thinking expansion and child count
         let node_id = node_ids.get(idx).copied();
