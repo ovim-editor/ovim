@@ -1,6 +1,7 @@
 mod helpers;
 
 use helpers::EditorTest;
+use ovim::editor::LspAction;
 
 /// Test Ctrl-T (indent in insert mode)
 #[test]
@@ -275,15 +276,19 @@ fn test_ctrl_y_scroll_line_up() {
     test.assert_mode(ovim::mode::Mode::Normal);
 }
 
-/// Test Ctrl-G (show file info)
+/// Test Ctrl-G (goto definition in new tab)
 #[test]
-fn test_ctrl_g_file_info() {
+fn test_ctrl_g_goto_definition_new_tab() {
     let mut test = EditorTest::new("test content\n");
     test.set_file_path("/tmp/test.txt".to_string());
 
     test.keys("<C-g>");
 
     test.assert_mode(ovim::mode::Mode::Normal);
+    assert_eq!(
+        test.editor.pending_lsp_action(),
+        Some(&LspAction::GoToDefinitionNewTab)
+    );
 }
 
 /// Test Ctrl-L (redraw screen)

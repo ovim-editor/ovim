@@ -372,9 +372,9 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
             Ok(true)
         }
 
-        // Clear and refresh diagnostics
+        // Go to definition in new tab
         KeyCode::Char('g') => {
-            editor.clear_and_refresh_diagnostics();
+            editor.request_goto_definition_new_tab();
             editor.clear_count();
             Ok(true)
         }
