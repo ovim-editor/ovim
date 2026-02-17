@@ -41,6 +41,8 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(edit_range_def());
     registry.register(insert_lines_def());
     registry.register(delete_lines_def());
+    registry.register(write_file_at_path_def());
+    registry.register(create_file_def());
 }
 
 /// Dispatch a built-in tool call by name.
@@ -62,9 +64,11 @@ pub fn execute_builtin(
         "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
             "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
         )),
-        "edit_range" | "insert_lines" | "delete_lines" => ToolResult::Error(format!(
-            "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
-        )),
+        "edit_range" | "insert_lines" | "delete_lines" | "write_file_at_path" | "create_file" => {
+            ToolResult::Error(format!(
+                "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
+            ))
+        }
         _ => ToolResult::Error(format!("unknown built-in tool: {name}")),
     }
 }
@@ -748,7 +752,8 @@ pub(crate) fn edit_range_def() -> ToolDefinition {
         name: "edit_range".to_string(),
         description: "Replace a range of lines with new text. Lines are 1-indexed and inclusive. \
             IMPORTANT: After an edit, line numbers shift. When making multiple edits, work from \
-            bottom to top. new_text should include proper indentation."
+            bottom to top. new_text should include proper indentation. \
+            Optional path allows editing a specific file in the project."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
@@ -775,6 +780,14 @@ pub(crate) fn edit_range_def() -> ToolDefinition {
                 required: true,
                 description: "Replacement text (may contain newlines).".to_string(),
             },
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: false,
+                description:
+                    "Optional file path relative to project root. If omitted, edits current target file."
+                        .to_string(),
+            },
         ],
     }
 }
@@ -783,7 +796,8 @@ pub(crate) fn insert_lines_def() -> ToolDefinition {
     ToolDefinition {
         name: "insert_lines".to_string(),
         description: "Insert new text after a specific line. Use after_line=0 to insert at the \
-            beginning. Text should include proper indentation."
+            beginning. Text should include proper indentation. Optional path allows inserting \
+            into a specific file in the project."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
@@ -805,6 +819,14 @@ pub(crate) fn insert_lines_def() -> ToolDefinition {
                 required: true,
                 description: "Text to insert (may contain newlines).".to_string(),
             },
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: false,
+                description:
+                    "Optional file path relative to project root. If omitted, edits current target file."
+                        .to_string(),
+            },
         ],
     }
 }
@@ -813,7 +835,8 @@ pub(crate) fn delete_lines_def() -> ToolDefinition {
     ToolDefinition {
         name: "delete_lines".to_string(),
         description: "Delete lines from start_line to end_line (inclusive, 1-indexed). \
-            When deleting multiple ranges, work from bottom to top to avoid line number shifts."
+            When deleting multiple ranges, work from bottom to top to avoid line number shifts. \
+            Optional path allows deleting from a specific file in the project."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
@@ -833,6 +856,72 @@ pub(crate) fn delete_lines_def() -> ToolDefinition {
                 param_type: ParamType::LineNumber,
                 required: true,
                 description: "Last line to delete (1-indexed, inclusive).".to_string(),
+            },
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: false,
+                description:
+                    "Optional file path relative to project root. If omitted, edits current target file."
+                        .to_string(),
+            },
+        ],
+    }
+}
+
+pub(crate) fn write_file_at_path_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "write_file_at_path".to_string(),
+        description: "Write full file content at path (create or overwrite). \
+            Path is relative to project root."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Mutation,
+        parameters: vec![
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: true,
+                description: "File path relative to project root.".to_string(),
+            },
+            ToolParam {
+                name: "content".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "Full file content to write.".to_string(),
+            },
+        ],
+    }
+}
+
+pub(crate) fn create_file_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "create_file".to_string(),
+        description: "Create a new file at path and write full content. \
+            Fails if the target file already exists."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Mutation,
+        parameters: vec![
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: true,
+                description: "New file path relative to project root.".to_string(),
+            },
+            ToolParam {
+                name: "content".to_string(),
+                param_type: ParamType::String,
+                required: false,
+                description: "Optional initial file content.".to_string(),
             },
         ],
     }

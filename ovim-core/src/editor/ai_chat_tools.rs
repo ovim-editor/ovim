@@ -195,6 +195,12 @@ impl Editor {
         if tc.name == "open_file" {
             return self.execute_open_file_tool(tc, approved_once_root);
         }
+        if matches!(
+            tc.name.as_str(),
+            "edit_range" | "insert_lines" | "delete_lines" | "write_file_at_path" | "create_file"
+        ) {
+            return self.execute_path_scoped_mutation_tool(tc, approved_once_root);
+        }
 
         let result = match self
             .ai_state
@@ -521,6 +527,12 @@ impl Editor {
         }
 
         let target_path = self.active_chat_target_display_path();
+        let explicit_path = tc
+            .arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(compact_tool_path);
+        let mutation_target = explicit_path.clone().unwrap_or_else(|| target_path.clone());
 
         let (kind, label) = match tc.name.as_str() {
             "edit_range" => {
@@ -551,7 +563,7 @@ impl Editor {
                 let removed = old_lines.saturating_sub(new_lines);
                 (
                     ToolSummaryKind::Mutation,
-                    format!("{target_path} +{added} -{removed}"),
+                    format!("{mutation_target} +{added} -{removed}"),
                 )
             }
             "insert_lines" => {
@@ -569,7 +581,7 @@ impl Editor {
                     .unwrap_or(0);
                 (
                     ToolSummaryKind::Mutation,
-                    format!("{target_path} +{added} -0"),
+                    format!("{mutation_target} +{added} -0"),
                 )
             }
             "delete_lines" => {
@@ -586,7 +598,43 @@ impl Editor {
                 let removed = end.saturating_sub(start).saturating_add(1);
                 (
                     ToolSummaryKind::Mutation,
-                    format!("{target_path} +0 -{removed}"),
+                    format!("{mutation_target} +0 -{removed}"),
+                )
+            }
+            "write_file_at_path" => {
+                let written = tc
+                    .arguments
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        if s.is_empty() {
+                            0
+                        } else {
+                            s.lines().count().max(1)
+                        }
+                    })
+                    .unwrap_or(0);
+                (
+                    ToolSummaryKind::Mutation,
+                    format!("{mutation_target} +{written} -*"),
+                )
+            }
+            "create_file" => {
+                let written = tc
+                    .arguments
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        if s.is_empty() {
+                            0
+                        } else {
+                            s.lines().count().max(1)
+                        }
+                    })
+                    .unwrap_or(0);
+                (
+                    ToolSummaryKind::Mutation,
+                    format!("{mutation_target} +{written} -0"),
                 )
             }
             "open_file" => {
@@ -871,6 +919,134 @@ impl Editor {
         ToolDispatchOutcome::Completed(
             self.handle_open_file_at_absolute_path(&absolute_path, &tc.arguments),
         )
+    }
+
+    fn execute_path_scoped_mutation_tool(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_root: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        let name = tc.name.as_str();
+        let requires_path = matches!(name, "write_file_at_path" | "create_file");
+
+        let raw_path = tc
+            .arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        if requires_path && raw_path.is_none() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' is required".to_string(),
+            ));
+        }
+
+        if let Some(raw_path) = raw_path {
+            let caps = self.build_chat_capabilities();
+            if caps.file_scope < crate::ai::FileScope::Project {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(
+                    "path parameter requires project file scope".to_string(),
+                ));
+            }
+
+            let resolution =
+                match self.resolve_tool_path_policy(raw_path, false, name, approved_once_root) {
+                    Ok(r) => r,
+                    Err(e) => return ToolDispatchOutcome::Completed(ToolResult::Error(e)),
+                };
+            let absolute_path = match resolution {
+                ToolPathResolution::Allowed { absolute_path, .. } => absolute_path,
+                ToolPathResolution::NeedsApproval(req) => {
+                    return ToolDispatchOutcome::ApprovalRequired(req)
+                }
+            };
+
+            if name == "create_file" && absolute_path.exists() {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(format!(
+                    "'{}' already exists. Use write_file_at_path to overwrite.",
+                    absolute_path.display()
+                )));
+            }
+
+            let allow_create = matches!(name, "write_file_at_path" | "create_file");
+            if let Err(e) =
+                self.ensure_mutation_target_buffer_for_path(&absolute_path, allow_create)
+            {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(e));
+            }
+        }
+
+        ToolDispatchOutcome::Completed(self.execute_mutation_tool(&tc.name, &tc.arguments))
+    }
+
+    fn ensure_mutation_target_buffer_for_path(
+        &mut self,
+        absolute_path: &Path,
+        allow_create: bool,
+    ) -> std::result::Result<(), String> {
+        let normalized_target = normalize_path(absolute_path);
+
+        if let Some(index) = self.buffers.iter().position(|buffer| {
+            buffer
+                .file_path()
+                .map(|p| normalize_path(Path::new(p)) == normalized_target)
+                .unwrap_or(false)
+        }) {
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.active_buffer_id = index;
+            }
+            return Ok(());
+        }
+
+        if absolute_path.exists() {
+            if !absolute_path.is_file() {
+                return Err(format!(
+                    "'{}' is not a file. Use list_files to inspect the directory.",
+                    absolute_path.display()
+                ));
+            }
+            let buffer = crate::buffer::Buffer::load_file(absolute_path)
+                .map_err(|e| format!("failed to open '{}': {}", absolute_path.display(), e))?;
+            self.buffers.push(buffer);
+            self.lsp_state.needs_lsp_init = true;
+            let idx = self.buffers.len().saturating_sub(1);
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.active_buffer_id = idx;
+            }
+            return Ok(());
+        }
+
+        if !allow_create {
+            return Err(format!(
+                "'{}' does not exist. Create it first with create_file or write_file_at_path.",
+                absolute_path.display()
+            ));
+        }
+
+        let Some(parent) = absolute_path.parent() else {
+            return Err(format!(
+                "cannot create '{}': invalid target path",
+                absolute_path.display()
+            ));
+        };
+        if !parent.exists() || !parent.is_dir() {
+            return Err(format!(
+                "cannot create '{}': parent directory '{}' does not exist",
+                absolute_path.display(),
+                parent.display()
+            ));
+        }
+
+        let mut buffer = crate::buffer::Buffer::new();
+        buffer.set_file_path(absolute_path.to_string_lossy().to_string());
+        self.buffers.push(buffer);
+        self.lsp_state.needs_lsp_init = true;
+        let idx = self.buffers.len().saturating_sub(1);
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.active_buffer_id = idx;
+        }
+        Ok(())
     }
 
     fn handle_open_file_at_absolute_path(
@@ -1849,6 +2025,7 @@ fn compact_tool_path(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
+    use std::fs;
 
     fn make_symbol(
         name: &str,
@@ -1934,5 +2111,104 @@ mod tests {
         let summary = editor.build_tool_event_summary(&tc, &ToolResult::Success("ok".to_string()));
         assert_eq!(summary.kind, ToolSummaryKind::Mutation);
         assert!(summary.label.contains("+0 -1"), "{}", summary.label);
+    }
+
+    #[test]
+    fn write_file_at_path_creates_missing_file() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("new_module.rs");
+
+            let mut editor = Editor::default();
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.approved_external_roots.push(dir.path().to_path_buf());
+                let canonical =
+                    std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+                if canonical != dir.path() {
+                    chat.approved_external_roots.push(canonical);
+                }
+            }
+
+            let tool_call = ToolCallInfo {
+                id: "call_write".to_string(),
+                name: "write_file_at_path".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "content": "pub fn generated() {}\n"
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            let content = fs::read_to_string(&target).expect("read target");
+            assert!(content.contains("pub fn generated() {}"));
+        });
+    }
+
+    #[test]
+    fn edit_range_with_path_updates_target_file() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("target.rs");
+            fs::write(&target, "line1\nline2\n").expect("seed");
+
+            let mut editor = Editor::default();
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.approved_external_roots.push(dir.path().to_path_buf());
+                let canonical =
+                    std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+                if canonical != dir.path() {
+                    chat.approved_external_roots.push(canonical);
+                }
+            }
+
+            let tool_call = ToolCallInfo {
+                id: "call_edit".to_string(),
+                name: "edit_range".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "start_line": 1,
+                    "end_line": 1,
+                    "new_text": "updated"
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            let content = fs::read_to_string(&target).expect("read target");
+            assert!(content.starts_with("updated\n"));
+        });
     }
 }

@@ -258,6 +258,8 @@ mod tests {
         assert!(reg.get("edit_range").is_some());
         assert!(reg.get("insert_lines").is_some());
         assert!(reg.get("delete_lines").is_some());
+        assert!(reg.get("write_file_at_path").is_some());
+        assert!(reg.get("create_file").is_some());
     }
 
     #[test]
@@ -282,6 +284,8 @@ mod tests {
         assert!(!names.contains(&"edit_range"));
         assert!(!names.contains(&"insert_lines"));
         assert!(!names.contains(&"delete_lines"));
+        assert!(!names.contains(&"write_file_at_path"));
+        assert!(!names.contains(&"create_file"));
     }
 
     #[test]
@@ -300,5 +304,7 @@ mod tests {
         assert!(names.contains(&"edit_range"));
         assert!(names.contains(&"insert_lines"));
         assert!(names.contains(&"delete_lines"));
+        assert!(names.contains(&"write_file_at_path"));
+        assert!(names.contains(&"create_file"));
     }
 }

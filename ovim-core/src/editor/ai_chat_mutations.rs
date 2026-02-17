@@ -306,6 +306,8 @@ impl Editor {
             "edit_range" => self.handle_edit_range(args),
             "insert_lines" => self.handle_insert_lines(args),
             "delete_lines" => self.handle_delete_lines(args),
+            "write_file_at_path" => self.handle_write_file_at_path(args, false),
+            "create_file" => self.handle_write_file_at_path(args, true),
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
         };
 
@@ -342,6 +344,95 @@ impl Editor {
     // -----------------------------------------------------------------
     // Mutation handlers
     // -----------------------------------------------------------------
+
+    fn force_save_current_buffer(&mut self, path_hint: &str) -> Result<(), ToolResult> {
+        if self.buffer().file_path().is_none() {
+            return Err(ToolResult::Error(format!(
+                "cannot save '{path_hint}': target buffer has no file path"
+            )));
+        }
+        self.buffer_mut()
+            .save()
+            .map_err(|e| ToolResult::Error(format!("failed to save '{}': {}", path_hint, e)))?;
+        self.mark_saved();
+        Ok(())
+    }
+
+    fn handle_write_file_at_path(
+        &mut self,
+        args: &serde_json::Value,
+        create_only: bool,
+    ) -> ToolResult {
+        let path = match required_str(args, "path") {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let mut content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        if create_only
+            && self
+                .buffer()
+                .file_path()
+                .is_some_and(|p| std::path::Path::new(p).exists())
+        {
+            return ToolResult::Error(format!(
+                "'{}' already exists. Use write_file_at_path to overwrite.",
+                path
+            ));
+        }
+
+        let cursor_before = self.cursor_position();
+        let cursor_abs_before = self.cursor_abs_char();
+        let existing_chars = self.buffer().rope().len_chars();
+
+        let ((), edits) = self.buffer_mut().record(|buf| {
+            if existing_chars > 0 {
+                buf.delete_char_range(0, existing_chars);
+            }
+            if !content.is_empty() {
+                buf.insert_text_at(0, 0, &content);
+            }
+        });
+
+        if !edits.is_empty() {
+            let cursor_abs_after = remap_abs_char_through_edits(cursor_abs_before, &edits)
+                .min(self.buffer().rope().len_chars());
+            self.set_cursor_from_abs_char(cursor_abs_after);
+            let cursor_after = self.cursor_position();
+            self.push_recorded_undo(edits, cursor_before, cursor_after);
+            self.post_mutation_refresh();
+        }
+
+        if let Err(e) = self.force_save_current_buffer(&path) {
+            return e;
+        }
+
+        // Mark full file as edited for review mode.
+        let buf_idx = self.current_buffer_index;
+        let end_line = self.buffer().line_count().saturating_sub(1);
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.agent_edits.all_edits.insert(buf_idx, Vec::new());
+            chat.agent_edits.record_edit(buf_idx, 0, end_line);
+        }
+
+        let line_count = if content.is_empty() {
+            0
+        } else {
+            content.lines().count()
+        };
+        let action = if create_only { "Created" } else { "Wrote" };
+        let file_label = self.buffer().file_path().unwrap_or(path.as_str());
+        ToolResult::Success(format!(
+            "{action} {file_label} ({line_count} line{}).",
+            if line_count == 1 { "" } else { "s" }
+        ))
+    }
 
     fn handle_edit_range(&mut self, args: &serde_json::Value) -> ToolResult {
         let start_line = match required_u64(args, "start_line", 1) {
