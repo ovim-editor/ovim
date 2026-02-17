@@ -245,6 +245,7 @@ mod tests {
         assert!(reg.get("read_file_at_path").is_some());
         assert!(reg.get("read_selection").is_some());
         assert!(reg.get("read_diagnostics").is_some());
+        assert!(reg.get("read_project_diagnostics").is_some());
         assert!(reg.get("search_project").is_some());
         assert!(reg.get("list_files").is_some());
         // LSP tools
@@ -260,6 +261,8 @@ mod tests {
         assert!(reg.get("delete_lines").is_some());
         assert!(reg.get("write_file_at_path").is_some());
         assert!(reg.get("create_file").is_some());
+        assert!(reg.get("snapshot_file").is_some());
+        assert!(reg.get("restore_file").is_some());
     }
 
     #[test]
@@ -277,6 +280,7 @@ mod tests {
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"search_project"));
         assert!(names.contains(&"list_files"));
+        assert!(names.contains(&"read_project_diagnostics"));
         // Navigation tools present (always allowed)
         assert!(names.contains(&"open_file"));
         assert!(names.contains(&"select_text"));
@@ -286,6 +290,8 @@ mod tests {
         assert!(!names.contains(&"delete_lines"));
         assert!(!names.contains(&"write_file_at_path"));
         assert!(!names.contains(&"create_file"));
+        assert!(!names.contains(&"snapshot_file"));
+        assert!(!names.contains(&"restore_file"));
     }
 
     #[test]
@@ -306,5 +312,7 @@ mod tests {
         assert!(names.contains(&"delete_lines"));
         assert!(names.contains(&"write_file_at_path"));
         assert!(names.contains(&"create_file"));
+        assert!(names.contains(&"snapshot_file"));
+        assert!(names.contains(&"restore_file"));
     }
 }

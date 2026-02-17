@@ -477,8 +477,12 @@ fn summarize_streaming_tool_call(tool_call: &ToolCallInfo) -> (ToolSummaryKind, 
         }
         "write_file_at_path" => (ToolSummaryKind::Mutation, "writing file".to_string()),
         "create_file" => (ToolSummaryKind::Mutation, "creating file".to_string()),
+        "snapshot_file" => (ToolSummaryKind::Other, "snapshot file".to_string()),
+        "restore_file" => (ToolSummaryKind::Mutation, "restoring file".to_string()),
         "search_project" | "list_files" => (ToolSummaryKind::Search, tool_call.name.clone()),
-        "read_diagnostics" => (ToolSummaryKind::Diagnostics, "diagnostics".to_string()),
+        "read_diagnostics" | "read_project_diagnostics" => {
+            (ToolSummaryKind::Diagnostics, "diagnostics".to_string())
+        }
         "select_text" => (ToolSummaryKind::Navigation, "selecting text".to_string()),
         _ => (ToolSummaryKind::Other, tool_call.name.clone()),
     }

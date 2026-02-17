@@ -21,6 +21,12 @@ pub struct ToolEventSummary {
     pub label: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FileSnapshot {
+    pub path: PathBuf,
+    pub content: String,
+}
+
 /// Viewport state for chat history rendering.
 pub struct ChatViewportState {
     /// Row scroll offset from bottom (0 = latest).
@@ -115,6 +121,10 @@ pub struct AiChatState {
     pub approved_external_roots: Vec<PathBuf>,
     /// Compact tool event summaries keyed by tool call id.
     pub tool_event_summaries: HashMap<String, ToolEventSummary>,
+    /// File snapshots captured by snapshot_file tool, keyed by snapshot id.
+    pub file_snapshots: HashMap<String, FileSnapshot>,
+    /// Monotonic counter for snapshot ids.
+    pub next_snapshot_id: u64,
     /// Tracks which lines each agent turn modified, per buffer.
     pub agent_edits: AgentEditTracker,
     /// Whether the buffer was clean when chat opened (for auto-save guard).
@@ -161,6 +171,8 @@ impl AiChatState {
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             tool_event_summaries: HashMap::new(),
+            file_snapshots: HashMap::new(),
+            next_snapshot_id: 0,
             agent_edits: AgentEditTracker::new(),
             buffer_was_clean_at_chat_start: false,
             view_mode: ChatViewMode::DockedChat,
