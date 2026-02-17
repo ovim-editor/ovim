@@ -238,7 +238,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
 
     let allow_edits = editor.ai_chat_allow_edits();
     let focus = editor.ai_chat_focus();
-    let scroll = editor.ai_chat_message_scroll();
+    let selected_offset = editor.ai_chat_history_cursor_offset();
     let panel_width = area.width as usize;
 
     // Get node IDs for active branch (parallel to messages)
@@ -250,8 +250,8 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     // Render messages bottom-up with scroll
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
     for (idx, msg) in messages.iter().enumerate() {
-        let is_selected =
-            focus == ChatFocus::MessageHistory && idx == messages.len().saturating_sub(1 + scroll);
+        let is_selected = focus == ChatFocus::MessageHistory
+            && idx == messages.len().saturating_sub(1 + selected_offset);
 
         // Look up NodeId for thinking expansion and child count
         let node_id = node_ids.get(idx).copied();
@@ -376,7 +376,8 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     // when new streaming rows are appended.
     let visible_rows = area.height as usize;
     let total = rendered_lines.len();
-    let effective_scroll = compute_effective_history_scroll(editor, total);
+    editor.render_cache.ai_chat_last_total_rows = total;
+    let effective_scroll = editor.ai_chat_effective_message_scroll(total);
     let start = total.saturating_sub(visible_rows + effective_scroll);
     let end = total.saturating_sub(effective_scroll).min(total);
 
@@ -392,33 +393,6 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
         };
         frame.render_widget(Paragraph::new(vec![rendered_lines[line_idx].0.clone()]), r);
     }
-}
-
-fn compute_effective_history_scroll(editor: &mut Editor, total_rows: usize) -> usize {
-    let Some(chat) = editor.ai_state.chat.as_mut() else {
-        return 0;
-    };
-
-    if total_rows == 0 {
-        chat.message_scroll_base_total_rows = Some(0);
-        return 0;
-    }
-
-    if chat.message_follow_latest || chat.message_scroll == 0 {
-        chat.message_follow_latest = true;
-        chat.message_scroll_base_total_rows = Some(total_rows);
-        return 0;
-    }
-
-    let base = chat
-        .message_scroll_base_total_rows
-        .get_or_insert(total_rows);
-    if total_rows < *base {
-        *base = total_rows;
-    }
-    let growth_since_pin = total_rows.saturating_sub(*base);
-    let effective = chat.message_scroll.saturating_add(growth_since_pin);
-    effective.min(total_rows.saturating_sub(1))
 }
 
 fn render_chat_bubble(

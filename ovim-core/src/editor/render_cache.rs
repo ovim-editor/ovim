@@ -22,6 +22,8 @@ pub struct RenderCache {
     pub ai_prompt_model_hitboxes: Vec<(crate::Rect, String)>,
     /// Cached AI chat panel area from last render (for mouse scroll hit-testing).
     pub last_chat_area: Option<crate::Rect>,
+    /// Cached AI chat total rendered row count from last render pass.
+    pub ai_chat_last_total_rows: usize,
     /// Cached AI chat input area from last render.
     pub ai_chat_input_area: Option<crate::Rect>,
     /// Cached AI chat input cursor position from last render.
@@ -40,6 +42,7 @@ impl Default for RenderCache {
             ai_prompt_input_rows: Vec::new(),
             ai_prompt_model_hitboxes: Vec::new(),
             last_chat_area: None,
+            ai_chat_last_total_rows: 0,
             ai_chat_input_area: None,
             ai_chat_input_cursor_pos: None,
         }

@@ -240,14 +240,19 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Up => {
+            let mut moved_to_history = false;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 let (line, _total) = cursor_line_info(&chat.input, chat.input_cursor);
                 if line == 0 {
                     // First line — navigate to message history
                     chat.focus = ChatFocus::MessageHistory;
+                    moved_to_history = true;
                 } else {
                     chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, -1);
                 }
+            }
+            if moved_to_history {
+                editor.ai_chat_reset_history_cursor();
             }
         }
         KeyCode::Down => {
@@ -281,48 +286,22 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
 fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Up | KeyCode::Char('k') => {
-            if let Some(chat) = editor.ai_state.chat.as_mut() {
-                if chat.message_follow_latest {
-                    chat.message_follow_latest = false;
-                    chat.message_scroll_base_total_rows = None;
-                }
-                chat.message_scroll = chat.message_scroll.saturating_add(1);
-            }
+            editor.ai_chat_scroll_history_up(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if let Some(chat) = editor.ai_state.chat.as_mut() {
-                if chat.message_scroll == 0 {
-                    chat.message_follow_latest = true;
-                    chat.message_scroll_base_total_rows = None;
+            if editor.ai_chat_scroll_history_down(1) {
+                if let Some(chat) = editor.ai_state.chat.as_mut() {
                     chat.focus = ChatFocus::TextInput;
-                } else {
-                    chat.message_scroll = chat.message_scroll.saturating_sub(1);
-                    if chat.message_scroll == 0 {
-                        chat.message_follow_latest = true;
-                        chat.message_scroll_base_total_rows = None;
-                    }
                 }
             }
         }
         // Ctrl-U — scroll up half page
         KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            if let Some(chat) = editor.ai_state.chat.as_mut() {
-                if chat.message_follow_latest {
-                    chat.message_follow_latest = false;
-                    chat.message_scroll_base_total_rows = None;
-                }
-                chat.message_scroll = chat.message_scroll.saturating_add(10);
-            }
+            editor.ai_chat_scroll_history_up(10);
         }
         // Ctrl-D — scroll down half page
         KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.message_scroll = chat.message_scroll.saturating_sub(10);
-                if chat.message_scroll == 0 {
-                    chat.message_follow_latest = true;
-                    chat.message_scroll_base_total_rows = None;
-                }
-            }
+            editor.ai_chat_scroll_history_down(10);
         }
         KeyCode::Enter => {
             let node_ids = editor
@@ -330,8 +309,8 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 .map(|c| c.node_ids_for_active_branch().to_vec())
                 .unwrap_or_default();
             let messages = editor.ai_chat_messages();
-            let scroll = editor.ai_chat_message_scroll();
-            let idx = messages.len().saturating_sub(1 + scroll);
+            let cursor = editor.ai_chat_history_cursor_offset();
+            let idx = messages.len().saturating_sub(1 + cursor);
 
             if idx < messages.len() && idx < node_ids.len() {
                 let node_id = node_ids[idx];
