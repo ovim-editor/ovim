@@ -117,8 +117,16 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 apply_text_object(editor, TextObjects::inner_word(editor.buffer()), false);
                 return Ok(());
             }
+            ('i', KeyCode::Char('W')) => {
+                apply_text_object(editor, TextObjects::inner_big_word(editor.buffer()), false);
+                return Ok(());
+            }
             ('a', KeyCode::Char('w')) => {
                 apply_text_object(editor, TextObjects::around_word(editor.buffer()), false);
+                return Ok(());
+            }
+            ('a', KeyCode::Char('W')) => {
+                apply_text_object(editor, TextObjects::around_big_word(editor.buffer()), false);
                 return Ok(());
             }
             ('i', KeyCode::Char('p')) => {

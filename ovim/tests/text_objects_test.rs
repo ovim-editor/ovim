@@ -141,7 +141,7 @@ fn test_diW_delete_inner_WORD() {
 
     test.keys("diW"); // Delete "hello-world" as one WORD
 
-    assert_eq!(test.buffer_content(), "hello-world test\n");
+    assert_eq!(test.buffer_content(), " test\n");
     test.assert_cursor(0, 0);
 }
 
@@ -151,7 +151,7 @@ fn test_daW_delete_around_WORD() {
 
     test.keys("daW");
 
-    assert_eq!(test.buffer_content(), "hello-world test.case\n");
+    assert_eq!(test.buffer_content(), "test.case\n");
     test.assert_cursor(0, 0);
 }
 
@@ -163,8 +163,8 @@ fn test_yiW_with_punctuation() {
         .keys("$")
         .press('p');
 
-    assert_eq!(test.buffer_content(), "func(args) next\n");
-    test.assert_cursor(0, 14);
+    assert_eq!(test.buffer_content(), "func(args) nextfunc(args)\n");
+    test.assert_cursor(0, 24);
 }
 
 // ============================================================================
