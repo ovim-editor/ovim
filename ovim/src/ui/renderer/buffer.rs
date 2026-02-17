@@ -2079,6 +2079,7 @@ mod tests {
         // "a世b世c" scrolled past 'a' and '世' (3 display cols), width 5
         let (text, precedes, extends) = slice_horizontal_viewport("a世b世c", 3, 5);
         assert!(precedes);
+        assert!(!extends);
         // Should show '<' + content from display col 3 + possibly '>'
         assert_eq!(text.chars().next(), Some('<'));
     }
