@@ -305,9 +305,9 @@ fn handle_scroll(editor: &mut Editor, up: bool, row: u16) -> Result<()> {
         if let Some(chat_rect) = editor.render_cache.last_chat_area {
             if row >= chat_rect.y && row < chat_rect.y + chat_rect.height {
                 if up {
-                    editor.ai_chat_scroll_history_up(SCROLL_LINES);
+                    editor.ai_chat_scroll_viewport_up(SCROLL_LINES);
                 } else {
-                    editor.ai_chat_scroll_history_down(SCROLL_LINES);
+                    editor.ai_chat_scroll_viewport_down(SCROLL_LINES);
                 }
                 return Ok(());
             }

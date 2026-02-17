@@ -513,6 +513,16 @@ impl Editor {
             .unwrap_or(0)
     }
 
+    /// Selected message index in current conversation.
+    pub fn ai_chat_history_selected_index(&self) -> Option<usize> {
+        let messages_len = self.ai_chat_messages().len();
+        if messages_len == 0 {
+            return None;
+        }
+        let offset = self.ai_chat_history_cursor_offset().min(messages_len - 1);
+        Some(messages_len - 1 - offset)
+    }
+
     /// Selected message offset from the latest message.
     pub fn ai_chat_history_cursor_offset(&self) -> usize {
         self.ai_state
@@ -539,8 +549,8 @@ impl Editor {
             .min(total_rows.saturating_sub(1))
     }
 
-    /// Scroll message history toward older rows.
-    pub fn ai_chat_scroll_history_up(&mut self, rows: usize) {
+    /// Scroll chat history viewport toward older rows.
+    pub fn ai_chat_scroll_viewport_up(&mut self, rows: usize) {
         if rows == 0 {
             return;
         }
@@ -554,18 +564,18 @@ impl Editor {
             if chat.viewport.follow_latest {
                 chat.viewport.follow_latest = false;
                 chat.viewport.pinned_base_total_rows = baseline;
+            } else if chat.viewport.pinned_base_total_rows.is_none() {
+                chat.viewport.pinned_base_total_rows = baseline;
             }
             chat.viewport.row_scroll_from_bottom =
                 chat.viewport.row_scroll_from_bottom.saturating_add(rows);
-            chat.history.cursor_offset_from_latest =
-                chat.history.cursor_offset_from_latest.saturating_add(rows);
         }
     }
 
-    /// Scroll message history toward the latest rows.
+    /// Scroll chat history viewport toward latest rows.
     ///
     /// Returns true when the viewport reached bottom/latest.
-    pub fn ai_chat_scroll_history_down(&mut self, rows: usize) -> bool {
+    pub fn ai_chat_scroll_viewport_down(&mut self, rows: usize) -> bool {
         if rows == 0 {
             return self
                 .ai_state
@@ -576,16 +586,76 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.viewport.row_scroll_from_bottom =
                 chat.viewport.row_scroll_from_bottom.saturating_sub(rows);
-            chat.history.cursor_offset_from_latest =
-                chat.history.cursor_offset_from_latest.saturating_sub(rows);
             if chat.viewport.row_scroll_from_bottom == 0 {
                 chat.viewport.follow_latest = true;
                 chat.viewport.pinned_base_total_rows = None;
-                chat.history.cursor_offset_from_latest = 0;
                 return true;
             }
         }
         false
+    }
+
+    /// Move message-history selection toward older messages.
+    pub fn ai_chat_history_cursor_move_older(&mut self, messages: usize) {
+        if messages == 0 {
+            return;
+        }
+        let total = self.ai_chat_messages().len();
+        if total == 0 {
+            return;
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            let max_offset = total.saturating_sub(1);
+            chat.history.cursor_offset_from_latest =
+                (chat.history.cursor_offset_from_latest + messages).min(max_offset);
+        }
+        self.ai_chat_history_ensure_cursor_visible();
+    }
+
+    /// Move message-history selection toward latest messages.
+    ///
+    /// Returns true when selection reached the latest message.
+    pub fn ai_chat_history_cursor_move_newer(&mut self, messages: usize) -> bool {
+        if messages == 0 {
+            return self.ai_chat_history_cursor_offset() == 0;
+        }
+        if self.ai_chat_messages().is_empty() {
+            return true;
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.history.cursor_offset_from_latest = chat
+                .history
+                .cursor_offset_from_latest
+                .saturating_sub(messages);
+        }
+        self.ai_chat_history_ensure_cursor_visible();
+        self.ai_chat_history_cursor_offset() == 0
+    }
+
+    fn ai_chat_history_ensure_cursor_visible(&mut self) {
+        let Some(selected_idx) = self.ai_chat_history_selected_index() else {
+            return;
+        };
+        let Some(&(msg_start, msg_end)) = self
+            .render_cache
+            .ai_chat_last_message_row_spans
+            .get(selected_idx)
+        else {
+            return;
+        };
+        let vis_start = self.render_cache.ai_chat_last_visible_start_row;
+        let vis_end = self.render_cache.ai_chat_last_visible_end_row;
+        if vis_end <= vis_start {
+            return;
+        }
+
+        if msg_end <= vis_start {
+            let delta = vis_start.saturating_sub(msg_start).max(1);
+            self.ai_chat_scroll_viewport_up(delta);
+        } else if msg_start >= vis_end {
+            let delta = msg_end.saturating_sub(vis_end).max(1);
+            self.ai_chat_scroll_viewport_down(delta);
+        }
     }
 
     /// Ensure history selection references the latest message.
