@@ -90,6 +90,7 @@ impl Editor {
         chat.waiting = true;
         chat.message_scroll = 0;
         chat.tool_call_count = 0;
+        chat.pending_tool_approval = None;
 
         // Spawn the streaming request
         if let Err(e) = self.spawn_streaming_request() {
@@ -445,6 +446,29 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Whether a tool call is currently paused pending user approval.
+    pub fn ai_chat_has_pending_tool_approval(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.pending_tool_approval.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Human-readable summary of the pending approval, if any.
+    pub fn ai_chat_pending_tool_approval_summary(&self) -> Option<String> {
+        let pending = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.pending_tool_approval.as_ref())?;
+        Some(format!(
+            "Outside-repo access requested: {} ({})",
+            pending.requested_path.display(),
+            pending.tool_call.name
+        ))
+    }
+
     /// Whether chat allows edits.
     pub fn ai_chat_allow_edits(&self) -> bool {
         self.ai_state
@@ -502,11 +526,10 @@ impl Editor {
         let buf_idx = self.current_buffer_index;
         let cursor_line = self.buffer().cursor().line();
 
-        let target = self
-            .ai_state
-            .chat
-            .as_ref()
-            .and_then(|c| c.agent_edits.next_edit_boundary(buf_idx, cursor_line, forward));
+        let target = self.ai_state.chat.as_ref().and_then(|c| {
+            c.agent_edits
+                .next_edit_boundary(buf_idx, cursor_line, forward)
+        });
 
         if let Some(line) = target {
             self.buffer_mut().cursor_mut().set_position(line, 0);

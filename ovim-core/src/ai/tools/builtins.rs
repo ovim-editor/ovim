@@ -629,9 +629,10 @@ fn hover_def() -> ToolDefinition {
 fn goto_definition_def() -> ToolDefinition {
     ToolDefinition {
         name: "goto_definition".to_string(),
-        description: "Find where a symbol at a specific position is defined. Returns the file path \
+        description:
+            "Find where a symbol at a specific position is defined. Returns the file path \
             and line number of the definition. Use to trace function calls, type references, etc."
-            .to_string(),
+                .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,

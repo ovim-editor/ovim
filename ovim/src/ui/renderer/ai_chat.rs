@@ -713,6 +713,7 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     let focus = editor.ai_chat_focus();
     let is_focused = focus == ChatFocus::ModelSelector;
     let w = area.width as usize;
+    let pending_approval = editor.ai_chat_has_pending_tool_approval();
 
     let mut profile_names = editor.ai_profile_names_sorted();
     if profile_names.is_empty() {
@@ -731,6 +732,35 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
             .bg(BG_PANEL),
     ));
     used_width += 2;
+
+    if pending_approval {
+        if let Some(summary) = editor.ai_chat_pending_tool_approval_summary() {
+            let mut label = format!(" ! {} ", summary);
+            let max_label = w.saturating_sub(4);
+            if label.chars().count() > max_label {
+                label = label
+                    .chars()
+                    .take(max_label.saturating_sub(1))
+                    .collect::<String>();
+                label.push('…');
+            }
+            let label_w = label.chars().count();
+            if used_width + label_w + 1 < w {
+                spans.push(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    " ",
+                    Style::default().fg(TEXT_DIM).bg(BG_PANEL),
+                ));
+                used_width += label_w + 1;
+            }
+        }
+    }
 
     for name in &profile_names {
         let Some(profile) = editor.ai_state.config.resolve_profile(name) else {
@@ -769,7 +799,9 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     // Hints at right
     let allow_edits = editor.ai_chat_allow_edits();
-    let hint = if allow_edits {
+    let hint = if pending_approval {
+        " [C-y allow once] [C-a allow session] [C-n deny] "
+    } else if allow_edits {
         " [Enter send] [C-y copy] [Esc\u{00d7}2 close] "
     } else {
         " [?] [Enter send] [C-y copy] [Esc\u{00d7}2 close] "

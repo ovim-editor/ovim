@@ -17,8 +17,7 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
 
     if review_mode {
         // <C-r> toggles back to chat
-        if key_event.code == KeyCode::Char('r')
-            && key_event.modifiers.contains(Modifiers::CONTROL)
+        if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(Modifiers::CONTROL)
         {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.review_mode = false;
@@ -46,6 +45,25 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
+    if editor.ai_chat_has_pending_tool_approval() {
+        if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_tool_approval(true, false);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Char('a') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_tool_approval(true, true);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_tool_approval(false, false);
+            return Ok(());
+        }
+        return Ok(());
+    }
+
     // <C-r> toggles review mode
     if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(Modifiers::CONTROL) {
         if let Some(chat) = editor.ai_state.chat.as_mut() {
@@ -54,7 +72,7 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
-    // <C-y> copies conversation to clipboard
+    // <C-y> copies conversation to clipboard (unless used for pending tool approval)
     if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL) {
         editor.copy_ai_chat_conversation();
         return Ok(());

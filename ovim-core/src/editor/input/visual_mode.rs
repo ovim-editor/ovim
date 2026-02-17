@@ -776,8 +776,13 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let expand_tab = editor.options.expand_tab;
                 let cursor_before = editor.cursor_position();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
-                    let _ =
-                        helpers::auto_indent_lines(buf, start_line, end_line + 1, tab_width, expand_tab);
+                    let _ = helpers::auto_indent_lines(
+                        buf,
+                        start_line,
+                        end_line + 1,
+                        tab_width,
+                        expand_tab,
+                    );
                 });
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();

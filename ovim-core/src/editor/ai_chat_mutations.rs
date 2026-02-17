@@ -321,11 +321,7 @@ impl Editor {
 
         // Only restore if active_buffer_id didn't change during the mutation
         // (e.g., open_file could have changed it)
-        let current_active = self
-            .ai_state
-            .chat
-            .as_ref()
-            .map(|c| c.active_buffer_id);
+        let current_active = self.ai_state.chat.as_ref().map(|c| c.active_buffer_id);
         if current_active == Some(target) {
             self.current_buffer_index = original;
         }

@@ -5,10 +5,32 @@ use crate::ai::tools::builtins::{self, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{SideEffect, ToolResult};
 use anyhow::Result;
+use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::ai_chat_state::PendingAiChatJob;
+use super::ai_chat_state::{PendingAiChatJob, PendingToolApproval};
 use super::Editor;
+
+#[derive(Debug, Clone)]
+struct ToolApprovalRequest {
+    requested_path: PathBuf,
+    approval_root: PathBuf,
+    message: String,
+}
+
+enum ToolDispatchOutcome {
+    Completed(ToolResult),
+    ApprovalRequired(ToolApprovalRequest),
+}
+
+enum ToolPathResolution {
+    Allowed {
+        absolute_path: PathBuf,
+        boundary_root: PathBuf,
+    },
+    NeedsApproval(ToolApprovalRequest),
+}
 
 impl Editor {
     // -----------------------------------------------------------------
@@ -41,6 +63,12 @@ impl Editor {
             network: profile_scope.network,
             allow_mutations: allow_edits,
         };
+
+        // Outside a git repository, force file-scoped access for project tools.
+        // This prevents broad accidental traversal from process CWD.
+        if self.ai_repo_root().is_none() && caps.file_scope >= crate::ai::FileScope::Project {
+            caps.file_scope = crate::ai::FileScope::File;
+        }
 
         // If edits not allowed, disable shell but keep file_scope at profile level
         // so read-only project tools (search_project, list_files, read_file_at_path)
@@ -94,8 +122,11 @@ impl Editor {
         // Get diagnostics for current buffer
         let diagnostics = self.get_diagnostics_for_current_buffer();
 
-        let current_file = buf.file_path().map(std::path::PathBuf::from);
-        let project_root = std::env::current_dir().ok();
+        let current_file = buf
+            .file_path()
+            .map(PathBuf::from)
+            .map(|p| self.absolutize_path(&p));
+        let project_root = self.ai_repo_root();
 
         // Snapshot all open buffers so read_file_at_path can read
         // in-memory content instead of potentially stale disk files.
@@ -146,8 +177,24 @@ impl Editor {
 
     /// Dispatch a single tool call by side effect. Read tools get a snapshot,
     /// mutation tools get `&mut self`.
-    pub(crate) fn dispatch_tool_call(&mut self, tc: &ToolCallInfo) -> ToolResult {
-        match self
+    ///
+    /// `approved_once_root` temporarily allows one outside-repo access for the call.
+    fn dispatch_tool_call_with_approval(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_root: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        if tc.name == "read_file_at_path" {
+            return self.execute_read_file_at_path_tool(tc, approved_once_root);
+        }
+        if tc.name == "list_files" {
+            return self.execute_list_files_tool(tc, approved_once_root);
+        }
+        if tc.name == "open_file" {
+            return self.execute_open_file_tool(tc, approved_once_root);
+        }
+
+        let result = match self
             .ai_state
             .tool_registry
             .get(&tc.name)
@@ -168,7 +215,8 @@ impl Editor {
                 ToolResult::Error("external tools not yet supported".into())
             }
             None => ToolResult::Error(format!("unknown tool: {}", tc.name)),
-        }
+        };
+        ToolDispatchOutcome::Completed(result)
     }
 
     /// Execute tool calls from a completed stream response, record results,
@@ -226,24 +274,153 @@ impl Editor {
             );
         }
 
-        // 2. Execute each tool with bifurcated dispatch
-        for tc in &tool_calls {
-            let result = self.dispatch_tool_call(tc);
-            let result_content = match &result {
-                ToolResult::Success(s) => s.clone(),
-                ToolResult::Error(s) => format!("Error: {s}"),
-            };
+        // 2. Execute tools. May pause for user approval.
+        self.execute_tool_call_batch(tool_calls, model_name.to_string())
+    }
+
+    /// Resolve a paused outside-repo tool request.
+    pub fn ai_chat_resolve_pending_tool_approval(&mut self, allow: bool, remember: bool) -> bool {
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|c| c.pending_tool_approval.take());
+
+        let Some(pending) = pending else {
+            return false;
+        };
+
+        if !allow {
             if let Some(conv) = self.conversation_mut() {
-                conv.append_tool_result(tc.id.clone(), result_content);
+                conv.append_tool_result(
+                    pending.tool_call.id.clone(),
+                    format!(
+                        "Error: user denied outside-repo access for '{}'",
+                        pending.requested_path.display()
+                    ),
+                );
+            }
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+                chat.waiting = true;
+            }
+            self.set_lsp_status("Denied outside-repo tool access".to_string());
+            return self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name);
+        }
+
+        if remember {
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                let root = normalize_path(&pending.approval_root);
+                if !chat
+                    .approved_external_roots
+                    .iter()
+                    .any(|p| normalize_path(p) == root)
+                {
+                    chat.approved_external_roots.push(root);
+                }
             }
         }
 
-        // 3. Count actual tool calls used
-        if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.tool_call_count = chat.tool_call_count.saturating_add(tool_calls.len() as u16);
+        let outcome =
+            self.dispatch_tool_call_with_approval(&pending.tool_call, Some(&pending.approval_root));
+        match outcome {
+            ToolDispatchOutcome::Completed(result) => {
+                let result_content = match &result {
+                    ToolResult::Success(s) => s.clone(),
+                    ToolResult::Error(s) => format!("Error: {s}"),
+                };
+                if let Some(conv) = self.conversation_mut() {
+                    conv.append_tool_result(pending.tool_call.id.clone(), result_content);
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+                    chat.waiting = true;
+                }
+                self.set_lsp_status(format!(
+                    "Approved outside-repo access: {}",
+                    pending.requested_path.display()
+                ));
+                self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                self.pause_for_tool_approval(PendingToolApproval {
+                    tool_call: pending.tool_call,
+                    remaining_tool_calls: pending.remaining_tool_calls,
+                    model_name: pending.model_name,
+                    requested_path: req.requested_path.clone(),
+                    approval_root: req.approval_root.clone(),
+                });
+                self.set_lsp_status(req.message);
+                true
+            }
+        }
+    }
+
+    fn execute_tool_call_batch(
+        &mut self,
+        tool_calls: Vec<ToolCallInfo>,
+        model_name: String,
+    ) -> bool {
+        let max_tool_calls = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.opts.profile.as_ref())
+            .and_then(|p| self.ai_state.config.resolve_profile(p))
+            .map(|p| p.agent_loop.max_tool_calls)
+            .unwrap_or(50);
+
+        let mut executed_in_batch: u16 = 0;
+
+        for (idx, tc) in tool_calls.iter().enumerate() {
+            let used = self
+                .ai_state
+                .chat
+                .as_ref()
+                .map(|c| c.tool_call_count)
+                .unwrap_or(0);
+            if used.saturating_add(executed_in_batch) >= max_tool_calls {
+                if let Some(conv) = self.conversation_mut() {
+                    conv.append_error("Tool call iteration limit reached.".to_string());
+                }
+                self.clear_streaming_state();
+                return true;
+            }
+
+            match self.dispatch_tool_call_with_approval(tc, None) {
+                ToolDispatchOutcome::Completed(result) => {
+                    let result_content = match &result {
+                        ToolResult::Success(s) => s.clone(),
+                        ToolResult::Error(s) => format!("Error: {s}"),
+                    };
+                    if let Some(conv) = self.conversation_mut() {
+                        conv.append_tool_result(tc.id.clone(), result_content);
+                    }
+                    executed_in_batch = executed_in_batch.saturating_add(1);
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.tool_call_count =
+                            chat.tool_call_count.saturating_add(executed_in_batch);
+                    }
+                    self.pause_for_tool_approval(PendingToolApproval {
+                        tool_call: tc.clone(),
+                        remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                        model_name,
+                        requested_path: req.requested_path,
+                        approval_root: req.approval_root,
+                    });
+                    self.set_lsp_status(req.message);
+                    return true;
+                }
+            }
         }
 
-        // 4. Start new streaming request
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.tool_call_count = chat.tool_call_count.saturating_add(executed_in_batch);
+            chat.waiting = true;
+        }
+
         if let Err(e) = self.spawn_streaming_request() {
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error(format!("Failed to continue: {e}"));
@@ -255,6 +432,365 @@ impl Editor {
         }
 
         true
+    }
+
+    fn pause_for_tool_approval(&mut self, pending: PendingToolApproval) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_tool_approval = Some(pending);
+            chat.waiting = false;
+            chat.pending_job = None;
+            chat.streaming_content = None;
+            chat.streaming_thinking = None;
+        }
+    }
+
+    fn execute_read_file_at_path_tool(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_root: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        let Some(raw_path) = tc.arguments.get("path").and_then(|v| v.as_str()) else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' parameter is required and must be non-empty".to_string(),
+            ));
+        };
+        if raw_path.is_empty() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' parameter is required and must be non-empty".to_string(),
+            ));
+        }
+
+        let resolution = match self.resolve_tool_path_policy(
+            raw_path,
+            false,
+            "read_file_at_path",
+            approved_once_root,
+        ) {
+            Ok(r) => r,
+            Err(e) => return ToolDispatchOutcome::Completed(ToolResult::Error(e)),
+        };
+
+        let (absolute_path, boundary_root) = match resolution {
+            ToolPathResolution::Allowed {
+                absolute_path,
+                boundary_root,
+            } => (absolute_path, boundary_root),
+            ToolPathResolution::NeedsApproval(req) => {
+                return ToolDispatchOutcome::ApprovalRequired(req)
+            }
+        };
+
+        let rel_path = to_relative_path_for_boundary(&absolute_path, &boundary_root);
+        let mut patched_call = tc.clone();
+        if let Some(obj) = patched_call.arguments.as_object_mut() {
+            obj.insert("path".to_string(), json!(rel_path));
+        } else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "tool arguments must be an object".to_string(),
+            ));
+        }
+
+        let mut ctx = self.build_tool_execution_context();
+        ctx.scope_context.project_root = Some(boundary_root);
+        let result = self.execute_tool_call(&patched_call, &ctx);
+        ToolDispatchOutcome::Completed(result)
+    }
+
+    fn execute_list_files_tool(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_root: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        let mut patched_call = tc.clone();
+        let boundary_root = if let Some(raw_path) =
+            tc.arguments.get("path").and_then(|v| v.as_str())
+        {
+            if raw_path.is_empty() {
+                match self.ai_repo_root() {
+                    Some(root) => root,
+                    None => {
+                        return ToolDispatchOutcome::Completed(ToolResult::Error(
+                            "No git repository root detected. Project-level tools are restricted outside repositories."
+                                .to_string(),
+                        ))
+                    }
+                }
+            } else {
+                let resolution = match self.resolve_tool_path_policy(
+                    raw_path,
+                    true,
+                    "list_files",
+                    approved_once_root,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => return ToolDispatchOutcome::Completed(ToolResult::Error(e)),
+                };
+                let (absolute_path, boundary_root) = match resolution {
+                    ToolPathResolution::Allowed {
+                        absolute_path,
+                        boundary_root,
+                    } => (absolute_path, boundary_root),
+                    ToolPathResolution::NeedsApproval(req) => {
+                        return ToolDispatchOutcome::ApprovalRequired(req)
+                    }
+                };
+                let rel_path = to_relative_path_for_boundary(&absolute_path, &boundary_root);
+                if let Some(obj) = patched_call.arguments.as_object_mut() {
+                    obj.insert("path".to_string(), json!(rel_path));
+                } else {
+                    return ToolDispatchOutcome::Completed(ToolResult::Error(
+                        "tool arguments must be an object".to_string(),
+                    ));
+                }
+                boundary_root
+            }
+        } else {
+            match self.ai_repo_root() {
+                Some(root) => root,
+                None => {
+                    return ToolDispatchOutcome::Completed(ToolResult::Error(
+                        "No git repository root detected. Project-level tools are restricted outside repositories."
+                            .to_string(),
+                    ))
+                }
+            }
+        };
+
+        let mut ctx = self.build_tool_execution_context();
+        ctx.scope_context.project_root = Some(boundary_root);
+        let result = self.execute_tool_call(&patched_call, &ctx);
+        ToolDispatchOutcome::Completed(result)
+    }
+
+    fn execute_open_file_tool(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_root: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        let Some(raw_path) = tc.arguments.get("path").and_then(|v| v.as_str()) else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' is required".to_string(),
+            ));
+        };
+        if raw_path.is_empty() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' is required".to_string(),
+            ));
+        }
+
+        let caps = self.build_chat_capabilities();
+        let Some(tool_def) = self.ai_state.tool_registry.get("open_file") else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "unknown tool: open_file".into(),
+            ));
+        };
+        if !caps.contains(&tool_def.required_scope) {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "tool 'open_file' requires scope not granted by current context".to_string(),
+            ));
+        }
+
+        let resolution =
+            match self.resolve_tool_path_policy(raw_path, false, "open_file", approved_once_root) {
+                Ok(r) => r,
+                Err(e) => return ToolDispatchOutcome::Completed(ToolResult::Error(e)),
+            };
+        let absolute_path = match resolution {
+            ToolPathResolution::Allowed { absolute_path, .. } => absolute_path,
+            ToolPathResolution::NeedsApproval(req) => {
+                return ToolDispatchOutcome::ApprovalRequired(req)
+            }
+        };
+
+        ToolDispatchOutcome::Completed(
+            self.handle_open_file_at_absolute_path(&absolute_path, &tc.arguments),
+        )
+    }
+
+    fn handle_open_file_at_absolute_path(
+        &mut self,
+        absolute_path: &Path,
+        args: &serde_json::Value,
+    ) -> ToolResult {
+        if !absolute_path.is_file() {
+            return ToolResult::Error(format!(
+                "'{}' is not a file. Use list_files to see available files.",
+                absolute_path.display()
+            ));
+        }
+
+        if let Err(e) = self.open_file(absolute_path) {
+            return ToolResult::Error(format!(
+                "failed to open '{}': {}",
+                absolute_path.display(),
+                e
+            ));
+        }
+
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.saturating_sub(1) as usize)
+            .unwrap_or(0);
+        let col = args
+            .get("column")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.saturating_sub(1) as usize)
+            .unwrap_or(0);
+
+        let max_line = self.buffer().rope().len_lines().saturating_sub(1);
+        let target_line = line.min(max_line);
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(target_line, col);
+        self.buffer_mut().validate_cursor_position();
+        self.center_cursor_in_viewport();
+
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.active_buffer_id = self.current_buffer_index;
+            if !chat.review_mode {
+                chat.review_mode = true;
+            }
+        }
+
+        let actual_line = self.buffer().cursor().line() + 1;
+        let actual_col = self.buffer().cursor().col() + 1;
+        let total_lines = self.buffer().rope().len_lines();
+        ToolResult::Success(format!(
+            "Opened {} at line {}, column {} ({} lines total).",
+            absolute_path.display(),
+            actual_line,
+            actual_col,
+            total_lines
+        ))
+    }
+
+    fn resolve_tool_path_policy(
+        &self,
+        raw_path: &str,
+        treat_as_directory: bool,
+        tool_name: &str,
+        approved_once_root: Option<&PathBuf>,
+    ) -> std::result::Result<ToolPathResolution, String> {
+        let repo_root = self.ai_repo_root().ok_or_else(|| {
+            "No git repository root detected. Project-level tools are restricted outside repositories."
+                .to_string()
+        })?;
+        let repo_root = normalize_path(&repo_root);
+
+        let requested_path = {
+            let path = Path::new(raw_path);
+            if path.is_absolute() {
+                self.absolutize_path(path)
+            } else {
+                let joined = repo_root.join(path);
+                joined
+                    .canonicalize()
+                    .unwrap_or_else(|_| normalize_path(&joined))
+            }
+        };
+
+        if requested_path.starts_with(&repo_root) {
+            return Ok(ToolPathResolution::Allowed {
+                absolute_path: requested_path,
+                boundary_root: repo_root,
+            });
+        }
+
+        if let Some(root) = approved_once_root {
+            let root = normalize_path(root);
+            if requested_path.starts_with(&root) {
+                return Ok(ToolPathResolution::Allowed {
+                    absolute_path: requested_path,
+                    boundary_root: root,
+                });
+            }
+        }
+
+        if let Some(root) = self.current_session_approved_root_for(&requested_path) {
+            return Ok(ToolPathResolution::Allowed {
+                absolute_path: requested_path,
+                boundary_root: root,
+            });
+        }
+
+        let approval_root = if treat_as_directory {
+            requested_path.clone()
+        } else {
+            requested_path
+                .parent()
+                .map(normalize_path)
+                .unwrap_or_else(|| requested_path.clone())
+        };
+
+        Ok(ToolPathResolution::NeedsApproval(ToolApprovalRequest {
+            requested_path: requested_path.clone(),
+            approval_root: approval_root.clone(),
+            message: format!(
+                "Approval required: {} wants outside-repo access to {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
+                tool_name,
+                requested_path.display()
+            ),
+        }))
+    }
+
+    fn current_session_approved_root_for(&self, path: &Path) -> Option<PathBuf> {
+        let chat = self.ai_state.chat.as_ref()?;
+        for root in &chat.approved_external_roots {
+            let root = normalize_path(root);
+            if path.starts_with(&root) {
+                return Some(root);
+            }
+        }
+        None
+    }
+
+    /// Repository root for AI project-level tools.
+    ///
+    /// Resolves from current file (if available) or current working directory.
+    pub(crate) fn ai_repo_root(&self) -> Option<PathBuf> {
+        let origin_file = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| self.buffers.get(chat.origin_buffer_id))
+            .and_then(|buf| buf.file_path())
+            .map(PathBuf::from);
+        let current_file = self.buffer().file_path().map(PathBuf::from);
+
+        let start = if let Some(file) = origin_file.or(current_file) {
+            self.absolutize_path(&file)
+        } else {
+            std::env::current_dir().ok()?
+        };
+        let mut dir = if start.is_dir() {
+            start
+        } else {
+            start.parent()?.to_path_buf()
+        };
+
+        loop {
+            if dir.join(".git").exists() {
+                return Some(normalize_path(&dir));
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        None
+    }
+
+    fn absolutize_path(&self, path: &Path) -> PathBuf {
+        let joined = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        };
+        joined
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_path(&joined))
     }
 
     // -----------------------------------------------------------------
@@ -276,8 +812,8 @@ impl Editor {
         // --- File info (always) ---
         let file_info = match buf.file_path() {
             Some(path) => {
-                let lang = crate::syntax::LanguageRegistry::get_lsp_language_id(path)
-                    .unwrap_or("unknown");
+                let lang =
+                    crate::syntax::LanguageRegistry::get_lsp_language_id(path).unwrap_or("unknown");
                 let total_lines = buf.rope().len_lines();
                 let modified = if buf.is_modified() { ", modified" } else { "" };
                 format!(
@@ -295,7 +831,11 @@ impl Editor {
 
         // --- Cursor position (always) ---
         let cursor = buf.cursor();
-        let cursor_line = format!("Cursor: line {}, col {}\n", cursor.line() + 1, cursor.col() + 1);
+        let cursor_line = format!(
+            "Cursor: line {}, col {}\n",
+            cursor.line() + 1,
+            cursor.col() + 1
+        );
         out.push_str(&cursor_line);
         remaining = remaining.saturating_sub(cursor_line.len());
 
@@ -307,7 +847,10 @@ impl Editor {
             let kind = symbol_kind_label(sym.kind);
             let start = sym.range.start.line + 1;
             let end = sym.range.end.line + 1;
-            let scope_line = format!("Enclosing: {} {} (lines {}-{})\n", kind, sym.name, start, end);
+            let scope_line = format!(
+                "Enclosing: {} {} (lines {}-{})\n",
+                kind, sym.name, start, end
+            );
             if scope_line.len() <= remaining {
                 out.push_str(&scope_line);
                 remaining = remaining.saturating_sub(scope_line.len());
@@ -362,7 +905,12 @@ impl Editor {
                 let line_content = rope.line(line_idx).to_string();
                 // Trim trailing newline from ropey line
                 let line_content = line_content.trim_end_matches('\n');
-                let formatted = format!("{:>width$} | {}\n", line_idx + 1, line_content, width = num_width);
+                let formatted = format!(
+                    "{:>width$} | {}\n",
+                    line_idx + 1,
+                    line_content,
+                    width = num_width
+                );
                 if code_len + formatted.len() > code_budget {
                     truncated_after = render_end - line_idx;
                     break;
@@ -400,10 +948,7 @@ impl Editor {
                     out.push_str(line);
                 }
                 if truncated_after > 0 {
-                    out.push_str(&format!(
-                        "[... {} more lines below ...]\n",
-                        truncated_after
-                    ));
+                    out.push_str(&format!("[... {} more lines below ...]\n", truncated_after));
                 }
                 remaining = remaining.saturating_sub(header.len() + code_len);
             }
@@ -421,10 +966,8 @@ impl Editor {
                 .collect();
 
             if !vp_diags.is_empty() {
-                let mut diag_section = format!(
-                    "\n### Diagnostics ({} on visible lines)\n",
-                    vp_diags.len()
-                );
+                let mut diag_section =
+                    format!("\n### Diagnostics ({} on visible lines)\n", vp_diags.len());
                 for d in &vp_diags {
                     let severity = match d.severity {
                         Some(lsp_types::DiagnosticSeverity::ERROR) => "Error",
@@ -456,11 +999,7 @@ impl Editor {
     // -----------------------------------------------------------------
 
     /// Execute an LSP-backed tool (document_symbols, hover, goto_definition).
-    pub(crate) fn execute_lsp_tool(
-        &self,
-        name: &str,
-        args: &serde_json::Value,
-    ) -> ToolResult {
+    pub(crate) fn execute_lsp_tool(&self, name: &str, args: &serde_json::Value) -> ToolResult {
         let buf = &self.buffers[self.current_buffer_index];
         let Some(file_path) = buf.file_path() else {
             return ToolResult::Error("No file open.".to_string());
@@ -492,7 +1031,9 @@ impl Editor {
         let cached_symbols = self.lsp_state.available_document_symbols.clone();
 
         match name {
-            "document_symbols" => handle_lsp_document_symbols(lsp, uri, language_id, cached_symbols),
+            "document_symbols" => {
+                handle_lsp_document_symbols(lsp, uri, language_id, cached_symbols)
+            }
             "hover" => handle_lsp_hover(lsp, uri, language_id, args),
             "goto_definition" => handle_lsp_goto_definition(lsp, uri, language_id, args),
             _ => ToolResult::Error(format!("unknown LSP tool: {name}")),
@@ -672,6 +1213,7 @@ impl Editor {
                 profile_name,
                 model_name,
             });
+            chat.pending_tool_approval = None;
             chat.streaming_content = Some(String::new());
             chat.streaming_thinking = None;
             chat.streaming_tool_calls.clear();
@@ -700,10 +1242,34 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = false;
             chat.pending_job = None;
+            chat.pending_tool_approval = None;
             chat.streaming_content = None;
             chat.streaming_thinking = None;
             chat.message_scroll = 0;
         }
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn to_relative_path_for_boundary(path: &Path, boundary_root: &Path) -> String {
+    let rel = path.strip_prefix(boundary_root).unwrap_or(path);
+    if rel.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        rel.to_string_lossy().to_string()
     }
 }
 
@@ -737,7 +1303,9 @@ pub(crate) fn find_enclosing_symbol(
             if let Some(children) = &sym.children {
                 if let Some(child) = find_enclosing_symbol(children, cursor_line) {
                     let child_span = child.range.end.line - child.range.start.line;
-                    let best_span = best.map(|b| b.range.end.line - b.range.start.line).unwrap_or(u32::MAX);
+                    let best_span = best
+                        .map(|b| b.range.end.line - b.range.start.line)
+                        .unwrap_or(u32::MAX);
                     if child_span < best_span {
                         best = Some(child);
                     }
@@ -832,9 +1400,8 @@ fn handle_lsp_document_symbols(
     cached_symbols: Vec<lsp_types::DocumentSymbol>,
 ) -> ToolResult {
     let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async {
-            lsp.document_symbols(&uri, &language_id).await
-        })
+        tokio::runtime::Handle::current()
+            .block_on(async { lsp.document_symbols(&uri, &language_id).await })
     });
 
     match result {
@@ -872,9 +1439,9 @@ fn handle_lsp_hover(
 
     match result {
         Ok(Some(content)) => ToolResult::Success(content),
-        Ok(None) => ToolResult::Success(
-            "No hover information available at this position.".to_string(),
-        ),
+        Ok(None) => {
+            ToolResult::Success("No hover information available at this position.".to_string())
+        }
         Err(e) => ToolResult::Error(format!("LSP hover failed: {e}")),
     }
 }
@@ -907,9 +1474,7 @@ fn handle_lsp_goto_definition(
                 path, def_line, def_col
             ))
         }
-        Ok(None) => ToolResult::Success(
-            "No definition found at this position.".to_string(),
-        ),
+        Ok(None) => ToolResult::Success("No definition found at this position.".to_string()),
         Err(e) => ToolResult::Error(format!("LSP goto_definition failed: {e}")),
     }
 }
