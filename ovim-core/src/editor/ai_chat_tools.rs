@@ -64,9 +64,11 @@ impl Editor {
             allow_mutations: allow_edits,
         };
 
-        // Outside a git repository, force file-scoped access for project tools.
-        // This prevents broad accidental traversal from process CWD.
-        if self.ai_repo_root().is_none() && caps.file_scope >= crate::ai::FileScope::Project {
+        // Without an approved project boundary, force file-scoped access for
+        // project tools to prevent broad accidental traversal from process CWD.
+        if self.ai_effective_project_root().is_none()
+            && caps.file_scope >= crate::ai::FileScope::Project
+        {
             caps.file_scope = crate::ai::FileScope::File;
         }
 
@@ -126,7 +128,7 @@ impl Editor {
             .file_path()
             .map(PathBuf::from)
             .map(|p| self.absolutize_path(&p));
-        let project_root = self.ai_repo_root();
+        let project_root = self.ai_effective_project_root();
 
         // Snapshot all open buffers so read_file_at_path can read
         // in-memory content instead of potentially stale disk files.
@@ -178,7 +180,7 @@ impl Editor {
     /// Dispatch a single tool call by side effect. Read tools get a snapshot,
     /// mutation tools get `&mut self`.
     ///
-    /// `approved_once_root` temporarily allows one outside-repo access for the call.
+    /// `approved_once_root` temporarily allows one outside-project access for the call.
     fn dispatch_tool_call_with_approval(
         &mut self,
         tc: &ToolCallInfo,
@@ -278,7 +280,7 @@ impl Editor {
         self.execute_tool_call_batch(tool_calls, model_name.to_string())
     }
 
-    /// Resolve a paused outside-repo tool request.
+    /// Resolve a paused outside-project tool request.
     pub fn ai_chat_resolve_pending_tool_approval(&mut self, allow: bool, remember: bool) -> bool {
         let pending = self
             .ai_state
@@ -295,7 +297,7 @@ impl Editor {
                 conv.append_tool_result(
                     pending.tool_call.id.clone(),
                     format!(
-                        "Error: user denied outside-repo access for '{}'",
+                        "Error: user denied outside-project access for '{}'",
                         pending.requested_path.display()
                     ),
                 );
@@ -304,7 +306,7 @@ impl Editor {
                 chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                 chat.waiting = true;
             }
-            self.set_lsp_status("Denied outside-repo tool access".to_string());
+            self.set_lsp_status("Denied outside-project tool access".to_string());
             return self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name);
         }
 
@@ -337,7 +339,7 @@ impl Editor {
                     chat.waiting = true;
                 }
                 self.set_lsp_status(format!(
-                    "Approved outside-repo access: {}",
+                    "Approved outside-project access: {}",
                     pending.requested_path.display()
                 ));
                 self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
@@ -354,6 +356,53 @@ impl Editor {
                 true
             }
         }
+    }
+
+    /// On first chat open in a no-repo session, ask once whether project tools
+    /// may access the current folder as the project boundary.
+    pub(crate) fn maybe_prompt_no_repo_session_folder_access_on_chat_open(&mut self) {
+        if self.ai_repo_root().is_some() || self.ai_state.no_repo_session_prompted {
+            return;
+        }
+        let Some(folder) = self.ai_no_repo_candidate_root() else {
+            return;
+        };
+
+        self.ai_state.no_repo_session_prompted = true;
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_no_repo_folder_approval = Some(folder.clone());
+        }
+        self.set_lsp_status(format!(
+            "You're not in a git repo. Allow AI tool access to folder: {}? Press Ctrl-Y to allow, Ctrl-N to deny.",
+            folder.display()
+        ));
+    }
+
+    /// Resolve the first-chat-open no-repo folder access prompt.
+    pub fn ai_chat_resolve_pending_no_repo_folder_approval(&mut self, allow: bool) -> bool {
+        let pending_folder = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|c| c.pending_no_repo_folder_approval.take());
+
+        let Some(folder) = pending_folder else {
+            return false;
+        };
+
+        self.ai_state.no_repo_session_prompted = true;
+        if allow {
+            let root = normalize_path(&folder);
+            self.ai_state.no_repo_session_allowed_root = Some(root.clone());
+            self.set_lsp_status(format!(
+                "Approved AI tool access for folder: {}",
+                root.display()
+            ));
+        } else {
+            self.ai_state.no_repo_session_allowed_root = None;
+            self.set_lsp_status("Denied no-repo folder tool access".to_string());
+        }
+        true
     }
 
     fn execute_tool_call_batch(
@@ -502,59 +551,56 @@ impl Editor {
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
         let mut patched_call = tc.clone();
-        let boundary_root = if let Some(raw_path) =
-            tc.arguments.get("path").and_then(|v| v.as_str())
-        {
-            if raw_path.is_empty() {
-                match self.ai_repo_root() {
+        let boundary_root =
+            if let Some(raw_path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
+                if raw_path.is_empty() {
+                    match self.ai_effective_project_root() {
+                        Some(root) => root,
+                        None => {
+                            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                                self.no_project_root_error(),
+                            ))
+                        }
+                    }
+                } else {
+                    let resolution = match self.resolve_tool_path_policy(
+                        raw_path,
+                        true,
+                        "list_files",
+                        approved_once_root,
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => return ToolDispatchOutcome::Completed(ToolResult::Error(e)),
+                    };
+                    let (absolute_path, boundary_root) = match resolution {
+                        ToolPathResolution::Allowed {
+                            absolute_path,
+                            boundary_root,
+                        } => (absolute_path, boundary_root),
+                        ToolPathResolution::NeedsApproval(req) => {
+                            return ToolDispatchOutcome::ApprovalRequired(req)
+                        }
+                    };
+                    let rel_path = to_relative_path_for_boundary(&absolute_path, &boundary_root);
+                    if let Some(obj) = patched_call.arguments.as_object_mut() {
+                        obj.insert("path".to_string(), json!(rel_path));
+                    } else {
+                        return ToolDispatchOutcome::Completed(ToolResult::Error(
+                            "tool arguments must be an object".to_string(),
+                        ));
+                    }
+                    boundary_root
+                }
+            } else {
+                match self.ai_effective_project_root() {
                     Some(root) => root,
                     None => {
                         return ToolDispatchOutcome::Completed(ToolResult::Error(
-                            "No git repository root detected. Project-level tools are restricted outside repositories."
-                                .to_string(),
+                            self.no_project_root_error(),
                         ))
                     }
                 }
-            } else {
-                let resolution = match self.resolve_tool_path_policy(
-                    raw_path,
-                    true,
-                    "list_files",
-                    approved_once_root,
-                ) {
-                    Ok(r) => r,
-                    Err(e) => return ToolDispatchOutcome::Completed(ToolResult::Error(e)),
-                };
-                let (absolute_path, boundary_root) = match resolution {
-                    ToolPathResolution::Allowed {
-                        absolute_path,
-                        boundary_root,
-                    } => (absolute_path, boundary_root),
-                    ToolPathResolution::NeedsApproval(req) => {
-                        return ToolDispatchOutcome::ApprovalRequired(req)
-                    }
-                };
-                let rel_path = to_relative_path_for_boundary(&absolute_path, &boundary_root);
-                if let Some(obj) = patched_call.arguments.as_object_mut() {
-                    obj.insert("path".to_string(), json!(rel_path));
-                } else {
-                    return ToolDispatchOutcome::Completed(ToolResult::Error(
-                        "tool arguments must be an object".to_string(),
-                    ));
-                }
-                boundary_root
-            }
-        } else {
-            match self.ai_repo_root() {
-                Some(root) => root,
-                None => {
-                    return ToolDispatchOutcome::Completed(ToolResult::Error(
-                        "No git repository root detected. Project-level tools are restricted outside repositories."
-                            .to_string(),
-                    ))
-                }
-            }
-        };
+            };
 
         let mut ctx = self.build_tool_execution_context();
         ctx.scope_context.project_root = Some(boundary_root);
@@ -672,28 +718,27 @@ impl Editor {
         tool_name: &str,
         approved_once_root: Option<&PathBuf>,
     ) -> std::result::Result<ToolPathResolution, String> {
-        let repo_root = self.ai_repo_root().ok_or_else(|| {
-            "No git repository root detected. Project-level tools are restricted outside repositories."
-                .to_string()
-        })?;
-        let repo_root = normalize_path(&repo_root);
+        let boundary_root = self
+            .ai_effective_project_root()
+            .ok_or_else(|| self.no_project_root_error())?;
+        let boundary_root = normalize_path(&boundary_root);
 
         let requested_path = {
             let path = Path::new(raw_path);
             if path.is_absolute() {
                 self.absolutize_path(path)
             } else {
-                let joined = repo_root.join(path);
+                let joined = boundary_root.join(path);
                 joined
                     .canonicalize()
                     .unwrap_or_else(|_| normalize_path(&joined))
             }
         };
 
-        if requested_path.starts_with(&repo_root) {
+        if requested_path.starts_with(&boundary_root) {
             return Ok(ToolPathResolution::Allowed {
                 absolute_path: requested_path,
-                boundary_root: repo_root,
+                boundary_root,
             });
         }
 
@@ -727,7 +772,7 @@ impl Editor {
             requested_path: requested_path.clone(),
             approval_root: approval_root.clone(),
             message: format!(
-                "Approval required: {} wants outside-repo access to {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
+                "Approval required: {} wants outside-project access to {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
                 tool_name,
                 requested_path.display()
             ),
@@ -745,10 +790,20 @@ impl Editor {
         None
     }
 
-    /// Repository root for AI project-level tools.
+    /// Effective project boundary for AI project-level tools.
     ///
-    /// Resolves from current file (if available) or current working directory.
-    pub(crate) fn ai_repo_root(&self) -> Option<PathBuf> {
+    /// Prefers git repository root. Outside git, falls back to a
+    /// session-approved folder root.
+    pub(crate) fn ai_effective_project_root(&self) -> Option<PathBuf> {
+        self.ai_repo_root().or_else(|| {
+            self.ai_state
+                .no_repo_session_allowed_root
+                .as_ref()
+                .map(|p| normalize_path(p))
+        })
+    }
+
+    fn ai_project_start_path(&self) -> Option<PathBuf> {
         let origin_file = self
             .ai_state
             .chat
@@ -758,11 +813,31 @@ impl Editor {
             .map(PathBuf::from);
         let current_file = self.buffer().file_path().map(PathBuf::from);
 
-        let start = if let Some(file) = origin_file.or(current_file) {
-            self.absolutize_path(&file)
+        if let Some(file) = origin_file.or(current_file) {
+            Some(self.absolutize_path(&file))
         } else {
-            std::env::current_dir().ok()?
-        };
+            std::env::current_dir().ok()
+        }
+    }
+
+    fn ai_no_repo_candidate_root(&self) -> Option<PathBuf> {
+        let start = self.ai_project_start_path()?;
+        if start.is_dir() {
+            Some(normalize_path(&start))
+        } else {
+            start.parent().map(normalize_path)
+        }
+    }
+
+    fn no_project_root_error(&self) -> String {
+        "No project boundary available. You're not in a git repo and no folder access was approved for this session.".to_string()
+    }
+
+    /// Repository root for AI project-level tools.
+    ///
+    /// Resolves from current file (if available) or current working directory.
+    pub(crate) fn ai_repo_root(&self) -> Option<PathBuf> {
+        let start = self.ai_project_start_path()?;
         let mut dir = if start.is_dir() {
             start
         } else {
