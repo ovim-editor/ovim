@@ -3,6 +3,7 @@ use crate::ai::tools::ToolRegistry;
 use crate::ai::{AiConfig, AiJobResult, EditFormat, PROFILE_LOCAL};
 use crate::mode::Mode;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -88,6 +89,10 @@ pub struct AiState {
     pub conversations: HashMap<(usize, String), ConversationTree>,
     /// Registry of all available tools.
     pub tool_registry: ToolRegistry,
+    /// Whether we've already asked for no-repo folder access in this process session.
+    pub no_repo_session_prompted: bool,
+    /// User-approved folder root for project-level AI tools when not in a git repo.
+    pub no_repo_session_allowed_root: Option<PathBuf>,
 }
 
 impl Default for AiState {
@@ -128,6 +133,8 @@ impl Default for AiState {
             chat: None,
             conversations: HashMap::new(),
             tool_registry: ToolRegistry::new(),
+            no_repo_session_prompted: false,
+            no_repo_session_allowed_root: None,
         }
     }
 }

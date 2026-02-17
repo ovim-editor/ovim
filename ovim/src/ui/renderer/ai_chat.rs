@@ -713,7 +713,8 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     let focus = editor.ai_chat_focus();
     let is_focused = focus == ChatFocus::ModelSelector;
     let w = area.width as usize;
-    let pending_approval = editor.ai_chat_has_pending_tool_approval();
+    let pending_no_repo_approval = editor.ai_chat_has_pending_no_repo_folder_approval();
+    let pending_tool_approval = editor.ai_chat_has_pending_tool_approval();
 
     let mut profile_names = editor.ai_profile_names_sorted();
     if profile_names.is_empty() {
@@ -733,8 +734,13 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     ));
     used_width += 2;
 
-    if pending_approval {
-        if let Some(summary) = editor.ai_chat_pending_tool_approval_summary() {
+    if pending_no_repo_approval || pending_tool_approval {
+        let summary = if pending_no_repo_approval {
+            editor.ai_chat_pending_no_repo_folder_approval_summary()
+        } else {
+            editor.ai_chat_pending_tool_approval_summary()
+        };
+        if let Some(summary) = summary {
             let mut label = format!(" ! {} ", summary);
             let max_label = w.saturating_sub(4);
             if label.chars().count() > max_label {
@@ -799,7 +805,9 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     // Hints at right
     let allow_edits = editor.ai_chat_allow_edits();
-    let hint = if pending_approval {
+    let hint = if pending_no_repo_approval {
+        " [C-y allow] [C-n deny] "
+    } else if pending_tool_approval {
         " [C-y allow once] [C-a allow session] [C-n deny] "
     } else if allow_edits {
         " [Enter send] [C-y copy] [Esc\u{00d7}2 close] "

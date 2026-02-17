@@ -39,6 +39,7 @@ impl Editor {
         chat.buffer_was_clean_at_chat_start = buffer_clean;
         self.ai_state.chat = Some(chat);
         self.set_mode(Mode::AiChat);
+        self.maybe_prompt_no_repo_session_folder_access_on_chat_open();
 
         if let Some(msg) = initial {
             if let Some(conv) = self.conversation() {
@@ -455,6 +456,28 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Whether chat is waiting for first-time no-repo folder approval.
+    pub fn ai_chat_has_pending_no_repo_folder_approval(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.pending_no_repo_folder_approval.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Human-readable summary of the pending no-repo folder approval, if any.
+    pub fn ai_chat_pending_no_repo_folder_approval_summary(&self) -> Option<String> {
+        let pending = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.pending_no_repo_folder_approval.as_ref())?;
+        Some(format!(
+            "Not in a git repo. Allow tool access to folder: {}",
+            pending.display()
+        ))
+    }
+
     /// Human-readable summary of the pending approval, if any.
     pub fn ai_chat_pending_tool_approval_summary(&self) -> Option<String> {
         let pending = self
@@ -463,7 +486,7 @@ impl Editor {
             .as_ref()
             .and_then(|c| c.pending_tool_approval.as_ref())?;
         Some(format!(
-            "Outside-repo access requested: {} ({})",
+            "Outside-project access requested: {} ({})",
             pending.requested_path.display(),
             pending.tool_call.name
         ))

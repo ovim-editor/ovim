@@ -45,6 +45,25 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
+    if editor.ai_chat_has_pending_no_repo_folder_approval() {
+        if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_no_repo_folder_approval(true);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Char('a') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_no_repo_folder_approval(true);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_no_repo_folder_approval(false);
+            return Ok(());
+        }
+        return Ok(());
+    }
+
     if editor.ai_chat_has_pending_tool_approval() {
         if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL)
         {
