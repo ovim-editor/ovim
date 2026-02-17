@@ -19,7 +19,7 @@ use super::file_tree_widget::render_file_tree;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::line_cache::LineRenderCache;
-use super::overlays::{render_completion_menu, render_hover_window};
+use super::overlays::{render_ai_review_shortcuts, render_completion_menu, render_hover_window};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
     ai_prompt_panel_height, render_ai_prompt_line, render_command_line, render_margin_widgets,
@@ -363,15 +363,20 @@ fn render_overlays(
     ctx: &OverlayContext,
     command_chunk: Rect,
 ) {
+    if editor.mode() == crate::mode::Mode::AiChat && editor.ai_chat_review_mode() {
+        render_ai_review_shortcuts(frame, theme, ctx.layout.buffer_area);
+    }
+
     // Top-right toast overlays (diagnostics + transient notifications) — hidden during full-screen overlays
     let mode = editor.mode();
-    if !matches!(
+    let hide_toasts = matches!(
         mode,
         crate::mode::Mode::Picker
             | crate::mode::Mode::LspManager
             | crate::mode::Mode::HoverPreview
             | crate::mode::Mode::HoverNavigate
-    ) {
+    ) || (mode == crate::mode::Mode::AiChat && editor.ai_chat_review_mode());
+    if !hide_toasts {
         render_top_right_toasts(frame, editor, theme, ctx.layout.buffer_area);
     }
 
@@ -489,7 +494,7 @@ fn set_cursor_position(
         let rename_cursor_x =
             (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
-    } else if editor.mode() == crate::mode::Mode::AiChat {
+    } else if editor.mode() == crate::mode::Mode::AiChat && chat_area.is_some() {
         if let Some(chat_rect) = chat_area {
             if let Some((cx, cy)) = super::ai_chat::chat_cursor_info(editor, chat_rect) {
                 frame.set_cursor_position((cx, cy));

@@ -1,4 +1,5 @@
 use crate::editor::Editor;
+use crate::syntax::{Theme, UiGroup};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -25,7 +26,7 @@ pub fn render_hover_window(
     ctx: &OverlayContext,
     hover_position: Option<(usize, usize)>,
     is_preview: bool,
-    theme: &crate::syntax::Theme,
+    theme: &Theme,
     content_type: crate::editor::HoverContentType,
 ) {
     let layout = ctx.layout;
@@ -355,4 +356,100 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     // Clear background and render menu
     frame.render_widget(ratatui::widgets::Clear, menu_area);
     frame.render_widget(paragraph, menu_area);
+}
+
+/// Compact floating help card for AI chat review mode.
+///
+/// Uses a rounded border and transparent panel background while clearing
+/// underlying content for readability.
+pub fn render_ai_review_shortcuts(frame: &mut Frame, theme: &Theme, buffer_area: Rect) {
+    if buffer_area.width < 34 || buffer_area.height < 8 {
+        return;
+    }
+
+    let shortcuts = vec![
+        ("<-", "previous change"),
+        ("->", "next change"),
+        ("Enter", "accept review"),
+        ("Ctrl-r", "return to chat"),
+        ("Esc", "close chat"),
+    ];
+
+    let title = " AI Review ";
+    let content_width = shortcuts
+        .iter()
+        .map(|(_k, v)| 1 + 8 + 1 + v.width())
+        .max()
+        .unwrap_or(24)
+        .max(title.width())
+        .max(24);
+
+    let max_panel_width = buffer_area.width.saturating_sub(2) as usize;
+    if max_panel_width < 12 {
+        return;
+    }
+    let panel_width = (content_width + 2).min(max_panel_width) as u16;
+    let max_panel_height = buffer_area.height.saturating_sub(2);
+    if max_panel_height < 4 {
+        return;
+    }
+    let visible_rows = shortcuts
+        .len()
+        .min(max_panel_height.saturating_sub(2) as usize);
+    let panel_height = (visible_rows + 2) as u16;
+
+    let x = buffer_area
+        .x
+        .saturating_add(buffer_area.width.saturating_sub(panel_width + 1));
+    let y = buffer_area.y.saturating_add(1);
+    let panel_area = Rect {
+        x,
+        y,
+        width: panel_width,
+        height: panel_height,
+    };
+
+    let border_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Info));
+    let key_color =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::TabActiveFg));
+    let text_color =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::StatusLineForeground));
+
+    let mut lines = Vec::with_capacity(visible_rows);
+    for (key, desc) in shortcuts.into_iter().take(visible_rows) {
+        let key_text = format!("{key:<8}");
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default().bg(Color::Reset)),
+            Span::styled(
+                key_text,
+                Style::default()
+                    .fg(key_color)
+                    .bg(Color::Reset)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {desc}"),
+                Style::default().fg(text_color).bg(Color::Reset),
+            ),
+        ]));
+    }
+
+    let card = Paragraph::new(lines)
+        .style(Style::default().bg(Color::Reset))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(Style::default().fg(border_color).bg(Color::Reset))
+                .title(title)
+                .title_style(
+                    Style::default()
+                        .fg(border_color)
+                        .bg(Color::Reset)
+                        .add_modifier(Modifier::BOLD),
+                ),
+        );
+
+    frame.render_widget(ratatui::widgets::Clear, panel_area);
+    frame.render_widget(card, panel_area);
 }

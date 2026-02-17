@@ -1105,7 +1105,7 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
         file_count,
         if file_count == 1 { "" } else { "s" },
     );
-    let hints = " ]a/[a navigate | <C-r> chat | u undo ";
+    let hints = " <-/-> edits | Enter accept | <C-r> chat | u undo ";
 
     let w = area.width as usize;
     let used = 8 + info.chars().count() + hints.len();

@@ -24,6 +24,18 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             }
             return Ok(());
         }
+        if key_event.code == KeyCode::Left {
+            editor.goto_agent_edit(false);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Right {
+            editor.goto_agent_edit(true);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Enter {
+            editor.ai_chat_accept_review();
+            return Ok(());
+        }
         // Esc closes chat entirely from review mode
         if key_event.code == KeyCode::Esc {
             editor.close_ai_chat();

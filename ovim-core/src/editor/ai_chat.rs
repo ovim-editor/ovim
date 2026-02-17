@@ -560,6 +560,18 @@ impl Editor {
         }
     }
 
+    /// Accept the current review session and return to chat.
+    ///
+    /// This keeps file edits on disk/in-memory, but clears per-turn review
+    /// markers so the next review session starts fresh.
+    pub fn ai_chat_accept_review(&mut self) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.agent_edits.clear();
+            chat.review_mode = false;
+        }
+        self.set_lsp_status("Accepted AI changes and returned to chat".to_string());
+    }
+
     /// Whether review mode is active.
     pub fn ai_chat_review_mode(&self) -> bool {
         self.ai_state
