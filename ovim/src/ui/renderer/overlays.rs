@@ -368,27 +368,26 @@ pub fn render_ai_review_shortcuts(frame: &mut Frame, theme: &Theme, buffer_area:
     }
 
     let shortcuts = vec![
-        ("<-", "previous change"),
-        ("->", "next change"),
-        ("Enter", "accept review"),
-        ("Ctrl-r", "return to chat"),
-        ("Esc", "close chat"),
+        ("\u{2190}/\u{2192}", "navigate edits"),
+        ("Enter", "accept"),
+        ("Ctrl-r", "back to chat"),
+        ("Esc", "close"),
     ];
 
-    let title = " AI Review ";
+    let title = " Review Keys ";
     let content_width = shortcuts
         .iter()
-        .map(|(_k, v)| 1 + 8 + 1 + v.width())
+        .map(|(k, v)| 1 + k.width() + 3 + v.width())
         .max()
-        .unwrap_or(24)
+        .unwrap_or(20)
         .max(title.width())
-        .max(24);
+        .max(20);
 
     let max_panel_width = buffer_area.width.saturating_sub(2) as usize;
     if max_panel_width < 12 {
         return;
     }
-    let panel_width = (content_width + 2).min(max_panel_width) as u16;
+    let panel_width = (content_width + 2).min(max_panel_width).max(24) as u16;
     let max_panel_height = buffer_area.height.saturating_sub(2);
     if max_panel_height < 4 {
         return;
@@ -414,10 +413,11 @@ pub fn render_ai_review_shortcuts(frame: &mut Frame, theme: &Theme, buffer_area:
         crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::TabActiveFg));
     let text_color =
         crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::StatusLineForeground));
+    let dash_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Border));
 
     let mut lines = Vec::with_capacity(visible_rows);
     for (key, desc) in shortcuts.into_iter().take(visible_rows) {
-        let key_text = format!("{key:<8}");
+        let key_text = format!("{key:<7}");
         lines.push(Line::from(vec![
             Span::styled(" ", Style::default().bg(Color::Reset)),
             Span::styled(
@@ -428,7 +428,11 @@ pub fn render_ai_review_shortcuts(frame: &mut Frame, theme: &Theme, buffer_area:
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {desc}"),
+                " \u{2022} ",
+                Style::default().fg(dash_color).bg(Color::Reset),
+            ),
+            Span::styled(
+                desc.to_string(),
                 Style::default().fg(text_color).bg(Color::Reset),
             ),
         ]));

@@ -1089,6 +1089,7 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
         .ai_chat_state()
         .map(|c| c.agent_edits.edited_buffer_count())
         .unwrap_or(0);
+    let active_target = review_target_path_hint(editor, 34);
 
     let mode_span = Span::styled(
         " REVIEW ",
@@ -1099,16 +1100,20 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
     );
 
     let info = format!(
-        " {} edit{} in {} file{} ",
+        " {} edit{} in {} file{} \u{00b7} {} ",
         edit_count,
         if edit_count == 1 { "" } else { "s" },
         file_count,
         if file_count == 1 { "" } else { "s" },
+        active_target,
     );
-    let hints = " <-/-> edits | Enter accept | <C-r> chat | u undo ";
-
+    let hints = " \u{2190}/\u{2192} edits  Enter accept  Ctrl-r chat  Esc close ";
     let w = area.width as usize;
-    let used = 8 + info.chars().count() + hints.len();
+    let mode_width = " REVIEW ".chars().count();
+    let max_hint_width = w.saturating_sub(mode_width + 12).min(44);
+    let hints = truncate_tail(hints, max_hint_width);
+    let max_info_width = w.saturating_sub(mode_width + hints.chars().count());
+    let info = truncate_middle(&info, max_info_width);
 
     let info_span = Span::styled(info, Style::default().fg(status_fg).bg(status_bg));
     let hints_span = Span::styled(
@@ -1118,6 +1123,7 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
             .bg(status_bg)
             .add_modifier(Modifier::DIM),
     );
+    let used = mode_width + info_span.content.chars().count() + hints_span.content.chars().count();
     let gap = w.saturating_sub(used);
     let gap_span = Span::styled(" ".repeat(gap), Style::default().bg(status_bg));
 
@@ -1125,9 +1131,87 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
     frame.render_widget(Paragraph::new(vec![line]), area);
 }
 
+fn review_target_path_hint(editor: &Editor, max_chars: usize) -> String {
+    let path = editor
+        .ai_chat_state()
+        .and_then(|c| editor.get_buffer(c.active_buffer_id))
+        .and_then(|b| b.file_path())
+        .unwrap_or("[No Name]");
+    compact_path_hint(path, max_chars)
+}
+
+fn compact_path_hint(path: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return truncate_middle(path, max_chars);
+    }
+
+    let mut tail = parts[parts.len() - 1].to_string();
+    for idx in (0..parts.len().saturating_sub(1)).rev() {
+        let candidate = format!("{}/{}", parts[idx], tail);
+        if candidate.chars().count() + 2 > max_chars {
+            break;
+        }
+        tail = candidate;
+    }
+
+    if tail == normalized || parts.len() == 1 {
+        truncate_middle(&tail, max_chars)
+    } else {
+        truncate_middle(&format!("\u{2026}/{}", tail), max_chars)
+    }
+}
+
+fn truncate_tail(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars == 1 {
+        return "\u{2026}".to_string();
+    }
+    let mut out: String = text.chars().take(max_chars - 1).collect();
+    out.push('\u{2026}');
+    out
+}
+
+fn truncate_middle(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars <= 3 {
+        return truncate_tail(text, max_chars);
+    }
+
+    let head = (max_chars - 1) / 2;
+    let tail = max_chars - head - 1;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{}\u{2026}{}", start, end)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::wrap_prompt_rows;
+    use super::{compact_path_hint, truncate_middle, wrap_prompt_rows};
 
     #[test]
     fn test_wrap_prompt_rows_preserves_text_across_rows() {
@@ -1147,5 +1231,21 @@ mod tests {
     fn test_wrap_prompt_rows_handles_empty_input() {
         let rows = wrap_prompt_rows("", 3, 4, 8);
         assert_eq!(rows, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn compact_path_hint_keeps_disambiguating_tail() {
+        let path = "/workspace/packages/ovim/src/ui/renderer/ai_chat.rs";
+        let hint = compact_path_hint(path, 24);
+        assert!(hint.ends_with("renderer/ai_chat.rs"));
+    }
+
+    #[test]
+    fn truncate_middle_preserves_both_sides() {
+        let text = "edits in 3 files · src/ui/renderer/ai_chat.rs";
+        let out = truncate_middle(text, 20);
+        assert!(out.starts_with("edits"));
+        assert!(out.ends_with("chat.rs"));
+        assert!(out.contains('…'));
     }
 }
