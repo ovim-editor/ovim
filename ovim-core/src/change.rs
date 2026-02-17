@@ -47,7 +47,7 @@ pub type Position = (usize, usize);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextObjectType {
     /// Inner/around word (iw/aw)
-    Word { inner: bool },
+    Word { inner: bool, big: bool },
     /// Quoted string with specific quote char (i"/a", i'/a', i`/a`)
     Quote { char: char, inner: bool },
     /// Paired delimiters (i(/a(, i[/a[, i{/a{, i</a<)
@@ -918,13 +918,12 @@ impl Change {
         object_type: &TextObjectType,
     ) -> Option<crate::textobjects::TextObjectRange> {
         match object_type {
-            TextObjectType::Word { inner } => {
-                if *inner {
-                    TextObjects::inner_word(buffer)
-                } else {
-                    TextObjects::around_word(buffer)
-                }
-            }
+            TextObjectType::Word { inner, big } => match (*inner, *big) {
+                (true, true) => TextObjects::inner_big_word(buffer),
+                (true, false) => TextObjects::inner_word(buffer),
+                (false, true) => TextObjects::around_big_word(buffer),
+                (false, false) => TextObjects::around_word(buffer),
+            },
             TextObjectType::Quote { char, inner } => {
                 TextObjects::quoted_string(buffer, *char, !*inner)
             }
@@ -1152,6 +1151,10 @@ pub struct ChangeManager {
     pub save_point: Option<usize>,
     /// Last position where an edit occurred (for g; navigation)
     pub last_edit_position: Option<Position>,
+    /// Changelist positions (older/newer navigation via g; / g,)
+    pub change_list: Vec<Position>,
+    /// Current index in changelist (None when empty)
+    pub change_list_index: Option<usize>,
     /// Semantic repeat action for dot-repeat (mutually exclusive with last_change)
     pub last_repeat_action: Option<RepeatAction>,
 }
@@ -1171,6 +1174,8 @@ impl ChangeManager {
             last_change: None,
             save_point: Some(0), // Start at save point (empty buffer is saved)
             last_edit_position: None,
+            change_list: Vec::new(),
+            change_list_index: None,
             last_repeat_action: None,
         }
     }
@@ -1208,11 +1213,51 @@ impl ChangeManager {
 
     /// Pushes a change to the undo stack
     pub fn push_change(&mut self, change: Change) {
-        self.last_edit_position = Some(change.edit_position());
+        self.note_edit_position(change.edit_position());
         self.undo_stack.push(change.clone());
         self.redo_stack.clear(); // Clear redo stack on new change
         self.last_change = Some(change);
         self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
+    }
+
+    /// Records an edit position in the changelist and moves current index to newest.
+    pub fn note_edit_position(&mut self, pos: Position) {
+        self.last_edit_position = Some(pos);
+
+        if let Some(idx) = self.change_list_index {
+            if idx + 1 < self.change_list.len() {
+                self.change_list.truncate(idx + 1);
+            }
+        }
+
+        if self.change_list.last().copied() != Some(pos) {
+            self.change_list.push(pos);
+        }
+        self.change_list_index = self.change_list.len().checked_sub(1);
+    }
+
+    /// Jump to an older entry in the changelist (g;).
+    pub fn jump_change_older(&mut self, count: usize) -> Option<Position> {
+        let len = self.change_list.len();
+        if len == 0 {
+            return None;
+        }
+        let idx = self.change_list_index.unwrap_or(len - 1);
+        let next = idx.saturating_sub(count.max(1));
+        self.change_list_index = Some(next);
+        self.change_list.get(next).copied()
+    }
+
+    /// Jump to a newer entry in the changelist (g,).
+    pub fn jump_change_newer(&mut self, count: usize) -> Option<Position> {
+        let len = self.change_list.len();
+        if len == 0 {
+            return None;
+        }
+        let idx = self.change_list_index.unwrap_or(len - 1);
+        let next = (idx + count.max(1)).min(len.saturating_sub(1));
+        self.change_list_index = Some(next);
+        self.change_list.get(next).copied()
     }
 
     /// Undoes the last change. If the change has an undo_group_id, keeps

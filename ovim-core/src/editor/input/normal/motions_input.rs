@@ -148,6 +148,33 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
 
         // File motions
+        KeyCode::Char('H') => {
+            let offset = editor.effective_count().saturating_sub(1);
+            let scroll_offset = editor.scroll_offset();
+            Motions::move_to_screen_top(editor.buffer_mut(), scroll_offset, offset);
+            editor.clear_count();
+            Ok(true)
+        }
+        KeyCode::Char('M') => {
+            let scroll_offset = editor.scroll_offset();
+            let viewport_height = editor.viewport_height();
+            Motions::move_to_screen_middle(editor.buffer_mut(), scroll_offset, viewport_height);
+            editor.clear_count();
+            Ok(true)
+        }
+        KeyCode::Char('L') => {
+            let offset = editor.effective_count().saturating_sub(1);
+            let scroll_offset = editor.scroll_offset();
+            let viewport_height = editor.viewport_height();
+            Motions::move_to_screen_bottom(
+                editor.buffer_mut(),
+                scroll_offset,
+                viewport_height,
+                offset,
+            );
+            editor.clear_count();
+            Ok(true)
+        }
         KeyCode::Char('G') => {
             let max_line = editor.buffer().line_count().saturating_sub(1);
             let target_line = if let Some(count) = editor.count() {
