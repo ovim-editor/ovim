@@ -503,7 +503,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width)?;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width, editor.options.expand_tab)?;
             editor.clear_count();
             true
         }
@@ -512,7 +512,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width)?;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width, editor.options.expand_tab)?;
             editor.clear_count();
             true
         }
@@ -522,7 +522,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
             let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width)?;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line, tab_width, editor.options.expand_tab)?;
             editor.clear_count();
             true
         }
@@ -702,7 +702,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
         }
         Operator::AutoIndent => {
             let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width)?;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, editor.options.expand_tab)?;
         }
         Operator::Delete => {
             let deleted = editor.record_operation(
@@ -841,7 +841,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
         }
         Operator::AutoIndent => {
             let tab_width = editor.options.tab_width;
-            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width)?;
+            helpers::auto_indent_lines_with_tracking(editor, start_line, end_line + 1, tab_width, editor.options.expand_tab)?;
         }
         Operator::Fold => {
             editor

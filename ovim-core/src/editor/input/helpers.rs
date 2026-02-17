@@ -160,8 +160,24 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
         .take_while(|c| c.is_whitespace() && *c != '\n')
         .collect();
 
+    // Check if text before cursor ends with an opening bracket
+    let text_before_cursor: String = line_text.chars().take(cursor.col()).collect();
+    let trimmed_before = text_before_cursor.trim_end();
+    let extra_indent = if trimmed_before.ends_with('{')
+        || trimmed_before.ends_with('(')
+        || trimmed_before.ends_with('[')
+    {
+        if editor.options.expand_tab {
+            " ".repeat(editor.options.shift_width)
+        } else {
+            "\t".to_string()
+        }
+    } else {
+        String::new()
+    };
+
     // Insert newline + indentation
-    let text_to_insert = format!("\n{}", indent);
+    let text_to_insert = format!("\n{}{}", indent, extra_indent);
     let change = Change::insert(position, text_to_insert, cursor_before);
     let inserted = editor.apply_change_and_record(change);
 
@@ -1502,6 +1518,7 @@ pub fn auto_indent_lines(
     start_line: usize,
     end_line: usize,
     tab_width: usize,
+    expand_tab: bool,
 ) -> anyhow::Result<usize> {
     let end_line = end_line.min(buffer.line_count());
     if start_line >= end_line {
@@ -1552,7 +1569,7 @@ pub fn auto_indent_lines(
                 }
                 // Add new indent
                 if current_indent > 0 {
-                    let indent_str = " ".repeat(current_indent);
+                    let indent_str = indent_string(current_indent, expand_tab, tab_width);
                     buffer.insert_text_at(line_idx, 0, &indent_str);
                 }
                 lines_indented += 1;
@@ -1581,6 +1598,7 @@ pub fn auto_indent_lines_with_tracking(
     start_line: usize,
     end_line: usize,
     tab_width: usize,
+    expand_tab: bool,
 ) -> anyhow::Result<usize> {
     let end_line = end_line.min(editor.buffer().line_count());
     if start_line >= end_line {
@@ -1654,16 +1672,22 @@ pub fn auto_indent_lines_with_tracking(
                     buf.delete_range(line_idx, 0, line_idx, leading_chars);
                 }
 
-                // Add new indent (spaces)
+                // Add new indent
                 if line_indent > 0 {
-                    let indent_str = " ".repeat(line_indent);
+                    let indent_str = indent_string(line_indent, expand_tab, tab_width);
                     buf.insert_text_at(line_idx, 0, &indent_str);
                 }
 
                 lines_indented += 1;
             }
 
-            last_cursor_after = (line_idx, line_indent);
+            // Cursor column = char count of the indent string (not visual width)
+            let cursor_col = if expand_tab || tab_width == 0 {
+                line_indent
+            } else {
+                line_indent / tab_width + line_indent % tab_width
+            };
+            last_cursor_after = (line_idx, cursor_col);
         }
 
         (lines_indented, last_cursor_after)
@@ -1679,6 +1703,31 @@ pub fn auto_indent_lines_with_tracking(
     }
 
     Ok(lines_indented)
+}
+
+/// Generate an indent string of `visual_width` columns, respecting expandtab.
+pub fn indent_string(visual_width: usize, expand_tab: bool, tab_width: usize) -> String {
+    if !expand_tab && tab_width > 0 {
+        let tabs = visual_width / tab_width;
+        let spaces = visual_width % tab_width;
+        "\t".repeat(tabs) + &" ".repeat(spaces)
+    } else {
+        " ".repeat(visual_width)
+    }
+}
+
+/// Insert a tab character or equivalent spaces, respecting expandtab.
+pub fn insert_tab(editor: &mut Editor) -> Result<()> {
+    if editor.options.expand_tab {
+        let spaces = " ".repeat(editor.options.shift_width);
+        let cursor = editor.buffer().cursor();
+        let pos = (cursor.line(), cursor.col());
+        let change = Change::insert(pos, spaces, pos);
+        editor.apply_change_and_record(change);
+    } else {
+        insert_char(editor, '\t')?;
+    }
+    Ok(())
 }
 
 /// Count leading spaces (tabs count as tab_width spaces)
