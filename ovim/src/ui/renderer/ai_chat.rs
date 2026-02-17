@@ -16,22 +16,41 @@ use ratatui::{
 pub(crate) const BG_PANEL: Color = Color::Reset;
 const BG_INPUT: Color = Color::Rgb(28, 33, 42);
 
-const BORDER_USER: Color = Color::Cyan;
-const BORDER_ASSISTANT_EDIT: Color = Color::Green;
-const BORDER_ASSISTANT_QUERY: Color = Color::Rgb(100, 149, 237); // cornflower blue
-const BORDER_ERROR: Color = Color::Red;
-const BORDER_THINKING: Color = Color::Rgb(80, 88, 100);
-const BORDER_SELECTED: Color = Color::Yellow;
+const ACCENT_USER: Color = Color::Rgb(98, 176, 255);
+const ACCENT_ASSISTANT_EDIT: Color = Color::Rgb(132, 209, 149);
+const ACCENT_ASSISTANT_QUERY: Color = Color::Rgb(120, 165, 235);
+const ACCENT_ERROR: Color = Color::Rgb(255, 107, 107);
+const ACCENT_THINKING: Color = Color::Rgb(166, 152, 208);
+const ACCENT_SELECTED: Color = Color::Rgb(255, 216, 107);
 
 pub(crate) const TEXT_DIM: Color = Color::Rgb(128, 140, 155);
 const TEXT_THINKING: Color = Color::Rgb(100, 112, 130);
 pub(crate) const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
+const BG_USER_ROW: Color = Color::Rgb(25, 41, 64);
+const BG_ASSISTANT_EDIT_ROW: Color = Color::Rgb(24, 49, 38);
+const BG_ASSISTANT_QUERY_ROW: Color = Color::Rgb(30, 41, 63);
+const BG_THINKING_ROW: Color = Color::Rgb(34, 38, 50);
+const BG_ERROR_ROW: Color = Color::Rgb(66, 30, 33);
+const BG_SELECTED_ROW: Color = Color::Rgb(48, 56, 74);
+const BG_USER_LABEL: Color = Color::Rgb(37, 60, 91);
+const BG_ASSISTANT_EDIT_LABEL: Color = Color::Rgb(38, 67, 52);
+const BG_ASSISTANT_QUERY_LABEL: Color = Color::Rgb(42, 56, 84);
+const BG_THINKING_LABEL: Color = Color::Rgb(50, 55, 70);
+const BG_ERROR_LABEL: Color = Color::Rgb(86, 39, 42);
+const BG_SELECTED_LABEL: Color = Color::Rgb(70, 80, 103);
 const TOOL_READ: Color = Color::Rgb(112, 175, 255);
 const TOOL_NAV: Color = Color::Rgb(126, 211, 160);
 const TOOL_MUT: Color = Color::Rgb(151, 215, 110);
 const TOOL_SEARCH: Color = Color::Rgb(224, 193, 110);
 const TOOL_DIAG: Color = Color::Rgb(255, 173, 102);
 const TOOL_ERROR: Color = Color::Rgb(255, 107, 107);
+const TOOL_BG_READ: Color = Color::Rgb(28, 46, 72);
+const TOOL_BG_NAV: Color = Color::Rgb(26, 50, 39);
+const TOOL_BG_MUT: Color = Color::Rgb(30, 55, 32);
+const TOOL_BG_SEARCH: Color = Color::Rgb(58, 46, 27);
+const TOOL_BG_DIAG: Color = Color::Rgb(62, 41, 26);
+const TOOL_BG_ERROR: Color = Color::Rgb(67, 28, 31);
+const TOOL_BG_OTHER: Color = Color::Rgb(36, 40, 50);
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -309,14 +328,6 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
         for line in bubble_lines {
             rendered_lines.push((line, false));
         }
-        // Spacing between messages
-        rendered_lines.push((
-            Line::from(Span::styled(
-                " ".repeat(panel_width),
-                Style::default().bg(BG_PANEL),
-            )),
-            true,
-        ));
         let msg_row_end = rendered_lines.len();
         message_row_spans.push((msg_row_start, msg_row_end));
     }
@@ -344,13 +355,6 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             for line in bubble_lines {
                 rendered_lines.push((line, false));
             }
-            rendered_lines.push((
-                Line::from(Span::styled(
-                    " ".repeat(panel_width),
-                    Style::default().bg(BG_PANEL),
-                )),
-                true,
-            ));
         }
     }
 
@@ -378,13 +382,6 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             for line in bubble_lines {
                 rendered_lines.push((line, false));
             }
-            rendered_lines.push((
-                Line::from(Span::styled(
-                    " ".repeat(panel_width),
-                    Style::default().bg(BG_PANEL),
-                )),
-                true,
-            ));
         }
     }
 
@@ -493,24 +490,32 @@ fn render_tool_event_row(
     pending: bool,
 ) -> Line<'static> {
     let color = if selected {
-        BORDER_SELECTED
+        ACCENT_SELECTED
     } else {
         tool_kind_color(kind)
     };
-    let prefix = match kind {
-        ToolSummaryKind::Mutation => " edit ",
-        ToolSummaryKind::Navigation => " nav  ",
-        ToolSummaryKind::Read => " read ",
-        ToolSummaryKind::Search => " find ",
-        ToolSummaryKind::Diagnostics => " diag ",
-        ToolSummaryKind::Error => " err  ",
-        ToolSummaryKind::Other => " tool ",
+    let bg = if selected {
+        BG_SELECTED_ROW
+    } else {
+        tool_kind_background(kind)
     };
-    let text = format!("{prefix}{label}");
-    let display = compact_tool_text(&text, panel_width.saturating_sub(1));
-    let mut style = Style::default().fg(color).bg(BG_PANEL);
+    let prefix = match kind {
+        ToolSummaryKind::Mutation => "\u{0394}",
+        ToolSummaryKind::Navigation => "\u{21aa}",
+        ToolSummaryKind::Read => "\u{2263}",
+        ToolSummaryKind::Search => "\u{2315}",
+        ToolSummaryKind::Diagnostics => "\u{2691}",
+        ToolSummaryKind::Error => "\u{00d7}",
+        ToolSummaryKind::Other => "\u{2022}",
+    };
+    let text = format!(" {prefix} {label}");
+    let display = compact_tool_text(&text, panel_width);
+    let mut style = Style::default().fg(color).bg(bg);
     if pending {
         style = style.add_modifier(Modifier::DIM);
+    }
+    if selected {
+        style = style.add_modifier(Modifier::BOLD);
     }
     let padded = format!(
         "{}{}",
@@ -560,6 +565,179 @@ fn tool_kind_color(kind: ToolSummaryKind) -> Color {
     }
 }
 
+fn tool_kind_background(kind: ToolSummaryKind) -> Color {
+    match kind {
+        ToolSummaryKind::Read => TOOL_BG_READ,
+        ToolSummaryKind::Navigation => TOOL_BG_NAV,
+        ToolSummaryKind::Mutation => TOOL_BG_MUT,
+        ToolSummaryKind::Search => TOOL_BG_SEARCH,
+        ToolSummaryKind::Diagnostics => TOOL_BG_DIAG,
+        ToolSummaryKind::Error => TOOL_BG_ERROR,
+        ToolSummaryKind::Other => TOOL_BG_OTHER,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MessageRowStyle {
+    accent: Color,
+    label_fg: Color,
+    label_bg: Color,
+    text_fg: Color,
+    body_bg: Color,
+}
+
+fn message_row_style(role: ChatRole, allow_edits: bool, selected: bool) -> MessageRowStyle {
+    let mut style = match role {
+        ChatRole::User => MessageRowStyle {
+            accent: ACCENT_USER,
+            label_fg: Color::White,
+            label_bg: BG_USER_LABEL,
+            text_fg: TEXT_NORMAL,
+            body_bg: BG_USER_ROW,
+        },
+        ChatRole::Assistant => {
+            if allow_edits {
+                MessageRowStyle {
+                    accent: ACCENT_ASSISTANT_EDIT,
+                    label_fg: Color::White,
+                    label_bg: BG_ASSISTANT_EDIT_LABEL,
+                    text_fg: TEXT_NORMAL,
+                    body_bg: BG_ASSISTANT_EDIT_ROW,
+                }
+            } else {
+                MessageRowStyle {
+                    accent: ACCENT_ASSISTANT_QUERY,
+                    label_fg: Color::White,
+                    label_bg: BG_ASSISTANT_QUERY_LABEL,
+                    text_fg: TEXT_NORMAL,
+                    body_bg: BG_ASSISTANT_QUERY_ROW,
+                }
+            }
+        }
+        ChatRole::Thinking => MessageRowStyle {
+            accent: ACCENT_THINKING,
+            label_fg: Color::Rgb(222, 216, 245),
+            label_bg: BG_THINKING_LABEL,
+            text_fg: TEXT_THINKING,
+            body_bg: BG_THINKING_ROW,
+        },
+        ChatRole::Error => MessageRowStyle {
+            accent: ACCENT_ERROR,
+            label_fg: Color::White,
+            label_bg: BG_ERROR_LABEL,
+            text_fg: Color::Rgb(255, 198, 198),
+            body_bg: BG_ERROR_ROW,
+        },
+        ChatRole::Tool => MessageRowStyle {
+            accent: ACCENT_ASSISTANT_QUERY,
+            label_fg: Color::White,
+            label_bg: BG_ASSISTANT_QUERY_LABEL,
+            text_fg: TEXT_NORMAL,
+            body_bg: BG_ASSISTANT_QUERY_ROW,
+        },
+    };
+
+    if selected {
+        style.accent = ACCENT_SELECTED;
+        style.label_bg = BG_SELECTED_LABEL;
+        style.body_bg = BG_SELECTED_ROW;
+    }
+
+    style
+}
+
+fn card_text_width(panel_width: usize, accent_glyph: &str) -> usize {
+    panel_width
+        .saturating_sub(accent_glyph.chars().count() + 1)
+        .max(1)
+}
+
+fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+    let len = text.chars().count();
+    if len <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars == 1 {
+        return "\u{2026}".to_string();
+    }
+    let mut out: String = text.chars().take(max_chars - 1).collect();
+    out.push('\u{2026}');
+    out
+}
+
+fn render_card_text_line(
+    panel_width: usize,
+    accent_glyph: &str,
+    accent_color: Color,
+    row_bg: Color,
+    text: &str,
+    text_style: Style,
+) -> Line<'static> {
+    let width = card_text_width(panel_width, accent_glyph);
+    let display = truncate_with_ellipsis(text, width);
+    let padding = width.saturating_sub(display.chars().count());
+    let mut spans = Vec::with_capacity(3);
+    spans.push(Span::styled(
+        accent_glyph.to_string(),
+        Style::default()
+            .fg(accent_color)
+            .bg(row_bg)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(" ", Style::default().bg(row_bg)));
+    spans.push(Span::styled(
+        format!("{}{}", display, " ".repeat(padding)),
+        text_style.bg(row_bg),
+    ));
+    Line::from(spans)
+}
+
+fn render_card_styled_line(
+    panel_width: usize,
+    accent_glyph: &str,
+    accent_color: Color,
+    row_bg: Color,
+    row_spans: Vec<Span<'static>>,
+) -> Line<'static> {
+    let width = card_text_width(panel_width, accent_glyph);
+    let mut used = 0usize;
+    let mut spans = Vec::with_capacity(row_spans.len() + 3);
+    spans.push(Span::styled(
+        accent_glyph.to_string(),
+        Style::default()
+            .fg(accent_color)
+            .bg(row_bg)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(" ", Style::default().bg(row_bg)));
+
+    for span in row_spans {
+        let remaining = width.saturating_sub(used);
+        if remaining == 0 {
+            break;
+        }
+        let content = truncate_with_ellipsis(&span.content, remaining);
+        let span_width = content.chars().count();
+        if span_width == 0 {
+            continue;
+        }
+        spans.push(Span::styled(content, span.style.bg(row_bg)));
+        used += span_width;
+    }
+
+    if used < width {
+        spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(row_bg),
+        ));
+    }
+
+    Line::from(spans)
+}
+
 fn render_chat_bubble(
     message: &ChatMessage,
     panel_width: usize,
@@ -569,195 +747,111 @@ fn render_chat_bubble(
     child_count: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let max_bubble_width = if panel_width < 60 {
-        // Narrow panel: use full width minus minimal padding
-        panel_width.saturating_sub(2)
-    } else {
-        (panel_width * 3 / 4)
-            .max(20)
-            .min(panel_width.saturating_sub(4))
-    };
-    let inner_width = max_bubble_width.saturating_sub(4); // borders + padding
-
-    let border_color = if is_selected {
-        BORDER_SELECTED
-    } else {
-        match message.role {
-            ChatRole::User => BORDER_USER,
-            ChatRole::Assistant => {
-                if allow_edits {
-                    BORDER_ASSISTANT_EDIT
-                } else {
-                    BORDER_ASSISTANT_QUERY
-                }
-            }
-            ChatRole::Thinking => BORDER_THINKING,
-            ChatRole::Error => BORDER_ERROR,
-            ChatRole::Tool => {
-                if message.content.starts_with("Error: ") {
-                    BORDER_ERROR
-                } else {
-                    BORDER_ASSISTANT_QUERY
-                }
-            }
-        }
-    };
-
-    let text_color = match message.role {
-        ChatRole::Error => Color::Red,
-        ChatRole::Thinking => TEXT_THINKING,
-        _ => TEXT_NORMAL,
-    };
-
-    let is_user = message.role == ChatRole::User;
-    let indent = if is_user {
-        panel_width.saturating_sub(max_bubble_width)
-    } else {
-        1
-    };
-
-    let border_style = Style::default().fg(border_color).bg(BG_PANEL);
-    let text_style = Style::default().fg(text_color).bg(BG_PANEL);
-    let pad_style = Style::default().bg(BG_PANEL);
-
+    let row_style = message_row_style(message.role.clone(), allow_edits, is_selected);
+    let accent_glyph = if is_selected { "\u{258c}" } else { "\u{258d}" };
+    let text_style = Style::default().fg(row_style.text_fg);
     let mut lines = Vec::new();
 
-    // Role label
-    let label_text = match message.role {
-        ChatRole::User => " You ".to_string(),
+    let label = match message.role {
+        ChatRole::User => "You".to_string(),
         ChatRole::Assistant => {
             if let Some(ref model) = message.model {
-                format!(" {} ", model)
+                model.clone()
             } else {
-                " Assistant ".to_string()
+                "Assistant".to_string()
             }
         }
-        ChatRole::Thinking => " thinking ".to_string(),
-        ChatRole::Error => " Error ".to_string(),
-        ChatRole::Tool => " Tool ".to_string(),
+        ChatRole::Thinking => "Thinking".to_string(),
+        ChatRole::Error => "Error".to_string(),
+        ChatRole::Tool => "Tool".to_string(),
     };
 
-    // Branch indicator suffix for top border
-    let branch_suffix = if child_count > 1 {
-        format!(" \u{2442} {} ", child_count) // ⑂ N
+    let header = if child_count > 1 {
+        format!("{label}  \u{2442} {child_count}")
     } else {
-        String::new()
+        label
     };
-    let suffix_display_len = branch_suffix.chars().count();
+    lines.push(render_card_text_line(
+        panel_width,
+        accent_glyph,
+        row_style.accent,
+        row_style.label_bg,
+        &header,
+        Style::default()
+            .fg(row_style.label_fg)
+            .add_modifier(Modifier::BOLD),
+    ));
 
-    // Top border: ╭─ label ──────── ⑂ N ─╮
-    let label_display_len = label_text.chars().count();
-    let top_fill = max_bubble_width.saturating_sub(2 + label_display_len + suffix_display_len);
-    let top = format!(
-        "{}╭{}{}{}╮{}",
-        " ".repeat(indent),
-        &label_text,
-        "─".repeat(top_fill),
-        &branch_suffix,
-        " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
-    );
-    lines.push(Line::from(Span::styled(top, border_style)));
+    let inner_width = card_text_width(panel_width, accent_glyph);
 
     // For thinking messages: collapsed vs expanded
     if message.role == ChatRole::Thinking && !is_thinking_expanded {
-        // Collapsed: single line with ▸ prefix + truncated content
-        let prefix = "▸ ";
-        let max_preview = inner_width.saturating_sub(prefix.len());
         let first_line = message.content.lines().next().unwrap_or("");
-        let preview: String = first_line.chars().take(max_preview).collect();
-        let row_chars = prefix.len() + preview.chars().count();
-        let padding = inner_width.saturating_sub(row_chars);
-        let spans = vec![
-            Span::styled(" ".repeat(indent), pad_style),
-            Span::styled("│ ", border_style),
-            Span::styled(prefix, text_style),
-            Span::styled(format!("{}{}", preview, " ".repeat(padding)), text_style),
-            Span::styled(" │", border_style),
-            Span::styled(
-                " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
-                pad_style,
-            ),
-        ];
-        lines.push(Line::from(spans));
+        lines.push(render_card_text_line(
+            panel_width,
+            accent_glyph,
+            row_style.accent,
+            row_style.body_bg,
+            &format!("\u{25b8} {}", first_line),
+            text_style,
+        ));
     } else if message.role == ChatRole::Assistant {
         // Markdown-rendered content for assistant messages
         let md_elements = super::markdown::parse_markdown(&message.content);
         let md_lines = super::markdown::render_markdown(&md_elements, inner_width, Some(theme));
         for md_line in &md_lines {
-            // Wrap each markdown line's spans into the bubble chrome.
-            // First, compute the display width of the spans.
             let content_spans = styled_word_wrap_line(md_line, inner_width);
             for row_spans in content_spans {
-                let row_width: usize = row_spans.iter().map(|s| s.content.chars().count()).sum();
-                let padding = inner_width.saturating_sub(row_width);
-                let mut spans = vec![
-                    Span::styled(" ".repeat(indent), pad_style),
-                    Span::styled("│ ", border_style),
-                ];
-                spans.extend(row_spans);
-                if padding > 0 {
-                    spans.push(Span::styled(" ".repeat(padding), pad_style));
-                }
-                spans.push(Span::styled(" │", border_style));
-                spans.push(Span::styled(
-                    " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
-                    pad_style,
+                lines.push(render_card_styled_line(
+                    panel_width,
+                    accent_glyph,
+                    row_style.accent,
+                    row_style.body_bg,
+                    row_spans,
                 ));
-                lines.push(Line::from(spans));
             }
+        }
+        if md_lines.is_empty() {
+            lines.push(render_card_text_line(
+                panel_width,
+                accent_glyph,
+                row_style.accent,
+                row_style.body_bg,
+                "",
+                text_style,
+            ));
         }
     } else {
         // Plain text for thinking, user, error, tool messages
         let display_content = if message.role == ChatRole::Thinking {
-            format!("▾ {}", message.content)
+            format!("\u{25be} {}", message.content)
         } else {
             message.content.clone()
         };
         let wrapped = word_wrap(&display_content, inner_width);
         for row in &wrapped {
-            let row_chars: usize = row.chars().count();
-            let padding = inner_width.saturating_sub(row_chars);
-            let spans = vec![
-                Span::styled(" ".repeat(indent), pad_style),
-                Span::styled("│ ", border_style),
-                Span::styled(format!("{}{}", row, " ".repeat(padding)), text_style),
-                Span::styled(" │", border_style),
-                Span::styled(
-                    " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
-                    pad_style,
-                ),
-            ];
-            lines.push(Line::from(spans));
+            lines.push(render_card_text_line(
+                panel_width,
+                accent_glyph,
+                row_style.accent,
+                row_style.body_bg,
+                row,
+                text_style,
+            ));
         }
     }
 
     // Retry hint for error bubbles
     if message.role == ChatRole::Error {
-        let hint = "(submit again to retry)";
-        let hint_chars = hint.chars().count();
-        let padding = inner_width.saturating_sub(hint_chars);
-        let hint_style = Style::default().fg(TEXT_DIM).bg(BG_PANEL);
-        let spans = vec![
-            Span::styled(" ".repeat(indent), pad_style),
-            Span::styled("│ ", border_style),
-            Span::styled(format!("{}{}", hint, " ".repeat(padding)), hint_style),
-            Span::styled(" │", border_style),
-            Span::styled(
-                " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
-                pad_style,
-            ),
-        ];
-        lines.push(Line::from(spans));
+        lines.push(render_card_text_line(
+            panel_width,
+            accent_glyph,
+            row_style.accent,
+            row_style.body_bg,
+            "(submit again to retry)",
+            Style::default().fg(TEXT_DIM).add_modifier(Modifier::DIM),
+        ));
     }
-
-    // Bottom border: ╰──╯
-    let bottom = format!(
-        "{}╰{}╯{}",
-        " ".repeat(indent),
-        "─".repeat(max_bubble_width.saturating_sub(2)),
-        " ".repeat(panel_width.saturating_sub(indent + max_bubble_width)),
-    );
-    lines.push(Line::from(Span::styled(bottom, border_style)));
 
     lines
 }
