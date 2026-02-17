@@ -6,6 +6,7 @@ mod ai_chat_tools;
 mod ai_context;
 pub(crate) mod ai_integration;
 mod ai_state;
+mod ai_workflow;
 mod blame_commands;
 mod buffer_manager;
 mod change_tracking;

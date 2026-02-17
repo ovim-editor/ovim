@@ -1,3 +1,6 @@
+use crate::ai::path_policy::{
+    has_parent_traversal, is_path_approved, normalize_path, sensitive_path_reason,
+};
 use crate::ai::scope::{Capabilities, RequiredScope, ScopeContext};
 use crate::ai::types::{DiagnosticFact, FileScope};
 use crate::editor::grep;
@@ -17,6 +20,8 @@ pub struct ToolExecutionContext {
     pub project_diagnostics: Vec<ProjectDiagnosticFile>,
     pub scope_context: ScopeContext,
     pub capabilities: Capabilities,
+    /// Session-approved path roots (outside-project and/or sensitive overrides).
+    pub approved_path_roots: Vec<std::path::PathBuf>,
     /// Contents of all open buffers, keyed by canonical path.
     /// Used by `read_file_at_path` to read from in-memory buffers
     /// instead of disk (which may be stale after edits).
@@ -52,6 +57,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(delete_lines_def());
     registry.register(write_file_at_path_def());
     registry.register(create_file_def());
+    registry.register(apply_patch_at_path_def());
     registry.register(snapshot_file_def());
     registry.register(restore_file_def());
 }
@@ -76,12 +82,82 @@ pub fn execute_builtin(
         "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
             "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
         )),
-        "edit_range" | "insert_lines" | "delete_lines" | "write_file_at_path" | "create_file"
-        | "snapshot_file" | "restore_file" => ToolResult::Error(format!(
+        "edit_range"
+        | "insert_lines"
+        | "delete_lines"
+        | "write_file_at_path"
+        | "create_file"
+        | "apply_patch_at_path"
+        | "snapshot_file"
+        | "restore_file" => ToolResult::Error(format!(
             "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
         )),
         _ => ToolResult::Error(format!("unknown built-in tool: {name}")),
     }
+}
+
+fn resolve_project_root(ctx: &ToolExecutionContext) -> Result<std::path::PathBuf, ToolResult> {
+    ctx.scope_context.project_root.clone().ok_or_else(|| {
+        ToolResult::Error(
+            "No project root detected (no .git directory found). \
+                 Project-level tools require a git repository."
+                .to_string(),
+        )
+    })
+}
+
+fn ensure_non_sensitive_or_approved(
+    path: &std::path::Path,
+    ctx: &ToolExecutionContext,
+) -> Result<(), ToolResult> {
+    if let Some(reason) = sensitive_path_reason(path) {
+        if !is_path_approved(path, &ctx.approved_path_roots) {
+            return Err(ToolResult::Error(format!(
+                "Access blocked: {} ({})",
+                path.display(),
+                reason
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_project_relative_path(
+    rel_path: &str,
+    ctx: &ToolExecutionContext,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), ToolResult> {
+    if rel_path.is_empty() {
+        return Err(ToolResult::Error(
+            "'path' parameter is required and must be non-empty".to_string(),
+        ));
+    }
+
+    let project_root = resolve_project_root(ctx)?;
+    let rel = std::path::Path::new(rel_path);
+    if has_parent_traversal(rel) {
+        return Err(ToolResult::Error(
+            "path traversal (..) not allowed".to_string(),
+        ));
+    }
+
+    let candidate = project_root.join(rel);
+    let normalized = normalize_path(&candidate);
+    let root_normalized = normalize_path(&project_root);
+    if !normalized.starts_with(&root_normalized) {
+        return Err(ToolResult::Error(
+            "path is outside project root".to_string(),
+        ));
+    }
+
+    if let Err(err) = ctx
+        .capabilities
+        .validate_path(&normalized, &ctx.scope_context)
+    {
+        return Err(ToolResult::Error(err.to_string()));
+    }
+    ensure_non_sensitive_or_approved(&normalized, ctx)?;
+
+    Ok((normalized, root_normalized))
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +194,12 @@ fn read_file_def() -> ToolDefinition {
 }
 
 fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
+    if let Some(path) = ctx.scope_context.current_file.as_ref() {
+        if let Err(e) = ensure_non_sensitive_or_approved(path, ctx) {
+            return e;
+        }
+    }
+
     let lines: Vec<&str> = ctx.buffer_content.lines().collect();
     let total = lines.len();
 
@@ -212,36 +294,22 @@ fn handle_read_file_at_path(args: &serde_json::Value, ctx: &ToolExecutionContext
         }
     };
 
-    // Reject path traversal
-    if rel_path.contains("..") {
-        return ToolResult::Error("path traversal (..) not allowed".to_string());
-    }
-
-    let project_root = match &ctx.scope_context.project_root {
-        Some(root) => root.clone(),
-        None => {
-            return ToolResult::Error(
-                "No project root detected (no .git directory found). \
-                 Project-level tools require a git repository."
-                    .to_string(),
-            )
-        }
+    let (normalized, _root_normalized) = match resolve_project_relative_path(rel_path, ctx) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
-
-    let candidate = project_root.join(rel_path);
-    // Validate it stays within project root
-    let normalized = candidate.canonicalize().unwrap_or(candidate.clone());
-    let root_normalized = project_root.canonicalize().unwrap_or(project_root.clone());
-    if !normalized.starts_with(&root_normalized) {
-        return ToolResult::Error("path is outside project root".to_string());
-    }
 
     // Check if file is already open in a buffer — use in-memory content
     // to stay consistent with edit_range / insert_lines / delete_lines.
+    let normalized_canonical = normalized
+        .canonicalize()
+        .unwrap_or_else(|_| normalized.clone());
     let content = if let Some(buf_content) = ctx.open_buffers.get(&normalized) {
         buf_content.clone()
-    } else if candidate.is_file() {
-        match std::fs::read_to_string(&candidate) {
+    } else if let Some(buf_content) = ctx.open_buffers.get(&normalized_canonical) {
+        buf_content.clone()
+    } else if normalized.is_file() {
+        match std::fs::read_to_string(&normalized) {
             Ok(c) => c,
             Err(e) => return ToolResult::Error(format!("failed to read '{}': {}", rel_path, e)),
         }
@@ -611,18 +679,19 @@ fn handle_search_project(args: &serde_json::Value, ctx: &ToolExecutionContext) -
         .map(|n| (n as usize).min(200))
         .unwrap_or(50);
 
-    let project_root = match &ctx.scope_context.project_root {
-        Some(root) => root.clone(),
-        None => {
-            return ToolResult::Error(
-                "No project root detected (no .git directory found). \
-                 Project-level tools require a git repository."
-                    .to_string(),
-            )
-        }
+    let project_root = match resolve_project_root(ctx) {
+        Ok(root) => root,
+        Err(e) => return e,
     };
 
-    let matches = grep::grep_search_sync(query, &project_root, max_results);
+    let matches = grep::grep_search_sync(query, &project_root, max_results.saturating_mul(2))
+        .into_iter()
+        .filter(|m| {
+            let abs = project_root.join(&m.rel_path);
+            ensure_non_sensitive_or_approved(&abs, ctx).is_ok()
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
 
     if matches.is_empty() {
         return ToolResult::Success(format!("No matches found for '{query}'."));
@@ -678,15 +747,9 @@ fn list_files_def() -> ToolDefinition {
 }
 
 fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
-    let project_root = match &ctx.scope_context.project_root {
-        Some(root) => root.clone(),
-        None => {
-            return ToolResult::Error(
-                "No project root detected (no .git directory found). \
-                 Project-level tools require a git repository."
-                    .to_string(),
-            )
-        }
+    let project_root = match resolve_project_root(ctx) {
+        Ok(root) => root,
+        Err(e) => return e,
     };
 
     let max_results = args
@@ -696,17 +759,16 @@ fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> To
         .unwrap_or(200);
 
     let search_dir = if let Some(subpath) = args.get("path").and_then(|v| v.as_str()) {
-        if subpath.contains("..") {
-            return ToolResult::Error("path traversal (..) not allowed".to_string());
+        let rel = subpath.trim();
+        if rel.is_empty() {
+            project_root.clone()
+        } else {
+            let (candidate, _root) = match resolve_project_relative_path(rel, ctx) {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            candidate
         }
-        let candidate = project_root.join(subpath);
-        // Validate it stays within project root
-        let normalized = candidate.canonicalize().unwrap_or(candidate.clone());
-        let root_normalized = project_root.canonicalize().unwrap_or(project_root.clone());
-        if !normalized.starts_with(&root_normalized) {
-            return ToolResult::Error("path is outside project root".to_string());
-        }
-        candidate
     } else {
         project_root.clone()
     };
@@ -732,6 +794,9 @@ fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> To
             .unwrap_or(entry.path())
             .to_string_lossy()
             .to_string();
+        if ensure_non_sensitive_or_approved(entry.path(), ctx).is_err() {
+            continue;
+        }
         files.push(rel_path);
         if files.len() >= max_results {
             break;
@@ -1107,6 +1172,36 @@ pub(crate) fn create_file_def() -> ToolDefinition {
     }
 }
 
+pub(crate) fn apply_patch_at_path_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "apply_patch_at_path".to_string(),
+        description: "Apply a single-file apply_patch diff to the file at path. \
+            Path is relative to project root; diff must contain *** Begin Patch / *** End Patch \
+            with exactly one file section."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Mutation,
+        parameters: vec![
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: true,
+                description: "Target file path relative to project root.".to_string(),
+            },
+            ToolParam {
+                name: "diff".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "apply_patch diff envelope with one file hunk set.".to_string(),
+            },
+        ],
+    }
+}
+
 pub(crate) fn snapshot_file_def() -> ToolDefinition {
     ToolDefinition {
         name: "snapshot_file".to_string(),
@@ -1178,6 +1273,7 @@ mod tests {
                 network: false,
                 allow_mutations: true,
             },
+            approved_path_roots: Vec::new(),
             open_buffers: std::collections::HashMap::new(),
         }
     }
@@ -1382,6 +1478,7 @@ mod tests {
                 network: false,
                 allow_mutations: true,
             },
+            approved_path_roots: Vec::new(),
             open_buffers: std::collections::HashMap::new(),
         }
     }
@@ -1486,6 +1583,42 @@ mod tests {
         match result {
             ToolResult::Error(s) => assert!(s.contains("traversal")),
             ToolResult::Success(_) => panic!("expected error for path traversal"),
+        }
+    }
+
+    #[test]
+    fn read_file_at_path_blocks_sensitive_env_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".env"), "API_KEY=secret\n").unwrap();
+        let ctx = test_ctx_with_project("", root.to_path_buf());
+        let result = execute_builtin(
+            "read_file_at_path",
+            &serde_json::json!({"path": ".env"}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Error(s) => assert!(s.contains("Access blocked")),
+            ToolResult::Success(_) => panic!("expected sensitive path block"),
+        }
+    }
+
+    #[test]
+    fn read_file_at_path_allows_sensitive_when_approved() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let env_path = root.join(".env");
+        std::fs::write(&env_path, "API_KEY=secret\n").unwrap();
+        let mut ctx = test_ctx_with_project("", root.to_path_buf());
+        ctx.approved_path_roots = vec![env_path.clone()];
+        let result = execute_builtin(
+            "read_file_at_path",
+            &serde_json::json!({"path": ".env"}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(s) => assert!(s.contains("API_KEY=secret")),
+            ToolResult::Error(e) => panic!("expected success, got error: {e}"),
         }
     }
 }

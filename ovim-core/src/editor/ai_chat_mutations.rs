@@ -1,3 +1,6 @@
+use crate::ai::formats::apply_patch::parse_apply_patch;
+use crate::ai::formats::matching::{find_match, MatchResult};
+use crate::ai::formats::Hunk;
 use crate::ai::tools::ToolResult;
 
 use super::ai_integration::remap_abs_char_through_edits;
@@ -50,6 +53,118 @@ fn snippet_around(
         out.push_str(&format!("{:>4} | {}\n", i + 1, s));
     }
     out
+}
+
+fn normalize_path_label(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn normalize_trailing_ws_and_lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .lines()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if text.ends_with('\n') || text.ends_with("\r\n") {
+            "\n"
+        } else {
+            ""
+        }
+}
+
+fn line_start_at_or_before(text: &str, byte_offset: usize) -> usize {
+    if byte_offset == 0 {
+        return 0;
+    }
+    text[..byte_offset]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0)
+}
+
+fn line_end_after_n_lines(text: &str, start: usize, lines: usize) -> usize {
+    if lines == 0 || start >= text.len() {
+        return start.min(text.len());
+    }
+
+    let mut end = start;
+    let mut remaining = lines;
+    while remaining > 0 && end < text.len() {
+        match text[end..].find('\n') {
+            Some(rel) => end += rel + 1,
+            None => {
+                end = text.len();
+                break;
+            }
+        }
+        remaining -= 1;
+    }
+    end
+}
+
+fn find_normalized_match_range(
+    haystack: &str,
+    byte_offset: usize,
+    needle: &str,
+) -> Option<(usize, usize)> {
+    let needle_lines = needle.lines().count().max(1);
+    let start = line_start_at_or_before(haystack, byte_offset.min(haystack.len()));
+    let end = line_end_after_n_lines(haystack, start, needle_lines);
+    if start > end || end > haystack.len() {
+        return None;
+    }
+
+    let candidate = &haystack[start..end];
+    if normalize_trailing_ws_and_lf(candidate) == normalize_trailing_ws_and_lf(needle) {
+        return Some((start, end));
+    }
+    None
+}
+
+fn apply_patch_hunks_to_text(mut content: String, hunks: &[Hunk]) -> Result<String, ToolResult> {
+    for (idx, hunk) in hunks.iter().enumerate() {
+        if hunk.search.is_empty() {
+            content.push_str(&hunk.replace);
+            continue;
+        }
+
+        let range = match find_match(&content, &hunk.search) {
+            MatchResult::Exact { byte_offset } => {
+                let end = byte_offset.saturating_add(hunk.search.len());
+                if end > content.len() {
+                    return Err(ToolResult::Error(format!(
+                        "patch hunk {} matched an invalid byte range",
+                        idx + 1
+                    )));
+                }
+                (byte_offset, end)
+            }
+            MatchResult::WhitespaceNormalized { byte_offset } => {
+                find_normalized_match_range(&content, byte_offset, &hunk.search).ok_or_else(
+                    || {
+                        ToolResult::Error(format!(
+                            "patch hunk {} matched only after whitespace normalization but could not determine a stable replacement range",
+                            idx + 1
+                        ))
+                    },
+                )?
+            }
+            MatchResult::NotFound(err) => {
+                let mut msg = format!("patch hunk {} not found: {}", idx + 1, err.message);
+                if let Some(line) = err.closest_line {
+                    msg.push_str(&format!(" (closest line: {})", line + 1));
+                }
+                if let Some(snippet) = err.closest_snippet {
+                    msg.push_str(&format!(" near '{}'", snippet));
+                }
+                return Err(ToolResult::Error(msg));
+            }
+        };
+
+        content.replace_range(range.0..range.1, &hunk.replace);
+    }
+
+    Ok(content)
 }
 
 impl Editor {
@@ -316,6 +431,7 @@ impl Editor {
             "delete_lines" => self.handle_delete_lines(args),
             "write_file_at_path" => self.handle_write_file_at_path(args, false),
             "create_file" => self.handle_write_file_at_path(args, true),
+            "apply_patch_at_path" => self.handle_apply_patch_at_path(args),
             "snapshot_file" => self.handle_snapshot_file(args),
             "restore_file" => self.handle_restore_file(args),
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
@@ -472,6 +588,68 @@ impl Editor {
             "{action} {file_label} ({line_count} line{}).\nSave: {save_outcome}.",
             if line_count == 1 { "" } else { "s" },
         ))
+    }
+
+    fn handle_apply_patch_at_path(&mut self, args: &serde_json::Value) -> ToolResult {
+        let path = match required_str(args, "path") {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let diff = match required_str(args, "diff") {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+
+        let file_edits = match parse_apply_patch(&diff) {
+            Ok(edits) => edits,
+            Err(e) => {
+                return ToolResult::Error(format!(
+                "invalid apply_patch diff: {e}. Expected *** Begin Patch / *** End Patch format."
+            ))
+            }
+        };
+        if file_edits.len() != 1 {
+            return ToolResult::Error(format!(
+                "apply_patch_at_path expects exactly one file section, got {}",
+                file_edits.len()
+            ));
+        }
+
+        let file_edit = &file_edits[0];
+        if let Some(diff_path) = file_edit.path.as_ref() {
+            let expected = normalize_path_label(&path);
+            let provided = normalize_path_label(diff_path);
+            if expected != provided {
+                return ToolResult::Error(format!(
+                    "patch path '{}' does not match requested path '{}'",
+                    diff_path, path
+                ));
+            }
+        }
+
+        if file_edit.hunks.is_empty() {
+            return ToolResult::Success("Patch contained no hunks; no changes made.".to_string());
+        }
+
+        let original = self.buffer().rope().to_string();
+        let patched = match apply_patch_hunks_to_text(original, &file_edit.hunks) {
+            Ok(text) => text,
+            Err(e) => return e,
+        };
+
+        let mut write_args = serde_json::Map::new();
+        write_args.insert("path".to_string(), serde_json::Value::String(path.clone()));
+        write_args.insert("content".to_string(), serde_json::Value::String(patched));
+
+        match self.handle_write_file_at_path(&serde_json::Value::Object(write_args), false) {
+            ToolResult::Success(msg) => ToolResult::Success(format!(
+                "Applied {} patch hunk(s) to {}.\n{}",
+                file_edit.hunks.len(),
+                path,
+                msg
+            )),
+            ToolResult::Error(err) => ToolResult::Error(err),
+        }
     }
 
     fn handle_snapshot_file(&mut self, args: &serde_json::Value) -> ToolResult {

@@ -94,6 +94,14 @@ pub struct AiState {
     pub no_repo_session_prompted: bool,
     /// User-approved folder root for project-level AI tools when not in a git repo.
     pub no_repo_session_allowed_root: Option<PathBuf>,
+    /// Loaded workflow specs keyed by workflow name.
+    pub workflows: HashMap<String, crate::ai::workflow::WorkflowSpec>,
+    /// Historical workflow runs (latest appended at end).
+    pub workflow_runs: Vec<crate::ai::WorkflowRunRecord>,
+    /// Pending async workflow runs.
+    pub pending_workflow_runs: Vec<crate::ai::workflow::PendingWorkflowRun>,
+    /// Monotonic run id for workflow executions.
+    pub next_workflow_run_id: u64,
 }
 
 impl Default for AiState {
@@ -136,6 +144,10 @@ impl Default for AiState {
             tool_registry: ToolRegistry::new(),
             no_repo_session_prompted: false,
             no_repo_session_allowed_root: None,
+            workflows: HashMap::new(),
+            workflow_runs: Vec::new(),
+            pending_workflow_runs: Vec::new(),
+            next_workflow_run_id: 1,
         }
     }
 }

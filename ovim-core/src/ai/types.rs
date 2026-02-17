@@ -48,10 +48,23 @@ pub struct ProfileScope {
 impl Default for ProfileScope {
     fn default() -> Self {
         Self {
-            files: FileScope::Project,
+            files: FileScope::File,
             shell: false,
             network: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolApprovalMode {
+    Auto,
+    SensitivePrompt,
+    AlwaysPrompt,
+}
+
+impl Default for ToolApprovalMode {
+    fn default() -> Self {
+        Self::SensitivePrompt
     }
 }
 

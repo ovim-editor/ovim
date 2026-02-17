@@ -212,6 +212,69 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
         ai.set("edit_formats", formats_table)?;
     }
 
+    // vim.ai.workflows.{list,reload,run,status}
+    {
+        let workflows = lua.create_table()?;
+
+        let b = bridge.clone();
+        let list = lua.create_function(move |_lua, ()| {
+            b.execute_command("workflow list".to_string())
+                .map_err(mlua::Error::external)?;
+            Ok(())
+        })?;
+        workflows.set("list", list)?;
+
+        let b = bridge.clone();
+        let reload = lua.create_function(move |_lua, ()| {
+            b.execute_command("workflow reload".to_string())
+                .map_err(mlua::Error::external)?;
+            Ok(())
+        })?;
+        workflows.set("reload", reload)?;
+
+        let b = bridge.clone();
+        let status = lua.create_function(move |_lua, ()| {
+            b.execute_command("workflow status".to_string())
+                .map_err(mlua::Error::external)?;
+            Ok(())
+        })?;
+        workflows.set("status", status)?;
+
+        let b = bridge.clone();
+        let run = lua.create_function(move |_lua, (name, opts): (String, Option<Table>)| {
+            let mut cmd = format!("workflow run {}", name);
+            if let Some(opts) = opts {
+                for pair in opts.pairs::<String, Value>() {
+                    let (k, v) = pair?;
+                    let mut encoded = match v {
+                        Value::String(s) => serde_json::to_string(s.to_str().unwrap_or(""))
+                            .unwrap_or_else(|_| "\"\"".to_string()),
+                        Value::Integer(i) => i.to_string(),
+                        Value::Number(n) => n.to_string(),
+                        Value::Boolean(b) => b.to_string(),
+                        Value::Nil => "null".to_string(),
+                        _ => {
+                            return Err(mlua::Error::external(format!(
+                                "vim.ai.workflows.run: unsupported input type for key '{}'",
+                                k
+                            )));
+                        }
+                    };
+                    encoded = encoded.replace(' ', "\\u0020");
+                    cmd.push(' ');
+                    cmd.push_str(&k);
+                    cmd.push('=');
+                    cmd.push_str(&encoded);
+                }
+            }
+            b.execute_command(cmd).map_err(mlua::Error::external)?;
+            Ok(())
+        })?;
+        workflows.set("run", run)?;
+
+        ai.set("workflows", workflows)?;
+    }
+
     // Metatable for vim.ai itself — handles default_profile as a virtual field.
     {
         let meta = lua.create_table()?;

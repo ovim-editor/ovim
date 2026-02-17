@@ -1499,6 +1499,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Handle :session start/stop/list commands
             } else if command == "ai status" || command == "ai env" {
                 handle_ai_status(editor)
+            } else if command == "workflow" || command.starts_with("workflow ") {
+                handle_workflow_command(editor, command)
             } else if command == "session" || command.starts_with("session ") {
                 handle_session_command(editor, command)
             // Handle :! shell command execution
@@ -1842,6 +1844,12 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
             .collect::<Vec<_>>()
             .join(", ")
     ));
+    let approval_mode = match config.tool_approval_mode {
+        crate::ai::ToolApprovalMode::Auto => "auto",
+        crate::ai::ToolApprovalMode::SensitivePrompt => "sensitive_prompt",
+        crate::ai::ToolApprovalMode::AlwaysPrompt => "always_prompt",
+    };
+    lines.push(format!("Tool approval mode: {}", approval_mode));
 
     // Show context mappings
     if !config.contexts.is_empty() {
@@ -1917,6 +1925,83 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
         message: None,
         line_count: None,
     })
+}
+
+fn handle_workflow_command(editor: &mut Editor, command: &str) -> CommandResult {
+    let subcmd = command.strip_prefix("workflow").unwrap_or("").trim();
+
+    match subcmd {
+        "" | "list" => {
+            if let Err(err) = editor.ensure_workflows_loaded() {
+                return CommandResult::Error(ErrorResponse {
+                    error: format!("Failed to load workflows: {}", err),
+                });
+            }
+            let names = editor.workflow_names_sorted();
+            let message = if names.is_empty() {
+                "No workflows found.".to_string()
+            } else {
+                format!("{} workflow(s):\n{}", names.len(), names.join("\n"))
+            };
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some(message),
+                line_count: None,
+            })
+        }
+        "reload" => match editor.reload_workflows() {
+            Ok(count) => CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Loaded {} workflow(s)", count)),
+                line_count: None,
+            }),
+            Err(err) => CommandResult::Error(ErrorResponse {
+                error: format!("Failed to reload workflows: {}", err),
+            }),
+        },
+        "status" => CommandResult::Success(SuccessResponse {
+            success: true,
+            message: Some(editor.workflow_status_report()),
+            line_count: None,
+        }),
+        s if s.starts_with("run ") => {
+            let mut parts = s["run ".len()..].split_whitespace();
+            let Some(name) = parts.next() else {
+                return CommandResult::Error(ErrorResponse {
+                    error: "Usage: :workflow run <name> [k=v ...]".to_string(),
+                });
+            };
+
+            let mut inputs = std::collections::BTreeMap::new();
+            for pair in parts {
+                let Some((key, raw_value)) = pair.split_once('=') else {
+                    return CommandResult::Error(ErrorResponse {
+                        error: format!("Invalid input '{}': expected k=v", pair),
+                    });
+                };
+                let value = serde_json::from_str::<serde_json::Value>(raw_value)
+                    .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
+                inputs.insert(key.to_string(), value);
+            }
+
+            match editor.run_workflow(name, inputs) {
+                Ok(run_id) => CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some(format!("Workflow '{}' started (run #{})", name, run_id)),
+                    line_count: None,
+                }),
+                Err(err) => CommandResult::Error(ErrorResponse {
+                    error: format!("Failed to run workflow '{}': {}", name, err),
+                }),
+            }
+        }
+        _ => CommandResult::Error(ErrorResponse {
+            error: format!(
+                "Unknown workflow subcommand '{}'. Usage: :workflow [list|reload|run <name> [k=v ...]|status]",
+                subcmd
+            ),
+        }),
+    }
 }
 
 fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
