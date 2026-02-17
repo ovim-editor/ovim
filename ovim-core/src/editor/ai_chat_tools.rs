@@ -106,7 +106,8 @@ impl Editor {
 
     /// Snapshot current editor state into a ToolExecutionContext.
     pub(crate) fn build_tool_execution_context(&self) -> ToolExecutionContext {
-        let buf = &self.buffers[self.current_buffer_index];
+        let target_index = self.active_chat_target_buffer_index();
+        let buf = &self.buffers[target_index];
         let buffer_content = buf.rope().to_string();
         let file_path = buf.file_path().map(|p| p.to_string());
         let cursor = {
@@ -121,8 +122,8 @@ impl Editor {
             .as_ref()
             .map(|s| (s.start_line, s.start_col, s.end_line, s.end_col));
 
-        // Get diagnostics for current buffer
-        let diagnostics = self.get_diagnostics_for_current_buffer();
+        // Get diagnostics for active target buffer
+        let diagnostics = self.get_diagnostics_for_buffer_index(target_index);
         let project_diagnostics = self.get_project_diagnostics_for_chat();
 
         let current_file = buf
@@ -156,6 +157,16 @@ impl Editor {
             capabilities: self.build_chat_capabilities(),
             open_buffers,
         }
+    }
+
+    fn active_chat_target_buffer_index(&self) -> usize {
+        let current = self.current_buffer_index;
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|chat| chat.active_buffer_id)
+            .filter(|idx| *idx < self.buffers.len())
+            .unwrap_or(current)
     }
 
     /// Execute a single read tool call, checking scope before dispatch.
@@ -1497,7 +1508,8 @@ impl Editor {
 
     /// Execute an LSP-backed tool (document_symbols, hover, goto_definition).
     pub(crate) fn execute_lsp_tool(&self, name: &str, args: &serde_json::Value) -> ToolResult {
-        let buf = &self.buffers[self.current_buffer_index];
+        let target_index = self.active_chat_target_buffer_index();
+        let buf = &self.buffers[target_index];
         let Some(file_path) = buf.file_path() else {
             return ToolResult::Error("No file open.".to_string());
         };
@@ -1719,19 +1731,56 @@ impl Editor {
         Ok(())
     }
 
-    /// Get diagnostics for the current buffer (read from LSP state).
-    pub(crate) fn get_diagnostics_for_current_buffer(&self) -> Vec<crate::ai::DiagnosticFact> {
-        let diags = self.all_diagnostics();
-        diags
-            .iter()
-            .map(|d| crate::ai::DiagnosticFact {
-                message: d.message.clone(),
-                severity: d.severity.map(|s| format!("{:?}", s)),
-                line: d.range.start.line,
-                start_character: d.range.start.character,
-                end_character: d.range.end.character,
-            })
-            .collect()
+    /// Get diagnostics for a specific buffer index.
+    fn get_diagnostics_for_buffer_index(
+        &self,
+        buffer_index: usize,
+    ) -> Vec<crate::ai::DiagnosticFact> {
+        if buffer_index == self.current_buffer_index {
+            return self
+                .all_diagnostics()
+                .iter()
+                .map(|d| crate::ai::DiagnosticFact {
+                    message: d.message.clone(),
+                    severity: d.severity.map(|s| format!("{:?}", s)),
+                    line: d.range.start.line,
+                    start_character: d.range.start.character,
+                    end_character: d.range.end.character,
+                })
+                .collect();
+        }
+
+        let Some(path) = self
+            .buffers
+            .get(buffer_index)
+            .and_then(|buf| buf.file_path())
+            .map(PathBuf::from)
+        else {
+            return Vec::new();
+        };
+        let Some(lsp) = self.lsp_state.lsp_manager.as_ref() else {
+            return Vec::new();
+        };
+        let Some(uri) = crate::lsp::uri_from_file_path(&path) else {
+            return Vec::new();
+        };
+        let Some(handle) = tokio::runtime::Handle::try_current().ok() else {
+            return Vec::new();
+        };
+
+        tokio::task::block_in_place(|| {
+            handle
+                .block_on(async { lsp.get_diagnostics(&uri).await })
+                .into_iter()
+                .map(|d| crate::ai::DiagnosticFact {
+                    message: d.message,
+                    severity: d.severity.map(|s| format!("{:?}", s)),
+                    line: d.range.start.line,
+                    start_character: d.range.start.character,
+                    end_character: d.range.end.character,
+                })
+                .collect()
+        })
     }
 
     fn get_project_diagnostics_for_chat(&self) -> Vec<ProjectDiagnosticFile> {
@@ -2376,6 +2425,45 @@ mod tests {
 
             let content = fs::read_to_string(&target).expect("read target");
             assert_eq!(content, "alpha\nbeta\n");
+        });
+    }
+
+    #[test]
+    fn tool_context_uses_active_chat_target_buffer() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let file_a = dir.path().join("a.rs");
+            let file_b = dir.path().join("b.rs");
+            fs::write(&file_a, "from_a\n").expect("seed a");
+            fs::write(&file_b, "from_b\n").expect("seed b");
+
+            let mut editor = Editor::default();
+            editor.open_file(&file_a).expect("open a");
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            let active_idx = editor
+                .ai_state
+                .chat
+                .as_ref()
+                .map(|c| c.active_buffer_id)
+                .expect("chat");
+
+            // User switches current buffer, but active chat target should stay on file_a.
+            editor.open_file(&file_b).expect("open b");
+            assert_ne!(editor.current_buffer_index(), active_idx);
+
+            let ctx = editor.build_tool_execution_context();
+            assert!(ctx
+                .file_path
+                .as_deref()
+                .is_some_and(|p| p.ends_with("a.rs")));
+            assert!(ctx.buffer_content.contains("from_a"));
         });
     }
 }
