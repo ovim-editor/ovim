@@ -10,6 +10,9 @@ use crate::ai::scope::{Capabilities, RequiredScope};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SideEffect {
     Read,
+    /// Navigation tools change editor state (open files, move cursor, select)
+    /// but don't edit text. Always allowed, even when edits are disabled.
+    Navigation,
     Mutation,
     External,
 }
@@ -239,10 +242,19 @@ mod tests {
     fn default_registry_has_builtins() {
         let reg = ToolRegistry::new();
         assert!(reg.get("read_file").is_some());
+        assert!(reg.get("read_file_at_path").is_some());
         assert!(reg.get("read_selection").is_some());
         assert!(reg.get("read_diagnostics").is_some());
         assert!(reg.get("search_project").is_some());
         assert!(reg.get("list_files").is_some());
+        // LSP tools
+        assert!(reg.get("document_symbols").is_some());
+        assert!(reg.get("hover").is_some());
+        assert!(reg.get("goto_definition").is_some());
+        // Navigation tools
+        assert!(reg.get("open_file").is_some());
+        assert!(reg.get("select_text").is_some());
+        // Mutation tools
         assert!(reg.get("edit_range").is_some());
         assert!(reg.get("insert_lines").is_some());
         assert!(reg.get("delete_lines").is_some());
@@ -263,6 +275,9 @@ mod tests {
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"search_project"));
         assert!(names.contains(&"list_files"));
+        // Navigation tools present (always allowed)
+        assert!(names.contains(&"open_file"));
+        assert!(names.contains(&"select_text"));
         // Mutation tools excluded
         assert!(!names.contains(&"edit_range"));
         assert!(!names.contains(&"insert_lines"));
@@ -280,6 +295,8 @@ mod tests {
         };
         let tools = reg.tools_for_scope(&caps);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"open_file"));
+        assert!(names.contains(&"select_text"));
         assert!(names.contains(&"edit_range"));
         assert!(names.contains(&"insert_lines"));
         assert!(names.contains(&"delete_lines"));

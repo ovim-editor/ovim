@@ -81,7 +81,7 @@ impl Capabilities {
     /// Whether this capability set allows the given side effect.
     pub fn allows_side_effect(&self, effect: SideEffect) -> bool {
         match effect {
-            SideEffect::Read => true,
+            SideEffect::Read | SideEffect::Navigation => true,
             SideEffect::Mutation => self.allow_mutations,
             SideEffect::External => self.shell,
         }

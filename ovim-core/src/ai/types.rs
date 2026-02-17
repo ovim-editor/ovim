@@ -48,7 +48,7 @@ pub struct ProfileScope {
 impl Default for ProfileScope {
     fn default() -> Self {
         Self {
-            files: FileScope::File,
+            files: FileScope::Project,
             shell: false,
             network: false,
         }

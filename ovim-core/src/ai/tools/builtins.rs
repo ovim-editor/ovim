@@ -15,16 +15,28 @@ pub struct ToolExecutionContext {
     pub diagnostics: Vec<DiagnosticFact>,
     pub scope_context: ScopeContext,
     pub capabilities: Capabilities,
+    /// Contents of all open buffers, keyed by canonical path.
+    /// Used by `read_file_at_path` to read from in-memory buffers
+    /// instead of disk (which may be stale after edits).
+    pub open_buffers: std::collections::HashMap<std::path::PathBuf, String>,
 }
 
 /// Register all built-in tools into the registry.
 pub fn register_builtins(registry: &mut ToolRegistry) {
     // Read tools
     registry.register(read_file_def());
+    registry.register(read_file_at_path_def());
     registry.register(read_selection_def());
     registry.register(read_diagnostics_def());
     registry.register(search_project_def());
     registry.register(list_files_def());
+    // LSP tools (dispatched via execute_lsp_tool — always allowed with file scope)
+    registry.register(document_symbols_def());
+    registry.register(hover_def());
+    registry.register(goto_definition_def());
+    // Navigation tools (dispatched via execute_navigation_tool — always allowed)
+    registry.register(open_file_def());
+    registry.register(select_text_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
     registry.register(edit_range_def());
     registry.register(insert_lines_def());
@@ -42,10 +54,14 @@ pub fn execute_builtin(
 ) -> ToolResult {
     match name {
         "read_file" => handle_read_file(args, ctx),
+        "read_file_at_path" => handle_read_file_at_path(args, ctx),
         "read_selection" => handle_read_selection(args, ctx),
         "read_diagnostics" => handle_read_diagnostics(args, ctx),
         "search_project" => handle_search_project(args, ctx),
         "list_files" => handle_list_files(args, ctx),
+        "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
+            "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
+        )),
         "edit_range" | "insert_lines" | "delete_lines" => ToolResult::Error(format!(
             "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
         )),
@@ -60,7 +76,9 @@ pub fn execute_builtin(
 fn read_file_def() -> ToolDefinition {
     ToolDefinition {
         name: "read_file".to_string(),
-        description: "Read the current buffer content, optionally a line range.".to_string(),
+        description: "Read the currently open buffer. Use this for the file you're already viewing. \
+            For other project files, use read_file_at_path instead. Returns empty if no file is open."
+            .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,
@@ -89,7 +107,12 @@ fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> Too
     let total = lines.len();
 
     if total == 0 {
-        return ToolResult::Success("[empty buffer]".to_string());
+        return ToolResult::Success(
+            "[empty buffer] The current buffer has no content. \
+             Use list_files to explore the project structure, \
+             or read_file_at_path to read a specific file."
+                .to_string(),
+        );
     }
 
     let start = args
@@ -125,13 +148,143 @@ fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> Too
 }
 
 // ---------------------------------------------------------------------------
+// read_file_at_path
+// ---------------------------------------------------------------------------
+
+fn read_file_at_path_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "read_file_at_path".to_string(),
+        description: "Read any file in the project by path. Use when you need to examine files \
+            found via list_files or search_project. Path is relative to project root. \
+            Returns file contents with line numbers."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "File path relative to project root.".to_string(),
+            },
+            ToolParam {
+                name: "start_line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: false,
+                description: "First line to read (1-indexed, inclusive).".to_string(),
+            },
+            ToolParam {
+                name: "end_line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: false,
+                description: "Last line to read (1-indexed, inclusive).".to_string(),
+            },
+        ],
+    }
+}
+
+fn handle_read_file_at_path(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
+    let rel_path = match args.get("path").and_then(|v| v.as_str()) {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            return ToolResult::Error(
+                "'path' parameter is required and must be non-empty".to_string(),
+            )
+        }
+    };
+
+    // Reject path traversal
+    if rel_path.contains("..") {
+        return ToolResult::Error("path traversal (..) not allowed".to_string());
+    }
+
+    let project_root = match &ctx.scope_context.project_root {
+        Some(root) => root.clone(),
+        None => {
+            return ToolResult::Error(
+                "No project root detected (no .git directory found). \
+                 Project-level tools require a git repository."
+                    .to_string(),
+            )
+        }
+    };
+
+    let candidate = project_root.join(rel_path);
+    // Validate it stays within project root
+    let normalized = candidate.canonicalize().unwrap_or(candidate.clone());
+    let root_normalized = project_root.canonicalize().unwrap_or(project_root.clone());
+    if !normalized.starts_with(&root_normalized) {
+        return ToolResult::Error("path is outside project root".to_string());
+    }
+
+    // Check if file is already open in a buffer — use in-memory content
+    // to stay consistent with edit_range / insert_lines / delete_lines.
+    let content = if let Some(buf_content) = ctx.open_buffers.get(&normalized) {
+        buf_content.clone()
+    } else if candidate.is_file() {
+        match std::fs::read_to_string(&candidate) {
+            Ok(c) => c,
+            Err(e) => return ToolResult::Error(format!("failed to read '{}': {}", rel_path, e)),
+        }
+    } else {
+        return ToolResult::Error(format!(
+            "'{}' is not a file. Use list_files to see available files.",
+            rel_path
+        ));
+    };
+
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+
+    if total == 0 {
+        return ToolResult::Success(format!("File: {} (empty)\n", rel_path));
+    }
+
+    let start = args
+        .get("start_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.saturating_sub(1) as usize)
+        .unwrap_or(0);
+    let end = args
+        .get("end_line")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(total);
+
+    let start = start.min(total);
+    let end = end.min(total);
+    if start >= end {
+        return ToolResult::Success("[empty range]".to_string());
+    }
+
+    let mut output = String::new();
+    output.push_str(&format!(
+        "File: {} (lines {}-{} of {})\n",
+        rel_path,
+        start + 1,
+        end,
+        total
+    ));
+    for (i, line) in lines[start..end].iter().enumerate() {
+        output.push_str(&format!("{:>4} | {}\n", start + i + 1, line));
+    }
+    ToolResult::Success(output)
+}
+
+// ---------------------------------------------------------------------------
 // read_selection
 // ---------------------------------------------------------------------------
 
 fn read_selection_def() -> ToolDefinition {
     ToolDefinition {
         name: "read_selection".to_string(),
-        description: "Read the current or most recent visual selection.".to_string(),
+        description: "Read the user's visual selection. Only works when the user has selected \
+            text in the editor. If no selection exists, use read_file instead."
+            .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,
@@ -144,7 +297,11 @@ fn read_selection_def() -> ToolDefinition {
 
 fn handle_read_selection(_args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
     let Some((start_line, start_col, end_line, end_col)) = ctx.selection else {
-        return ToolResult::Error("no active selection".to_string());
+        return ToolResult::Error(
+            "No active selection. Use read_file to access the full buffer content, \
+             or read_file_at_path to read other files."
+                .to_string(),
+        );
     };
 
     let lines: Vec<&str> = ctx.buffer_content.lines().collect();
@@ -188,7 +345,10 @@ fn handle_read_selection(_args: &serde_json::Value, ctx: &ToolExecutionContext) 
 fn read_diagnostics_def() -> ToolDefinition {
     ToolDefinition {
         name: "read_diagnostics".to_string(),
-        description: "Get LSP diagnostics for the current file.".to_string(),
+        description:
+            "Get compiler errors and warnings for the current file from the language server. \
+            Use after making edits to check for introduced errors."
+                .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,
@@ -232,7 +392,9 @@ fn handle_read_diagnostics(_args: &serde_json::Value, ctx: &ToolExecutionContext
 fn search_project_def() -> ToolDefinition {
     ToolDefinition {
         name: "search_project".to_string(),
-        description: "Search for a pattern across all project files (respects .gitignore)."
+        description: "Search for a regex pattern across all project files. Use to find where \
+            functions, types, or patterns are defined or used. More efficient than reading files \
+            one by one. Returns matching lines with file paths. Respects .gitignore."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -275,7 +437,13 @@ fn handle_search_project(args: &serde_json::Value, ctx: &ToolExecutionContext) -
 
     let project_root = match &ctx.scope_context.project_root {
         Some(root) => root.clone(),
-        None => return ToolResult::Error("no project root available".to_string()),
+        None => {
+            return ToolResult::Error(
+                "No project root detected (no .git directory found). \
+                 Project-level tools require a git repository."
+                    .to_string(),
+            )
+        }
     };
 
     let matches = grep::grep_search_sync(query, &project_root, max_results);
@@ -306,7 +474,10 @@ fn handle_search_project(args: &serde_json::Value, ctx: &ToolExecutionContext) -
 fn list_files_def() -> ToolDefinition {
     ToolDefinition {
         name: "list_files".to_string(),
-        description: "List files in the project (respects .gitignore).".to_string(),
+        description: "List files and directories in the project. Use FIRST when exploring an \
+            unfamiliar project or when you don't know what files exist. Returns sorted file paths \
+            relative to project root. Respects .gitignore."
+            .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
             shell: false,
@@ -333,7 +504,13 @@ fn list_files_def() -> ToolDefinition {
 fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
     let project_root = match &ctx.scope_context.project_root {
         Some(root) => root.clone(),
-        None => return ToolResult::Error("no project root available".to_string()),
+        None => {
+            return ToolResult::Error(
+                "No project root detected (no .git directory found). \
+                 Project-level tools require a git repository."
+                    .to_string(),
+            )
+        }
     };
 
     let max_results = args
@@ -400,13 +577,178 @@ fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> To
 }
 
 // ---------------------------------------------------------------------------
+// LSP tool definitions (dispatched via execute_lsp_tool)
+// ---------------------------------------------------------------------------
+
+fn document_symbols_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "document_symbols".to_string(),
+        description: "Get the outline/structure of the current file from the language server. \
+            Returns functions, structs, classes, methods, etc. with their line ranges. \
+            Useful for understanding file structure without reading the entire file."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![],
+    }
+}
+
+fn hover_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "hover".to_string(),
+        description: "Get type information and documentation for a symbol at a specific position \
+            from the language server. Returns type signatures, doc comments, and other hover info."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![
+            ToolParam {
+                name: "line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: true,
+                description: "Line number (1-indexed).".to_string(),
+            },
+            ToolParam {
+                name: "column".to_string(),
+                param_type: ParamType::Integer,
+                required: true,
+                description: "Column number (1-indexed).".to_string(),
+            },
+        ],
+    }
+}
+
+fn goto_definition_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "goto_definition".to_string(),
+        description: "Find where a symbol at a specific position is defined. Returns the file path \
+            and line number of the definition. Use to trace function calls, type references, etc."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![
+            ToolParam {
+                name: "line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: true,
+                description: "Line number (1-indexed).".to_string(),
+            },
+            ToolParam {
+                name: "column".to_string(),
+                param_type: ParamType::Integer,
+                required: true,
+                description: "Column number (1-indexed).".to_string(),
+            },
+        ],
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Navigation tool definitions (dispatched via execute_navigation_tool)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn open_file_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "open_file".to_string(),
+        description: "Open a project file in the editor, optionally at a specific line and column. \
+            The viewport will center on the target position. Use after list_files or search_project \
+            to examine a file in context. Path is relative to project root."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Navigation,
+        parameters: vec![
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "File path relative to project root.".to_string(),
+            },
+            ToolParam {
+                name: "line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: false,
+                description: "Line to jump to (1-indexed). Defaults to 1.".to_string(),
+            },
+            ToolParam {
+                name: "column".to_string(),
+                param_type: ParamType::Integer,
+                required: false,
+                description: "Column to jump to (1-indexed). Defaults to 1.".to_string(),
+            },
+        ],
+    }
+}
+
+pub(crate) fn select_text_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "select_text".to_string(),
+        description: "Select a range of text in the current buffer and center the viewport on it. \
+            Use to highlight a specific code region for the user — for example, to show where a \
+            function is defined or where a bug is located. Lines and columns are 1-indexed."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::File,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Navigation,
+        parameters: vec![
+            ToolParam {
+                name: "start_line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: true,
+                description: "First line of selection (1-indexed).".to_string(),
+            },
+            ToolParam {
+                name: "start_column".to_string(),
+                param_type: ParamType::Integer,
+                required: false,
+                description: "First column of selection (1-indexed). Defaults to 1.".to_string(),
+            },
+            ToolParam {
+                name: "end_line".to_string(),
+                param_type: ParamType::LineNumber,
+                required: true,
+                description: "Last line of selection (1-indexed).".to_string(),
+            },
+            ToolParam {
+                name: "end_column".to_string(),
+                param_type: ParamType::Integer,
+                required: false,
+                description: "Last column of selection (1-indexed). Defaults to end of line."
+                    .to_string(),
+            },
+        ],
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mutation tool definitions (dispatched via execute_mutation_tool)
 // ---------------------------------------------------------------------------
 
 pub(crate) fn edit_range_def() -> ToolDefinition {
     ToolDefinition {
         name: "edit_range".to_string(),
-        description: "Replace lines start_line..end_line (inclusive) with new text.".to_string(),
+        description: "Replace a range of lines with new text. Lines are 1-indexed and inclusive. \
+            IMPORTANT: After an edit, line numbers shift. When making multiple edits, work from \
+            bottom to top. new_text should include proper indentation."
+            .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,
@@ -439,7 +781,9 @@ pub(crate) fn edit_range_def() -> ToolDefinition {
 pub(crate) fn insert_lines_def() -> ToolDefinition {
     ToolDefinition {
         name: "insert_lines".to_string(),
-        description: "Insert text after a specific line.".to_string(),
+        description: "Insert new text after a specific line. Use after_line=0 to insert at the \
+            beginning. Text should include proper indentation."
+            .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,
@@ -467,7 +811,9 @@ pub(crate) fn insert_lines_def() -> ToolDefinition {
 pub(crate) fn delete_lines_def() -> ToolDefinition {
     ToolDefinition {
         name: "delete_lines".to_string(),
-        description: "Delete a range of lines.".to_string(),
+        description: "Delete lines from start_line to end_line (inclusive, 1-indexed). \
+            When deleting multiple ranges, work from bottom to top to avoid line number shifts."
+            .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
             shell: false,
@@ -513,6 +859,7 @@ mod tests {
                 network: false,
                 allow_mutations: true,
             },
+            open_buffers: std::collections::HashMap::new(),
         }
     }
 
@@ -565,7 +912,7 @@ mod tests {
         let ctx = test_ctx("hello world");
         let result = execute_builtin("read_selection", &serde_json::json!({}), &ctx);
         match result {
-            ToolResult::Error(s) => assert!(s.contains("no active selection")),
+            ToolResult::Error(s) => assert!(s.contains("No active selection")),
             ToolResult::Success(_) => panic!("expected error"),
         }
     }
@@ -651,6 +998,7 @@ mod tests {
                 network: false,
                 allow_mutations: true,
             },
+            open_buffers: std::collections::HashMap::new(),
         }
     }
 
