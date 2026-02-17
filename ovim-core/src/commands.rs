@@ -1487,6 +1487,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         line_count: None,
                     })
                 }
+            // Handle :help keybindings
+            } else if command == "help keybindings" || command == "help keys" {
+                CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some(
+                        "Keybinding compatibility guide: architecture/knowledge/keybinding-compat.md".to_string(),
+                    ),
+                    line_count: None,
+                })
             // Handle :map, :noremap and variants
             } else if is_map_command(command) {
                 handle_map_command(editor, command)
