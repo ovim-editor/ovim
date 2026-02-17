@@ -65,23 +65,46 @@ pub fn handle_ai_prompt_mode(editor: &mut Editor, key_event: KeyEvent) -> Result
             editor.ai_state.prompt.cursor = editor.ai_state.prompt.input.len();
         }
         KeyCode::Tab | KeyCode::Down => {
-            editor.ai_cycle_profile(true);
+            if editor.ai_state.prompt.model_picker_open {
+                editor.ai_move_model_picker_selection(true);
+            } else {
+                editor.ai_cycle_profile(true);
+            }
         }
         KeyCode::BackTab | KeyCode::Up => {
-            editor.ai_cycle_profile(false);
+            if editor.ai_state.prompt.model_picker_open {
+                editor.ai_move_model_picker_selection(false);
+            } else {
+                editor.ai_cycle_profile(false);
+            }
+        }
+        KeyCode::Char('m') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.ai_toggle_model_picker();
         }
         KeyCode::Enter => {
-            editor.submit_ai_prompt_job()?;
+            if editor.ai_state.prompt.model_picker_open {
+                editor.ai_apply_model_picker_selection();
+            } else {
+                editor.submit_ai_prompt_job()?;
+            }
         }
         KeyCode::Esc => {
-            editor.ai_state.prompt.input.clear();
-            editor.ai_state.prompt.cursor = 0;
-            editor.ai_state.active_selection = None;
-            editor.set_mode(Mode::Normal);
+            if editor.ai_state.prompt.model_picker_open {
+                editor.ai_close_model_picker();
+            } else {
+                editor.ai_state.prompt.input.clear();
+                editor.ai_state.prompt.cursor = 0;
+                editor.ai_state.prompt.model_picker_open = false;
+                editor.ai_state.prompt.model_picker_index = 0;
+                editor.ai_state.active_selection = None;
+                editor.set_mode(Mode::Normal);
+            }
         }
         KeyCode::Char('c') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.ai_state.prompt.input.clear();
             editor.ai_state.prompt.cursor = 0;
+            editor.ai_state.prompt.model_picker_open = false;
+            editor.ai_state.prompt.model_picker_index = 0;
             editor.ai_state.active_selection = None;
             editor.set_mode(Mode::Normal);
         }

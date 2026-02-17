@@ -25,6 +25,13 @@ impl Editor {
         };
         self.ai_state.active_profile = profile_name.to_string();
         self.ai_state.edit_format = profile.edit_format.clone();
+        if let Some(idx) = self
+            .ai_profile_names_sorted()
+            .iter()
+            .position(|name| name == profile_name)
+        {
+            self.ai_state.prompt.model_picker_index = idx;
+        }
         self.set_lsp_status(format!(
             "AI profile: {} ({}/{})",
             profile_name, profile.provider, profile.model
@@ -53,6 +60,76 @@ impl Editor {
         };
 
         let _ = self.ai_set_profile(&names[next_idx]);
+    }
+
+    /// Opens the AI prompt model picker and highlights the current profile.
+    pub fn ai_open_model_picker(&mut self) {
+        let names = self.ai_profile_names_sorted();
+        if names.is_empty() {
+            self.ai_state.prompt.model_picker_open = false;
+            self.ai_state.prompt.model_picker_index = 0;
+            return;
+        }
+
+        let current_idx = names
+            .iter()
+            .position(|name| name == &self.ai_state.active_profile)
+            .unwrap_or(0);
+        self.ai_state.prompt.model_picker_open = true;
+        self.ai_state.prompt.model_picker_index = current_idx;
+    }
+
+    /// Closes the AI prompt model picker.
+    pub fn ai_close_model_picker(&mut self) {
+        self.ai_state.prompt.model_picker_open = false;
+    }
+
+    /// Toggles the AI prompt model picker.
+    pub fn ai_toggle_model_picker(&mut self) {
+        if self.ai_state.prompt.model_picker_open {
+            self.ai_close_model_picker();
+        } else {
+            self.ai_open_model_picker();
+        }
+    }
+
+    /// Move highlighted profile in the model picker.
+    pub fn ai_move_model_picker_selection(&mut self, forward: bool) {
+        let names = self.ai_profile_names_sorted();
+        if names.is_empty() {
+            return;
+        }
+
+        if !self.ai_state.prompt.model_picker_open {
+            self.ai_open_model_picker();
+        }
+
+        let len = names.len();
+        let idx = self.ai_state.prompt.model_picker_index.min(len.saturating_sub(1));
+        self.ai_state.prompt.model_picker_index = if forward {
+            (idx + 1) % len
+        } else if idx == 0 {
+            len - 1
+        } else {
+            idx - 1
+        };
+    }
+
+    /// Applies the highlighted model picker selection.
+    pub fn ai_apply_model_picker_selection(&mut self) {
+        let names = self.ai_profile_names_sorted();
+        if names.is_empty() {
+            self.ai_close_model_picker();
+            return;
+        }
+
+        let idx = self
+            .ai_state
+            .prompt
+            .model_picker_index
+            .min(names.len().saturating_sub(1));
+        let _ = self.ai_set_profile(&names[idx]);
+        self.ai_close_model_picker();
     }
 
     /// Start AI prompt from the current visual selection.
@@ -108,6 +185,8 @@ impl Editor {
         self.ai_state.active_selection = Some(snapshot);
         self.ai_state.prompt.input.clear();
         self.ai_state.prompt.cursor = 0;
+        self.ai_state.prompt.model_picker_open = false;
+        self.ai_state.prompt.model_picker_index = 0;
         self.set_mode(Mode::AiPrompt);
         self.set_lsp_status("AI prompt: type instruction and press Enter".to_string());
         Ok(())
@@ -207,6 +286,8 @@ impl Editor {
 
         self.ai_state.prompt.input.clear();
         self.ai_state.prompt.cursor = 0;
+        self.ai_state.prompt.model_picker_open = false;
+        self.ai_state.prompt.model_picker_index = 0;
         self.ai_state.active_selection = None;
         self.set_mode(Mode::Normal);
         self.set_lsp_status(format!("AI job {} started ({})", job_id, provider_label));

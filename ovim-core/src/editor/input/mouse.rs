@@ -416,11 +416,23 @@ fn handle_picker_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 /// Handles a left click inside the AI prompt panel.
 /// Returns true when the click was consumed.
 fn handle_ai_prompt_click(editor: &mut Editor, col: u16, row: u16) -> Result<bool> {
+    if let Some(trigger) = editor.render_cache.ai_prompt_model_trigger_hitbox {
+        if trigger.contains(col, row) {
+            editor.ai_toggle_model_picker();
+            return Ok(true);
+        }
+    }
+
     for (rect, profile_name) in editor.render_cache.ai_prompt_model_hitboxes.clone() {
         if rect.contains(col, row) {
             let _ = editor.ai_set_profile(&profile_name);
+            editor.ai_close_model_picker();
             return Ok(true);
         }
+    }
+
+    if editor.ai_state.prompt.model_picker_open {
+        editor.ai_close_model_picker();
     }
 
     let prompt = editor.ai_prompt_input().to_string();

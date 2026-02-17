@@ -11,6 +11,8 @@ use std::time::Instant;
 pub struct AiPromptState {
     pub input: String,
     pub cursor: usize,
+    pub model_picker_open: bool,
+    pub model_picker_index: usize,
 }
 
 impl Default for AiPromptState {
@@ -18,6 +20,8 @@ impl Default for AiPromptState {
         Self {
             input: String::new(),
             cursor: 0,
+            model_picker_open: false,
+            model_picker_index: 0,
         }
     }
 }
