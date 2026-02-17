@@ -510,13 +510,12 @@ impl Buffer {
     /// Finds and deletes a text object at the current cursor position.
     pub fn delete_text_object(&mut self, object_type: &TextObjectType) {
         let range = match object_type {
-            TextObjectType::Word { inner } => {
-                if *inner {
-                    TextObjects::inner_word(self)
-                } else {
-                    TextObjects::around_word(self)
-                }
-            }
+            TextObjectType::Word { inner, big } => match (*inner, *big) {
+                (true, true) => TextObjects::inner_big_word(self),
+                (true, false) => TextObjects::inner_word(self),
+                (false, true) => TextObjects::around_big_word(self),
+                (false, false) => TextObjects::around_word(self),
+            },
             TextObjectType::Quote { char, inner } => {
                 TextObjects::quoted_string(self, *char, !*inner)
             }

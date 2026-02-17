@@ -187,6 +187,134 @@ impl TextObjects {
         })
     }
 
+    /// Gets the range for "inner WORD" (iW).
+    /// WORD uses non-whitespace runs (punctuation is part of the WORD).
+    pub fn inner_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= buffer.line_count() {
+            return None;
+        }
+
+        let line = buffer.rope().line(line_idx).to_string();
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        if col >= chars.len() {
+            return None;
+        }
+
+        // If cursor is on whitespace, select the whitespace sequence.
+        if chars[col].is_whitespace() {
+            let mut start_col = col;
+            while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col < chars.len() && chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            return Some(TextObjectRange {
+                start_line: line_idx,
+                start_col,
+                end_line: line_idx,
+                end_col,
+            });
+        }
+
+        // For WORD, include contiguous non-whitespace.
+        let mut start_col = col;
+        while start_col > 0 && !chars[start_col - 1].is_whitespace() {
+            start_col -= 1;
+        }
+
+        let mut end_col = col;
+        while end_col < chars.len() && !chars[end_col].is_whitespace() {
+            end_col += 1;
+        }
+
+        Some(TextObjectRange {
+            start_line: line_idx,
+            start_col,
+            end_line: line_idx,
+            end_col,
+        })
+    }
+
+    /// Gets the range for "around WORD" (aW).
+    /// WORD uses non-whitespace runs (punctuation is part of the WORD).
+    pub fn around_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
+        let cursor = buffer.cursor();
+        let line_idx = cursor.line();
+        let col = cursor.col();
+
+        if line_idx >= buffer.line_count() {
+            return None;
+        }
+
+        let line = buffer.rope().line(line_idx).to_string();
+        let line_text = line.trim_end_matches('\n');
+        let chars: Vec<char> = line_text.chars().collect();
+
+        if col >= chars.len() {
+            return None;
+        }
+
+        // If cursor is on whitespace, select the whitespace sequence.
+        if chars[col].is_whitespace() {
+            let mut start_col = col;
+            while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col < chars.len() && chars[end_col].is_whitespace() {
+                end_col += 1;
+            }
+            return Some(TextObjectRange {
+                start_line: line_idx,
+                start_col,
+                end_line: line_idx,
+                end_col,
+            });
+        }
+
+        // Find WORD boundaries (contiguous non-whitespace).
+        let mut start_col = col;
+        while start_col > 0 && !chars[start_col - 1].is_whitespace() {
+            start_col -= 1;
+        }
+
+        let mut end_col = col;
+        while end_col < chars.len() && !chars[end_col].is_whitespace() {
+            end_col += 1;
+        }
+
+        // Include trailing whitespace if followed by more content,
+        // otherwise include leading whitespace.
+        let word_end = end_col;
+        while end_col < chars.len() && chars[end_col].is_whitespace() && chars[end_col] != '\n' {
+            end_col += 1;
+        }
+
+        let has_trailing_space = end_col > word_end;
+        let has_content_after = end_col < chars.len();
+        if !(has_trailing_space && has_content_after) {
+            end_col = word_end;
+            while start_col > 0 && chars[start_col - 1].is_whitespace() {
+                start_col -= 1;
+            }
+        }
+
+        Some(TextObjectRange {
+            start_line: line_idx,
+            start_col,
+            end_line: line_idx,
+            end_col,
+        })
+    }
+
     /// Gets the range for a quoted string (inner or around)
     /// quote_char: the quote character (', ", `)
     /// include_quotes: true for "around", false for "inner"

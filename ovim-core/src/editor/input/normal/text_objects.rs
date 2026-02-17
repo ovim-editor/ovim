@@ -39,6 +39,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 TextObjects::around_word(editor.buffer())
             }
         }
+        KeyCode::Char('W') => {
+            if text_obj_type == 'i' {
+                TextObjects::inner_big_word(editor.buffer())
+            } else {
+                TextObjects::around_big_word(editor.buffer())
+            }
+        }
         KeyCode::Char('p') => {
             if text_obj_type == 'i' {
                 TextObjects::inner_paragraph(editor.buffer())
@@ -97,7 +104,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     // Determine the TextObjectType for semantic repeat
     let inner = text_obj_type == 'i';
     let object_type: Option<TextObjectType> = match key_event.code {
-        KeyCode::Char('w') => Some(TextObjectType::Word { inner }),
+        KeyCode::Char('w') => Some(TextObjectType::Word { inner, big: false }),
+        KeyCode::Char('W') => Some(TextObjectType::Word { inner, big: true }),
         KeyCode::Char('"') | KeyCode::Char('\'') | KeyCode::Char('`') => {
             let quote = match key_event.code {
                 KeyCode::Char(c) => c,
