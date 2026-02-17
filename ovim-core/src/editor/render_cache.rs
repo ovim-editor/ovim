@@ -24,6 +24,12 @@ pub struct RenderCache {
     pub last_chat_area: Option<crate::Rect>,
     /// Cached AI chat total rendered row count from last render pass.
     pub ai_chat_last_total_rows: usize,
+    /// Cached visible chat row window start (inclusive) from last render.
+    pub ai_chat_last_visible_start_row: usize,
+    /// Cached visible chat row window end (exclusive) from last render.
+    pub ai_chat_last_visible_end_row: usize,
+    /// Cached row spans per message from last render (oldest..latest).
+    pub ai_chat_last_message_row_spans: Vec<(usize, usize)>,
     /// Cached AI chat input area from last render.
     pub ai_chat_input_area: Option<crate::Rect>,
     /// Cached AI chat input cursor position from last render.
@@ -43,6 +49,9 @@ impl Default for RenderCache {
             ai_prompt_model_hitboxes: Vec::new(),
             last_chat_area: None,
             ai_chat_last_total_rows: 0,
+            ai_chat_last_visible_start_row: 0,
+            ai_chat_last_visible_end_row: 0,
+            ai_chat_last_message_row_spans: Vec::new(),
             ai_chat_input_area: None,
             ai_chat_input_cursor_pos: None,
         }

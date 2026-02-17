@@ -213,6 +213,11 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
 fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, theme: &Theme) {
     let messages = editor.ai_chat_messages();
     if messages.is_empty() {
+        editor.render_cache.ai_chat_last_total_rows = 0;
+        editor.render_cache.ai_chat_last_visible_start_row = 0;
+        editor.render_cache.ai_chat_last_visible_end_row = 0;
+        editor.render_cache.ai_chat_last_message_row_spans.clear();
+
         // Empty state
         let help = if editor.ai_chat_allow_edits() {
             " Type a message and press Enter to chat with AI "
@@ -238,7 +243,9 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
 
     let allow_edits = editor.ai_chat_allow_edits();
     let focus = editor.ai_chat_focus();
-    let selected_offset = editor.ai_chat_history_cursor_offset();
+    let selected_offset = editor
+        .ai_chat_history_cursor_offset()
+        .min(messages.len().saturating_sub(1));
     let panel_width = area.width as usize;
 
     // Get node IDs for active branch (parallel to messages)
@@ -249,6 +256,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
 
     // Render messages bottom-up with scroll
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
+    let mut message_row_spans: Vec<(usize, usize)> = Vec::with_capacity(messages.len());
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected = focus == ChatFocus::MessageHistory
             && idx == messages.len().saturating_sub(1 + selected_offset);
@@ -271,6 +279,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             child_count,
             theme,
         );
+        let msg_row_start = rendered_lines.len();
         for line in bubble_lines {
             rendered_lines.push((line, false));
         }
@@ -282,6 +291,8 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             )),
             true,
         ));
+        let msg_row_end = rendered_lines.len();
+        message_row_spans.push((msg_row_start, msg_row_end));
     }
 
     // Streaming thinking bubble (if any)
@@ -380,6 +391,9 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     let effective_scroll = editor.ai_chat_effective_message_scroll(total);
     let start = total.saturating_sub(visible_rows + effective_scroll);
     let end = total.saturating_sub(effective_scroll).min(total);
+    editor.render_cache.ai_chat_last_visible_start_row = start;
+    editor.render_cache.ai_chat_last_visible_end_row = end;
+    editor.render_cache.ai_chat_last_message_row_spans = message_row_spans;
 
     for (row_idx, line_idx) in (start..end).enumerate() {
         if row_idx >= visible_rows {

@@ -286,22 +286,27 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
 fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Up | KeyCode::Char('k') => {
-            editor.ai_chat_scroll_history_up(1);
+            editor.ai_chat_history_cursor_move_older(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if editor.ai_chat_scroll_history_down(1) {
-                if let Some(chat) = editor.ai_state.chat.as_mut() {
-                    chat.focus = ChatFocus::TextInput;
+            let at_latest = editor.ai_chat_history_cursor_offset() == 0;
+            if at_latest {
+                if editor.ai_chat_scroll_viewport_down(1) {
+                    if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        chat.focus = ChatFocus::TextInput;
+                    }
                 }
+            } else {
+                editor.ai_chat_history_cursor_move_newer(1);
             }
         }
         // Ctrl-U — scroll up half page
         KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.ai_chat_scroll_history_up(10);
+            editor.ai_chat_scroll_viewport_up(10);
         }
         // Ctrl-D — scroll down half page
         KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.ai_chat_scroll_history_down(10);
+            editor.ai_chat_scroll_viewport_down(10);
         }
         KeyCode::Enter => {
             let node_ids = editor
@@ -309,10 +314,10 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 .map(|c| c.node_ids_for_active_branch().to_vec())
                 .unwrap_or_default();
             let messages = editor.ai_chat_messages();
-            let cursor = editor.ai_chat_history_cursor_offset();
-            let idx = messages.len().saturating_sub(1 + cursor);
-
-            if idx < messages.len() && idx < node_ids.len() {
+            if let Some(idx) = editor.ai_chat_history_selected_index() {
+                if idx >= messages.len() || idx >= node_ids.len() {
+                    return Ok(());
+                }
                 let node_id = node_ids[idx];
                 let role = messages[idx].role.clone();
 
