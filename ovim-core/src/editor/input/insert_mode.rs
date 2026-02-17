@@ -381,7 +381,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.accept_completion();
         }
         KeyCode::Tab => {
-            helpers::insert_char(editor, '\t')?;
+            helpers::insert_tab(editor)?;
         }
         KeyCode::Char(c) => {
             helpers::insert_char(editor, c)?;
