@@ -98,3 +98,20 @@ fn test_diagnostic_nav_same_line_different_columns() {
     test.keys("[d");
     test.assert_cursor(0, 8);
 }
+
+#[test]
+fn test_show_diagnostic_at_cursor_chooses_nearest_on_line() {
+    let mut test = EditorTest::new("console.log(pendingCount);\n");
+
+    test.editor.set_test_diagnostics(vec![
+        make_diagnostic(0, 0, "first diagnostic"),
+        make_diagnostic(0, 20, "near pendingCount"),
+    ]);
+
+    // Cursor is not inside either range, but is much closer to column 20.
+    test.set_cursor(0, 18);
+    test.editor.show_diagnostic_at_cursor();
+
+    let hover = test.editor.hover_info().unwrap_or_default();
+    assert!(hover.contains("near pendingCount"));
+}

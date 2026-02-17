@@ -260,15 +260,21 @@ impl Editor {
             }
         };
 
-        // Find diagnostic covering cursor column, or first on line
+        // Pick diagnostic under cursor when possible; otherwise pick the nearest one
+        // on the line by column distance (instead of arbitrary first entry).
         let diagnostic = diagnostics
             .iter()
-            .find(|d| {
+            .min_by_key(|d| {
                 let start = crate::lsp::utf16_to_char_col(&line_text, d.range.start.character);
                 let end = crate::lsp::utf16_to_char_col(&line_text, d.range.end.character);
-                col >= start && col <= end
+                if col >= start && col <= end {
+                    0usize
+                } else if col < start {
+                    start - col
+                } else {
+                    col.saturating_sub(end)
+                }
             })
-            .or_else(|| diagnostics.first())
             .unwrap();
 
         // Format severity with markdown for nice rendering
