@@ -304,20 +304,10 @@ fn handle_scroll(editor: &mut Editor, up: bool, row: u16) -> Result<()> {
     if editor.mode() == Mode::AiChat {
         if let Some(chat_rect) = editor.render_cache.last_chat_area {
             if row >= chat_rect.y && row < chat_rect.y + chat_rect.height {
-                if let Some(chat) = editor.ai_state.chat.as_mut() {
-                    if up {
-                        if chat.message_follow_latest {
-                            chat.message_follow_latest = false;
-                            chat.message_scroll_base_total_rows = None;
-                        }
-                        chat.message_scroll = chat.message_scroll.saturating_add(SCROLL_LINES);
-                    } else {
-                        chat.message_scroll = chat.message_scroll.saturating_sub(SCROLL_LINES);
-                        if chat.message_scroll == 0 {
-                            chat.message_follow_latest = true;
-                            chat.message_scroll_base_total_rows = None;
-                        }
-                    }
+                if up {
+                    editor.ai_chat_scroll_history_up(SCROLL_LINES);
+                } else {
+                    editor.ai_chat_scroll_history_down(SCROLL_LINES);
                 }
                 return Ok(());
             }

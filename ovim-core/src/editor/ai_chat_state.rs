@@ -13,6 +13,40 @@ pub struct PendingToolApproval {
     pub approval_root: PathBuf,
 }
 
+/// Viewport state for chat history rendering.
+pub struct ChatViewportState {
+    /// Row scroll offset from bottom (0 = latest).
+    pub row_scroll_from_bottom: usize,
+    /// Whether viewport should track latest output automatically.
+    pub follow_latest: bool,
+    /// Total rendered row count when pinning started.
+    pub pinned_base_total_rows: Option<usize>,
+}
+
+impl Default for ChatViewportState {
+    fn default() -> Self {
+        Self {
+            row_scroll_from_bottom: 0,
+            follow_latest: true,
+            pinned_base_total_rows: None,
+        }
+    }
+}
+
+/// Selection state for message-history interactions.
+pub struct ChatHistoryState {
+    /// Selected message offset from latest message (0 = latest).
+    pub cursor_offset_from_latest: usize,
+}
+
+impl Default for ChatHistoryState {
+    fn default() -> Self {
+        Self {
+            cursor_offset_from_latest: 0,
+        }
+    }
+}
+
 pub struct AiChatState {
     pub opts: ChatOpts,
     /// Buffer ID where the chat was originally opened.
@@ -26,17 +60,10 @@ pub struct AiChatState {
     pub input_cursor: usize,
     /// Which zone has focus.
     pub focus: ChatFocus,
-    /// Scroll offset in message history (0 = bottom, increases = older).
-    pub message_scroll: usize,
-    /// Whether message history should stay pinned to latest output.
-    ///
-    /// When false, the viewport is pinned to a stable row anchor while
-    /// streaming continues.
-    pub message_follow_latest: bool,
-    /// Total rendered chat rows when pinning started.
-    ///
-    /// Used to keep the viewport stable while new rows are appended.
-    pub message_scroll_base_total_rows: Option<usize>,
+    /// Viewport behavior for chat history.
+    pub viewport: ChatViewportState,
+    /// Message-history selection state.
+    pub history: ChatHistoryState,
     /// Whether assistant can suggest edits.
     pub allow_edits: bool,
     /// Waiting for AI response.
@@ -96,9 +123,8 @@ impl AiChatState {
             input: String::new(),
             input_cursor: 0,
             focus: ChatFocus::TextInput,
-            message_scroll: 0,
-            message_follow_latest: true,
-            message_scroll_base_total_rows: None,
+            viewport: ChatViewportState::default(),
+            history: ChatHistoryState::default(),
             allow_edits,
             waiting: false,
             pending_job: None,
