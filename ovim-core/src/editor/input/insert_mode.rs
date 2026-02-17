@@ -73,19 +73,27 @@ fn exit_insert_mode(editor: &mut Editor) {
     // Cleanup whitespace-only lines before finalizing changes
     cleanup_whitespace_only_line(editor);
 
+    // Track whether finalize actually pushed an insert-mode undo entry.
+    // For cases like `cw<Esc>`/`C<Esc>` where no text was typed, finalize
+    // pushes nothing and we must not pop unrelated history.
+    let undo_len_before_finalize = editor.buffer().change_manager().undo_stack.len();
     editor.finalize_change_building();
+    let insert_change_pushed =
+        editor.buffer().change_manager().undo_stack.len() > undo_len_before_finalize;
 
     // Check for pending change repeat (cc, C, s, S, cj, ck, etc.)
     // Must be checked BEFORE PendingSemanticChange — they are mutually exclusive.
     if let Some(pending) = editor.take_pending_change_repeat() {
-        // Extract typed text from the just-finalized composite
-        let inserted_text = editor
-            .last_change()
+        // Pop insert composite only if this insert session actually pushed one.
+        let insert_undo = if insert_change_pushed {
+            editor.pop_last_change()
+        } else {
+            None
+        };
+        let inserted_text = insert_undo
+            .as_ref()
             .map(|c| c.get_inserted_text())
             .unwrap_or_default();
-
-        // Pop insert composite (from ChangeBuilder)
-        let insert_undo = editor.pop_last_change();
         // Pop delete undo only if the delete phase actually produced edits
         let delete_undo = pending
             .delete_token
@@ -95,6 +103,7 @@ fn exit_insert_mode(editor: &mut Editor) {
         let cursor_before = delete_undo
             .as_ref()
             .map(|c| c.cursor_before())
+            .or_else(|| insert_undo.as_ref().map(|c| c.cursor_before()))
             .unwrap_or_else(|| editor.cursor_position());
         let cursor_after = editor.cursor_position();
 
@@ -118,15 +127,16 @@ fn exit_insert_mode(editor: &mut Editor) {
     }
     // Check for pending semantic change operation (ci", cw, etc.)
     else if let Some(pending) = editor.take_pending_semantic_change() {
-        // Get the inserted text from the last change
-        let inserted_text = if let Some(last_change) = editor.last_change() {
-            last_change.get_inserted_text()
+        // Remove the insert composite only if this insert session pushed one.
+        let insert_undo = if insert_change_pushed {
+            editor.pop_last_change()
         } else {
-            String::new()
+            None
         };
-
-        // Remove the composite change that was just added
-        editor.pop_last_change();
+        let inserted_text = insert_undo
+            .as_ref()
+            .map(|c| c.get_inserted_text())
+            .unwrap_or_default();
 
         // Create the appropriate semantic change
         let cursor_after = (
@@ -479,4 +489,74 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::{PendingChangeRepeat, PendingSemanticChange};
+
+    #[test]
+    fn exit_insert_mode_semantic_no_insert_keeps_prior_undo_entry() {
+        let mut editor = Editor::with_content("word\n");
+
+        // Seed history so an accidental pop is observable.
+        let cursor = editor.cursor_position();
+        assert!(editor.apply_change_and_record(Change::insert(cursor, "X".to_string(), cursor)));
+        let undo_len_before = editor.buffer().change_manager().undo_stack.len();
+
+        // Simulate a semantic change operator (e.g., cw) entering insert mode,
+        // then immediate <Esc> (no inserted text).
+        editor.set_pending_semantic_change(PendingSemanticChange {
+            object_type: None,
+            is_word_change: true,
+            is_search_match_change: false,
+            search_pattern: None,
+            search_forward: None,
+            old_text: "word".to_string(),
+            old_range: Range::new((0, 0), (0, 4)),
+            cursor_before: (0, 0),
+        });
+        editor.start_change_building((0, 0));
+        editor.set_mode(Mode::Insert);
+
+        exit_insert_mode(&mut editor);
+
+        let undo_stack = &editor.buffer().change_manager().undo_stack;
+        assert_eq!(undo_stack.len(), undo_len_before + 1);
+        assert!(matches!(
+            undo_stack.first(),
+            Some(Change::InsertText { .. })
+        ));
+        assert!(matches!(
+            undo_stack.last(),
+            Some(Change::ChangeWord { replacement, .. }) if replacement.is_empty()
+        ));
+    }
+
+    #[test]
+    fn exit_insert_mode_pending_change_repeat_no_insert_no_delete_keeps_prior_undo() {
+        let mut editor = Editor::with_content("line\n");
+
+        // Seed history so an accidental pop/replace is observable.
+        let cursor = editor.cursor_position();
+        assert!(editor.apply_change_and_record(Change::insert(cursor, "X".to_string(), cursor)));
+        let undo_len_before = editor.buffer().change_manager().undo_stack.len();
+
+        // Simulate a no-op change operator (e.g., C at EOL) entering insert mode,
+        // then immediate <Esc> (no delete edits + no insert edits).
+        editor.set_pending_change_repeat(PendingChangeRepeat {
+            delete_action: RepeatAction::DeleteToEndOfLine,
+            linewise: false,
+            delete_token: None,
+        });
+        editor.start_change_building((0, 0));
+        editor.set_mode(Mode::Insert);
+
+        exit_insert_mode(&mut editor);
+
+        let undo_stack = &editor.buffer().change_manager().undo_stack;
+        assert_eq!(undo_stack.len(), undo_len_before);
+        assert!(matches!(undo_stack.last(), Some(Change::InsertText { .. })));
+    }
 }

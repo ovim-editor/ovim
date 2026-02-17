@@ -2,6 +2,7 @@ use crate::ai::chat_types::{
     ChatFocus, ChatMessage, ChatOpts, ChatRole, ConversationTree, NodeId, StreamChunk,
     ToolCallInfo, ToolSummaryKind,
 };
+use crate::buffer::BufferId;
 use crate::mode::Mode;
 use anyhow::Result;
 
@@ -15,7 +16,7 @@ impl Editor {
 
     /// Open or resume an AI chat panel.
     pub fn open_ai_chat(&mut self, opts: ChatOpts) -> Result<()> {
-        let buffer_id = self.current_buffer_index;
+        let buffer_id = self.buffer().id();
         let mode_before = self.mode();
 
         // Ensure conversation exists
@@ -451,6 +452,13 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Whether an AI turn still has pending work that can affect review flow.
+    pub fn ai_chat_has_pending_work(&self) -> bool {
+        self.ai_chat_waiting()
+            || self.ai_chat_has_pending_tool_approval()
+            || self.ai_chat_has_pending_no_repo_folder_approval()
+    }
+
     /// Whether a tool call is currently paused pending user approval.
     pub fn ai_chat_has_pending_tool_approval(&self) -> bool {
         self.ai_state
@@ -503,6 +511,39 @@ impl Editor {
             .as_ref()
             .map(|c| c.allow_edits)
             .unwrap_or(true)
+    }
+
+    /// Human-readable save policy for AI chat mutations.
+    pub fn ai_chat_save_policy_label(&self) -> Option<&'static str> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|_| "only_if_clean_at_start")
+    }
+
+    /// Effective save mode for current AI target buffer.
+    pub fn ai_chat_save_mode_label(&self) -> Option<&'static str> {
+        let chat = self.ai_state.chat.as_ref()?;
+        let has_path = self
+            .get_buffer_by_id(chat.active_buffer_id)
+            .and_then(|b| b.file_path())
+            .is_some();
+        if !has_path {
+            return Some("unsaved-buffer");
+        }
+        if chat.buffer_was_clean_at_chat_start {
+            Some("auto")
+        } else {
+            Some("manual")
+        }
+    }
+
+    /// Most recent save outcome message for this chat session.
+    pub fn ai_chat_last_save_outcome(&self) -> Option<&str> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.last_save_outcome.as_deref())
     }
 
     /// Selected message index in current conversation.
@@ -739,12 +780,12 @@ impl Editor {
 
     /// Jump to the next/previous agent edit in the current buffer.
     pub fn goto_agent_edit(&mut self, forward: bool) {
-        let buf_idx = self.current_buffer_index;
+        let buffer_id = self.buffer().id();
         let cursor_line = self.buffer().cursor().line();
 
         let target = self.ai_state.chat.as_ref().and_then(|c| {
             c.agent_edits
-                .next_edit_boundary(buf_idx, cursor_line, forward)
+                .next_edit_boundary(buffer_id, cursor_line, forward)
         });
 
         if let Some(line) = target {
@@ -836,11 +877,11 @@ impl Editor {
     // Helpers
     // -----------------------------------------------------------------
 
-    pub(crate) fn ai_chat_conversation_key(&self) -> (usize, String) {
+    pub(crate) fn ai_chat_conversation_key(&self) -> (BufferId, String) {
         if let Some(chat) = &self.ai_state.chat {
             (chat.origin_buffer_id, chat.opts.name.clone())
         } else {
-            (self.current_buffer_index, "chat".to_string())
+            (self.buffer().id(), "chat".to_string())
         }
     }
 
@@ -861,6 +902,7 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::ai::chat_types::ChatOpts;
+    use crate::buffer::Buffer;
 
     fn open_test_chat(editor: &mut Editor) {
         editor
@@ -975,11 +1017,12 @@ mod tests {
     fn accept_review_clears_markers_and_returns_to_docked_chat() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
+        let buffer_id = editor.buffer().id();
 
         editor.ai_chat_enter_review_mode();
         {
             let chat = editor.ai_state.chat.as_mut().expect("chat");
-            chat.agent_edits.record_edit(0, 0, 0);
+            chat.agent_edits.record_edit(buffer_id, 0, 0);
             assert_eq!(chat.agent_edits.total_edit_count(), 1);
         }
 
@@ -994,5 +1037,29 @@ mod tests {
             .agent_edits
             .total_edit_count();
         assert_eq!(edits, 0);
+    }
+
+    #[test]
+    fn conversation_history_survives_buffer_index_shift() {
+        let mut editor = Editor::default();
+
+        // Seed two buffers so deleting one will shift indices.
+        editor.add_buffer(Buffer::new_from_str("second\n"));
+        open_test_chat(&mut editor);
+
+        {
+            let conv = editor.conversation_mut().expect("conversation");
+            conv.append_user_message("hello".to_string());
+        }
+
+        // Delete the first buffer so the chat buffer index changes.
+        editor.switch_to_buffer(0);
+        let should_quit = editor.delete_current_buffer();
+        assert!(!should_quit);
+
+        // Conversation should still resolve through stable BufferId keying.
+        let messages = editor.ai_chat_messages();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "hello");
     }
 }

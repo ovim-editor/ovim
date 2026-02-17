@@ -1,6 +1,7 @@
 use crate::ai::chat_types::{
     ChatFocus, ChatOpts, NodeId, StreamChunk, ToolCallInfo, ToolSummaryKind,
 };
+use crate::buffer::BufferId;
 use crate::mode::Mode;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -74,9 +75,9 @@ pub struct AiChatState {
     pub opts: ChatOpts,
     /// Buffer ID where the chat was originally opened.
     /// Used for the conversation key — never changes during the session.
-    pub origin_buffer_id: usize,
+    pub origin_buffer_id: BufferId,
     /// Buffer ID that mutations target. Updated by `open_file`.
-    pub active_buffer_id: usize,
+    pub active_buffer_id: BufferId,
     /// Chat input text.
     pub input: String,
     /// Byte offset cursor in input.
@@ -129,6 +130,8 @@ pub struct AiChatState {
     pub agent_edits: AgentEditTracker,
     /// Whether the buffer was clean when chat opened (for auto-save guard).
     pub buffer_was_clean_at_chat_start: bool,
+    /// Most recent save outcome from an agent mutation.
+    pub last_save_outcome: Option<String>,
     /// Chat panel view mode.
     pub view_mode: ChatViewMode,
     /// Current undo group ID for grouping agent edits per turn.
@@ -143,7 +146,7 @@ impl AiChatState {
         self.input.lines().count().max(1)
     }
 
-    pub fn new(opts: ChatOpts, active_buffer_id: usize, mode_before: Mode) -> Self {
+    pub fn new(opts: ChatOpts, active_buffer_id: BufferId, mode_before: Mode) -> Self {
         let allow_edits = opts.allow_edits;
         Self {
             opts,
@@ -175,6 +178,7 @@ impl AiChatState {
             next_snapshot_id: 0,
             agent_edits: AgentEditTracker::new(),
             buffer_was_clean_at_chat_start: false,
+            last_save_outcome: None,
             view_mode: ChatViewMode::DockedChat,
             current_undo_group: None,
             next_undo_group_id: 0,
@@ -199,7 +203,7 @@ pub struct ScratchBufferState {
 /// Ranges are 0-indexed, inclusive: (start_line, end_line).
 pub struct AgentEditTracker {
     /// Per-buffer modified line ranges: sorted, non-overlapping.
-    pub all_edits: HashMap<usize, Vec<(usize, usize)>>,
+    pub all_edits: HashMap<BufferId, Vec<(usize, usize)>>,
 }
 
 impl AgentEditTracker {
@@ -210,8 +214,8 @@ impl AgentEditTracker {
     }
 
     /// Record that lines [start..=end] (0-indexed) were modified in the given buffer.
-    pub fn record_edit(&mut self, buffer_index: usize, start_line: usize, end_line: usize) {
-        let ranges = self.all_edits.entry(buffer_index).or_default();
+    pub fn record_edit(&mut self, buffer_id: BufferId, start_line: usize, end_line: usize) {
+        let ranges = self.all_edits.entry(buffer_id).or_default();
         ranges.push((start_line, end_line));
         Self::merge_ranges(ranges);
     }
@@ -219,8 +223,8 @@ impl AgentEditTracker {
     /// Adjust all tracked ranges after lines were inserted.
     /// `after_line` is 0-indexed: N new lines inserted after this line shift
     /// all ranges with start > after_line by +count.
-    pub fn adjust_for_insert(&mut self, buffer_index: usize, after_line: usize, count: usize) {
-        if let Some(ranges) = self.all_edits.get_mut(&buffer_index) {
+    pub fn adjust_for_insert(&mut self, buffer_id: BufferId, after_line: usize, count: usize) {
+        if let Some(ranges) = self.all_edits.get_mut(&buffer_id) {
             for range in ranges.iter_mut() {
                 if range.0 > after_line {
                     range.0 += count;
@@ -235,9 +239,9 @@ impl AgentEditTracker {
 
     /// Adjust all tracked ranges after lines were deleted.
     /// Lines [start..=end] (0-indexed) were removed.
-    pub fn adjust_for_delete(&mut self, buffer_index: usize, start_line: usize, end_line: usize) {
+    pub fn adjust_for_delete(&mut self, buffer_id: BufferId, start_line: usize, end_line: usize) {
         let count = end_line - start_line + 1;
-        if let Some(ranges) = self.all_edits.get_mut(&buffer_index) {
+        if let Some(ranges) = self.all_edits.get_mut(&buffer_id) {
             ranges.retain_mut(|range| {
                 if range.1 < start_line {
                     // Entirely before deletion — unchanged
@@ -265,8 +269,8 @@ impl AgentEditTracker {
     }
 
     /// Check if a line (0-indexed) in the given buffer was modified by the agent.
-    pub fn is_line_modified(&self, buffer_index: usize, line: usize) -> bool {
-        if let Some(ranges) = self.all_edits.get(&buffer_index) {
+    pub fn is_line_modified(&self, buffer_id: BufferId, line: usize) -> bool {
+        if let Some(ranges) = self.all_edits.get(&buffer_id) {
             for &(start, end) in ranges {
                 if line >= start && line <= end {
                     return true;
@@ -282,11 +286,11 @@ impl AgentEditTracker {
     /// Get the next agent edit boundary from a given line (forward or backward).
     pub fn next_edit_boundary(
         &self,
-        buffer_index: usize,
+        buffer_id: BufferId,
         from_line: usize,
         forward: bool,
     ) -> Option<usize> {
-        let ranges = self.all_edits.get(&buffer_index)?;
+        let ranges = self.all_edits.get(&buffer_id)?;
         if forward {
             for &(start, _end) in ranges {
                 if start > from_line {

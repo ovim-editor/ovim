@@ -64,6 +64,14 @@ impl Editor {
             allow_mutations: allow_edits,
         };
 
+        // Without an active file target, keep this chat session file-scoped so
+        // project-level tools do not behave inconsistently.
+        if !self.active_chat_target_has_file_path()
+            && caps.file_scope >= crate::ai::FileScope::Project
+        {
+            caps.file_scope = crate::ai::FileScope::File;
+        }
+
         // Without an approved project boundary, force file-scoped access for
         // project tools to prevent broad accidental traversal from process CWD.
         if self.ai_effective_project_root().is_none()
@@ -165,8 +173,34 @@ impl Editor {
             .chat
             .as_ref()
             .map(|chat| chat.active_buffer_id)
-            .filter(|idx| *idx < self.buffers.len())
+            .and_then(|buffer_id| self.find_buffer_index_by_id(buffer_id))
             .unwrap_or(current)
+    }
+
+    fn active_chat_target_buffer_index_strict(&self) -> std::result::Result<usize, String> {
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            return Ok(self.current_buffer_index);
+        };
+        self.find_buffer_index_by_id(chat.active_buffer_id).ok_or_else(|| {
+            format!(
+                "Active chat target is no longer available (buffer id {}). Re-open the target file with open_file before continuing.",
+                chat.active_buffer_id
+            )
+        })
+    }
+
+    fn active_chat_target_has_file_path(&self) -> bool {
+        let Ok(target_index) = self.active_chat_target_buffer_index_strict() else {
+            return false;
+        };
+        self.buffers
+            .get(target_index)
+            .and_then(|b| b.file_path())
+            .is_some()
+    }
+
+    fn no_file_open_guidance(&self) -> String {
+        "No file open. Open or select a file first, then retry. Tip: use open_file(path, create=true) if you know the target path.".to_string()
     }
 
     /// Execute a single read tool call, checking scope before dispatch.
@@ -199,6 +233,14 @@ impl Editor {
         tc: &ToolCallInfo,
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
+        if let Err(err) = self.active_chat_target_buffer_index_strict() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(err));
+        }
+
+        if !self.active_chat_target_has_file_path() && tc.name != "open_file" {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(self.no_file_open_guidance()));
+        }
+
         if tc.name == "read_file_at_path" {
             return self.execute_read_file_at_path_tool(tc, approved_once_root);
         }
@@ -325,14 +367,15 @@ impl Editor {
                     pending.requested_path.display()
                 )),
             );
+            let result_content = self.format_tool_result_with_target(
+                &pending.tool_call,
+                &ToolResult::Error(format!(
+                    "user denied outside-project access for '{}'",
+                    pending.requested_path.display()
+                )),
+            );
             if let Some(conv) = self.conversation_mut() {
-                conv.append_tool_result(
-                    pending.tool_call.id.clone(),
-                    format!(
-                        "Error: user denied outside-project access for '{}'",
-                        pending.requested_path.display()
-                    ),
-                );
+                conv.append_tool_result(pending.tool_call.id.clone(), result_content);
             }
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.tool_call_count = chat.tool_call_count.saturating_add(1);
@@ -360,10 +403,8 @@ impl Editor {
         match outcome {
             ToolDispatchOutcome::Completed(result) => {
                 self.record_tool_event_summary(&pending.tool_call, &result);
-                let result_content = match &result {
-                    ToolResult::Success(s) => s.clone(),
-                    ToolResult::Error(s) => format!("Error: {s}"),
-                };
+                let result_content =
+                    self.format_tool_result_with_target(&pending.tool_call, &result);
                 if let Some(conv) = self.conversation_mut() {
                     conv.append_tool_result(pending.tool_call.id.clone(), result_content);
                 }
@@ -472,10 +513,7 @@ impl Editor {
             match self.dispatch_tool_call_with_approval(tc, None) {
                 ToolDispatchOutcome::Completed(result) => {
                     self.record_tool_event_summary(tc, &result);
-                    let result_content = match &result {
-                        ToolResult::Success(s) => s.clone(),
-                        ToolResult::Error(s) => format!("Error: {s}"),
-                    };
+                    let result_content = self.format_tool_result_with_target(tc, &result);
                     if let Some(conv) = self.conversation_mut() {
                         conv.append_tool_result(tc.id.clone(), result_content);
                     }
@@ -535,6 +573,21 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.tool_event_summaries.insert(tc.id.clone(), summary);
         }
+    }
+
+    fn format_tool_result_with_target(&self, tc: &ToolCallInfo, result: &ToolResult) -> String {
+        let target = tc
+            .arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(compact_tool_path)
+            .unwrap_or_else(|| self.active_chat_target_display_path());
+        let body = match result {
+            ToolResult::Success(s) => s.as_str().to_string(),
+            ToolResult::Error(s) => format!("Error: {s}"),
+        };
+        format!("Target: {target}\n{body}")
     }
 
     fn build_tool_event_summary(&self, tc: &ToolCallInfo, result: &ToolResult) -> ToolEventSummary {
@@ -781,7 +834,7 @@ impl Editor {
             .ai_state
             .chat
             .as_ref()
-            .and_then(|c| self.buffers.get(c.active_buffer_id))
+            .and_then(|c| self.get_buffer_by_id(c.active_buffer_id))
             .and_then(|b| b.file_path())
             .map(PathBuf::from)
             .or_else(|| self.buffer().file_path().map(PathBuf::from));
@@ -1041,7 +1094,7 @@ impl Editor {
                 .unwrap_or(false)
         }) {
             if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.active_buffer_id = index;
+                chat.active_buffer_id = self.buffers[index].id();
             }
             return Ok(());
         }
@@ -1059,7 +1112,7 @@ impl Editor {
             self.lsp_state.needs_lsp_init = true;
             let idx = self.buffers.len().saturating_sub(1);
             if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.active_buffer_id = idx;
+                chat.active_buffer_id = self.buffers[idx].id();
             }
             return Ok(());
         }
@@ -1091,7 +1144,7 @@ impl Editor {
         self.lsp_state.needs_lsp_init = true;
         let idx = self.buffers.len().saturating_sub(1);
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.active_buffer_id = idx;
+            chat.active_buffer_id = self.buffers[idx].id();
         }
         Ok(())
     }
@@ -1157,8 +1210,9 @@ impl Editor {
         self.buffer_mut().validate_cursor_position();
         self.center_cursor_in_viewport();
 
+        let opened_buffer_id = self.buffer().id();
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.active_buffer_id = self.current_buffer_index;
+            chat.active_buffer_id = opened_buffer_id;
         }
 
         let actual_line = self.buffer().cursor().line() + 1;
@@ -1270,7 +1324,7 @@ impl Editor {
             .ai_state
             .chat
             .as_ref()
-            .and_then(|chat| self.buffers.get(chat.origin_buffer_id))
+            .and_then(|chat| self.get_buffer_by_id(chat.origin_buffer_id))
             .and_then(|buf| buf.file_path())
             .map(PathBuf::from);
         let current_file = self.buffer().file_path().map(PathBuf::from);
@@ -1360,6 +1414,7 @@ impl Editor {
             }
             None => {
                 out.push_str("No file open.\n");
+                out.push_str(&format!("{}\n", self.no_file_open_guidance()));
                 return out;
             }
         };
@@ -1540,7 +1595,7 @@ impl Editor {
         let target_index = self.active_chat_target_buffer_index();
         let buf = &self.buffers[target_index];
         let Some(file_path) = buf.file_path() else {
-            return ToolResult::Error("No file open.".to_string());
+            return ToolResult::Error(self.no_file_open_guidance());
         };
         let language_id = crate::syntax::LanguageRegistry::get_lsp_language_id(file_path)
             .unwrap_or("unknown")
@@ -1644,6 +1699,13 @@ impl Editor {
                  - Verify after edit: After editing, use read_diagnostics to check for new errors.\n\
                  - Bottom-up editing: When making multiple edits to the same file, edit from bottom to top so line numbers remain valid.\n\n",
             );
+
+            if !self.active_chat_target_has_file_path() {
+                prompt.push_str(
+                    "- No file is currently open. First call open_file(path) or open_file(path, create=true).\n\
+                     - If the path is unknown, ask the user to open/select a file first.\n\n",
+                );
+            }
         }
 
         prompt
@@ -2476,7 +2538,7 @@ mod tests {
                     ..Default::default()
                 })
                 .expect("open chat");
-            let active_idx = editor
+            let active_buffer_id = editor
                 .ai_state
                 .chat
                 .as_ref()
@@ -2485,6 +2547,9 @@ mod tests {
 
             // User switches current buffer, but active chat target should stay on file_a.
             editor.open_file(&file_b).expect("open b");
+            let active_idx = editor
+                .find_buffer_index_by_id(active_buffer_id)
+                .expect("active buffer index");
             assert_ne!(editor.current_buffer_index(), active_idx);
 
             let ctx = editor.build_tool_execution_context();
@@ -2544,5 +2609,101 @@ mod tests {
                 .file_path()
                 .is_some_and(|p| p.ends_with("new_file.rs")));
         });
+    }
+
+    #[test]
+    fn no_file_open_limits_toolset_to_file_scope_and_keeps_open_file() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        let active = editor.ai_state.active_profile.clone();
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&active)
+            .expect("profile");
+        let caps = editor.build_chat_capabilities();
+        let names: Vec<&str> = editor
+            .ai_state
+            .tool_registry
+            .tools_for_profile(profile, &caps)
+            .into_iter()
+            .map(|t| t.name.as_str())
+            .collect();
+
+        assert!(names.contains(&"open_file"));
+        assert!(!names.contains(&"list_files"));
+        assert!(!names.contains(&"search_project"));
+    }
+
+    #[test]
+    fn no_file_open_returns_consistent_guidance_for_non_open_tools() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        let tool_call = ToolCallInfo {
+            id: "call_read".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                assert!(err.contains("No file open."));
+                assert!(err.contains("open_file(path, create=true)"));
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
+                panic!("expected guidance error, got success: {ok}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                panic!("unexpected approval request: {}", req.message);
+            }
+        }
+    }
+
+    #[test]
+    fn tool_dispatch_fails_when_active_target_buffer_id_is_invalid() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.active_buffer_id = u64::MAX;
+        }
+
+        let tool_call = ToolCallInfo {
+            id: "call_read".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({}),
+        };
+
+        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                assert!(err.contains("Active chat target is no longer available"));
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
+                panic!("expected invalid-target error, got success: {ok}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                panic!("unexpected approval request: {}", req.message);
+            }
+        }
     }
 }

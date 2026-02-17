@@ -150,8 +150,9 @@ impl Editor {
 
         // Also update the chat's active_buffer_id to point at the newly opened buffer.
         // Keep chat view mode unchanged; users can explicitly enter review focus.
+        let opened_buffer_id = self.buffer().id();
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.active_buffer_id = self.current_buffer_index;
+            chat.active_buffer_id = opened_buffer_id;
         }
 
         // Return a snippet around the target position
@@ -284,12 +285,18 @@ impl Editor {
 
         // Resolve target buffer from the chat session, then dispatch.
         let original = self.current_buffer_index;
-        let target = self
-            .ai_state
-            .chat
-            .as_ref()
-            .map(|c| c.active_buffer_id)
-            .unwrap_or(original);
+        let target = match self.ai_state.chat.as_ref() {
+            Some(chat) => match self.find_buffer_index_by_id(chat.active_buffer_id) {
+                Some(idx) => idx,
+                None => {
+                    return ToolResult::Error(format!(
+                        "Active chat target is no longer available (buffer id {}). Re-open the target file with open_file before mutating.",
+                        chat.active_buffer_id
+                    ))
+                }
+            },
+            None => original,
+        };
 
         // Validate target buffer index
         if target >= self.buffers.len() {
@@ -299,6 +306,7 @@ impl Editor {
                 self.buffers.len()
             ));
         }
+        let target_buffer_id = self.buffers[target].id();
 
         self.current_buffer_index = target;
 
@@ -316,13 +324,13 @@ impl Editor {
         // Only restore if active_buffer_id didn't change during the mutation
         // (e.g., open_file could have changed it)
         let current_active = self.ai_state.chat.as_ref().map(|c| c.active_buffer_id);
-        if current_active == Some(target) {
+        if current_active == Some(target_buffer_id) {
             self.current_buffer_index = original;
         }
         result
     }
 
-    /// Shared post-mutation refresh: rehighlight, diagnostics, mark dirty, auto-save.
+    /// Shared post-mutation refresh: rehighlight, diagnostics, mark dirty.
     fn post_mutation_refresh(&mut self) {
         if self.buffer().needs_rehighlight() {
             self.process_viewport_rehighlight();
@@ -330,16 +338,40 @@ impl Editor {
         self.request_diagnostics_refresh();
         self.ai_state.last_observed_buffer_version = self.buffer().version();
         self.mark_dirty();
+    }
 
-        // Auto-save agent edits to disk when buffer was clean at chat start
-        let should_save = self.buffer().file_path().is_some()
-            && self
-                .ai_state
-                .chat
-                .as_ref()
-                .is_some_and(|c| c.buffer_was_clean_at_chat_start);
-        if should_save && self.buffer_mut().save().is_ok() {
-            self.mark_saved();
+    fn record_ai_chat_save_outcome(&mut self, outcome: impl Into<String>) -> String {
+        let outcome = outcome.into();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.last_save_outcome = Some(outcome.clone());
+        }
+        outcome
+    }
+
+    fn auto_save_current_buffer_if_configured(&mut self) -> String {
+        if self.buffer().file_path().is_none() {
+            return self.record_ai_chat_save_outcome(
+                "not saved (target buffer has no file path)".to_string(),
+            );
+        }
+
+        let should_save = self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|c| c.buffer_was_clean_at_chat_start);
+        if !should_save {
+            return self.record_ai_chat_save_outcome(
+                "not auto-saved (policy only_if_clean_at_start)".to_string(),
+            );
+        }
+
+        match self.buffer_mut().save() {
+            Ok(()) => {
+                self.mark_saved();
+                self.record_ai_chat_save_outcome("auto-saved".to_string())
+            }
+            Err(e) => self.record_ai_chat_save_outcome(format!("auto-save failed: {e}")),
         }
     }
 
@@ -347,17 +379,22 @@ impl Editor {
     // Mutation handlers
     // -----------------------------------------------------------------
 
-    fn force_save_current_buffer(&mut self, path_hint: &str) -> Result<(), ToolResult> {
+    fn force_save_current_buffer(&mut self, path_hint: &str) -> Result<String, ToolResult> {
         if self.buffer().file_path().is_none() {
+            self.record_ai_chat_save_outcome("save failed (target buffer has no file path)");
             return Err(ToolResult::Error(format!(
                 "cannot save '{path_hint}': target buffer has no file path"
             )));
         }
-        self.buffer_mut()
-            .save()
-            .map_err(|e| ToolResult::Error(format!("failed to save '{}': {}", path_hint, e)))?;
+        if let Err(e) = self.buffer_mut().save() {
+            self.record_ai_chat_save_outcome(format!("save failed: {e}"));
+            return Err(ToolResult::Error(format!(
+                "failed to save '{}': {}",
+                path_hint, e
+            )));
+        }
         self.mark_saved();
-        Ok(())
+        Ok(self.record_ai_chat_save_outcome("saved to disk"))
     }
 
     fn handle_write_file_at_path(
@@ -411,16 +448,17 @@ impl Editor {
             self.post_mutation_refresh();
         }
 
-        if let Err(e) = self.force_save_current_buffer(&path) {
-            return e;
-        }
+        let save_outcome = match self.force_save_current_buffer(&path) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
 
         // Mark full file as edited for review mode.
-        let buf_idx = self.current_buffer_index;
+        let buffer_id = self.buffer().id();
         let end_line = self.buffer().line_count().saturating_sub(1);
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.agent_edits.all_edits.insert(buf_idx, Vec::new());
-            chat.agent_edits.record_edit(buf_idx, 0, end_line);
+            chat.agent_edits.all_edits.insert(buffer_id, Vec::new());
+            chat.agent_edits.record_edit(buffer_id, 0, end_line);
         }
 
         let line_count = if content.is_empty() {
@@ -431,8 +469,8 @@ impl Editor {
         let action = if create_only { "Created" } else { "Wrote" };
         let file_label = self.buffer().file_path().unwrap_or(path.as_str());
         ToolResult::Success(format!(
-            "{action} {file_label} ({line_count} line{}).",
-            if line_count == 1 { "" } else { "s" }
+            "{action} {file_label} ({line_count} line{}).\nSave: {save_outcome}.",
+            if line_count == 1 { "" } else { "s" },
         ))
     }
 
@@ -582,21 +620,22 @@ impl Editor {
         let cursor_after = self.cursor_position();
         self.push_recorded_undo(edits, cursor_before, cursor_after);
         self.post_mutation_refresh();
+        let save_outcome = self.auto_save_current_buffer_if_configured();
 
         let new_line_count = self.buffer().rope().len_lines();
         let new_text_lines = new_text.lines().count().max(1);
         let new_end = start_line + new_text_lines - 1;
 
         // Record agent edit (convert 1-indexed to 0-indexed)
-        let buf_idx = self.current_buffer_index;
+        let buffer_id = self.buffer().id();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.agent_edits
-                .record_edit(buf_idx, start_line - 1, new_end - 1);
+                .record_edit(buffer_id, start_line - 1, new_end - 1);
         }
 
         let snippet = snippet_around(self.buffer().rope(), start_line, new_end, 3);
         ToolResult::Success(format!(
-            "Replaced lines {start_line}-{end_line} (buffer now has {new_line_count} lines).\n{snippet}"
+            "Replaced lines {start_line}-{end_line} (buffer now has {new_line_count} lines).\nSave: {save_outcome}.\n{snippet}"
         ))
     }
 
@@ -661,6 +700,7 @@ impl Editor {
         let cursor_after = self.cursor_position();
         self.push_recorded_undo(edits, cursor_before, cursor_after);
         self.post_mutation_refresh();
+        let save_outcome = self.auto_save_current_buffer_if_configured();
 
         let new_line_count = self.buffer().rope().len_lines();
         let inserted_lines = insert_text.lines().count().max(1);
@@ -668,17 +708,17 @@ impl Editor {
         let ins_end = after_line + inserted_lines;
 
         // Record agent edit and adjust existing ranges (convert 1-indexed to 0-indexed)
-        let buf_idx = self.current_buffer_index;
+        let buffer_id = self.buffer().id();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.agent_edits
-                .adjust_for_insert(buf_idx, after_line, inserted_lines);
+                .adjust_for_insert(buffer_id, after_line, inserted_lines);
             chat.agent_edits
-                .record_edit(buf_idx, ins_start - 1, ins_end - 1);
+                .record_edit(buffer_id, ins_start - 1, ins_end - 1);
         }
 
         let snippet = snippet_around(self.buffer().rope(), ins_start, ins_end, 3);
         ToolResult::Success(format!(
-            "Inserted text after line {after_line} (buffer now has {new_line_count} lines).\n{snippet}"
+            "Inserted text after line {after_line} (buffer now has {new_line_count} lines).\nSave: {save_outcome}.\n{snippet}"
         ))
     }
 
@@ -734,21 +774,22 @@ impl Editor {
         let cursor_after = self.cursor_position();
         self.push_recorded_undo(edits, cursor_before, cursor_after);
         self.post_mutation_refresh();
+        let save_outcome = self.auto_save_current_buffer_if_configured();
 
         let deleted_count = end_line - start_line + 1;
         let new_line_count = self.buffer().rope().len_lines();
 
         // Adjust existing ranges for deletion (convert 1-indexed to 0-indexed)
-        let buf_idx = self.current_buffer_index;
+        let buffer_id = self.buffer().id();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.agent_edits
-                .adjust_for_delete(buf_idx, start_line - 1, end_line - 1);
+                .adjust_for_delete(buffer_id, start_line - 1, end_line - 1);
         }
 
         // Show context around the deletion point
         let snippet = snippet_around(self.buffer().rope(), start_line, start_line, 3);
         ToolResult::Success(format!(
-            "Deleted {deleted_count} line(s) ({start_line}-{end_line}). Buffer now has {new_line_count} lines.\n{snippet}"
+            "Deleted {deleted_count} line(s) ({start_line}-{end_line}). Buffer now has {new_line_count} lines.\nSave: {save_outcome}.\n{snippet}"
         ))
     }
 }

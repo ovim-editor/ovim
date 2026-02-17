@@ -1238,11 +1238,23 @@ impl ChangeManager {
         }
     }
 
-    /// Redoes the next change
+    /// Redoes the next change. If the change has an undo_group_id, keeps
+    /// replaying changes with the same group ID so one redo restores the group.
     pub fn redo(&mut self, buffer: &mut Buffer) -> bool {
         if let Some(change) = self.redo_stack.pop() {
+            let group_id = change.undo_group_id();
             change.apply(buffer);
             self.undo_stack.push(change);
+
+            // If this change was part of a group, redo the rest of the group
+            if let Some(gid) = group_id {
+                while self.redo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
+                    let grouped = self.redo_stack.pop().unwrap();
+                    grouped.apply(buffer);
+                    self.undo_stack.push(grouped);
+                }
+            }
+
             true
         } else {
             false

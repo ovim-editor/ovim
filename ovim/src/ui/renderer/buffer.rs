@@ -540,10 +540,10 @@ fn build_gutter_line(
     };
 
     // Diagnostic signs take priority over agent edits > git signs
-    let buf_idx = editor.current_buffer_index();
+    let buffer_id = buffer.id();
     let is_agent_edit = editor
         .ai_chat_state()
-        .map(|c| c.agent_edits.is_line_modified(buf_idx, line_idx))
+        .map(|c| c.agent_edits.is_line_modified(buffer_id, line_idx))
         .unwrap_or(false);
 
     let (sign_text, sign_color) = if !line_diagnostics.is_empty() {

@@ -322,6 +322,26 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                         .add_modifier(Modifier::ITALIC),
                 ));
             }
+
+            if let (Some(policy), Some(mode)) = (
+                editor.ai_chat_save_policy_label(),
+                editor.ai_chat_save_mode_label(),
+            ) {
+                let save_text = format!(" save:{mode} ");
+                right_spans.push(Span::styled(
+                    save_text,
+                    Style::default().fg(Color::Rgb(150, 165, 190)).bg(status_bg),
+                ));
+                if policy != "only_if_clean_at_start" {
+                    right_spans.push(Span::styled(
+                        format!(" ({policy}) "),
+                        Style::default()
+                            .fg(Color::Rgb(126, 140, 165))
+                            .bg(status_bg)
+                            .add_modifier(Modifier::DIM),
+                    ));
+                }
+            }
         }
 
         right_spans.push(Span::styled(
@@ -1090,6 +1110,16 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
         .map(|c| c.agent_edits.edited_buffer_count())
         .unwrap_or(0);
     let active_target = review_target_path_hint(editor, 34);
+    let pending_state = if editor.ai_chat_has_pending_tool_approval() {
+        "approval pending"
+    } else if editor.ai_chat_has_pending_no_repo_folder_approval() {
+        "folder approval pending"
+    } else if editor.ai_chat_waiting() {
+        "agent running"
+    } else {
+        "ready"
+    };
+    let save_mode = editor.ai_chat_save_mode_label().unwrap_or("unknown");
 
     let mode_span = Span::styled(
         " REVIEW ",
@@ -1100,14 +1130,20 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
     );
 
     let info = format!(
-        " {} edit{} in {} file{} \u{00b7} {} ",
+        " {} edit{} in {} file{} \u{00b7} {} \u{00b7} {} \u{00b7} save:{} ",
         edit_count,
         if edit_count == 1 { "" } else { "s" },
         file_count,
         if file_count == 1 { "" } else { "s" },
         active_target,
+        pending_state,
+        save_mode,
     );
-    let hints = " \u{2190}/\u{2192} edits  Enter accept  Ctrl-r chat  Esc close ";
+    let hints = if editor.ai_chat_has_pending_work() {
+        " \u{2190}/\u{2192} edits  Enter/Esc locked while pending  Ctrl-r chat "
+    } else {
+        " \u{2190}/\u{2192} edits  Enter accept  Ctrl-r chat  Esc close "
+    };
     let w = area.width as usize;
     let mode_width = " REVIEW ".chars().count();
     let max_hint_width = w.saturating_sub(mode_width + 12).min(44);
@@ -1134,7 +1170,7 @@ fn render_review_mode_status(frame: &mut Frame, editor: &Editor, theme: &Theme, 
 fn review_target_path_hint(editor: &Editor, max_chars: usize) -> String {
     let path = editor
         .ai_chat_state()
-        .and_then(|c| editor.get_buffer(c.active_buffer_id))
+        .and_then(|c| editor.get_buffer_by_id(c.active_buffer_id))
         .and_then(|b| b.file_path())
         .unwrap_or("[No Name]");
     compact_path_hint(path, max_chars)
