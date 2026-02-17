@@ -289,7 +289,7 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.ai_chat_history_cursor_move_older(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            let at_latest = editor.ai_chat_history_cursor_offset() == 0;
+            let at_latest = editor.ai_chat_history_is_latest_selected();
             if at_latest {
                 if editor.ai_chat_scroll_viewport_down(1) {
                     if let Some(chat) = editor.ai_state.chat.as_mut() {

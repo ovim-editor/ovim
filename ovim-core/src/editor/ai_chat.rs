@@ -92,7 +92,7 @@ impl Editor {
         chat.viewport.row_scroll_from_bottom = 0;
         chat.viewport.follow_latest = true;
         chat.viewport.pinned_base_total_rows = None;
-        chat.history.cursor_offset_from_latest = 0;
+        chat.history.selected_node_id = None;
         chat.tool_call_count = 0;
         chat.pending_tool_approval = None;
 
@@ -504,32 +504,33 @@ impl Editor {
             .unwrap_or(true)
     }
 
-    /// Message scroll offset.
-    pub fn ai_chat_message_scroll(&self) -> usize {
-        self.ai_state
-            .chat
-            .as_ref()
-            .map(|c| c.viewport.row_scroll_from_bottom)
-            .unwrap_or(0)
-    }
-
     /// Selected message index in current conversation.
     pub fn ai_chat_history_selected_index(&self) -> Option<usize> {
-        let messages_len = self.ai_chat_messages().len();
-        if messages_len == 0 {
+        let conv = self.conversation()?;
+        let node_ids = conv.node_ids_for_active_branch();
+        if node_ids.is_empty() {
             return None;
         }
-        let offset = self.ai_chat_history_cursor_offset().min(messages_len - 1);
-        Some(messages_len - 1 - offset)
-    }
-
-    /// Selected message offset from the latest message.
-    pub fn ai_chat_history_cursor_offset(&self) -> usize {
-        self.ai_state
+        let selected = self
+            .ai_state
             .chat
             .as_ref()
-            .map(|c| c.history.cursor_offset_from_latest)
-            .unwrap_or(0)
+            .and_then(|c| c.history.selected_node_id);
+        if let Some(sel) = selected {
+            if let Some(idx) = node_ids.iter().position(|id| *id == sel) {
+                return Some(idx);
+            }
+        }
+        Some(node_ids.len() - 1)
+    }
+
+    /// Whether history selection currently points at latest message.
+    pub fn ai_chat_history_is_latest_selected(&self) -> bool {
+        let Some(idx) = self.ai_chat_history_selected_index() else {
+            return true;
+        };
+        let len = self.ai_chat_messages().len();
+        idx + 1 >= len
     }
 
     /// Effective row scroll offset for rendering given the current row count.
@@ -600,14 +601,22 @@ impl Editor {
         if messages == 0 {
             return;
         }
-        let total = self.ai_chat_messages().len();
-        if total == 0 {
-            return;
-        }
+        let target_id = {
+            let Some(conv) = self.conversation() else {
+                return;
+            };
+            let node_ids = conv.node_ids_for_active_branch();
+            if node_ids.is_empty() {
+                return;
+            }
+            let current = self
+                .ai_chat_history_selected_index()
+                .unwrap_or(node_ids.len() - 1);
+            let target = current.saturating_sub(messages);
+            node_ids.get(target).copied()
+        };
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            let max_offset = total.saturating_sub(1);
-            chat.history.cursor_offset_from_latest =
-                (chat.history.cursor_offset_from_latest + messages).min(max_offset);
+            chat.history.selected_node_id = target_id;
         }
         self.ai_chat_history_ensure_cursor_visible();
     }
@@ -617,19 +626,27 @@ impl Editor {
     /// Returns true when selection reached the latest message.
     pub fn ai_chat_history_cursor_move_newer(&mut self, messages: usize) -> bool {
         if messages == 0 {
-            return self.ai_chat_history_cursor_offset() == 0;
+            return self.ai_chat_history_is_latest_selected();
         }
-        if self.ai_chat_messages().is_empty() {
-            return true;
-        }
+        let target_id = {
+            let Some(conv) = self.conversation() else {
+                return true;
+            };
+            let node_ids = conv.node_ids_for_active_branch();
+            if node_ids.is_empty() {
+                return true;
+            }
+            let current = self
+                .ai_chat_history_selected_index()
+                .unwrap_or(node_ids.len() - 1);
+            let target = (current + messages).min(node_ids.len() - 1);
+            node_ids.get(target).copied()
+        };
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.history.cursor_offset_from_latest = chat
-                .history
-                .cursor_offset_from_latest
-                .saturating_sub(messages);
+            chat.history.selected_node_id = target_id;
         }
         self.ai_chat_history_ensure_cursor_visible();
-        self.ai_chat_history_cursor_offset() == 0
+        self.ai_chat_history_is_latest_selected()
     }
 
     fn ai_chat_history_ensure_cursor_visible(&mut self) {
@@ -660,8 +677,11 @@ impl Editor {
 
     /// Ensure history selection references the latest message.
     pub fn ai_chat_reset_history_cursor(&mut self) {
+        let latest = self
+            .conversation()
+            .and_then(|c| c.node_ids_for_active_branch().last().copied());
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.history.cursor_offset_from_latest = 0;
+            chat.history.selected_node_id = latest;
         }
     }
 
@@ -802,5 +822,108 @@ impl Editor {
     pub(crate) fn conversation_mut(&mut self) -> Option<&mut ConversationTree> {
         let key = self.ai_chat_conversation_key();
         self.ai_state.conversations.get_mut(&key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::chat_types::ChatOpts;
+
+    fn open_test_chat(editor: &mut Editor) {
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+    }
+
+    #[test]
+    fn history_selection_tracks_node_identity_across_appends() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        {
+            let conv = editor.conversation_mut().expect("conversation");
+            conv.append_user_message("u1".to_string());
+            conv.append_assistant_message("a1".to_string(), "m".to_string());
+            conv.append_user_message("u2".to_string());
+        }
+
+        editor.ai_chat_reset_history_cursor();
+        editor.ai_chat_history_cursor_move_older(1); // select a1
+
+        let idx_before = editor
+            .ai_chat_history_selected_index()
+            .expect("selected index");
+        assert_eq!(editor.ai_chat_messages()[idx_before].content, "a1");
+
+        {
+            let conv = editor.conversation_mut().expect("conversation");
+            conv.append_assistant_message("a2".to_string(), "m".to_string());
+        }
+
+        let idx_after = editor
+            .ai_chat_history_selected_index()
+            .expect("selected index");
+        assert_eq!(editor.ai_chat_messages()[idx_after].content, "a1");
+    }
+
+    #[test]
+    fn history_cursor_visibility_scrolls_viewport_when_selection_offscreen() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        {
+            let conv = editor.conversation_mut().expect("conversation");
+            conv.append_user_message("u1".to_string());
+            conv.append_assistant_message("a1".to_string(), "m".to_string());
+            conv.append_user_message("u2".to_string());
+            conv.append_assistant_message("a2".to_string(), "m".to_string());
+        }
+
+        editor.render_cache.ai_chat_last_total_rows = 8;
+        editor.render_cache.ai_chat_last_visible_start_row = 6;
+        editor.render_cache.ai_chat_last_visible_end_row = 8;
+        editor.render_cache.ai_chat_last_message_row_spans = vec![(0, 2), (2, 4), (4, 6), (6, 8)];
+
+        editor.ai_chat_reset_history_cursor(); // latest (a2)
+        editor.ai_chat_history_cursor_move_older(2); // target a1, above visible region
+
+        let chat = editor.ai_state.chat.as_ref().expect("chat");
+        assert!(!chat.viewport.follow_latest);
+        assert_eq!(chat.viewport.pinned_base_total_rows, Some(8));
+        assert!(chat.viewport.row_scroll_from_bottom > 0);
+    }
+
+    #[test]
+    fn history_selection_falls_back_to_latest_when_node_leaves_branch() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        let root_id;
+        {
+            let conv = editor.conversation_mut().expect("conversation");
+            conv.append_user_message("u1".to_string());
+            root_id = conv.node_ids_for_active_branch()[0];
+            conv.append_assistant_message("a1".to_string(), "m".to_string());
+            conv.append_user_message("u2".to_string());
+        }
+
+        editor.ai_chat_reset_history_cursor();
+        editor.ai_chat_history_cursor_move_older(1); // select a1 on original branch
+
+        {
+            let conv = editor.conversation_mut().expect("conversation");
+            conv.fork_from(root_id);
+            conv.append_assistant_message("alt".to_string(), "m".to_string());
+        }
+
+        let idx = editor
+            .ai_chat_history_selected_index()
+            .expect("selected index");
+        assert_eq!(editor.ai_chat_messages()[idx].content, "alt");
     }
 }
