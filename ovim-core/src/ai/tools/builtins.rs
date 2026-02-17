@@ -13,12 +13,20 @@ pub struct ToolExecutionContext {
     /// (start_line, start_col, end_line, end_col) — 0-indexed.
     pub selection: Option<(usize, usize, usize, usize)>,
     pub diagnostics: Vec<DiagnosticFact>,
+    /// Project diagnostics grouped by file path (relative to project root when possible).
+    pub project_diagnostics: Vec<ProjectDiagnosticFile>,
     pub scope_context: ScopeContext,
     pub capabilities: Capabilities,
     /// Contents of all open buffers, keyed by canonical path.
     /// Used by `read_file_at_path` to read from in-memory buffers
     /// instead of disk (which may be stale after edits).
     pub open_buffers: std::collections::HashMap<std::path::PathBuf, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectDiagnosticFile {
+    pub path: String,
+    pub diagnostics: Vec<DiagnosticFact>,
 }
 
 /// Register all built-in tools into the registry.
@@ -28,6 +36,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(read_file_at_path_def());
     registry.register(read_selection_def());
     registry.register(read_diagnostics_def());
+    registry.register(read_project_diagnostics_def());
     registry.register(search_project_def());
     registry.register(list_files_def());
     // LSP tools (dispatched via execute_lsp_tool — always allowed with file scope)
@@ -43,6 +52,8 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(delete_lines_def());
     registry.register(write_file_at_path_def());
     registry.register(create_file_def());
+    registry.register(snapshot_file_def());
+    registry.register(restore_file_def());
 }
 
 /// Dispatch a built-in tool call by name.
@@ -59,16 +70,16 @@ pub fn execute_builtin(
         "read_file_at_path" => handle_read_file_at_path(args, ctx),
         "read_selection" => handle_read_selection(args, ctx),
         "read_diagnostics" => handle_read_diagnostics(args, ctx),
+        "read_project_diagnostics" => handle_read_project_diagnostics(args, ctx),
         "search_project" => handle_search_project(args, ctx),
         "list_files" => handle_list_files(args, ctx),
         "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
             "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
         )),
-        "edit_range" | "insert_lines" | "delete_lines" | "write_file_at_path" | "create_file" => {
-            ToolResult::Error(format!(
-                "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
-            ))
-        }
+        "edit_range" | "insert_lines" | "delete_lines" | "write_file_at_path" | "create_file"
+        | "snapshot_file" | "restore_file" => ToolResult::Error(format!(
+            "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
+        )),
         _ => ToolResult::Error(format!("unknown built-in tool: {name}")),
     }
 }
@@ -351,6 +362,7 @@ fn read_diagnostics_def() -> ToolDefinition {
         name: "read_diagnostics".to_string(),
         description:
             "Get compiler errors and warnings for the current file from the language server. \
+            Optional path reads diagnostics for a specific project file. \
             Use after making edits to check for introduced errors."
                 .to_string(),
         required_scope: RequiredScope {
@@ -359,23 +371,168 @@ fn read_diagnostics_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
-        parameters: vec![],
+        parameters: vec![ToolParam {
+            name: "path".to_string(),
+            param_type: ParamType::FilePath,
+            required: false,
+            description:
+                "Optional project file path. If omitted, reads diagnostics for current file."
+                    .to_string(),
+        }],
     }
 }
 
-fn handle_read_diagnostics(_args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
-    if ctx.diagnostics.is_empty() {
-        return ToolResult::Success("No diagnostics.".to_string());
+fn handle_read_diagnostics(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
+    if let Some(path) = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let Some(file) = find_project_diagnostics_file(path, &ctx.project_diagnostics) else {
+            return ToolResult::Success(format!("No diagnostics for {}.", path));
+        };
+        return format_diagnostics_for_file(&file.path, &file.diagnostics);
+    }
+
+    let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
+    format_diagnostics_for_file(file_label, &ctx.diagnostics)
+}
+
+fn read_project_diagnostics_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "read_project_diagnostics".to_string(),
+        description: "Get diagnostics across project files from the language server. \
+            Optional path_prefix filters results to a subpath."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![
+            ToolParam {
+                name: "path_prefix".to_string(),
+                param_type: ParamType::FilePath,
+                required: false,
+                description: "Optional relative path prefix to filter diagnostic files."
+                    .to_string(),
+            },
+            ToolParam {
+                name: "max_files".to_string(),
+                param_type: ParamType::Integer,
+                required: false,
+                description: "Maximum files to include (default 50, max 200).".to_string(),
+            },
+        ],
+    }
+}
+
+fn handle_read_project_diagnostics(
+    args: &serde_json::Value,
+    ctx: &ToolExecutionContext,
+) -> ToolResult {
+    if ctx.project_diagnostics.is_empty() {
+        return ToolResult::Success("No diagnostics in project.".to_string());
+    }
+
+    let prefix = args
+        .get("path_prefix")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|p| p.replace('\\', "/"));
+    let max_files = args
+        .get("max_files")
+        .and_then(|v| v.as_u64())
+        .map(|n| (n as usize).min(200))
+        .unwrap_or(50);
+
+    let mut files: Vec<&ProjectDiagnosticFile> = ctx
+        .project_diagnostics
+        .iter()
+        .filter(|entry| {
+            if let Some(prefix) = prefix.as_deref() {
+                entry.path.starts_with(prefix)
+            } else {
+                true
+            }
+        })
+        .collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    if files.is_empty() {
+        return ToolResult::Success("No diagnostics in project.".to_string());
+    }
+
+    let total_files = files.len();
+    if files.len() > max_files {
+        files.truncate(max_files);
+    }
+
+    let mut total_issues = 0usize;
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    for file in &files {
+        total_issues += file.diagnostics.len();
+        for d in &file.diagnostics {
+            match d
+                .severity
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "error" => errors += 1,
+                "warning" => warnings += 1,
+                _ => {}
+            }
+        }
     }
 
     let mut output = String::new();
-    let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
+    output.push_str(&format!(
+        "Project diagnostics: {} file(s), {} issue(s) [E{} W{}]\n",
+        total_files, total_issues, errors, warnings
+    ));
+    if total_files > files.len() {
+        output.push_str(&format!(
+            "Showing first {} file(s). Use path_prefix to narrow scope.\n",
+            files.len()
+        ));
+    }
+    for file in files {
+        output.push_str(&format!("{} ({}):\n", file.path, file.diagnostics.len()));
+        for d in file.diagnostics.iter().take(5) {
+            let severity = d.severity.as_deref().unwrap_or("unknown");
+            output.push_str(&format!(
+                "  Line {}: [{}] {} (col {}-{})\n",
+                d.line + 1,
+                severity,
+                d.message,
+                d.start_character,
+                d.end_character,
+            ));
+        }
+        if file.diagnostics.len() > 5 {
+            output.push_str(&format!("  ... {} more\n", file.diagnostics.len() - 5));
+        }
+    }
+    ToolResult::Success(output)
+}
+
+fn format_diagnostics_for_file(file_label: &str, diagnostics: &[DiagnosticFact]) -> ToolResult {
+    if diagnostics.is_empty() {
+        return ToolResult::Success("No diagnostics.".to_string());
+    }
+    let mut output = String::new();
     output.push_str(&format!(
         "Diagnostics for {} ({} total):\n",
         file_label,
-        ctx.diagnostics.len()
+        diagnostics.len()
     ));
-    for d in &ctx.diagnostics {
+    for d in diagnostics {
         let severity = d.severity.as_deref().unwrap_or("unknown");
         output.push_str(&format!(
             "  Line {}: [{}] {} (col {}-{})\n",
@@ -387,6 +544,21 @@ fn handle_read_diagnostics(_args: &serde_json::Value, ctx: &ToolExecutionContext
         ));
     }
     ToolResult::Success(output)
+}
+
+fn find_project_diagnostics_file<'a>(
+    requested_path: &str,
+    files: &'a [ProjectDiagnosticFile],
+) -> Option<&'a ProjectDiagnosticFile> {
+    let normalized = requested_path
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string();
+    files.iter().find(|entry| {
+        let candidate = entry.path.replace('\\', "/");
+        let candidate = candidate.trim_start_matches("./");
+        candidate == normalized || candidate.ends_with(&format!("/{}", normalized))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +1099,54 @@ pub(crate) fn create_file_def() -> ToolDefinition {
     }
 }
 
+pub(crate) fn snapshot_file_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "snapshot_file".to_string(),
+        description: "Create a recoverable snapshot of a file before edits. \
+            Returns a snapshot_id that can be used with restore_file."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Mutation,
+        parameters: vec![ToolParam {
+            name: "path".to_string(),
+            param_type: ParamType::FilePath,
+            required: true,
+            description: "File path relative to project root.".to_string(),
+        }],
+    }
+}
+
+pub(crate) fn restore_file_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "restore_file".to_string(),
+        description: "Restore file content from a prior snapshot_file snapshot_id.".to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Mutation,
+        parameters: vec![
+            ToolParam {
+                name: "path".to_string(),
+                param_type: ParamType::FilePath,
+                required: true,
+                description: "File path relative to project root.".to_string(),
+            },
+            ToolParam {
+                name: "snapshot_id".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "Snapshot id returned by snapshot_file.".to_string(),
+            },
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -939,6 +1159,7 @@ mod tests {
             cursor: (0, 0),
             selection: None,
             diagnostics: vec![],
+            project_diagnostics: vec![],
             scope_context: ScopeContext {
                 current_file: Some(PathBuf::from("test.rs")),
                 project_root: Some(PathBuf::from("/")),
@@ -1052,6 +1273,70 @@ mod tests {
     }
 
     #[test]
+    fn read_diagnostics_for_specific_path() {
+        let mut ctx = test_ctx("fn main() {}");
+        ctx.project_diagnostics = vec![ProjectDiagnosticFile {
+            path: "src/main.rs".to_string(),
+            diagnostics: vec![DiagnosticFact {
+                message: "type mismatch".to_string(),
+                severity: Some("error".to_string()),
+                line: 4,
+                start_character: 8,
+                end_character: 13,
+            }],
+        }];
+        let result = execute_builtin(
+            "read_diagnostics",
+            &serde_json::json!({"path": "src/main.rs"}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(s) => {
+                assert!(s.contains("type mismatch"));
+                assert!(s.contains("[error]"));
+            }
+            ToolResult::Error(e) => panic!("expected success, got error: {e}"),
+        }
+    }
+
+    #[test]
+    fn read_project_diagnostics_summary() {
+        let mut ctx = test_ctx_with_project("", PathBuf::from("/repo"));
+        ctx.project_diagnostics = vec![
+            ProjectDiagnosticFile {
+                path: "src/main.rs".to_string(),
+                diagnostics: vec![DiagnosticFact {
+                    message: "type mismatch".to_string(),
+                    severity: Some("error".to_string()),
+                    line: 10,
+                    start_character: 2,
+                    end_character: 7,
+                }],
+            },
+            ProjectDiagnosticFile {
+                path: "src/lib.rs".to_string(),
+                diagnostics: vec![DiagnosticFact {
+                    message: "unused variable".to_string(),
+                    severity: Some("warning".to_string()),
+                    line: 3,
+                    start_character: 1,
+                    end_character: 6,
+                }],
+            },
+        ];
+
+        let result = execute_builtin("read_project_diagnostics", &serde_json::json!({}), &ctx);
+        match result {
+            ToolResult::Success(s) => {
+                assert!(s.contains("Project diagnostics"));
+                assert!(s.contains("src/main.rs"));
+                assert!(s.contains("src/lib.rs"));
+            }
+            ToolResult::Error(e) => panic!("expected success, got error: {e}"),
+        }
+    }
+
+    #[test]
     fn unknown_tool_returns_error() {
         let ctx = test_ctx("hello");
         let result = execute_builtin("nonexistent", &serde_json::json!({}), &ctx);
@@ -1078,6 +1363,7 @@ mod tests {
             cursor: (0, 0),
             selection: None,
             diagnostics: vec![],
+            project_diagnostics: vec![],
             scope_context: ScopeContext {
                 current_file: Some(PathBuf::from("test.rs")),
                 project_root: Some(project_root),

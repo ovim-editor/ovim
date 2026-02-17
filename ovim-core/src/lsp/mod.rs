@@ -620,6 +620,20 @@ impl LspManager {
         (errors, warnings, info, hints)
     }
 
+    /// Gets merged diagnostics for all tracked URIs.
+    pub async fn list_all_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>)> {
+        let diagnostics = self.diagnostics.lock().await;
+        let mut out = Vec::new();
+        for (uri, server_map) in diagnostics.iter() {
+            let merged = Self::merge_diagnostics(server_map);
+            if !merged.is_empty() {
+                out.push((uri.clone(), merged));
+            }
+        }
+        out.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        out
+    }
+
     /// Sets diagnostics for a file from a specific server
     /// (called when receiving publishDiagnostics)
     pub async fn set_diagnostics(

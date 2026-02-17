@@ -308,6 +308,8 @@ impl Editor {
             "delete_lines" => self.handle_delete_lines(args),
             "write_file_at_path" => self.handle_write_file_at_path(args, false),
             "create_file" => self.handle_write_file_at_path(args, true),
+            "snapshot_file" => self.handle_snapshot_file(args),
+            "restore_file" => self.handle_restore_file(args),
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
         };
 
@@ -432,6 +434,87 @@ impl Editor {
             "{action} {file_label} ({line_count} line{}).",
             if line_count == 1 { "" } else { "s" }
         ))
+    }
+
+    fn handle_snapshot_file(&mut self, args: &serde_json::Value) -> ToolResult {
+        let path = match required_str(args, "path") {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let snapshot_path = self
+            .buffer()
+            .file_path()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(path.clone()));
+        let snapshot_content = self.buffer().rope().to_string();
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return ToolResult::Error("no active chat session".to_string());
+        };
+
+        let snapshot_id = format!("snap_{}", chat.next_snapshot_id);
+        chat.next_snapshot_id = chat.next_snapshot_id.saturating_add(1);
+        chat.file_snapshots.insert(
+            snapshot_id.clone(),
+            super::ai_chat_state::FileSnapshot {
+                path: snapshot_path,
+                content: snapshot_content,
+            },
+        );
+
+        ToolResult::Success(format!(
+            "Snapshot created: {} for {}",
+            snapshot_id,
+            self.buffer().file_path().unwrap_or("[No Name]")
+        ))
+    }
+
+    fn handle_restore_file(&mut self, args: &serde_json::Value) -> ToolResult {
+        let path = match required_str(args, "path") {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let snapshot_id = match required_str(args, "snapshot_id") {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return ToolResult::Error("no active chat session".to_string());
+        };
+        let Some(snapshot) = chat.file_snapshots.get(&snapshot_id).cloned() else {
+            return ToolResult::Error(format!("unknown snapshot_id '{}'", snapshot_id));
+        };
+
+        let current_path = self
+            .buffer()
+            .file_path()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(path.clone()));
+        let current_path = current_path
+            .canonicalize()
+            .unwrap_or_else(|_| current_path.clone());
+        let snapshot_path = snapshot
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| snapshot.path.clone());
+        if current_path != snapshot_path {
+            return ToolResult::Error(format!(
+                "snapshot '{}' was captured for '{}', not '{}'",
+                snapshot_id,
+                snapshot.path.display(),
+                current_path.display()
+            ));
+        }
+
+        let mut restore_args = serde_json::Map::new();
+        restore_args.insert(
+            "path".to_string(),
+            serde_json::Value::String(path.to_string()),
+        );
+        restore_args.insert(
+            "content".to_string(),
+            serde_json::Value::String(snapshot.content),
+        );
+        self.handle_write_file_at_path(&serde_json::Value::Object(restore_args), false)
     }
 
     fn handle_edit_range(&mut self, args: &serde_json::Value) -> ToolResult {

@@ -1,7 +1,7 @@
 use crate::ai::chat_types::{ChatMessage, StreamChunk, ToolCallInfo, ToolSummaryKind};
 use crate::ai::scope::{Capabilities, ScopeContext};
 use crate::ai::stream_ai_chat;
-use crate::ai::tools::builtins::{self, ToolExecutionContext};
+use crate::ai::tools::builtins::{self, ProjectDiagnosticFile, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{SideEffect, ToolResult};
 use anyhow::Result;
@@ -123,6 +123,7 @@ impl Editor {
 
         // Get diagnostics for current buffer
         let diagnostics = self.get_diagnostics_for_current_buffer();
+        let project_diagnostics = self.get_project_diagnostics_for_chat();
 
         let current_file = buf
             .file_path()
@@ -147,6 +148,7 @@ impl Editor {
             cursor,
             selection,
             diagnostics,
+            project_diagnostics,
             scope_context: ScopeContext {
                 current_file,
                 project_root,
@@ -197,7 +199,13 @@ impl Editor {
         }
         if matches!(
             tc.name.as_str(),
-            "edit_range" | "insert_lines" | "delete_lines" | "write_file_at_path" | "create_file"
+            "edit_range"
+                | "insert_lines"
+                | "delete_lines"
+                | "write_file_at_path"
+                | "create_file"
+                | "snapshot_file"
+                | "restore_file"
         ) {
             return self.execute_path_scoped_mutation_tool(tc, approved_once_root);
         }
@@ -728,6 +736,23 @@ impl Editor {
                     )
                 }
             }
+            "read_project_diagnostics" => {
+                let success = tool_result_success(result).unwrap_or_default();
+                let summary = success
+                    .lines()
+                    .next()
+                    .unwrap_or("project diagnostics")
+                    .to_string();
+                (ToolSummaryKind::Diagnostics, summary)
+            }
+            "snapshot_file" => (
+                ToolSummaryKind::Other,
+                format!("snapshot {}", mutation_target),
+            ),
+            "restore_file" => (
+                ToolSummaryKind::Mutation,
+                format!("{} restored", mutation_target),
+            ),
             "document_symbols" | "hover" | "goto_definition" => {
                 (ToolSummaryKind::Read, tc.name.clone())
             }
@@ -927,7 +952,10 @@ impl Editor {
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
         let name = tc.name.as_str();
-        let requires_path = matches!(name, "write_file_at_path" | "create_file");
+        let requires_path = matches!(
+            name,
+            "write_file_at_path" | "create_file" | "snapshot_file" | "restore_file"
+        );
 
         let raw_path = tc
             .arguments
@@ -969,7 +997,8 @@ impl Editor {
                 )));
             }
 
-            let allow_create = matches!(name, "write_file_at_path" | "create_file");
+            let allow_create =
+                matches!(name, "write_file_at_path" | "create_file" | "restore_file");
             if let Err(e) =
                 self.ensure_mutation_target_buffer_for_path(&absolute_path, allow_create)
             {
@@ -1705,6 +1734,52 @@ impl Editor {
             .collect()
     }
 
+    fn get_project_diagnostics_for_chat(&self) -> Vec<ProjectDiagnosticFile> {
+        let Some(lsp) = self.lsp_state.lsp_manager.as_ref() else {
+            return Vec::new();
+        };
+        let Some(handle) = tokio::runtime::Handle::try_current().ok() else {
+            return Vec::new();
+        };
+
+        let project_root = self.ai_effective_project_root();
+        tokio::task::block_in_place(|| {
+            let all = handle.block_on(async { lsp.list_all_diagnostics().await });
+            let mut out = Vec::new();
+            for (uri, diagnostics) in all {
+                let Some(path) = crate::lsp::uri_to_file_path(&uri) else {
+                    continue;
+                };
+                let path_label = if let Some(root) = project_root.as_ref() {
+                    if !path.starts_with(root) {
+                        continue;
+                    }
+                    to_relative_path_for_boundary(&path, root)
+                } else {
+                    path.to_string_lossy().to_string()
+                };
+                let facts = diagnostics
+                    .into_iter()
+                    .map(|d| crate::ai::DiagnosticFact {
+                        message: d.message,
+                        severity: d.severity.map(|s| format!("{:?}", s)),
+                        line: d.range.start.line,
+                        start_character: d.range.start.character,
+                        end_character: d.range.end.character,
+                    })
+                    .collect::<Vec<_>>();
+                if !facts.is_empty() {
+                    out.push(ProjectDiagnosticFile {
+                        path: path_label,
+                        diagnostics: facts,
+                    });
+                }
+            }
+            out.sort_by(|a, b| a.path.cmp(&b.path));
+            out
+        })
+    }
+
     /// Clear all streaming state and mark the chat as no longer waiting.
     pub(crate) fn clear_streaming_state(&mut self) {
         if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -2209,6 +2284,98 @@ mod tests {
 
             let content = fs::read_to_string(&target).expect("read target");
             assert!(content.starts_with("updated\n"));
+        });
+    }
+
+    #[test]
+    fn snapshot_and_restore_file_round_trip() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("restore.rs");
+            fs::write(&target, "alpha\nbeta\n").expect("seed");
+
+            let mut editor = Editor::default();
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.approved_external_roots.push(dir.path().to_path_buf());
+                let canonical =
+                    std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+                if canonical != dir.path() {
+                    chat.approved_external_roots.push(canonical);
+                }
+            }
+
+            let snapshot_call = ToolCallInfo {
+                id: "call_snap".to_string(),
+                name: "snapshot_file".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string()
+                }),
+            };
+            match editor.dispatch_tool_call_with_approval(&snapshot_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected snapshot error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            let snapshot_id = editor
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|c| c.file_snapshots.keys().next().cloned())
+                .expect("snapshot id");
+
+            let edit_call = ToolCallInfo {
+                id: "call_edit".to_string(),
+                name: "edit_range".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "start_line": 1,
+                    "end_line": 1,
+                    "new_text": "changed"
+                }),
+            };
+            match editor.dispatch_tool_call_with_approval(&edit_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected edit error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            let restore_call = ToolCallInfo {
+                id: "call_restore".to_string(),
+                name: "restore_file".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "snapshot_id": snapshot_id
+                }),
+            };
+            match editor.dispatch_tool_call_with_approval(&restore_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected restore error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            let content = fs::read_to_string(&target).expect("read target");
+            assert_eq!(content, "alpha\nbeta\n");
         });
     }
 }
