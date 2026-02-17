@@ -133,12 +133,13 @@ vim.ai.setup({
 
     contexts = {
         selection = "local",
-        chat = "local",
+        chat = "openai_frontier",
         query = "local",
     },
 
     profiles = {
         ["local"] = {
+            scope = "project",
             provider = "ollama",
             model = "qwen2.5-coder:7b",
             temperature = 0.2,
@@ -153,6 +154,7 @@ No explanation. No placeholders. Complete code only.]],
         },
 
         openai_fast = {
+            scope = "project",
             provider = "openai",
             model = "gpt-4.1-mini",
             api_key = "openai",
@@ -166,6 +168,7 @@ No explanation. No placeholders. Complete code only.]],
         },
 
         openai = {
+            scope = "project",
             provider = "openai",
             model = "gpt-4.1",
             api_key = "openai",
@@ -179,6 +182,7 @@ No explanation. No placeholders. Complete code only.]],
         },
 
         openai_frontier = {
+            scope = "project",
             provider = "openai",
             model = "gpt-5.2",
             api_key = "openai",
@@ -190,10 +194,10 @@ No explanation. No placeholders. Complete code only.]],
             syntax_check = true,
             retry = { max = 1 },
             reasoning_effort = "none",
-            verbosity = "low",
         },
 
         anthropic = {
+            scope = "project",
             provider = "anthropic",
             model = "claude-sonnet-4-5-20250929",
             api_key = "anthropic",
@@ -206,6 +210,7 @@ No explanation. No placeholders. Complete code only.]],
         },
 
         anthropic_frontier = {
+            scope = "project",
             provider = "anthropic",
             model = "claude-opus-4-6",
             api_key = "anthropic",
