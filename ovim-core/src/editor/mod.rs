@@ -559,6 +559,9 @@ impl Editor {
         if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
             self.visual.visual_start = None;
         }
+        if mode != Mode::AiPrompt {
+            self.ai_state.prompt.model_picker_open = false;
+        }
     }
 
     /// Gets the dashboard selected menu index

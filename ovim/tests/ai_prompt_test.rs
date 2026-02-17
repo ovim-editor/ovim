@@ -7,7 +7,7 @@ use ovim_core::ai::{
     AgentLoopConfig, AiProfileConfig, AiProviderKind, ContextGatheringPolicy, EditFormat,
     RetryPolicy,
 };
-use ovim_core::{KeyCode, MouseButton, MouseEvent, MouseEventKind, Rect};
+use ovim_core::{KeyCode, Modifiers, MouseButton, MouseEvent, MouseEventKind, Rect};
 use std::time::Instant;
 
 /// Helper to build a test profile with common defaults.
@@ -355,6 +355,7 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
     test.editor.ai_state.edit_format = EditFormat::Json;
 
     test.keys("vll<Space>");
+    test.editor.ai_state.prompt.model_picker_open = true;
     test.editor.render_cache.ai_prompt_model_hitboxes = vec![
         (
             Rect {
@@ -388,6 +389,84 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
 
     assert_eq!(test.editor.ai_state.active_profile, "beta");
     assert_eq!(test.editor.ai_state.edit_format, EditFormat::Codeblock);
+    assert!(!test.editor.ai_state.prompt.model_picker_open);
+}
+
+#[test]
+fn test_ai_prompt_mouse_model_picker_trigger_toggles_open_state() {
+    let mut test = EditorTest::new("hello world\n");
+    test.keys("vll<Space>");
+    test.editor.render_cache.ai_prompt_model_trigger_hitbox = Some(Rect {
+        x: 10,
+        y: 20,
+        width: 16,
+        height: 1,
+    });
+
+    handle_mouse_event(
+        &mut test.editor,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 20,
+        },
+    )
+    .expect("mouse click should open picker");
+    assert!(test.editor.ai_state.prompt.model_picker_open);
+
+    handle_mouse_event(
+        &mut test.editor,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 20,
+        },
+    )
+    .expect("mouse click should close picker");
+    assert!(!test.editor.ai_state.prompt.model_picker_open);
+}
+
+#[test]
+fn test_ai_prompt_enter_applies_open_picker_selection_instead_of_submitting() {
+    let mut test = EditorTest::new("hello world\n");
+    test.editor.ai_state.config.profiles.clear();
+    let mut alpha = test_profile("alpha", AiProviderKind::Ollama, "model-a");
+    alpha.base_url = Some("http://127.0.0.1:11434".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("alpha".to_string(), alpha);
+    let mut beta = test_profile("beta", AiProviderKind::Ollama, "model-b");
+    beta.base_url = Some("http://127.0.0.1:11434".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("beta".to_string(), beta);
+
+    test.keys("vll<Space>");
+    test.editor.ai_state.prompt.input = "rewrite".to_string();
+    test.editor.ai_state.prompt.cursor = 7;
+    test.editor.ai_state.prompt.model_picker_open = true;
+    test.editor.ai_state.prompt.model_picker_index = 1;
+    test.press_enter();
+
+    assert_eq!(test.editor.ai_state.active_profile, "beta");
+    assert!(!test.editor.ai_state.prompt.model_picker_open);
+    assert_eq!(test.editor.ai_state.pending_jobs.len(), 0);
+}
+
+#[test]
+fn test_ai_prompt_ctrl_m_toggles_picker_and_esc_closes_picker_first() {
+    let mut test = EditorTest::new("hello world\n");
+    test.keys("vll<Space>");
+    test.press_with(KeyCode::Char('m'), Modifiers::CONTROL);
+    assert!(test.editor.ai_state.prompt.model_picker_open);
+
+    test.press_esc();
+    test.assert_mode(Mode::AiPrompt);
+    assert!(!test.editor.ai_state.prompt.model_picker_open);
 }
 
 #[test]

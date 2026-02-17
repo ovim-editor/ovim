@@ -827,6 +827,7 @@ pub struct AiPromptRenderLayout {
     pub input_area: Option<ovim_core::Rect>,
     pub input_rows: Vec<(ovim_core::Rect, usize, usize)>,
     pub model_hitboxes: Vec<(ovim_core::Rect, String)>,
+    pub model_trigger_hitbox: Option<ovim_core::Rect>,
 }
 
 const AI_PROMPT_PREFIX: &str = " prompt > ";
@@ -834,6 +835,7 @@ const AI_PROMPT_BORDER_ROWS: u16 = 2;
 const AI_PROMPT_STATIC_ROWS: u16 = 2;
 const AI_PROMPT_MIN_HEIGHT: u16 = 5;
 const AI_PROMPT_MAX_HEIGHT: u16 = 12;
+const AI_PROMPT_MODEL_DROPDOWN_MAX_ROWS: u16 = 6;
 
 fn wrap_prompt_rows(
     prompt: &str,
@@ -896,7 +898,12 @@ pub fn ai_prompt_panel_height(editor: &Editor, panel_width: u16, max_height: u16
     let first_row_width = inner_width.saturating_sub(prefix_width);
     let continuation_row_width = inner_width;
 
-    let reserved_rows = AI_PROMPT_BORDER_ROWS + AI_PROMPT_STATIC_ROWS;
+    let dropdown_rows = if editor.ai_state.prompt.model_picker_open {
+        (editor.ai_profile_names_sorted().len() as u16).min(AI_PROMPT_MODEL_DROPDOWN_MAX_ROWS)
+    } else {
+        0
+    };
+    let reserved_rows = AI_PROMPT_BORDER_ROWS + AI_PROMPT_STATIC_ROWS + dropdown_rows;
     let max_input_rows = available.saturating_sub(reserved_rows).max(1) as usize;
     let needed_rows = wrap_prompt_rows(
         editor.ai_prompt_input(),
@@ -956,7 +963,7 @@ pub fn render_ai_prompt_line(
 
     if let Some(row) = rows.first() {
         let header = format!(
-            " AI Edit  profile: {}  format: {}  • Enter submit • Esc cancel • Tab/Shift-Tab switch model",
+            " AI Edit  profile: {}  format: {}  • Enter submit • Esc cancel • Ctrl-M toggle picker • Tab/Shift-Tab cycle",
             editor.ai_state.active_profile, editor.ai_state.edit_format
         );
         frame.render_widget(
@@ -968,58 +975,133 @@ pub fn render_ai_prompt_line(
         );
     }
 
-    if rows.len() >= 2 {
-        let row = rows[1];
-        let mut spans = vec![Span::styled(
-            " models ",
-            Style::default().fg(Color::Rgb(128, 140, 155)).bg(panel_bg),
-        )];
-        let mut cursor_x = " models ".width();
+    let footer_row = *rows.last().unwrap_or(&inner);
+    let mut footer_spans = Vec::new();
+    let is_open = editor.ai_state.prompt.model_picker_open;
+    let caret = if is_open { '▴' } else { '▾' };
+    let active_model = editor
+        .ai_state
+        .config
+        .resolve_profile(&editor.ai_state.active_profile)
+        .map(|p| p.model.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let active_model_short: String = active_model.chars().take(24).collect();
+    let trigger_label = format!(
+        " {} {}:{} {} ",
+        if is_open { "models" } else { "model" },
+        editor.ai_state.active_profile,
+        active_model_short,
+        caret
+    );
+    let trigger_w = trigger_label.width().min(footer_row.width as usize);
+    footer_spans.push(Span::styled(
+        trigger_label.chars().take(trigger_w).collect::<String>(),
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(56, 72, 94))
+            .add_modifier(Modifier::BOLD),
+    ));
+    if trigger_w < footer_row.width as usize {
+        footer_spans.push(Span::styled(
+            " ".repeat(footer_row.width as usize - trigger_w),
+            Style::default().bg(panel_bg),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(footer_spans)), footer_row);
+    if trigger_w > 0 {
+        layout.model_trigger_hitbox = Some(ovim_core::Rect {
+            x: footer_row.x,
+            y: footer_row.y,
+            width: trigger_w as u16,
+            height: 1,
+        });
+    }
 
-        for name in profile_names {
-            let Some(profile) = editor.ai_state.config.resolve_profile(&name) else {
+    let body_row = if rows.len() >= 3 { rows[1] } else { inner };
+    let dropdown_rows = if is_open {
+        (profile_names.len() as u16)
+            .min(AI_PROMPT_MODEL_DROPDOWN_MAX_ROWS)
+            .min(body_row.height)
+    } else {
+        0
+    };
+    let input_rows_area = Rect {
+        x: body_row.x,
+        y: body_row.y,
+        width: body_row.width,
+        height: body_row.height.saturating_sub(dropdown_rows),
+    };
+
+    if dropdown_rows > 0 && body_row.width > 0 {
+        let names_len = profile_names.len();
+        let selected = editor
+            .ai_state
+            .prompt
+            .model_picker_index
+            .min(names_len.saturating_sub(1));
+        let view_rows = dropdown_rows as usize;
+        let start_idx = selected.saturating_sub(view_rows.saturating_sub(1));
+        let end_idx = (start_idx + view_rows).min(names_len);
+        let top_y = footer_row.y.saturating_sub((end_idx - start_idx) as u16);
+
+        for (slot, idx) in (start_idx..end_idx).enumerate() {
+            let name = &profile_names[idx];
+            let Some(profile) = editor.ai_state.config.resolve_profile(name) else {
                 continue;
             };
             let model_short: String = profile.model.chars().take(24).collect();
-            let label = format!(" {}:{} ", name, model_short);
-            let label_w = label.width();
-            if cursor_x + label_w > row.width as usize {
-                break;
-            }
-
-            let is_active = name == editor.ai_state.active_profile;
-            let style = if is_active {
+            let row_y = top_y + slot as u16;
+            let row_rect = Rect {
+                x: body_row.x,
+                y: row_y,
+                width: body_row.width,
+                height: 1,
+            };
+            let is_highlighted = idx == selected;
+            let line_style = if is_highlighted {
                 Style::default()
                     .fg(Color::White)
                     .bg(Color::Rgb(66, 86, 112))
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-                    .fg(Color::Rgb(180, 188, 202))
-                    .bg(Color::Rgb(46, 52, 64))
+                    .fg(Color::Rgb(188, 196, 208))
+                    .bg(Color::Rgb(36, 42, 52))
             };
-            spans.push(Span::styled(label.clone(), style));
-
+            let marker = if name == &editor.ai_state.active_profile {
+                "●"
+            } else {
+                " "
+            };
+            let label = format!(" {} {}  {} ", marker, name, model_short);
+            let label_w = label.width().min(row_rect.width as usize);
+            let mut spans = vec![Span::styled(
+                label.chars().take(label_w).collect::<String>(),
+                line_style,
+            )];
+            if label_w < row_rect.width as usize {
+                spans.push(Span::styled(
+                    " ".repeat(row_rect.width as usize - label_w),
+                    line_style,
+                ));
+            }
+            frame.render_widget(Paragraph::new(Line::from(spans)), row_rect);
             layout.model_hitboxes.push((
                 ovim_core::Rect {
-                    x: row.x + cursor_x as u16,
-                    y: row.y,
-                    width: label_w as u16,
+                    x: row_rect.x,
+                    y: row_rect.y,
+                    width: row_rect.width,
                     height: 1,
                 },
                 name.clone(),
             ));
-            cursor_x += label_w;
         }
-
-        if cursor_x < row.width as usize {
-            spans.push(Span::raw(" ".repeat(row.width as usize - cursor_x)));
-        }
-
-        frame.render_widget(Paragraph::new(Line::from(spans)), row);
     }
 
-    let input_rows_area = *rows.last().unwrap_or(&inner);
+    if input_rows_area.height == 0 || input_rows_area.width == 0 {
+        return layout;
+    }
+
     let prompt = editor.ai_prompt_input();
     let prefix_width = AI_PROMPT_PREFIX
         .width()

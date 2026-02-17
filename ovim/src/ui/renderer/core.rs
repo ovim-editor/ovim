@@ -336,6 +336,7 @@ fn render_status_area(frame: &mut Frame, editor: &mut Editor, theme: &Theme, are
     editor.render_cache.ai_prompt_input_area = None;
     editor.render_cache.ai_prompt_input_rows.clear();
     editor.render_cache.ai_prompt_model_hitboxes.clear();
+    editor.render_cache.ai_prompt_model_trigger_hitbox = None;
     if editor.mode() == crate::mode::Mode::Command {
         render_command_line(frame, editor, areas.command_chunk);
     } else if editor.mode() == crate::mode::Mode::Search {
@@ -347,6 +348,7 @@ fn render_status_area(frame: &mut Frame, editor: &mut Editor, theme: &Theme, are
         editor.render_cache.ai_prompt_input_area = layout.input_area;
         editor.render_cache.ai_prompt_input_rows = layout.input_rows;
         editor.render_cache.ai_prompt_model_hitboxes = layout.model_hitboxes;
+        editor.render_cache.ai_prompt_model_trigger_hitbox = layout.model_trigger_hitbox;
     } else {
         render_message_line(frame, editor, areas.command_chunk);
     }
