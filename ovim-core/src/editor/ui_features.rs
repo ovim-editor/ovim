@@ -527,9 +527,16 @@ impl Editor {
         // Determine uninstall command based on auto_install config
         let hint = if let Some(auto) = &lsp.auto_install {
             match &auto.method {
-                crate::language_config::InstallMethod::Npm { package, global } => {
+                crate::language_config::InstallMethod::Npm { global, .. } => {
+                    let packages = auto.method.npm_packages();
+                    if packages.is_empty() {
+                        return self.set_lsp_status(format!(
+                            "No uninstall method configured for {}",
+                            lang.name
+                        ));
+                    }
                     let flag = if *global { " -g" } else { "" };
-                    format!("Run: npm uninstall{flag} {package}")
+                    format!("Run: npm uninstall{flag} {}", packages.join(" "))
                 }
                 crate::language_config::InstallMethod::Cargo { package } => {
                     format!("Run: cargo uninstall {package}")

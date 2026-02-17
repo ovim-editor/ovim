@@ -62,7 +62,8 @@ root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"
 install_hint = "Install with: npm install -g typescript-language-server typescript"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "typescript-language-server", global = true }
+method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server", global = true }
+policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
 # TSX (TypeScript with JSX)
@@ -91,7 +92,8 @@ root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"
 install_hint = "Install with: npm install -g typescript-language-server typescript"
 
 [language.lsp.auto_install]
-method = { type = "npm", package = "typescript-language-server", global = true }
+method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server", global = true }
+policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
 # JavaScript
@@ -115,6 +117,10 @@ fallback_commands = [
 ]
 root_markers = ["package.json", "node_modules", ".git"]
 install_hint = "Install with: npm install -g typescript-language-server typescript"
+
+[language.lsp.auto_install]
+method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server", global = true }
+policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
 # Python
