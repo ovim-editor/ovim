@@ -292,7 +292,9 @@ fn test_gi_after_undo() {
     test.keys("gi");
 
     test.assert_mode(ovim::mode::Mode::Insert);
-    // Position might be adjusted if text was undone
+    let cursor = test.cursor();
+    assert_eq!(cursor.0, insert_pos.0);
+    assert_eq!(cursor.1, insert_pos.1 + 1);
 }
 
 /// Test gi after visual mode insert
@@ -376,6 +378,9 @@ fn test_gi_not_affected_by_paste() {
     test.keys("gi");
 
     test.assert_mode(ovim::mode::Mode::Insert);
+    let cursor = test.cursor();
+    assert_eq!(cursor.0, insert_cursor.0);
+    assert_eq!(cursor.1, insert_cursor.1 + 1);
 }
 
 /// Test gi position persistence across file operations

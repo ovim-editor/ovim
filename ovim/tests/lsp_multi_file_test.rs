@@ -2,7 +2,6 @@ mod helpers;
 
 use helpers::EditorTest;
 use std::fs;
-use std::path::PathBuf;
 
 /// Test LSP goto definition across multiple files
 #[test]
@@ -140,7 +139,6 @@ fn main() {
 
     // Save position
     test.keys("7G");
-    let original_pos = test.cursor();
 
     // Go to definition
     test.keys("gd");
@@ -150,6 +148,7 @@ fn main() {
 
     // Should be back at original position (or close to it)
     test.assert_mode(ovim::mode::Mode::Normal);
+    assert!(test.cursor().0 <= 6);
 }
 
 /// Test LSP with imports

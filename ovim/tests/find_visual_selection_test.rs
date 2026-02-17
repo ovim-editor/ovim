@@ -26,7 +26,7 @@ fn test_simple_visual_find() {
 
 #[test]
 fn test_fvf_selects_string() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#"let x = "hello world";"#);
     test.set_cursor(0, 0); // Position at start of line
 
@@ -53,7 +53,7 @@ fn test_fvf_selects_string() {
 
 #[test]
 fn test_fvf_selects_parentheses() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content("function(arg1, arg2)");
     test.set_cursor(0, 0); // Start of line
 
@@ -76,7 +76,7 @@ fn test_fvf_selects_parentheses() {
 
 #[test]
 fn test_fvf_selects_brackets() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content("let arr = [1, 2, 3];");
     test.set_cursor(0, 0);
 
@@ -99,7 +99,7 @@ fn test_fvf_selects_brackets() {
 
 #[test]
 fn test_fvf_selects_braces() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content("struct Foo { x: i32 }");
     test.set_cursor(0, 0);
 
@@ -122,7 +122,7 @@ fn test_fvf_selects_braces() {
 
 #[test]
 fn test_tvt_selects_until_char() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content("let x = value;");
     test.set_cursor(0, 0); // At start
 
@@ -142,7 +142,7 @@ fn test_tvt_selects_until_char() {
 
 #[test]
 fn test_fvf_backward_then_forward() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#"let x = "hello" + "world";"#);
     test.set_cursor(0, 20); // Between the two strings
 
@@ -162,7 +162,7 @@ fn test_fvf_backward_then_forward() {
 
 #[test]
 fn test_fvf_multiple_occurrences() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#""first" "second" "third""#);
     test.set_cursor(0, 0); // At opening quote of "first"
 
@@ -190,7 +190,7 @@ fn test_fvf_multiple_occurrences() {
 
 #[test]
 fn test_fvf_nested_quotes() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#"let s = "outer \"inner\" text";"#);
     test.set_cursor(0, 8);
 
@@ -208,7 +208,7 @@ fn test_fvf_nested_quotes() {
 
 #[test]
 fn test_fvf_no_match_stays_in_visual() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content("no quotes here");
     test.set_cursor(0, 0);
 
@@ -225,7 +225,7 @@ fn test_fvf_no_match_stays_in_visual() {
 
 #[test]
 fn test_fvf_with_count() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#""a" "b" "c" "d""#);
     test.set_cursor(0, 0);
 
@@ -245,7 +245,7 @@ fn test_fvf_with_count() {
 
 #[test]
 fn test_fvf_select_and_delete() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#"let x = "remove me" + other;"#);
     test.set_cursor(0, 0); // Start at beginning
 
@@ -259,7 +259,7 @@ fn test_fvf_select_and_delete() {
 
 #[test]
 fn test_fvf_select_and_change() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#"let x = "old";"#);
     test.set_cursor(0, 0); // Start at beginning
 
@@ -277,7 +277,7 @@ fn test_fvf_select_and_change() {
 
 #[test]
 fn test_tilde_visual_selection_case_toggle() {
-    let mut test = EditorTest::empty();
+    let mut test = EditorTest::new("");
     test.set_buffer_content(r#"let x = "HeLLo WoRLD";"#);
     test.set_cursor(0, 0); // At start
 

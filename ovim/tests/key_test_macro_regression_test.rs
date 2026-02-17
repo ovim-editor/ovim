@@ -1,3 +1,6 @@
+#[macro_use]
+#[path = "helpers/key_test_macro.rs"]
+mod key_test_macro;
 mod helpers;
 
 #[test]

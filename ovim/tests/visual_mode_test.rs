@@ -1,3 +1,11 @@
+#![allow(
+    non_snake_case,
+    reason = "Test names intentionally mirror Vim key notation (for example V, gN, and G)."
+)]
+
+#[macro_use]
+#[path = "helpers/editor_test_macro.rs"]
+mod editor_test_macro;
 mod helpers;
 use helpers::EditorTest;
 use ovim::mode::Mode;

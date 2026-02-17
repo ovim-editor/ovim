@@ -3,8 +3,11 @@
 /// These tests verify that viewport commands (zt, zz, zb) properly maintain
 /// scroll position after cursor movements.
 mod helpers;
+#[path = "helpers/viewport_assertions.rs"]
+mod viewport_assertions;
 
-use helpers::{EditorTest, ViewportAssertion};
+use helpers::EditorTest;
+use viewport_assertions::ViewportAssertion;
 
 /// Macro for declarative viewport testing
 #[macro_export]
