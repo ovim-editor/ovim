@@ -261,6 +261,7 @@ mod tests {
         assert!(reg.get("delete_lines").is_some());
         assert!(reg.get("write_file_at_path").is_some());
         assert!(reg.get("create_file").is_some());
+        assert!(reg.get("apply_patch_at_path").is_some());
         assert!(reg.get("snapshot_file").is_some());
         assert!(reg.get("restore_file").is_some());
     }
@@ -290,6 +291,7 @@ mod tests {
         assert!(!names.contains(&"delete_lines"));
         assert!(!names.contains(&"write_file_at_path"));
         assert!(!names.contains(&"create_file"));
+        assert!(!names.contains(&"apply_patch_at_path"));
         assert!(!names.contains(&"snapshot_file"));
         assert!(!names.contains(&"restore_file"));
     }
@@ -312,6 +314,7 @@ mod tests {
         assert!(names.contains(&"delete_lines"));
         assert!(names.contains(&"write_file_at_path"));
         assert!(names.contains(&"create_file"));
+        assert!(names.contains(&"apply_patch_at_path"));
         assert!(names.contains(&"snapshot_file"));
         assert!(names.contains(&"restore_file"));
     }

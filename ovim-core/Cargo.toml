@@ -19,6 +19,7 @@ dirs = "5.0"
 # language_config.rs
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 toml = "0.8"
 which = "6.0"
 shellexpand = "3.1"
@@ -65,6 +66,8 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-hcl = "1.1"
 streaming-iterator = "0.1.9"
 regex = "1.10"
+minijinja = "2.0"
+jsonschema = "0.28"
 # lua/
 mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional = true }
 # editor/

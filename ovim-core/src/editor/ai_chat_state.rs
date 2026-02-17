@@ -118,7 +118,8 @@ pub struct AiChatState {
     pub pending_tool_approval: Option<PendingToolApproval>,
     /// First-chat-open prompt when session starts outside a git repo.
     pub pending_no_repo_folder_approval: Option<PathBuf>,
-    /// Session-scoped roots explicitly approved for outside-project tool access.
+    /// Session-scoped roots explicitly approved for path-restricted tool access
+    /// (outside-project and sensitive-path overrides).
     pub approved_external_roots: Vec<PathBuf>,
     /// Compact tool event summaries keyed by tool call id.
     pub tool_event_summaries: HashMap<String, ToolEventSummary>,

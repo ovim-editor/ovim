@@ -93,8 +93,11 @@ impl LuaProfileConfig {
 
         let scope = ProfileScope {
             files: match self.scope.as_deref() {
+                Some("selection") => FileScope::Selection,
                 Some("file") => FileScope::File,
-                _ => FileScope::Project,
+                Some("any") => FileScope::Any,
+                Some("project") => FileScope::Project,
+                _ => FileScope::File,
             },
             shell: self.scope_shell,
             network: self.scope_network,

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
+use crate::ai::path_policy::{has_parent_traversal, normalize_path};
 use crate::ai::tools::SideEffect;
 use crate::ai::types::FileScope;
 
@@ -118,28 +119,6 @@ pub struct RequiredScope {
 pub struct ScopeContext {
     pub current_file: Option<PathBuf>,
     pub project_root: Option<PathBuf>,
-}
-
-/// Check if a path contains `..` components.
-fn has_parent_traversal(path: &Path) -> bool {
-    path.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-}
-
-/// Normalize a path without hitting the filesystem (no symlink resolution).
-/// Uses `components()` to collapse `.` and handle prefix canonically.
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
-use crate::ai::chat_types::{ChatMessage, StreamChunk, ToolCallInfo, ToolSummaryKind};
+use crate::ai::chat_types::{ChatMessage, ChatRole, StreamChunk, ToolCallInfo, ToolSummaryKind};
+use crate::ai::path_policy::{has_parent_traversal, sensitive_path_reason};
 use crate::ai::scope::{Capabilities, ScopeContext};
 use crate::ai::stream_ai_chat;
 use crate::ai::tools::builtins::{self, ProjectDiagnosticFile, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{SideEffect, ToolResult};
+use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
 use anyhow::Result;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -39,14 +41,17 @@ impl Editor {
 
     /// Build capabilities for the current chat session.
     pub(crate) fn build_chat_capabilities(&self) -> Capabilities {
-        let profile_scope = self
+        let profile_name = self
             .ai_state
             .chat
             .as_ref()
-            .and_then(|c| c.opts.profile.as_ref())
-            .and_then(|p| self.ai_state.config.resolve_profile(p))
-            .map(|p| &p.scope)
-            .cloned()
+            .and_then(|c| c.opts.profile.clone())
+            .unwrap_or_else(|| self.ai_state.active_profile.clone());
+        let profile_scope = self
+            .ai_state
+            .config
+            .resolve_profile(&profile_name)
+            .map(|p| p.scope.clone())
             .unwrap_or_default();
 
         let allow_edits = self
@@ -63,14 +68,6 @@ impl Editor {
             network: profile_scope.network,
             allow_mutations: allow_edits,
         };
-
-        // Without an active file target, keep this chat session file-scoped so
-        // project-level tools do not behave inconsistently.
-        if !self.active_chat_target_has_file_path()
-            && caps.file_scope >= crate::ai::FileScope::Project
-        {
-            caps.file_scope = crate::ai::FileScope::File;
-        }
 
         // Without an approved project boundary, force file-scoped access for
         // project tools to prevent broad accidental traversal from process CWD.
@@ -150,6 +147,12 @@ impl Editor {
                 open_buffers.insert(key, b.rope().to_string());
             }
         }
+        let approved_path_roots = self
+            .ai_state
+            .chat
+            .as_ref()
+            .map(|c| c.approved_external_roots.clone())
+            .unwrap_or_default();
 
         ToolExecutionContext {
             buffer_content,
@@ -163,6 +166,7 @@ impl Editor {
                 project_root,
             },
             capabilities: self.build_chat_capabilities(),
+            approved_path_roots,
             open_buffers,
         }
     }
@@ -203,6 +207,118 @@ impl Editor {
         "No file open. Open or select a file first, then retry. Tip: use open_file(path, create=true) if you know the target path.".to_string()
     }
 
+    fn active_chat_provider(&self) -> crate::ai::AiProviderKind {
+        let profile_name = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.opts.profile.clone())
+            .unwrap_or_else(|| self.ai_state.active_profile.clone());
+        self.ai_state
+            .config
+            .resolve_profile(&profile_name)
+            .map(|p| p.provider)
+            .unwrap_or(crate::ai::AiProviderKind::Ollama)
+    }
+
+    fn active_chat_provider_is_remote(&self) -> bool {
+        self.active_chat_provider() != crate::ai::AiProviderKind::Ollama
+    }
+
+    fn active_chat_tool_approval_mode(&self) -> ToolApprovalMode {
+        self.ai_state.config.tool_approval_mode
+    }
+
+    fn active_chat_target_absolute_path(&self) -> Option<PathBuf> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| self.get_buffer_by_id(c.active_buffer_id))
+            .and_then(|b| b.file_path())
+            .map(PathBuf::from)
+            .map(|p| self.absolutize_path(&p))
+            .or_else(|| {
+                self.buffer()
+                    .file_path()
+                    .map(PathBuf::from)
+                    .map(|p| self.absolutize_path(&p))
+            })
+    }
+
+    fn maybe_require_tool_policy_approval(
+        &self,
+        tc: &ToolCallInfo,
+        requested_path: Option<PathBuf>,
+        is_project_scan: bool,
+        approved_once_root: Option<&PathBuf>,
+    ) -> Option<ToolApprovalRequest> {
+        let mode = self.active_chat_tool_approval_mode();
+        if mode == ToolApprovalMode::Auto {
+            return None;
+        }
+
+        let tool_def = self.ai_state.tool_registry.get(&tc.name)?;
+        let is_mutation = tool_def.side_effect == SideEffect::Mutation;
+        let is_sensitive = requested_path
+            .as_ref()
+            .and_then(|p| sensitive_path_reason(p))
+            .is_some();
+
+        let requires = match mode {
+            ToolApprovalMode::Auto => false,
+            ToolApprovalMode::SensitivePrompt => is_mutation || is_project_scan || is_sensitive,
+            ToolApprovalMode::AlwaysPrompt => true,
+        };
+        if !requires {
+            return None;
+        }
+
+        if mode != ToolApprovalMode::AlwaysPrompt {
+            if let Some(path) = requested_path.as_ref() {
+                if let Some(root) = approved_once_root {
+                    let root = normalize_path(root);
+                    if path.starts_with(&root) {
+                        return None;
+                    }
+                }
+                if self.current_session_approved_root_for(path).is_some() {
+                    return None;
+                }
+            }
+        }
+
+        let requested_path = requested_path
+            .or_else(|| self.ai_effective_project_root())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let approval_root = if requested_path.is_dir() {
+            requested_path.clone()
+        } else {
+            requested_path.clone()
+        };
+        let reason = if mode == ToolApprovalMode::AlwaysPrompt {
+            "policy requires explicit approval"
+        } else if is_mutation {
+            "mutation tools require approval"
+        } else if is_project_scan {
+            "project-wide read requires approval"
+        } else if is_sensitive {
+            "sensitive path requires approval"
+        } else {
+            "approval required"
+        };
+
+        Some(ToolApprovalRequest {
+            requested_path: requested_path.clone(),
+            approval_root,
+            message: format!(
+                "Approval required: {} ({}) for {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
+                tc.name,
+                reason,
+                requested_path.display()
+            ),
+        })
+    }
+
     /// Execute a single read tool call, checking scope before dispatch.
     pub(crate) fn execute_tool_call(
         &self,
@@ -237,7 +353,30 @@ impl Editor {
             return ToolDispatchOutcome::Completed(ToolResult::Error(err));
         }
 
-        if !self.active_chat_target_has_file_path() && tc.name != "open_file" {
+        let has_explicit_path = tc
+            .arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty());
+        let path_scoped_without_open_file = has_explicit_path
+            && matches!(
+                tc.name.as_str(),
+                "read_file_at_path"
+                    | "list_files"
+                    | "edit_range"
+                    | "insert_lines"
+                    | "delete_lines"
+                    | "write_file_at_path"
+                    | "create_file"
+                    | "apply_patch_at_path"
+                    | "snapshot_file"
+                    | "restore_file"
+            );
+
+        if !self.active_chat_target_has_file_path()
+            && tc.name != "open_file"
+            && !path_scoped_without_open_file
+        {
             return ToolDispatchOutcome::Completed(ToolResult::Error(self.no_file_open_guidance()));
         }
 
@@ -257,10 +396,22 @@ impl Editor {
                 | "delete_lines"
                 | "write_file_at_path"
                 | "create_file"
+                | "apply_patch_at_path"
                 | "snapshot_file"
                 | "restore_file"
         ) {
             return self.execute_path_scoped_mutation_tool(tc, approved_once_root);
+        }
+
+        let generic_requested_path = self.active_chat_target_absolute_path();
+        let generic_project_scan = tc.name == "read_project_diagnostics";
+        if let Some(req) = self.maybe_require_tool_policy_approval(
+            tc,
+            generic_requested_path,
+            generic_project_scan,
+            approved_once_root,
+        ) {
+            return ToolDispatchOutcome::ApprovalRequired(req);
         }
 
         let result = match self
@@ -583,9 +734,15 @@ impl Editor {
             .filter(|s| !s.trim().is_empty())
             .map(compact_tool_path)
             .unwrap_or_else(|| self.active_chat_target_display_path());
-        let body = match result {
+        let raw_body = match result {
             ToolResult::Success(s) => s.as_str().to_string(),
             ToolResult::Error(s) => format!("Error: {s}"),
+        };
+        let body = if self.active_chat_provider_is_remote() {
+            let redacted = redact_high_risk_tokens(&raw_body);
+            truncate_utf8_with_notice(&redacted, 8 * 1024)
+        } else {
+            truncate_utf8_with_notice(&raw_body, 64 * 1024)
         };
         format!("Target: {target}\n{body}")
     }
@@ -707,6 +864,18 @@ impl Editor {
                 (
                     ToolSummaryKind::Mutation,
                     format!("{mutation_target} +{written} -0"),
+                )
+            }
+            "apply_patch_at_path" => {
+                let (added, removed) = tc
+                    .arguments
+                    .get("diff")
+                    .and_then(|v| v.as_str())
+                    .map(diff_line_deltas)
+                    .unwrap_or((0, 0));
+                (
+                    ToolSummaryKind::Mutation,
+                    format!("{mutation_target} +{added} -{removed}"),
                 )
             }
             "open_file" => {
@@ -885,6 +1054,14 @@ impl Editor {
                 return ToolDispatchOutcome::ApprovalRequired(req)
             }
         };
+        if let Some(req) = self.maybe_require_tool_policy_approval(
+            tc,
+            Some(absolute_path.clone()),
+            false,
+            approved_once_root,
+        ) {
+            return ToolDispatchOutcome::ApprovalRequired(req);
+        }
 
         let rel_path = to_relative_path_for_boundary(&absolute_path, &boundary_root);
         let mut patched_call = tc.clone();
@@ -908,11 +1085,11 @@ impl Editor {
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
         let mut patched_call = tc.clone();
-        let boundary_root =
+        let (boundary_root, requested_dir_for_policy) =
             if let Some(raw_path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
                 if raw_path.is_empty() {
                     match self.ai_effective_project_root() {
-                        Some(root) => root,
+                        Some(root) => (root.clone(), root),
                         None => {
                             return ToolDispatchOutcome::Completed(ToolResult::Error(
                                 self.no_project_root_error(),
@@ -946,11 +1123,11 @@ impl Editor {
                             "tool arguments must be an object".to_string(),
                         ));
                     }
-                    boundary_root
+                    (boundary_root, absolute_path)
                 }
             } else {
                 match self.ai_effective_project_root() {
-                    Some(root) => root,
+                    Some(root) => (root.clone(), root),
                     None => {
                         return ToolDispatchOutcome::Completed(ToolResult::Error(
                             self.no_project_root_error(),
@@ -958,6 +1135,15 @@ impl Editor {
                     }
                 }
             };
+
+        if let Some(req) = self.maybe_require_tool_policy_approval(
+            tc,
+            Some(requested_dir_for_policy),
+            true,
+            approved_once_root,
+        ) {
+            return ToolDispatchOutcome::ApprovalRequired(req);
+        }
 
         let mut ctx = self.build_tool_execution_context();
         ctx.scope_context.project_root = Some(boundary_root);
@@ -1009,6 +1195,14 @@ impl Editor {
                 return ToolDispatchOutcome::ApprovalRequired(req)
             }
         };
+        if let Some(req) = self.maybe_require_tool_policy_approval(
+            tc,
+            Some(absolute_path.clone()),
+            false,
+            approved_once_root,
+        ) {
+            return ToolDispatchOutcome::ApprovalRequired(req);
+        }
 
         ToolDispatchOutcome::Completed(self.handle_open_file_at_absolute_path(
             &absolute_path,
@@ -1025,7 +1219,11 @@ impl Editor {
         let name = tc.name.as_str();
         let requires_path = matches!(
             name,
-            "write_file_at_path" | "create_file" | "snapshot_file" | "restore_file"
+            "write_file_at_path"
+                | "create_file"
+                | "apply_patch_at_path"
+                | "snapshot_file"
+                | "restore_file"
         );
 
         let raw_path = tc
@@ -1034,6 +1232,7 @@ impl Editor {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        let mut mutation_target_for_policy = self.active_chat_target_absolute_path();
 
         if requires_path && raw_path.is_none() {
             return ToolDispatchOutcome::Completed(ToolResult::Error(
@@ -1060,6 +1259,7 @@ impl Editor {
                     return ToolDispatchOutcome::ApprovalRequired(req)
                 }
             };
+            mutation_target_for_policy = Some(absolute_path.clone());
 
             if name == "create_file" && absolute_path.exists() {
                 return ToolDispatchOutcome::Completed(ToolResult::Error(format!(
@@ -1075,6 +1275,15 @@ impl Editor {
             {
                 return ToolDispatchOutcome::Completed(ToolResult::Error(e));
             }
+        }
+
+        if let Some(req) = self.maybe_require_tool_policy_approval(
+            tc,
+            mutation_target_for_policy,
+            false,
+            approved_once_root,
+        ) {
+            return ToolDispatchOutcome::ApprovalRequired(req);
         }
 
         ToolDispatchOutcome::Completed(self.execute_mutation_tool(&tc.name, &tc.arguments))
@@ -1234,6 +1443,10 @@ impl Editor {
         tool_name: &str,
         approved_once_root: Option<&PathBuf>,
     ) -> std::result::Result<ToolPathResolution, String> {
+        if has_parent_traversal(Path::new(raw_path)) {
+            return Err("path traversal (..) not allowed".to_string());
+        }
+
         let boundary_root = self
             .ai_effective_project_root()
             .ok_or_else(|| self.no_project_root_error())?;
@@ -1250,8 +1463,28 @@ impl Editor {
                     .unwrap_or_else(|_| normalize_path(&joined))
             }
         };
+        let approved_once_root = approved_once_root.map(|p| normalize_path(p));
+        let approved_once_match = approved_once_root
+            .as_ref()
+            .is_some_and(|root| requested_path.starts_with(root));
+        let approved_session_match = self.current_session_approved_root_for(&requested_path);
 
         if requested_path.starts_with(&boundary_root) {
+            if let Some(reason) = sensitive_path_reason(&requested_path) {
+                let approved_sensitive = approved_once_match || approved_session_match.is_some();
+                if !approved_sensitive {
+                    return Ok(ToolPathResolution::NeedsApproval(ToolApprovalRequest {
+                        requested_path: requested_path.clone(),
+                        approval_root: requested_path.clone(),
+                        message: format!(
+                            "Approval required: {} wants sensitive-path access to {} ({}). Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
+                            tool_name,
+                            requested_path.display(),
+                            reason
+                        ),
+                    }));
+                }
+            }
             return Ok(ToolPathResolution::Allowed {
                 absolute_path: requested_path,
                 boundary_root,
@@ -1259,7 +1492,6 @@ impl Editor {
         }
 
         if let Some(root) = approved_once_root {
-            let root = normalize_path(root);
             if requested_path.starts_with(&root) {
                 return Ok(ToolPathResolution::Allowed {
                     absolute_path: requested_path,
@@ -1268,7 +1500,7 @@ impl Editor {
             }
         }
 
-        if let Some(root) = self.current_session_approved_root_for(&requested_path) {
+        if let Some(root) = approved_session_match {
             return Ok(ToolPathResolution::Allowed {
                 absolute_path: requested_path,
                 boundary_root: root,
@@ -1736,6 +1968,7 @@ impl Editor {
             .clone();
 
         let model_name = profile.model.clone();
+        let remote_provider = profile.provider != crate::ai::AiProviderKind::Ollama;
 
         // Resolution chain for chat system prompt:
         // 1. chat.opts.system_prompt (per-session override)
@@ -1759,15 +1992,19 @@ impl Editor {
             )
             .or_else(|| Some(self.build_chat_system_prompt(&profile)))
         };
-        // Append project context to system prompt
-        let project_ctx = crate::ai::project_context::load_project_context(
-            &self.ai_state.config.project_context,
-            self.buffers[self.current_buffer_index].file_path(),
-        );
-        let system_prompt =
-            system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx));
+        // For remote providers, keep default context narrower to reduce accidental egress.
+        let system_prompt = if remote_provider {
+            system_prompt
+        } else {
+            let project_ctx = crate::ai::project_context::load_project_context(
+                &self.ai_state.config.project_context,
+                self.buffers[self.current_buffer_index].file_path(),
+            );
+            system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx))
+        };
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
-        let editor_state = self.build_editor_state_context(8000);
+        let editor_state_budget = if remote_provider { 2500 } else { 8000 };
+        let editor_state = self.build_editor_state_context(editor_state_budget);
         let system_prompt = system_prompt.map(|sp| format!("{sp}\n\n{editor_state}"));
         let tool_schemas = self.build_tool_schemas_for_chat(&profile);
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
@@ -1779,10 +2016,26 @@ impl Editor {
 
         // Apply observation masking — only the API-bound copy gets masked;
         // the full conversation stays in ConversationTree for UI display.
-        let messages = crate::ai::chat_types::apply_observation_mask(
-            &messages,
-            &self.ai_state.config.chat_context,
-        );
+        let mut chat_context = self.ai_state.config.chat_context.clone();
+        if remote_provider {
+            chat_context.observation_window = chat_context.observation_window.min(2);
+        }
+        let mut messages = crate::ai::chat_types::apply_observation_mask(&messages, &chat_context);
+        if remote_provider {
+            messages = messages
+                .into_iter()
+                .map(|mut msg| {
+                    let budget = if msg.role == ChatRole::Tool {
+                        8 * 1024
+                    } else {
+                        24 * 1024
+                    };
+                    let redacted = redact_high_risk_tokens(&msg.content);
+                    msg.content = truncate_utf8_with_notice(&redacted, budget);
+                    msg
+                })
+                .collect();
+        }
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let tx_err = tx.clone();
@@ -1938,17 +2191,7 @@ impl Editor {
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
+    crate::ai::path_policy::normalize_path(path)
 }
 
 fn to_relative_path_for_boundary(path: &Path, boundary_root: &Path) -> String {
@@ -2199,6 +2442,22 @@ fn tool_line_range_suffix(args: &serde_json::Value) -> String {
     }
 }
 
+fn diff_line_deltas(diff: &str) -> (usize, usize) {
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+        if line.starts_with('+') {
+            added = added.saturating_add(1);
+        } else if line.starts_with('-') {
+            removed = removed.saturating_add(1);
+        }
+    }
+    (added, removed)
+}
+
 fn compact_tool_label(text: &str) -> String {
     let single_line = text
         .replace('\n', " ")
@@ -2240,7 +2499,15 @@ fn compact_tool_path(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
+    use crate::ai::FileScope;
     use std::fs;
+
+    fn set_active_profile_project_scope(editor: &mut Editor) {
+        let profile_name = editor.ai_state.active_profile.clone();
+        if let Some(profile) = editor.ai_state.config.profiles.get_mut(&profile_name) {
+            profile.scope.files = FileScope::Project;
+        }
+    }
 
     fn make_symbol(
         name: &str,
@@ -2343,6 +2610,7 @@ mod tests {
                     ..Default::default()
                 })
                 .expect("open chat");
+            set_active_profile_project_scope(&mut editor);
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =
@@ -2392,6 +2660,7 @@ mod tests {
                     ..Default::default()
                 })
                 .expect("open chat");
+            set_active_profile_project_scope(&mut editor);
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =
@@ -2428,6 +2697,62 @@ mod tests {
     }
 
     #[test]
+    fn apply_patch_at_path_updates_target_file() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("patch_target.rs");
+            fs::write(&target, "fn main() {\n    old_call();\n}\n").expect("seed");
+
+            let mut editor = Editor::default();
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            set_active_profile_project_scope(&mut editor);
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.approved_external_roots.push(dir.path().to_path_buf());
+                let canonical =
+                    std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+                if canonical != dir.path() {
+                    chat.approved_external_roots.push(canonical);
+                }
+            }
+
+            let diff = format!(
+                "*** Begin Patch\n*** Update File: {}\n@@ @@\n fn main() {{\n-    old_call();\n+    new_call();\n }}\n*** End Patch\n",
+                target.to_string_lossy()
+            );
+
+            let tool_call = ToolCallInfo {
+                id: "call_patch".to_string(),
+                name: "apply_patch_at_path".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "diff": diff
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected patch error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            let content = fs::read_to_string(&target).expect("read target");
+            assert!(content.contains("new_call();"));
+            assert!(!content.contains("old_call();"));
+        });
+    }
+
+    #[test]
     fn snapshot_and_restore_file_round_trip() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
@@ -2443,6 +2768,7 @@ mod tests {
                     ..Default::default()
                 })
                 .expect("open chat");
+            set_active_profile_project_scope(&mut editor);
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =

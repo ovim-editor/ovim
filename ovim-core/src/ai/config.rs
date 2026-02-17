@@ -1,6 +1,6 @@
 use crate::ai::types::{
     AgentLoopConfig, AiProviderKind, ApiKeyConfig, ContextGatheringPolicy, DiagnosticScope,
-    EditFormat, ProfileScope, RetryPolicy, PROFILE_LOCAL,
+    EditFormat, FileScope, ProfileScope, RetryPolicy, ToolApprovalMode, PROFILE_LOCAL,
 };
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -97,11 +97,14 @@ pub struct AiConfig {
     pub project_context: ProjectContextConfig,
     /// Chat context management (observation masking).
     pub chat_context: ChatContextConfig,
+    /// Tool-approval behavior for AI chat tool calls.
+    pub tool_approval_mode: ToolApprovalMode,
 }
 
 #[derive(Debug, Deserialize)]
 struct AiTomlConfig {
     default_profile: Option<String>,
+    tool_approval_mode: Option<String>,
     #[serde(default)]
     profiles: HashMap<String, AiTomlProfile>,
 }
@@ -124,6 +127,10 @@ struct AiTomlProfile {
     related_slices: Option<bool>,
     context_budget: Option<usize>,
     max_tool_calls: Option<u16>,
+    tools: Option<Vec<String>>,
+    scope: Option<String>,
+    scope_shell: Option<bool>,
+    scope_network: Option<bool>,
     reasoning_effort: Option<String>,
     verbosity: Option<String>,
     syntax_check: Option<bool>,
@@ -179,6 +186,7 @@ impl Default for AiConfig {
             format_prompts: HashMap::new(),
             project_context: ProjectContextConfig::default(),
             chat_context: ChatContextConfig::default(),
+            tool_approval_mode: ToolApprovalMode::default(),
         }
     }
 }
@@ -225,6 +233,17 @@ impl AiConfig {
                 max: profile.retry_max.unwrap_or(0),
                 fallback: profile.retry_fallback,
             };
+            let file_scope = profile
+                .scope
+                .as_deref()
+                .and_then(parse_file_scope_str)
+                .unwrap_or(FileScope::File);
+            let scope = ProfileScope {
+                files: file_scope,
+                shell: profile.scope_shell.unwrap_or(false),
+                network: profile.scope_network.unwrap_or(false),
+            };
+            let tools = profile.tools.unwrap_or_default();
 
             // Eagerly resolve api_key_env: if the user didn't set one in TOML,
             // fill in the provider default (e.g. "ANTHROPIC_API_KEY").
@@ -248,8 +267,8 @@ impl AiConfig {
                     chat_edit_format,
                     context,
                     agent_loop,
-                    tools: vec![],
-                    scope: ProfileScope::default(),
+                    tools,
+                    scope,
                     edit_prompt: profile.edit_prompt,
                     chat_prompt: profile.chat_prompt,
                     chat_edit_prompt: profile.chat_edit_prompt,
@@ -263,6 +282,9 @@ impl AiConfig {
 
         if let Some(default_profile) = parsed.default_profile {
             cfg.default_profile = default_profile;
+        }
+        if let Some(mode) = parsed.tool_approval_mode.as_deref() {
+            cfg.tool_approval_mode = parse_tool_approval_mode(mode);
         }
 
         if !cfg.profiles.contains_key(&cfg.default_profile) {
@@ -292,6 +314,24 @@ pub fn parse_edit_format_str(s: &str) -> EditFormat {
                 EditFormat::Lua(other.to_string())
             }
         }
+    }
+}
+
+fn parse_file_scope_str(s: &str) -> Option<FileScope> {
+    match s.to_ascii_lowercase().as_str() {
+        "selection" => Some(FileScope::Selection),
+        "file" => Some(FileScope::File),
+        "project" => Some(FileScope::Project),
+        "any" => Some(FileScope::Any),
+        _ => None,
+    }
+}
+
+fn parse_tool_approval_mode(s: &str) -> ToolApprovalMode {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => ToolApprovalMode::Auto,
+        "always_prompt" => ToolApprovalMode::AlwaysPrompt,
+        _ => ToolApprovalMode::SensitivePrompt,
     }
 }
 
@@ -355,5 +395,45 @@ pub fn system_prompt_for_edit_format(format: &EditFormat) -> &'static str {
         EditFormat::ApplyPatch | EditFormat::StrReplace | EditFormat::Lua(_) => {
             "You are a code editing assistant. Return ONLY the replacement code with no explanation, no markdown, no code fences."
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_scope_default_is_file() {
+        assert_eq!(ProfileScope::default().files, FileScope::File);
+    }
+
+    #[test]
+    fn parse_file_scope_values() {
+        assert_eq!(
+            parse_file_scope_str("selection"),
+            Some(FileScope::Selection)
+        );
+        assert_eq!(parse_file_scope_str("file"), Some(FileScope::File));
+        assert_eq!(parse_file_scope_str("project"), Some(FileScope::Project));
+        assert_eq!(parse_file_scope_str("any"), Some(FileScope::Any));
+        assert_eq!(parse_file_scope_str("unknown"), None);
+    }
+
+    #[test]
+    fn parse_tool_approval_mode_values() {
+        assert_eq!(parse_tool_approval_mode("auto"), ToolApprovalMode::Auto);
+        assert_eq!(
+            parse_tool_approval_mode("always_prompt"),
+            ToolApprovalMode::AlwaysPrompt
+        );
+        assert_eq!(
+            parse_tool_approval_mode("sensitive_prompt"),
+            ToolApprovalMode::SensitivePrompt
+        );
+        // Unknown values fail closed to sensitive_prompt.
+        assert_eq!(
+            parse_tool_approval_mode("something_else"),
+            ToolApprovalMode::SensitivePrompt
+        );
     }
 }
