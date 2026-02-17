@@ -575,8 +575,12 @@ impl Editor {
         idx + 1 >= len
     }
 
-    /// Effective row scroll offset for rendering given the current row count.
-    pub fn ai_chat_effective_message_scroll(&self, total_rows: usize) -> usize {
+    /// Effective row scroll offset for rendering given row count and viewport size.
+    pub fn ai_chat_effective_message_scroll(
+        &self,
+        total_rows: usize,
+        visible_rows: usize,
+    ) -> usize {
         let Some(chat) = self.ai_state.chat.as_ref() else {
             return 0;
         };
@@ -586,10 +590,11 @@ impl Editor {
         }
         let base = viewport.pinned_base_total_rows.unwrap_or(total_rows);
         let growth = total_rows.saturating_sub(base);
+        let max_scroll = total_rows.saturating_sub(visible_rows);
         viewport
             .row_scroll_from_bottom
             .saturating_add(growth)
-            .min(total_rows.saturating_sub(1))
+            .min(max_scroll)
     }
 
     /// Scroll chat history viewport toward older rows.
@@ -1037,6 +1042,22 @@ mod tests {
             .agent_edits
             .total_edit_count();
         assert_eq!(edits, 0);
+    }
+
+    #[test]
+    fn effective_message_scroll_is_clamped_to_viewport_window() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.viewport.follow_latest = false;
+            chat.viewport.row_scroll_from_bottom = 10_000;
+            chat.viewport.pinned_base_total_rows = Some(50);
+        }
+
+        // With 50 rows and a viewport of 12, max safe scroll is 38.
+        let effective = editor.ai_chat_effective_message_scroll(50, 12);
+        assert_eq!(effective, 38);
     }
 
     #[test]

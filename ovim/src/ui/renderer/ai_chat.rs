@@ -404,7 +404,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     let visible_rows = area.height as usize;
     let total = rendered_lines.len();
     editor.render_cache.ai_chat_last_total_rows = total;
-    let effective_scroll = editor.ai_chat_effective_message_scroll(total);
+    let effective_scroll = editor.ai_chat_effective_message_scroll(total, visible_rows);
     let start = total.saturating_sub(visible_rows + effective_scroll);
     let end = total.saturating_sub(effective_scroll).min(total);
     editor.render_cache.ai_chat_last_visible_start_row = start;
