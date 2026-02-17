@@ -4,11 +4,15 @@ mod java;
 use auto_install::{attempt_auto_install, InstallResult};
 use ovim::editor::Editor;
 use ovim::language_config::{
-    find_lsp_command, find_project_root, CompanionLspConfig, LanguageRegistry,
+    find_lsp_command, find_project_root, AutoInstallConfig, AutoInstallPolicy, CompanionLspConfig,
+    LanguageRegistry,
 };
 use ovim::lsp::companion_server_id;
 use ovim::lsp::uri_from_file_path;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 pub use java::init_java_status_sender;
 
@@ -58,11 +62,42 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     };
 
     // Try to find LSP server binary (primary command + fallbacks)
-    let server_command = match find_lsp_command(lsp_config) {
+    let mut server_command = match find_lsp_command(lsp_config) {
         Some(cmd) => cmd,
         None => {
             // LSP server not found - try auto-install if configured
             if let Some(auto_install_config) = &lsp_config.auto_install {
+                if !auto_install_on_missing_enabled(auto_install_config) {
+                    let hint = lsp_config
+                        .install_hint
+                        .as_deref()
+                        .unwrap_or("LSP server not found in PATH");
+                    editor.set_lsp_status(format!("LSP: {}", hint));
+                    ovim_core::lsp_info!(
+                        "LSP",
+                        "Skipping auto-install for {} because policy is manual_only",
+                        lang_config.name
+                    );
+                    return;
+                }
+
+                if !is_auto_install_allowed_for_current_mode(auto_install_config) {
+                    let hint = lsp_config
+                        .install_hint
+                        .as_deref()
+                        .unwrap_or("LSP server not found in PATH");
+                    editor.set_lsp_status(format!(
+                        "LSP: {} (auto-install skipped in headless mode)",
+                        hint
+                    ));
+                    ovim_core::lsp_info!(
+                        "LSP",
+                        "Skipping auto-install for {} in headless mode (allow_headless=false)",
+                        lang_config.name
+                    );
+                    return;
+                }
+
                 ovim_core::lsp_info!(
                     "LSP",
                     "{} language server not found. Attempting auto-install...",
@@ -92,8 +127,9 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                             path.display()
                         );
 
-                        // Use the installed command
-                        path.to_string_lossy().to_string()
+                        // Resolve again so PATH/fallback logic can pick the preferred command.
+                        find_lsp_command(lsp_config)
+                            .unwrap_or_else(|| path.to_string_lossy().to_string())
                     }
                     InstallResult::Failed(error) => {
                         editor.set_lsp_status(format!("LSP: Auto-install failed: {}", error));
@@ -147,71 +183,229 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
 
     // Start LSP server using the unified path
     if let Some(lsp_manager) = editor.lsp_manager() {
-        match lsp_manager
-            .start_server(
-                &language_id,
-                &server_command,
-                lsp_config.args.clone(),
-                &root_path,
-            )
-            .await
-        {
-            Ok(server_id) => {
-                editor.register_lsp_server(language_id.clone(), server_command.clone());
+        let mut attempted_known_failure_repair = false;
 
-                // Start notification listener to receive diagnostics
-                // Use server_id (may differ from language_id for multi-root)
-                lsp_manager.start_notification_listener(server_id).await;
+        loop {
+            match lsp_manager
+                .start_server(
+                    &language_id,
+                    &server_command,
+                    lsp_config.args.clone(),
+                    &root_path,
+                )
+                .await
+            {
+                Ok(server_id) => {
+                    editor.register_lsp_server(language_id.clone(), server_command.clone());
 
-                // PRE-WARM: Send didOpen immediately to eliminate first-request latency
-                // This ensures the LSP server has indexed the document before the first
-                // hover/goto_definition request, making K/gd feel instant.
-                if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
-                    let content = editor.buffer().rope().to_string();
-                    if let Some(uri) = uri_from_file_path(&file_path) {
-                        match lsp_manager
-                            .did_open_broadcast(uri, &language_id, 1, content.clone())
-                            .await
-                        {
-                            Ok(_) => {
-                                // Mark as sent+synced to prevent duplicate from ensure_lsp_document_synced
-                                editor.mark_document_opened_with_content(&file_path, content);
-                                ovim_core::lsp_debug!(
-                                    "LSP",
-                                    "Pre-warmed didOpen for {}",
-                                    file_path
-                                );
-                            }
-                            Err(e) => {
-                                // Don't mark as opened — ensure_lsp_document_synced will retry
-                                ovim_core::lsp_warn!(
-                                    "LSP",
-                                    "Pre-warm didOpen failed for {}: {} (will retry on next LSP request)",
-                                    file_path,
-                                    e
-                                );
+                    // Start notification listener to receive diagnostics
+                    // Use server_id (may differ from language_id for multi-root)
+                    lsp_manager.start_notification_listener(server_id).await;
+
+                    // PRE-WARM: Send didOpen immediately to eliminate first-request latency
+                    // This ensures the LSP server has indexed the document before the first
+                    // hover/goto_definition request, making K/gd feel instant.
+                    if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                        let content = editor.buffer().rope().to_string();
+                        if let Some(uri) = uri_from_file_path(&file_path) {
+                            match lsp_manager
+                                .did_open_broadcast(uri, &language_id, 1, content.clone())
+                                .await
+                            {
+                                Ok(_) => {
+                                    // Mark as sent+synced to prevent duplicate from ensure_lsp_document_synced
+                                    editor.mark_document_opened_with_content(&file_path, content);
+                                    ovim_core::lsp_debug!(
+                                        "LSP",
+                                        "Pre-warmed didOpen for {}",
+                                        file_path
+                                    );
+                                }
+                                Err(e) => {
+                                    // Don't mark as opened — ensure_lsp_document_synced will retry
+                                    ovim_core::lsp_warn!(
+                                        "LSP",
+                                        "Pre-warm didOpen failed for {}: {} (will retry on next LSP request)",
+                                        file_path,
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
+
+                    editor.set_lsp_status(format!("LSP: {} ready", lang_config.name));
+
+                    // Initialize companion LSP servers (e.g., Tailwind CSS for TypeScript)
+                    initialize_companions(editor, &language_id, &abs_path).await;
+                    break;
                 }
+                Err(e) => {
+                    let error = e.to_string();
+                    if !attempted_known_failure_repair
+                        && should_attempt_known_failure_repair(
+                            &lang_config.id,
+                            &lsp_config.command,
+                            lsp_config.auto_install.as_ref(),
+                            &error,
+                        )
+                    {
+                        attempted_known_failure_repair = true;
+                        let auto_install_config = lsp_config
+                            .auto_install
+                            .as_ref()
+                            .expect("repair precondition checked");
 
-                editor.set_lsp_status(format!("LSP: {} ready", lang_config.name));
+                        ovim_core::lsp_warn!(
+                            "LSP",
+                            "Known startup failure for {} ({}). Attempting one auto-repair install.",
+                            lang_config.name,
+                            error
+                        );
+                        editor.set_lsp_status(format!("LSP: Repairing {}...", lsp_config.command));
 
-                // Initialize companion LSP servers (e.g., Tailwind CSS for TypeScript)
-                initialize_companions(editor, &language_id, &abs_path).await;
-            }
-            Err(e) => {
-                editor.set_lsp_status(format!("LSP: Failed to start {}: {}", server_command, e));
-                ovim_core::lsp_warn!(
-                    "LSP",
-                    "Failed to start {} server '{}': {}",
-                    lang_config.name,
-                    server_command,
-                    e
-                );
+                        match attempt_auto_install(
+                            &lang_config.name,
+                            &lsp_config.command,
+                            auto_install_config,
+                        )
+                        .await
+                        {
+                            InstallResult::Success(path) => {
+                                server_command = find_lsp_command(lsp_config)
+                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                ovim_core::lsp_info!(
+                                    "LSP",
+                                    "Auto-repair completed for {}. Retrying with '{}'",
+                                    lang_config.name,
+                                    server_command
+                                );
+                                continue;
+                            }
+                            InstallResult::Failed(msg) => {
+                                editor.set_lsp_status(format!("LSP: Auto-repair failed: {}", msg));
+                                ovim_core::lsp_warn!("LSP", "Auto-repair failed: {}", msg);
+                                return;
+                            }
+                            InstallResult::PrerequisitesMissing(msg) => {
+                                editor.set_lsp_status(format!("LSP: {}", msg));
+                                ovim_core::lsp_warn!(
+                                    "LSP",
+                                    "Auto-repair prerequisites missing: {}",
+                                    msg
+                                );
+                                return;
+                            }
+                            InstallResult::Declined => {
+                                editor.set_lsp_status("LSP: Auto-repair declined".to_string());
+                                return;
+                            }
+                        }
+                    }
+
+                    editor.set_lsp_status(format!(
+                        "LSP: Failed to start {}: {}",
+                        server_command, error
+                    ));
+                    ovim_core::lsp_warn!(
+                        "LSP",
+                        "Failed to start {} server '{}': {}",
+                        lang_config.name,
+                        server_command,
+                        error
+                    );
+                    break;
+                }
             }
         }
     }
+}
+
+const KNOWN_FAILURE_REPAIR_COOLDOWN: Duration = Duration::from_secs(300);
+
+fn auto_install_on_missing_enabled(config: &AutoInstallConfig) -> bool {
+    !matches!(config.policy, AutoInstallPolicy::ManualOnly)
+}
+
+fn is_auto_install_allowed_for_current_mode(config: &AutoInstallConfig) -> bool {
+    if config.allow_headless {
+        return true;
+    }
+    !is_headless_mode()
+}
+
+fn is_headless_mode() -> bool {
+    std::env::var("OVIM_HEADLESS")
+        .map(|value| {
+            let value = value.trim();
+            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+        })
+        .unwrap_or(false)
+}
+
+fn should_attempt_known_failure_repair(
+    language_id: &str,
+    command: &str,
+    auto_install_config: Option<&AutoInstallConfig>,
+    error: &str,
+) -> bool {
+    let Some(config) = auto_install_config else {
+        return false;
+    };
+
+    if !matches!(
+        config.policy,
+        AutoInstallPolicy::AutoOnMissingOrKnownFailure
+    ) {
+        return false;
+    }
+
+    if !is_auto_install_allowed_for_current_mode(config) {
+        return false;
+    }
+
+    if !is_known_startup_failure(error) {
+        return false;
+    }
+
+    record_known_failure_repair_attempt(language_id, command)
+}
+
+fn is_known_startup_failure(error: &str) -> bool {
+    const KNOWN_STARTUP_FAILURE_MARKERS: &[&str] = &[
+        "Failed to send initialize request",
+        "Response channel closed for method 'initialize'",
+        "Request 'initialize' timed out",
+        "LSP server process failed to start or exited immediately",
+        "LSP server not responding — channel closed (method: initialize)",
+        "Failed to spawn language server",
+    ];
+
+    KNOWN_STARTUP_FAILURE_MARKERS
+        .iter()
+        .any(|marker| error.contains(marker))
+}
+
+fn record_known_failure_repair_attempt(language_id: &str, command: &str) -> bool {
+    static KNOWN_FAILURE_REPAIR_ATTEMPTS: OnceLock<Mutex<HashMap<String, Instant>>> =
+        OnceLock::new();
+    let attempts = KNOWN_FAILURE_REPAIR_ATTEMPTS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = format!("{}:{}", language_id, command);
+    let now = Instant::now();
+
+    let Ok(mut guard) = attempts.lock() else {
+        // If lock is poisoned, fail open and allow one repair attempt.
+        return true;
+    };
+
+    if let Some(last_attempt) = guard.get(&key) {
+        if now.duration_since(*last_attempt) < KNOWN_FAILURE_REPAIR_COOLDOWN {
+            return false;
+        }
+    }
+
+    guard.insert(key, now);
+    true
 }
 
 /// Normalize path to absolute and canonicalize if possible

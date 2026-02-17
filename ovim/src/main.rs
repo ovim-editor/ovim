@@ -54,6 +54,13 @@ async fn main() -> Result<()> {
     let dimension = cli.dimension;
     let render = cli.render;
 
+    // Track runtime mode for components that need different behavior in headless mode.
+    if headless {
+        std::env::set_var("OVIM_HEADLESS", "1");
+    } else {
+        std::env::remove_var("OVIM_HEADLESS");
+    }
+
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
         ovim_core::log_warn!("main", "Failed to initialize LSP logging: {}", e);
