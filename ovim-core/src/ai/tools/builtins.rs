@@ -857,6 +857,14 @@ pub(crate) fn open_file_def() -> ToolDefinition {
                 description: "File path relative to project root.".to_string(),
             },
             ToolParam {
+                name: "create".to_string(),
+                param_type: ParamType::Boolean,
+                required: false,
+                description:
+                    "Create and open an empty file when path does not exist (default: false)."
+                        .to_string(),
+            },
+            ToolParam {
                 name: "line".to_string(),
                 param_type: ParamType::LineNumber,
                 required: false,

@@ -927,6 +927,11 @@ impl Editor {
                 "'path' is required".to_string(),
             ));
         }
+        let create = tc
+            .arguments
+            .get("create")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let caps = self.build_chat_capabilities();
         let Some(tool_def) = self.ai_state.tool_registry.get("open_file") else {
@@ -952,9 +957,11 @@ impl Editor {
             }
         };
 
-        ToolDispatchOutcome::Completed(
-            self.handle_open_file_at_absolute_path(&absolute_path, &tc.arguments),
-        )
+        ToolDispatchOutcome::Completed(self.handle_open_file_at_absolute_path(
+            &absolute_path,
+            &tc.arguments,
+            create,
+        ))
     }
 
     fn execute_path_scoped_mutation_tool(
@@ -1093,15 +1100,37 @@ impl Editor {
         &mut self,
         absolute_path: &Path,
         args: &serde_json::Value,
+        create: bool,
     ) -> ToolResult {
-        if !absolute_path.is_file() {
+        if !absolute_path.exists() {
+            if !create {
+                return ToolResult::Error(format!(
+                    "'{}' is not a file. Use list_files to see available files.",
+                    absolute_path.display()
+                ));
+            }
+            let Some(parent) = absolute_path.parent() else {
+                return ToolResult::Error(format!(
+                    "cannot create '{}': invalid path",
+                    absolute_path.display()
+                ));
+            };
+            if !parent.exists() || !parent.is_dir() {
+                return ToolResult::Error(format!(
+                    "cannot create '{}': parent directory '{}' does not exist",
+                    absolute_path.display(),
+                    parent.display()
+                ));
+            }
+            let mut buffer = crate::buffer::Buffer::new();
+            buffer.set_file_path(absolute_path.to_string_lossy().to_string());
+            self.add_buffer(buffer);
+        } else if !absolute_path.is_file() {
             return ToolResult::Error(format!(
                 "'{}' is not a file. Use list_files to see available files.",
                 absolute_path.display()
             ));
-        }
-
-        if let Err(e) = self.open_file(absolute_path) {
+        } else if let Err(e) = self.open_file(absolute_path) {
             return ToolResult::Error(format!(
                 "failed to open '{}': {}",
                 absolute_path.display(),
@@ -2464,6 +2493,56 @@ mod tests {
                 .as_deref()
                 .is_some_and(|p| p.ends_with("a.rs")));
             assert!(ctx.buffer_content.contains("from_a"));
+        });
+    }
+
+    #[test]
+    fn open_file_with_create_opens_missing_target() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("new_file.rs");
+
+            let mut editor = Editor::default();
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.approved_external_roots.push(dir.path().to_path_buf());
+                let canonical =
+                    std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+                if canonical != dir.path() {
+                    chat.approved_external_roots.push(canonical);
+                }
+            }
+
+            let tool_call = ToolCallInfo {
+                id: "call_open".to_string(),
+                name: "open_file".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "create": true
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            assert!(editor
+                .buffer()
+                .file_path()
+                .is_some_and(|p| p.ends_with("new_file.rs")));
         });
     }
 }
