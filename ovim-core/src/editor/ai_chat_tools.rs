@@ -1,4 +1,4 @@
-use crate::ai::chat_types::{ChatMessage, StreamChunk, ToolCallInfo};
+use crate::ai::chat_types::{ChatMessage, StreamChunk, ToolCallInfo, ToolSummaryKind};
 use crate::ai::scope::{Capabilities, ScopeContext};
 use crate::ai::stream_ai_chat;
 use crate::ai::tools::builtins::{self, ToolExecutionContext};
@@ -9,7 +9,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::ai_chat_state::{PendingAiChatJob, PendingToolApproval};
+use super::ai_chat_state::{PendingAiChatJob, PendingToolApproval, ToolEventSummary};
 use super::Editor;
 
 #[derive(Debug, Clone)]
@@ -293,6 +293,13 @@ impl Editor {
         };
 
         if !allow {
+            self.record_tool_event_summary(
+                &pending.tool_call,
+                &ToolResult::Error(format!(
+                    "user denied outside-project access for '{}'",
+                    pending.requested_path.display()
+                )),
+            );
             if let Some(conv) = self.conversation_mut() {
                 conv.append_tool_result(
                     pending.tool_call.id.clone(),
@@ -327,6 +334,7 @@ impl Editor {
             self.dispatch_tool_call_with_approval(&pending.tool_call, Some(&pending.approval_root));
         match outcome {
             ToolDispatchOutcome::Completed(result) => {
+                self.record_tool_event_summary(&pending.tool_call, &result);
                 let result_content = match &result {
                     ToolResult::Success(s) => s.clone(),
                     ToolResult::Error(s) => format!("Error: {s}"),
@@ -438,6 +446,7 @@ impl Editor {
 
             match self.dispatch_tool_call_with_approval(tc, None) {
                 ToolDispatchOutcome::Completed(result) => {
+                    self.record_tool_event_summary(tc, &result);
                     let result_content = match &result {
                         ToolResult::Success(s) => s.clone(),
                         ToolResult::Error(s) => format!("Error: {s}"),
@@ -491,6 +500,217 @@ impl Editor {
             chat.streaming_content = None;
             chat.streaming_thinking = None;
         }
+    }
+
+    fn record_tool_event_summary(&mut self, tc: &ToolCallInfo, result: &ToolResult) {
+        if tc.id.is_empty() {
+            return;
+        }
+        let summary = self.build_tool_event_summary(tc, result);
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.tool_event_summaries.insert(tc.id.clone(), summary);
+        }
+    }
+
+    fn build_tool_event_summary(&self, tc: &ToolCallInfo, result: &ToolResult) -> ToolEventSummary {
+        if let ToolResult::Error(err) = result {
+            return ToolEventSummary {
+                kind: ToolSummaryKind::Error,
+                label: format!("{} {}", tc.name, compact_tool_label(err)),
+            };
+        }
+
+        let target_path = self.active_chat_target_display_path();
+
+        let (kind, label) = match tc.name.as_str() {
+            "edit_range" => {
+                let start = tc
+                    .arguments
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as usize;
+                let end = tc
+                    .arguments
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(start as u64) as usize;
+                let old_lines = end.saturating_sub(start).saturating_add(1);
+                let new_lines = tc
+                    .arguments
+                    .get("new_text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        if s.is_empty() {
+                            0
+                        } else {
+                            s.lines().count().max(1)
+                        }
+                    })
+                    .unwrap_or(0);
+                let added = new_lines.saturating_sub(old_lines);
+                let removed = old_lines.saturating_sub(new_lines);
+                (
+                    ToolSummaryKind::Mutation,
+                    format!("{target_path} +{added} -{removed}"),
+                )
+            }
+            "insert_lines" => {
+                let added = tc
+                    .arguments
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        if s.is_empty() {
+                            0
+                        } else {
+                            s.lines().count().max(1)
+                        }
+                    })
+                    .unwrap_or(0);
+                (
+                    ToolSummaryKind::Mutation,
+                    format!("{target_path} +{added} -0"),
+                )
+            }
+            "delete_lines" => {
+                let start = tc
+                    .arguments
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as usize;
+                let end = tc
+                    .arguments
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(start as u64) as usize;
+                let removed = end.saturating_sub(start).saturating_add(1);
+                (
+                    ToolSummaryKind::Mutation,
+                    format!("{target_path} +0 -{removed}"),
+                )
+            }
+            "open_file" => {
+                let path = tc
+                    .arguments
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(compact_tool_path)
+                    .unwrap_or_else(|| target_path.clone());
+                let line = tc
+                    .arguments
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                (ToolSummaryKind::Navigation, format!("{path}:{line}"))
+            }
+            "select_text" => {
+                let start = tc
+                    .arguments
+                    .get("start_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                let end = tc
+                    .arguments
+                    .get("end_line")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(start);
+                (
+                    ToolSummaryKind::Navigation,
+                    format!("{target_path}:{start}-{end}"),
+                )
+            }
+            "read_file_at_path" => {
+                let path = tc
+                    .arguments
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(compact_tool_path)
+                    .unwrap_or_else(|| target_path.clone());
+                let range = tool_line_range_suffix(&tc.arguments);
+                (ToolSummaryKind::Read, format!("{path}{range}"))
+            }
+            "read_file" => {
+                let range = tool_line_range_suffix(&tc.arguments);
+                (ToolSummaryKind::Read, format!("{target_path}{range}"))
+            }
+            "list_files" => {
+                let dir = tc
+                    .arguments
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(compact_tool_path)
+                    .unwrap_or_else(|| ".".to_string());
+                let count = tool_result_success(result)
+                    .and_then(|s| first_number_in_text(s.lines().next().unwrap_or("")));
+                let label = match count {
+                    Some(n) => format!("{dir} {n} files"),
+                    None => format!("{dir} files"),
+                };
+                (ToolSummaryKind::Search, label)
+            }
+            "search_project" => {
+                let query = tc
+                    .arguments
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let count = tool_result_success(result)
+                    .and_then(|s| first_number_in_text(s.lines().next().unwrap_or("")));
+                let label = match count {
+                    Some(n) => format!("\"{}\" {n} matches", compact_tool_label(query)),
+                    None => format!("\"{}\" search", compact_tool_label(query)),
+                };
+                (ToolSummaryKind::Search, label)
+            }
+            "read_diagnostics" => {
+                let success = tool_result_success(result).unwrap_or_default();
+                if success.starts_with("No diagnostics.") {
+                    (
+                        ToolSummaryKind::Diagnostics,
+                        "diagnostics E0 W0".to_string(),
+                    )
+                } else {
+                    let errors = success.matches("[error]").count();
+                    let warnings = success.matches("[warning]").count();
+                    (
+                        ToolSummaryKind::Diagnostics,
+                        format!("diagnostics E{errors} W{warnings}"),
+                    )
+                }
+            }
+            "document_symbols" | "hover" | "goto_definition" => {
+                (ToolSummaryKind::Read, tc.name.clone())
+            }
+            _ => (ToolSummaryKind::Other, tc.name.clone()),
+        };
+
+        ToolEventSummary {
+            kind,
+            label: compact_tool_label(&label),
+        }
+    }
+
+    fn active_chat_target_display_path(&self) -> String {
+        let path = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| self.buffers.get(c.active_buffer_id))
+            .and_then(|b| b.file_path())
+            .map(PathBuf::from)
+            .or_else(|| self.buffer().file_path().map(PathBuf::from));
+
+        let Some(path) = path else {
+            return "[No Name]".to_string();
+        };
+        let absolute = self.absolutize_path(&path);
+        if let Some(root) = self.ai_effective_project_root() {
+            let rel = to_relative_path_for_boundary(&absolute, &root);
+            return compact_tool_path(&rel);
+        }
+        compact_tool_path(&absolute.display().to_string())
     }
 
     fn execute_read_file_at_path_tool(
@@ -694,9 +914,6 @@ impl Editor {
 
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.active_buffer_id = self.current_buffer_index;
-            if !chat.review_mode {
-                chat.review_mode = true;
-            }
         }
 
         let actual_line = self.buffer().cursor().line() + 1;
@@ -1558,9 +1775,80 @@ fn handle_lsp_goto_definition(
     }
 }
 
+fn tool_result_success(result: &ToolResult) -> Option<&str> {
+    match result {
+        ToolResult::Success(s) => Some(s.as_str()),
+        ToolResult::Error(_) => None,
+    }
+}
+
+fn first_number_in_text(text: &str) -> Option<usize> {
+    let mut digits = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+fn tool_line_range_suffix(args: &serde_json::Value) -> String {
+    let start = args.get("start_line").and_then(|v| v.as_u64());
+    let end = args.get("end_line").and_then(|v| v.as_u64());
+    match (start, end) {
+        (Some(s), Some(e)) => format!(":{s}-{e}"),
+        (Some(s), None) => format!(":{s}"),
+        _ => String::new(),
+    }
+}
+
+fn compact_tool_label(text: &str) -> String {
+    let single_line = text
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let max_chars = 72;
+    if single_line.chars().count() <= max_chars {
+        return single_line;
+    }
+    let mut out: String = single_line
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect();
+    out.push('…');
+    out
+}
+
+fn compact_tool_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return ".".to_string();
+    }
+
+    let keep = 3usize.min(parts.len());
+    let tail = parts[parts.len() - keep..].join("/");
+    let max_chars = 42usize;
+    if tail.chars().count() <= max_chars {
+        return tail;
+    }
+
+    let mut out: String = tail.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
 
     fn make_symbol(
         name: &str,
@@ -1621,5 +1909,30 @@ mod tests {
     #[test]
     fn find_enclosing_symbol_empty() {
         assert!(find_enclosing_symbol(&[], 10).is_none());
+    }
+
+    #[test]
+    fn tool_summary_for_edit_range_reports_plus_minus_delta() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        let tc = ToolCallInfo {
+            id: "call_1".to_string(),
+            name: "edit_range".to_string(),
+            arguments: serde_json::json!({
+                "start_line": 10,
+                "end_line": 12,
+                "new_text": "a\nb\n"
+            }),
+        };
+        let summary = editor.build_tool_event_summary(&tc, &ToolResult::Success("ok".to_string()));
+        assert_eq!(summary.kind, ToolSummaryKind::Mutation);
+        assert!(summary.label.contains("+0 -1"), "{}", summary.label);
     }
 }

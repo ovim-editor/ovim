@@ -8,20 +8,13 @@ const DOUBLE_ESC_THRESHOLD: Duration = Duration::from_millis(300);
 
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // --- Review mode: delegate most keys to normal mode ---
-    let review_mode = editor
-        .ai_state
-        .chat
-        .as_ref()
-        .map(|c| c.review_mode)
-        .unwrap_or(false);
+    let review_mode = editor.ai_chat_review_mode();
 
     if review_mode {
         // <C-r> toggles back to chat
         if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(Modifiers::CONTROL)
         {
-            if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.review_mode = false;
-            }
+            editor.ai_chat_exit_review_mode();
             return Ok(());
         }
         if key_event.code == KeyCode::Left {
@@ -107,9 +100,7 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
 
     // <C-r> toggles review mode
     if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(Modifiers::CONTROL) {
-        if let Some(chat) = editor.ai_state.chat.as_mut() {
-            chat.review_mode = true;
-        }
+        editor.ai_chat_enter_review_mode();
         return Ok(());
     }
 

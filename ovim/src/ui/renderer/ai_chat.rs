@@ -1,6 +1,6 @@
 use crate::editor::Editor;
 use crate::syntax::Theme;
-use ovim_core::ai::chat_types::{ChatFocus, ChatMessage, ChatRole};
+use ovim_core::ai::chat_types::{ChatFocus, ChatMessage, ChatRole, ToolCallInfo, ToolSummaryKind};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -26,6 +26,12 @@ const BORDER_SELECTED: Color = Color::Yellow;
 pub(crate) const TEXT_DIM: Color = Color::Rgb(128, 140, 155);
 const TEXT_THINKING: Color = Color::Rgb(100, 112, 130);
 pub(crate) const TEXT_NORMAL: Color = Color::Rgb(200, 208, 220);
+const TOOL_READ: Color = Color::Rgb(112, 175, 255);
+const TOOL_NAV: Color = Color::Rgb(126, 211, 160);
+const TOOL_MUT: Color = Color::Rgb(151, 215, 110);
+const TOOL_SEARCH: Color = Color::Rgb(224, 193, 110);
+const TOOL_DIAG: Color = Color::Rgb(255, 173, 102);
+const TOOL_ERROR: Color = Color::Rgb(255, 107, 107);
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -258,6 +264,29 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected = focus == ChatFocus::MessageHistory && Some(idx) == selected_idx;
 
+        if is_hidden_tool_only_assistant(msg) {
+            let pos = rendered_lines.len();
+            message_row_spans.push((pos, pos));
+            continue;
+        }
+
+        if msg.role == ChatRole::Tool {
+            let msg_row_start = rendered_lines.len();
+            let (kind, label) = msg
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| editor.ai_chat_tool_event_summary_parts(id))
+                .map(|(k, l)| (k, l.to_string()))
+                .unwrap_or_else(|| fallback_tool_summary(msg));
+            rendered_lines.push((
+                render_tool_event_row(panel_width, &label, kind, is_selected, false),
+                false,
+            ));
+            let msg_row_end = rendered_lines.len();
+            message_row_spans.push((msg_row_start, msg_row_end));
+            continue;
+        }
+
         // Look up NodeId for thinking expansion and child count
         let node_id = node_ids.get(idx).copied();
         let is_thinking_expanded = node_id
@@ -359,21 +388,14 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
         }
     }
 
-    // Tool call status rows (dim indicators during tool execution)
+    // Tool call status rows during tool execution
     if let Some(chat) = editor.ai_state.chat.as_ref() {
         if !chat.streaming_tool_calls.is_empty() {
             for tc in &chat.streaming_tool_calls {
-                let status_text = format!("  \u{26A1} {}(...)", tc.name);
-                let padded = format!(
-                    "{}{}",
-                    status_text,
-                    " ".repeat(panel_width.saturating_sub(status_text.chars().count()))
-                );
+                let (kind, label) = summarize_streaming_tool_call(tc);
+                let status_text = format!("running {label}");
                 rendered_lines.push((
-                    Line::from(Span::styled(
-                        padded,
-                        Style::default().fg(TEXT_DIM).bg(BG_PANEL),
-                    )),
+                    render_tool_event_row(panel_width, &status_text, kind, false, true),
                     false,
                 ));
             }
@@ -403,6 +425,138 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             height: 1,
         };
         frame.render_widget(Paragraph::new(vec![rendered_lines[line_idx].0.clone()]), r);
+    }
+}
+
+fn is_hidden_tool_only_assistant(message: &ChatMessage) -> bool {
+    message.role == ChatRole::Assistant
+        && message.content.trim().is_empty()
+        && !message.tool_calls.is_empty()
+}
+
+fn fallback_tool_summary(message: &ChatMessage) -> (ToolSummaryKind, String) {
+    let content = message.content.trim();
+    if content.starts_with("Error:") {
+        return (
+            ToolSummaryKind::Error,
+            content
+                .trim_start_matches("Error:")
+                .trim()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    (
+        ToolSummaryKind::Other,
+        content
+            .split('\n')
+            .next()
+            .unwrap_or("tool result")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn summarize_streaming_tool_call(tool_call: &ToolCallInfo) -> (ToolSummaryKind, String) {
+    match tool_call.name.as_str() {
+        "read_file_at_path" | "open_file" => {
+            let path = tool_call
+                .arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(compact_tool_path)
+                .unwrap_or_else(|| "path".to_string());
+            let kind = if tool_call.name == "open_file" {
+                ToolSummaryKind::Navigation
+            } else {
+                ToolSummaryKind::Read
+            };
+            (kind, path)
+        }
+        "edit_range" | "insert_lines" | "delete_lines" => {
+            (ToolSummaryKind::Mutation, "editing".to_string())
+        }
+        "search_project" | "list_files" => (ToolSummaryKind::Search, tool_call.name.clone()),
+        "read_diagnostics" => (ToolSummaryKind::Diagnostics, "diagnostics".to_string()),
+        "select_text" => (ToolSummaryKind::Navigation, "selecting text".to_string()),
+        _ => (ToolSummaryKind::Other, tool_call.name.clone()),
+    }
+}
+
+fn render_tool_event_row(
+    panel_width: usize,
+    label: &str,
+    kind: ToolSummaryKind,
+    selected: bool,
+    pending: bool,
+) -> Line<'static> {
+    let color = if selected {
+        BORDER_SELECTED
+    } else {
+        tool_kind_color(kind)
+    };
+    let prefix = match kind {
+        ToolSummaryKind::Mutation => " edit ",
+        ToolSummaryKind::Navigation => " nav  ",
+        ToolSummaryKind::Read => " read ",
+        ToolSummaryKind::Search => " find ",
+        ToolSummaryKind::Diagnostics => " diag ",
+        ToolSummaryKind::Error => " err  ",
+        ToolSummaryKind::Other => " tool ",
+    };
+    let text = format!("{prefix}{label}");
+    let display = compact_tool_text(&text, panel_width.saturating_sub(1));
+    let mut style = Style::default().fg(color).bg(BG_PANEL);
+    if pending {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    let padded = format!(
+        "{}{}",
+        display,
+        " ".repeat(panel_width.saturating_sub(display.chars().count()))
+    );
+    Line::from(Span::styled(padded, style))
+}
+
+fn compact_tool_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return ".".to_string();
+    }
+    let keep = 3usize.min(parts.len());
+    let tail = parts[parts.len() - keep..].join("/");
+    compact_tool_text(&tail, 42)
+}
+
+fn compact_tool_text(text: &str, max_chars: usize) -> String {
+    let single_line = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('\n', " ");
+    if single_line.chars().count() <= max_chars {
+        return single_line;
+    }
+    let mut out: String = single_line
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect();
+    out.push('…');
+    out
+}
+
+fn tool_kind_color(kind: ToolSummaryKind) -> Color {
+    match kind {
+        ToolSummaryKind::Read => TOOL_READ,
+        ToolSummaryKind::Navigation => TOOL_NAV,
+        ToolSummaryKind::Mutation => TOOL_MUT,
+        ToolSummaryKind::Search => TOOL_SEARCH,
+        ToolSummaryKind::Diagnostics => TOOL_DIAG,
+        ToolSummaryKind::Error => TOOL_ERROR,
+        ToolSummaryKind::Other => TEXT_DIM,
     }
 }
 
@@ -1112,7 +1266,8 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_cursor_row_col, wrap_input_rows};
+    use super::{input_cursor_row_col, is_hidden_tool_only_assistant, wrap_input_rows};
+    use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
 
     #[test]
     fn wrap_input_rows_preserves_trailing_space() {
@@ -1136,6 +1291,40 @@ mod tests {
         let (row, col) = input_cursor_row_col(input, input.len(), 20, 4);
         assert_eq!(row, 1);
         assert_eq!(col, 0);
+    }
+
+    #[test]
+    fn hides_empty_assistant_messages_with_only_tool_calls() {
+        let msg = ChatMessage {
+            role: ChatRole::Assistant,
+            content: "  ".to_string(),
+            model: Some("model".to_string()),
+            timestamp: std::time::Instant::now(),
+            tool_calls: vec![ToolCallInfo {
+                id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({}),
+            }],
+            tool_call_id: None,
+        };
+        assert!(is_hidden_tool_only_assistant(&msg));
+    }
+
+    #[test]
+    fn does_not_hide_non_empty_assistant_messages() {
+        let msg = ChatMessage {
+            role: ChatRole::Assistant,
+            content: "done".to_string(),
+            model: Some("model".to_string()),
+            timestamp: std::time::Instant::now(),
+            tool_calls: vec![ToolCallInfo {
+                id: "call_1".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({}),
+            }],
+            tool_call_id: None,
+        };
+        assert!(!is_hidden_tool_only_assistant(&msg));
     }
 }
 

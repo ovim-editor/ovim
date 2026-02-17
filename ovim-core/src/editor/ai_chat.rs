@@ -1,10 +1,11 @@
 use crate::ai::chat_types::{
-    ChatFocus, ChatMessage, ChatOpts, ChatRole, ConversationTree, NodeId, StreamChunk, ToolCallInfo,
+    ChatFocus, ChatMessage, ChatOpts, ChatRole, ConversationTree, NodeId, StreamChunk,
+    ToolCallInfo, ToolSummaryKind,
 };
 use crate::mode::Mode;
 use anyhow::Result;
 
-use super::ai_chat_state::{AiChatState, ScratchBufferState};
+use super::ai_chat_state::{AiChatState, ChatViewMode, ScratchBufferState, ToolEventSummary};
 use super::Editor;
 
 impl Editor {
@@ -710,6 +711,23 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Compact summary metadata for a completed tool call.
+    pub fn ai_chat_tool_event_summary(&self, tool_call_id: &str) -> Option<&ToolEventSummary> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|c| c.tool_event_summaries.get(tool_call_id))
+    }
+
+    /// Convenience accessor for renderer callsites.
+    pub fn ai_chat_tool_event_summary_parts(
+        &self,
+        tool_call_id: &str,
+    ) -> Option<(ToolSummaryKind, &str)> {
+        self.ai_chat_tool_event_summary(tool_call_id)
+            .map(|s| (s.kind, s.label.as_str()))
+    }
+
     /// Whether a thinking message with the given node ID is expanded.
     pub fn ai_chat_is_thinking_expanded(&self, node_id: NodeId) -> bool {
         self.ai_state
@@ -742,7 +760,7 @@ impl Editor {
     pub fn ai_chat_accept_review(&mut self) {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.agent_edits.clear();
-            chat.review_mode = false;
+            chat.view_mode = ChatViewMode::DockedChat;
         }
         self.set_lsp_status("Accepted AI changes and returned to chat".to_string());
     }
@@ -752,8 +770,22 @@ impl Editor {
         self.ai_state
             .chat
             .as_ref()
-            .map(|c| c.review_mode)
+            .map(|c| c.view_mode == ChatViewMode::ReviewFocused)
             .unwrap_or(false)
+    }
+
+    /// Enter edits-focused review mode (chat hidden).
+    pub fn ai_chat_enter_review_mode(&mut self) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.view_mode = ChatViewMode::ReviewFocused;
+        }
+    }
+
+    /// Return to docked chat mode (chat visible).
+    pub fn ai_chat_exit_review_mode(&mut self) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.view_mode = ChatViewMode::DockedChat;
+        }
     }
 
     /// Whether the tree panel sidebar is open.
@@ -925,5 +957,42 @@ mod tests {
             .ai_chat_history_selected_index()
             .expect("selected index");
         assert_eq!(editor.ai_chat_messages()[idx].content, "alt");
+    }
+
+    #[test]
+    fn chat_view_mode_toggles_between_docked_and_review() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        assert!(!editor.ai_chat_review_mode());
+        editor.ai_chat_enter_review_mode();
+        assert!(editor.ai_chat_review_mode());
+        editor.ai_chat_exit_review_mode();
+        assert!(!editor.ai_chat_review_mode());
+    }
+
+    #[test]
+    fn accept_review_clears_markers_and_returns_to_docked_chat() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        editor.ai_chat_enter_review_mode();
+        {
+            let chat = editor.ai_state.chat.as_mut().expect("chat");
+            chat.agent_edits.record_edit(0, 0, 0);
+            assert_eq!(chat.agent_edits.total_edit_count(), 1);
+        }
+
+        editor.ai_chat_accept_review();
+
+        assert!(!editor.ai_chat_review_mode());
+        let edits = editor
+            .ai_state
+            .chat
+            .as_ref()
+            .expect("chat")
+            .agent_edits
+            .total_edit_count();
+        assert_eq!(edits, 0);
     }
 }

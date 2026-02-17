@@ -148,13 +148,10 @@ impl Editor {
         self.buffer_mut().validate_cursor_position();
         self.center_cursor_in_viewport();
 
-        // Also update the chat's active_buffer_id to point at the newly opened buffer
-        // and auto-collapse into review mode so the user sees the file full-screen.
+        // Also update the chat's active_buffer_id to point at the newly opened buffer.
+        // Keep chat view mode unchanged; users can explicitly enter review focus.
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.active_buffer_id = self.current_buffer_index;
-            if !chat.review_mode {
-                chat.review_mode = true;
-            }
         }
 
         // Return a snippet around the target position
@@ -245,13 +242,6 @@ impl Editor {
         let mid_line = (start_line_0 + end_line_0) / 2;
         self.buffer_mut().cursor_mut().set_position(mid_line, 0);
         self.center_cursor_in_viewport();
-
-        // Auto-collapse into review mode so the user sees the selection full-screen.
-        if let Some(chat) = self.ai_state.chat.as_mut() {
-            if !chat.review_mode {
-                chat.review_mode = true;
-            }
-        }
 
         let file_label = self.buffer().file_path().unwrap_or("[No Name]").to_string();
         let snip = snippet_around(self.buffer().rope(), start_line, end_line, 2);

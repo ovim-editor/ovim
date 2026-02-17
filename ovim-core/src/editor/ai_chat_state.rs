@@ -1,4 +1,6 @@
-use crate::ai::chat_types::{ChatFocus, ChatOpts, NodeId, StreamChunk, ToolCallInfo};
+use crate::ai::chat_types::{
+    ChatFocus, ChatOpts, NodeId, StreamChunk, ToolCallInfo, ToolSummaryKind,
+};
 use crate::mode::Mode;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,6 +13,12 @@ pub struct PendingToolApproval {
     pub model_name: String,
     pub requested_path: PathBuf,
     pub approval_root: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolEventSummary {
+    pub kind: ToolSummaryKind,
+    pub label: String,
 }
 
 /// Viewport state for chat history rendering.
@@ -47,6 +55,13 @@ impl Default for ChatHistoryState {
             selected_node_id: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatViewMode {
+    #[default]
+    DockedChat,
+    ReviewFocused,
 }
 
 pub struct AiChatState {
@@ -98,12 +113,14 @@ pub struct AiChatState {
     pub pending_no_repo_folder_approval: Option<PathBuf>,
     /// Session-scoped roots explicitly approved for outside-project tool access.
     pub approved_external_roots: Vec<PathBuf>,
+    /// Compact tool event summaries keyed by tool call id.
+    pub tool_event_summaries: HashMap<String, ToolEventSummary>,
     /// Tracks which lines each agent turn modified, per buffer.
     pub agent_edits: AgentEditTracker,
     /// Whether the buffer was clean when chat opened (for auto-save guard).
     pub buffer_was_clean_at_chat_start: bool,
-    /// Whether review mode is active (chat hidden, buffer full screen).
-    pub review_mode: bool,
+    /// Chat panel view mode.
+    pub view_mode: ChatViewMode,
     /// Current undo group ID for grouping agent edits per turn.
     pub current_undo_group: Option<u64>,
     /// Next undo group ID to assign.
@@ -143,9 +160,10 @@ impl AiChatState {
             pending_tool_approval: None,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
+            tool_event_summaries: HashMap::new(),
             agent_edits: AgentEditTracker::new(),
             buffer_was_clean_at_chat_start: false,
-            review_mode: false,
+            view_mode: ChatViewMode::DockedChat,
             current_undo_group: None,
             next_undo_group_id: 0,
         }

@@ -107,11 +107,8 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         1
     };
 
-    // In AiChat mode with review_mode off, split content area into buffer (left) + chat panel (right)
-    let review_mode = editor
-        .ai_chat_state()
-        .map(|c| c.review_mode)
-        .unwrap_or(false);
+    // In AiChat mode with review-focused mode off, split into buffer (left) + chat panel (right)
+    let review_mode = editor.ai_chat_review_mode();
     let (effective_content, chat_area) = if is_ai_chat && !review_mode {
         let allow_edits = editor.ai_chat_allow_edits();
         let (buffer_rect, chat_rect) =
