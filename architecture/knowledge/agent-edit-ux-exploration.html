@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ovim — Agent Edit UX Exploration</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-deep: #0a0c10;
+    --bg-page: #0d1017;
+    --bg-card: #131820;
+    --bg-terminal: #141b24;
+    --bg-panel: #141720;
+    --bg-input: #1c2130;
+    --bg-gutter: #111519;
+    --border: #1e2530;
+    --border-bright: #2a3444;
+    --text-primary: #c8d0dc;
+    --text-dim: #607080;
+    --text-muted: #4a5568;
+    --cyan: #56b6c2;
+    --green: #98c379;
+    --green-dim: #2d4a2d;
+    --green-gutter: #3d6b3d;
+    --yellow: #e5c07b;
+    --yellow-dim: #4a3d20;
+    --orange: #d19a66;
+    --red: #e06c75;
+    --red-dim: #4a2020;
+    --blue: #61afef;
+    --blue-dim: #1a3050;
+    --purple: #c678dd;
+    --magenta: #ff6ac1;
+    --cornflower: #6495ed;
+    --accent: #528bff;
+    --accent-dim: #1a2a50;
+  }
+
+  body {
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .page-header {
+    padding: 60px 40px 40px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .page-header h1 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 32px;
+    font-weight: 300;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+  }
+
+  .page-header h1 span { color: var(--accent); }
+
+  .page-header .subtitle {
+    color: var(--text-dim);
+    font-size: 16px;
+    font-weight: 300;
+    max-width: 700px;
+  }
+
+  .approaches {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 40px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 64px;
+  }
+
+  .approach {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+
+  .approach-info {
+    position: sticky;
+    top: 40px;
+  }
+
+  .approach-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+
+  .approach-title {
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    line-height: 1.3;
+  }
+
+  .approach-desc {
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 16px;
+  }
+
+  .pros-cons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 13px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .pro { color: var(--green); }
+  .con { color: var(--orange); }
+  .pro::before { content: '+ '; opacity: 0.5; }
+  .con::before { content: '- '; opacity: 0.5; }
+
+  /* Terminal mockup */
+  .terminal {
+    background: var(--bg-terminal);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    min-width: 0;
+  }
+
+  .terminal-titlebar {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .terminal-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--border-bright);
+  }
+
+  .terminal-titlebar-text {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: 4px;
+  }
+
+  .terminal-body {
+    padding: 0;
+    overflow-x: auto;
+  }
+
+  .term-row {
+    white-space: pre;
+    padding: 0 12px;
+    min-height: 19px;
+    display: flex;
+  }
+
+  .term-row.highlight-green { background: var(--green-dim); }
+  .term-row.highlight-yellow { background: var(--yellow-dim); }
+  .term-row.highlight-red { background: var(--red-dim); }
+  .term-row.highlight-blue { background: var(--blue-dim); }
+  .term-row.highlight-accent { background: var(--accent-dim); }
+
+  /* Spans for terminal coloring */
+  .t-dim { color: var(--text-dim); }
+  .t-muted { color: var(--text-muted); }
+  .t-text { color: var(--text-primary); }
+  .t-cyan { color: var(--cyan); }
+  .t-green { color: var(--green); }
+  .t-yellow { color: var(--yellow); }
+  .t-orange { color: var(--orange); }
+  .t-red { color: var(--red); }
+  .t-blue { color: var(--blue); }
+  .t-purple { color: var(--purple); }
+  .t-magenta { color: var(--magenta); }
+  .t-cornflower { color: var(--cornflower); }
+  .t-accent { color: var(--accent); }
+  .t-bold { font-weight: 600; }
+  .t-italic { font-style: italic; }
+  .t-underline { text-decoration: underline; }
+
+  .t-bg-panel { background: var(--bg-panel); }
+  .t-bg-input { background: var(--bg-input); }
+  .t-bg-green { background: var(--green-gutter); }
+  .t-bg-accent { background: var(--accent-dim); }
+  .t-bg-card { background: var(--bg-card); }
+
+  .term-section-label {
+    padding: 6px 12px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+  }
+
+  .term-gap {
+    height: 8px;
+  }
+
+  .verdict {
+    margin-top: 48px;
+    padding: 32px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .verdict h2 {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--accent);
+    margin-bottom: 16px;
+  }
+
+  .verdict p {
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1.8;
+    max-width: 800px;
+  }
+
+  .verdict p + p { margin-top: 12px; }
+  .verdict strong { color: var(--text-primary); font-weight: 500; }
+
+  @media (max-width: 900px) {
+    .approach {
+      grid-template-columns: 1fr;
+    }
+    .approach-info {
+      position: static;
+    }
+    .page-header, .approaches {
+      padding-left: 20px;
+      padding-right: 20px;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1><span>ovim</span> — Agent Edit UX Exploration</h1>
+  <p class="subtitle">Five approaches to giving users visibility and control when an AI agent modifies their code through the chat panel.</p>
+</div>
+
+<div class="approaches">
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- APPROACH A: Edit Summary Bubble -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="approach">
+  <div class="approach-info">
+    <div class="approach-label">Approach A</div>
+    <div class="approach-title">Edit Summary in Chat</div>
+    <div class="approach-desc">
+      After the agent completes a turn that involved edits, inject a collapsible
+      summary bubble into the conversation showing which files were modified,
+      how many lines changed, and offering quick actions.
+      Lightest-touch approach — no new UI surfaces, just richer chat content.
+    </div>
+    <div class="pros-cons">
+      <div class="pro">Zero new UI — lives in existing chat flow</div>
+      <div class="pro">Natural reading order: explanation → changes</div>
+      <div class="pro">Collapsible — doesn't clutter long conversations</div>
+      <div class="con">Summary appears after the fact</div>
+      <div class="con">No inline visibility in the buffer itself</div>
+    </div>
+  </div>
+  <div class="terminal">
+    <div class="terminal-titlebar">
+      <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+      <span class="terminal-titlebar-text">ovim — chat panel</span>
+    </div>
+    <div class="terminal-body">
+      <div class="term-section-label">buffer view (above chat)</div>
+      <div class="term-row"><span class="t-dim">  12 │ </span><span class="t-purple">fn </span><span class="t-blue">process_request</span><span class="t-text">(</span><span class="t-orange">&amp;mut self</span><span class="t-text">) {</span></div>
+      <div class="term-row"><span class="t-dim">  13 │ </span><span class="t-text">    </span><span class="t-purple">let </span><span class="t-text">result = </span><span class="t-cyan">self</span><span class="t-text">.validate();</span></div>
+      <div class="term-row"><span class="t-dim">  14 │ </span><span class="t-text">    </span><span class="t-purple">match </span><span class="t-text">result {</span></div>
+      <div class="term-section-label">chat panel</div>
+      <!-- User message -->
+      <div class="term-row t-bg-panel"></div>
+      <div class="term-row t-bg-panel"><span class="t-dim">                          </span><span class="t-cyan">╭ You ──────────────────╮</span></div>
+      <div class="term-row t-bg-panel"><span class="t-dim">                          </span><span class="t-cyan">│ </span><span class="t-text">Add error handling to </span><span class="t-cyan">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-dim">                          </span><span class="t-cyan">│ </span><span class="t-text">process_request       </span><span class="t-cyan">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-dim">                          </span><span class="t-cyan">╰──────────────────────╯</span></div>
+      <div class="term-row t-bg-panel"></div>
+      <!-- Assistant message -->
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">╭ gpt-4o ──────────────────────────────╮</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">I've added error handling with      </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">proper Result propagation and a     </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">fallback for the network timeout.   </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">╰──────────────────────────────────────╯</span></div>
+      <div class="term-row t-bg-panel"></div>
+      <!-- Edit summary bubble -->
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">╭ Changes ─────────────────────────────╮</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">│ </span><span class="t-green">✎ </span><span class="t-text">src/handler.rs    </span><span class="t-green">+12 </span><span class="t-red">-3 </span><span class="t-dim"> (3 edits)</span><span class="t-yellow">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">│ </span><span class="t-green">✎ </span><span class="t-text">src/error.rs      </span><span class="t-green">+28 </span><span class="t-dim">    (new)  </span><span class="t-yellow">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">│                                      │</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">│ </span><span class="t-dim">  [u] undo all  [Enter] view diff   </span><span class="t-yellow">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">╰──────────────────────────────────────╯</span></div>
+      <div class="term-row t-bg-panel"></div>
+      <!-- Input -->
+      <div class="term-row"><span class="t-accent">╭──────────────────────────────────────────╮</span></div>
+      <div class="term-row"><span class="t-accent">│ >> </span><span class="t-muted t-bg-input">█                                     </span><span class="t-accent"> │</span></div>
+      <div class="term-row"><span class="t-dim">  openai:gpt-4o │ </span><span class="t-dim">[Enter send] [C-y copy] [Esc×2 close]</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- APPROACH B: Gutter Markers -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="approach">
+  <div class="approach-info">
+    <div class="approach-label">Approach B</div>
+    <div class="approach-title">Gutter Markers</div>
+    <div class="approach-desc">
+      Show colored markers in the line number gutter indicating which lines the
+      agent added, modified, or deleted — like git diff signs but specifically
+      for agent edits. Clears when the user saves or accepts.
+    </div>
+    <div class="pros-cons">
+      <div class="pro">Immediate spatial awareness of what changed</div>
+      <div class="pro">Familiar pattern (git gutter signs)</div>
+      <div class="pro">Works for any buffer, even background ones</div>
+      <div class="con">Needs signcolumn space (1 char)</div>
+      <div class="con">Doesn't show what the old content was</div>
+      <div class="con">Only visible when viewing that buffer</div>
+    </div>
+  </div>
+  <div class="terminal">
+    <div class="terminal-titlebar">
+      <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+      <span class="terminal-titlebar-text">ovim — buffer with agent gutter</span>
+    </div>
+    <div class="terminal-body">
+      <div class="term-section-label">buffer view — after agent edits</div>
+      <div class="term-row"><span class="t-dim">   8 │   </span><span class="t-purple">use </span><span class="t-text">anyhow::Result;</span></div>
+      <div class="term-row"><span class="t-dim">   9 │   </span><span class="t-purple">use </span><span class="t-text">std::time::Duration;</span></div>
+      <div class="term-row"><span class="t-dim">  10 │   </span></div>
+      <div class="term-row"><span class="t-dim">  11 │   </span><span class="t-purple">fn </span><span class="t-blue">process_request</span><span class="t-text">(</span><span class="t-orange">&amp;mut self</span><span class="t-text">) -> </span><span class="t-yellow">Result</span><span class="t-text">&lt;()&gt; {</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  12 </span><span class="t-green t-bold">┃ </span><span class="t-text">    </span><span class="t-purple">let </span><span class="t-text">result = </span><span class="t-cyan">self</span><span class="t-text">.validate()</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  13 </span><span class="t-green t-bold">┃ </span><span class="t-text">        .map_err(|e| anyhow!(</span><span class="t-green">"validation: {e}"</span><span class="t-text">))?;</span></div>
+      <div class="term-row"><span class="t-dim">  14 │   </span></div>
+      <div class="term-row"><span class="t-dim">  15 │   </span><span class="t-text">    </span><span class="t-purple">match </span><span class="t-text">result {</span></div>
+      <div class="term-row"><span class="t-dim">  16 │   </span><span class="t-text">        </span><span class="t-yellow">Ok</span><span class="t-text">(v) => </span><span class="t-cyan">self</span><span class="t-text">.handle_success(v),</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  17 </span><span class="t-green t-bold">┃ </span><span class="t-text">        </span><span class="t-yellow">Err</span><span class="t-text">(e) </span><span class="t-purple">if </span><span class="t-text">e.is_timeout() => {</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  18 </span><span class="t-green t-bold">┃ </span><span class="t-text">            log::warn!(</span><span class="t-green">"timeout, retrying"</span><span class="t-text">);</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  19 </span><span class="t-green t-bold">┃ </span><span class="t-text">            </span><span class="t-cyan">self</span><span class="t-text">.retry_with_backoff()?</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  20 </span><span class="t-green t-bold">┃ </span><span class="t-text">        }</span></div>
+      <div class="term-row"><span class="t-dim">  21 │   </span><span class="t-text">        </span><span class="t-yellow">Err</span><span class="t-text">(e) => </span><span class="t-purple">return </span><span class="t-yellow">Err</span><span class="t-text">(e.into()),</span></div>
+      <div class="term-row"><span class="t-dim">  22 │   </span><span class="t-text">    }</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  23 </span><span class="t-green t-bold">┃ </span><span class="t-text">    </span><span class="t-yellow">Ok</span><span class="t-text">(())</span></div>
+      <div class="term-row"><span class="t-dim">  24 │   </span><span class="t-text">}</span></div>
+      <div class="term-row"></div>
+      <div class="term-section-label">status line</div>
+      <div class="term-row" style="background: #1a2040;"><span class="t-accent t-bold"> NORMAL </span><span class="t-dim"> src/handler.rs </span><span class="t-yellow">[+] </span><span class="t-dim"> main</span><span class="t-dim" style="float:right;">  </span><span class="t-green" style="float:right;"> ┃8 </span><span class="t-dim" style="float:right;">AI: </span><span class="t-dim" style="float:right;">  12:5 </span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- APPROACH C: Modified Files Bar -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="approach">
+  <div class="approach-info">
+    <div class="approach-label">Approach C</div>
+    <div class="approach-title">Modified Files Bar</div>
+    <div class="approach-desc">
+      A thin status strip between the buffer and chat panel showing which files
+      the agent has modified. Each file is a pill/badge that can be selected to
+      jump to that buffer. Shows +/- counts. Always visible during a chat session
+      with edits.
+    </div>
+    <div class="pros-cons">
+      <div class="pro">Persistent visibility of all modified files</div>
+      <div class="pro">Quick navigation to any modified buffer</div>
+      <div class="pro">Compact — just 1 row</div>
+      <div class="con">Takes 1 line of vertical space</div>
+      <div class="con">Clutters the layout when no edits have been made</div>
+    </div>
+  </div>
+  <div class="terminal">
+    <div class="terminal-titlebar">
+      <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+      <span class="terminal-titlebar-text">ovim — modified files bar</span>
+    </div>
+    <div class="terminal-body">
+      <div class="term-section-label">buffer view</div>
+      <div class="term-row"><span class="t-dim">  12 │ </span><span class="t-purple">fn </span><span class="t-blue">process_request</span><span class="t-text">(</span><span class="t-orange">&amp;mut self</span><span class="t-text">) {</span></div>
+      <div class="term-row"><span class="t-dim">  13 │ </span><span class="t-text">    </span><span class="t-purple">let </span><span class="t-text">result = </span><span class="t-cyan">self</span><span class="t-text">.validate();</span></div>
+      <div class="term-row"><span class="t-dim">  14 │ </span><span class="t-text">    </span><span class="t-purple">match </span><span class="t-text">result {</span></div>
+      <div class="term-row"><span class="t-dim">  15 │ </span><span class="t-text">        </span><span class="t-yellow">Ok</span><span class="t-text">(v) => </span><span class="t-cyan">self</span><span class="t-text">.handle(v),</span></div>
+      <div class="term-row"><span class="t-dim">  16 │ </span><span class="t-text">    }</span></div>
+      <div class="term-row"><span class="t-dim">  17 │ </span><span class="t-text">}</span></div>
+      <div class="term-row"></div>
+      <!-- Status line -->
+      <div class="term-row" style="background: #1a2040;"><span class="t-accent t-bold"> AI CHAT </span><span class="t-dim"> src/handler.rs </span><span class="t-yellow">[+] </span><span class="t-dim"> main</span><span class="t-dim" style="float:right;">  12:5 </span></div>
+      <!-- Modified files bar -->
+      <div class="term-row" style="background: #161c28; border-top: 1px solid #1e2530;"><span class="t-dim"> ✎ </span><span class="t-yellow t-bold" style="background: #2a2818; padding: 0 4px;"> handler.rs +12 -3 </span><span class="t-dim"> │ </span><span class="t-green" style="background: #1a2a1a; padding: 0 4px;"> error.rs +28 </span><span class="t-dim"> │ </span><span class="t-green" style="background: #1a2a1a; padding: 0 4px;"> mod.rs +2 -1 </span><span class="t-dim" style="float:right;"> [C-a] accept all  [C-z] undo turn </span></div>
+      <div class="term-section-label">chat panel</div>
+      <!-- Chat content -->
+      <div class="term-row t-bg-panel"></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">╭ gpt-4o ──────────────────────────────╮</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">Done! I've added error handling     </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">with proper Result propagation.     </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">╰──────────────────────────────────────╯</span></div>
+      <div class="term-row t-bg-panel"></div>
+      <div class="term-row"><span class="t-accent">╭──────────────────────────────────────────╮</span></div>
+      <div class="term-row"><span class="t-accent">│ >> </span><span class="t-muted t-bg-input">█                                     </span><span class="t-accent"> │</span></div>
+      <div class="term-row"><span class="t-dim">  openai:gpt-4o │ </span><span class="t-dim">[Enter send] [C-y copy] [Esc×2 close]</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- APPROACH D: Diff Review Mode -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="approach">
+  <div class="approach-info">
+    <div class="approach-label">Approach D</div>
+    <div class="approach-title">Diff Review Mode</div>
+    <div class="approach-desc">
+      A dedicated vim-like diff view activated by a keybinding (e.g. <code>[Enter]</code>
+      on the changes bubble, or <code>:ai diff</code>). Shows side-by-side or unified diff
+      of agent changes. User can accept (<code>:w</code>) or reject (<code>u</code>) per file.
+      Exits back to chat on close.
+    </div>
+    <div class="pros-cons">
+      <div class="pro">Full context: exactly what changed, before and after</div>
+      <div class="pro">Familiar to vim users (vimdiff-style)</div>
+      <div class="pro">Enables informed accept/reject decisions</div>
+      <div class="con">Interrupts the chat flow — a mode switch</div>
+      <div class="con">Complex to implement (diff rendering)</div>
+      <div class="con">May be overkill for small changes</div>
+    </div>
+  </div>
+  <div class="terminal">
+    <div class="terminal-titlebar">
+      <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+      <span class="terminal-titlebar-text">ovim — diff review mode</span>
+    </div>
+    <div class="terminal-body">
+      <div class="term-section-label">diff review — src/handler.rs (1 of 2 files)</div>
+      <!-- Unified diff view -->
+      <div class="term-row"><span class="t-dim t-italic"> src/handler.rs — 3 edits, +12 -3</span></div>
+      <div class="term-row"></div>
+      <div class="term-row"><span class="t-dim">  11 │ </span><span class="t-purple">fn </span><span class="t-blue">process_request</span><span class="t-text">(</span><span class="t-orange">&amp;mut self</span><span class="t-text">) -> </span><span class="t-yellow">Result</span><span class="t-text">&lt;()&gt; {</span></div>
+      <div class="term-row highlight-red"><span class="t-dim">     </span><span class="t-red">- </span><span class="t-red">    let result = self.validate();</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  12 </span><span class="t-green">+ </span><span class="t-text">    </span><span class="t-purple">let </span><span class="t-text">result = </span><span class="t-cyan">self</span><span class="t-text">.validate()</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  13 </span><span class="t-green">+ </span><span class="t-text">        .map_err(|e| anyhow!(</span><span class="t-green">"validation: {e}"</span><span class="t-text">))?;</span></div>
+      <div class="term-row"><span class="t-dim">  14 │ </span></div>
+      <div class="term-row"><span class="t-dim">  15 │ </span><span class="t-text">    </span><span class="t-purple">match </span><span class="t-text">result {</span></div>
+      <div class="term-row"><span class="t-dim">  16 │ </span><span class="t-text">        </span><span class="t-yellow">Ok</span><span class="t-text">(v) => </span><span class="t-cyan">self</span><span class="t-text">.handle_success(v),</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  17 </span><span class="t-green">+ </span><span class="t-text">        </span><span class="t-yellow">Err</span><span class="t-text">(e) </span><span class="t-purple">if </span><span class="t-text">e.is_timeout() => {</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  18 </span><span class="t-green">+ </span><span class="t-text">            log::warn!(</span><span class="t-green">"timeout, retrying"</span><span class="t-text">);</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  19 </span><span class="t-green">+ </span><span class="t-text">            </span><span class="t-cyan">self</span><span class="t-text">.retry_with_backoff()?</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  20 </span><span class="t-green">+ </span><span class="t-text">        }</span></div>
+      <div class="term-row"><span class="t-dim">  21 │ </span><span class="t-text">        </span><span class="t-yellow">Err</span><span class="t-text">(e) => </span><span class="t-purple">return </span><span class="t-yellow">Err</span><span class="t-text">(e.into()),</span></div>
+      <div class="term-row"><span class="t-dim">  22 │ </span><span class="t-text">    }</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  23 </span><span class="t-green">+ </span><span class="t-text">    </span><span class="t-yellow">Ok</span><span class="t-text">(())</span></div>
+      <div class="term-row"><span class="t-dim">  24 │ </span><span class="t-text">}</span></div>
+      <div class="term-row"></div>
+      <!-- Bottom bar -->
+      <div class="term-row" style="background: #1a2040;"><span class="t-accent t-bold"> DIFF REVIEW </span><span class="t-dim"> src/handler.rs </span><span class="t-yellow">[+] </span><span class="t-dim" style="float:right;"> file 1/2 </span></div>
+      <div class="term-row" style="background: #161c28;"><span class="t-dim"> [</span><span class="t-green">a</span><span class="t-dim">]ccept file  [</span><span class="t-red">r</span><span class="t-dim">]eject file  [</span><span class="t-yellow">]n</span><span class="t-dim">]ext file  [</span><span class="t-yellow">[p</span><span class="t-dim">]rev file  [</span><span class="t-accent">q</span><span class="t-dim">]uit review</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- APPROACH E: Composable — A + B + C -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="approach">
+  <div class="approach-info">
+    <div class="approach-label">Approach E</div>
+    <div class="approach-title">Composable: Summary + Gutter + Bar</div>
+    <div class="approach-desc">
+      Combine the best parts: a summary bubble in chat (A), gutter markers in the
+      buffer (B), and a thin modified-files strip (C). Each layer adds information
+      at a different zoom level — conversation context, spatial awareness, and
+      cross-file navigation. The diff mode (D) is available on demand but not the
+      default path.
+    </div>
+    <div class="pros-cons">
+      <div class="pro">Information at every zoom level</div>
+      <div class="pro">Each piece is independently useful</div>
+      <div class="pro">Gutter + bar can be toggled off</div>
+      <div class="pro">Diff review available but not forced</div>
+      <div class="con">Most implementation work</div>
+      <div class="con">Risk of visual clutter if all layers active</div>
+    </div>
+  </div>
+  <div class="terminal">
+    <div class="terminal-titlebar">
+      <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+      <span class="terminal-titlebar-text">ovim — composable approach (all layers)</span>
+    </div>
+    <div class="terminal-body">
+      <div class="term-section-label">buffer view — with agent gutter markers</div>
+      <div class="term-row"><span class="t-dim">  11 │   </span><span class="t-purple">fn </span><span class="t-blue">process_request</span><span class="t-text">(</span><span class="t-orange">&amp;mut self</span><span class="t-text">) -> </span><span class="t-yellow">Result</span><span class="t-text">&lt;()&gt; {</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  12 </span><span class="t-green t-bold">┃ </span><span class="t-text">    </span><span class="t-purple">let </span><span class="t-text">result = </span><span class="t-cyan">self</span><span class="t-text">.validate()</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  13 </span><span class="t-green t-bold">┃ </span><span class="t-text">        .map_err(|e| anyhow!(</span><span class="t-green">"validation: {e}"</span><span class="t-text">))?;</span></div>
+      <div class="term-row"><span class="t-dim">  14 │   </span></div>
+      <div class="term-row"><span class="t-dim">  15 │   </span><span class="t-text">    </span><span class="t-purple">match </span><span class="t-text">result {</span></div>
+      <div class="term-row"><span class="t-dim">  16 │   </span><span class="t-text">        </span><span class="t-yellow">Ok</span><span class="t-text">(v) => </span><span class="t-cyan">self</span><span class="t-text">.handle_success(v),</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  17 </span><span class="t-green t-bold">┃ </span><span class="t-text">        </span><span class="t-yellow">Err</span><span class="t-text">(e) </span><span class="t-purple">if </span><span class="t-text">e.is_timeout() => {</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  18 </span><span class="t-green t-bold">┃ </span><span class="t-text">            </span><span class="t-cyan">self</span><span class="t-text">.retry_with_backoff()?</span></div>
+      <div class="term-row highlight-green"><span class="t-dim">  19 </span><span class="t-green t-bold">┃ </span><span class="t-text">        }</span></div>
+      <div class="term-row"><span class="t-dim">  20 │   </span><span class="t-text">        </span><span class="t-yellow">Err</span><span class="t-text">(e) => </span><span class="t-purple">return </span><span class="t-yellow">Err</span><span class="t-text">(e.into()),</span></div>
+      <!-- Status line -->
+      <div class="term-row" style="background: #1a2040;"><span class="t-accent t-bold"> AI CHAT </span><span class="t-dim"> src/handler.rs </span><span class="t-yellow">[+] </span><span class="t-dim"> main</span><span class="t-green" style="float:right;"> ┃8 </span><span class="t-dim" style="float:right;"> 12:5 </span></div>
+      <!-- Modified files bar -->
+      <div class="term-row" style="background: #161c28; border-top: 1px solid #1e2530;"><span class="t-dim"> ✎ </span><span class="t-yellow t-bold" style="background: #2a2818; padding: 0 4px;"> handler.rs +12 -3 </span><span class="t-dim"> │ </span><span class="t-green" style="background: #1a2a1a; padding: 0 4px;"> error.rs +28 </span><span class="t-dim" style="float:right;"> [C-z] undo turn  [C-d] diff </span></div>
+      <div class="term-section-label">chat panel — with summary bubble</div>
+      <div class="term-row t-bg-panel"></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">╭ gpt-4o ──────────────────────────────╮</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">I've added error handling with      </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">Result propagation and a timeout    </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">│ </span><span class="t-text">retry fallback in process_request.  </span><span class="t-green">│</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-green">╰──────────────────────────────────────╯</span></div>
+      <div class="term-row t-bg-panel"></div>
+      <!-- Compact edit summary -->
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">╭ Changes ─────────────────────────────╮</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">│ </span><span class="t-green">✎ </span><span class="t-text">handler.rs </span><span class="t-green">+12 </span><span class="t-red">-3</span><span class="t-text"> │ </span><span class="t-green">✎ </span><span class="t-text">error.rs </span><span class="t-green">+28</span><span class="t-yellow"> │</span></div>
+      <div class="term-row t-bg-panel"><span class="t-text"> </span><span class="t-yellow">╰──────────────────────────────────────╯</span></div>
+      <div class="term-row t-bg-panel"></div>
+      <!-- Input -->
+      <div class="term-row"><span class="t-accent">╭──────────────────────────────────────────╮</span></div>
+      <div class="term-row"><span class="t-accent">│ >> </span><span class="t-muted t-bg-input">█                                     </span><span class="t-accent"> │</span></div>
+      <div class="term-row"><span class="t-dim">  openai:gpt-4o │ </span><span class="t-dim">[Enter send] [C-y copy] [Esc×2 close]</span></div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /approaches -->
+
+<!-- Verdict / recommendation -->
+<div class="verdict" style="margin-bottom: 80px; margin-left: 40px; margin-right: 40px;">
+  <h2>Recommended Path</h2>
+  <p>
+    <strong>Start with A (summary bubble)</strong> — it's the highest-value, lowest-cost change.
+    The agent already returns tool results; surfacing a "Changes" summary at the end of a
+    turn that involved edits is mostly a rendering concern. It gives the user
+    immediate awareness of what happened without any new modes or UI surfaces.
+  </p>
+  <p>
+    <strong>Then add B (gutter markers)</strong> — the spatial "what changed where" awareness is
+    the single most useful thing when reviewing edits in the buffer. This is a well-understood
+    pattern (git gutter) that vim users already expect. It also naturally handles background
+    buffers: when the user switches to a file the agent modified, the markers are already there.
+  </p>
+  <p>
+    <strong>C (modified files bar) and D (diff review) are valuable but secondary.</strong>
+    The files bar matters most for multi-file edits, which won't be the common case initially.
+    Diff review is powerful but complex — and less urgent because undo already provides a
+    safety net. Both can be added later without changing the A+B foundation.
+  </p>
+  <p>
+    <strong>Key implementation insight:</strong> all four approaches share one prerequisite —
+    tracking which lines/ranges were modified by the agent per-buffer. Build that tracking
+    layer first (a <code>Vec&lt;(usize, usize, EditKind)&gt;</code> per buffer for agent-touched ranges),
+    and A, B, C, D all become rendering decisions on top of the same data.
+  </p>
+</div>
+
+</body>
+</html>
