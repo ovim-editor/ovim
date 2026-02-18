@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -euo pipefail
 # Test script to verify syntax highlighting is working
 
 # Start ovim in headless mode
@@ -20,7 +22,7 @@ fi
 echo "Server running on port $PORT"
 
 # Fetch the render output
-RENDER=$(curl -s http://127.0.0.1:$PORT/render | jq -r '.ansi')
+RENDER=$(curl -s http://127.0.0.1:$PORT/v1/render | jq -r '.ansi')
 
 # Check if ANSI color codes are present
 if echo "$RENDER" | grep -q '\x1b\[.*m'; then

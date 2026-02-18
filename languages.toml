@@ -8,7 +8,7 @@
 #   - Same language ID → user config overrides
 #   - New language ID → user config adds
 #
-# See: code-docs/LANGUAGE_SUPPORT_ARCHITECTURE_ANALYSIS.md for design details
+# See: code-docs/DESIGN.md for design details
 
 # ============================================================================
 # Rust

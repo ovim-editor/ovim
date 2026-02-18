@@ -1,8 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Test rust-analyzer with actual workspace file and longer wait time
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-ra-workspace.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+OUTPUT_LOG="$TMP_DIR/ra_workspace_output.log"
 
 WORKSPACE_ROOT="/workspace"
 TEST_FILE="$WORKSPACE_ROOT/src/buffer/mod.rs"
@@ -142,9 +146,9 @@ send_message() {
 
     echo ">>> Step 8: Exit" >&2
     send_message '{"jsonrpc":"2.0","method":"exit"}'
-} | rust-analyzer 2>&1 | tee /tmp/ra_workspace_output.log
+} | rust-analyzer 2>&1 | tee "$OUTPUT_LOG"
 
 echo "" >&2
 echo "=== Test complete ===" >&2
 echo "Parsing results..." >&2
-python3 /workspace/parse_lsp_output.py /tmp/ra_workspace_output.log
+python3 /workspace/parse_lsp_output.py "$OUTPUT_LOG"

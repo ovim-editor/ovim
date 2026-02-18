@@ -1,13 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test Java language detection
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-java-detect.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+SRC_FILE="$TMP_DIR/test_lang_detect.rs"
+BIN_FILE="$TMP_DIR/test_lang_detect"
 
 echo "=== Testing Java Language Detection ==="
 echo ""
 
 # Create a simple Rust test program to verify language detection
-cat > /tmp/test_lang_detect.rs <<'EOF'
+cat > "$SRC_FILE" <<'EOF'
 use std::path::Path;
 
 // Import from ovim crate
@@ -51,11 +56,11 @@ fn main() {
 EOF
 
 echo "Compiling test program..."
-rustc --edition 2021 -L target/debug/deps --extern ovim=target/debug/libovim.rlib /tmp/test_lang_detect.rs -o /tmp/test_lang_detect
+rustc --edition 2021 -L target/debug/deps --extern ovim=target/debug/libovim.rlib "$SRC_FILE" -o "$BIN_FILE"
 
 echo "Running tests..."
 echo ""
-/tmp/test_lang_detect
+"$BIN_FILE"
 
 echo ""
 echo "=== Java detection working correctly! ==="

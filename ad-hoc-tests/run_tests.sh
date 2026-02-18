@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Automated test runner for ovim REST API
 # This script starts ovim with the API, extracts the URL, and runs tests
 
-set -e
+set -euo pipefail
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -11,19 +11,20 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-TEST_FILE="/tmp/ovim_test_$$.txt"
-LOG_FILE="/tmp/ovim_server_$$.log"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-run-tests.XXXXXX")"
+TEST_FILE="$TMP_DIR/ovim_test.txt"
+LOG_FILE="$TMP_DIR/ovim_server.log"
 
 echo -e "${BLUE}=== ovim REST API Automated Tests ===${NC}\n"
 
 # Clean up on exit
 cleanup() {
     echo -e "\n${YELLOW}Cleaning up...${NC}"
-    if [ ! -z "$OVIM_PID" ]; then
-        kill $OVIM_PID 2>/dev/null || true
-        wait $OVIM_PID 2>/dev/null || true
+    if [[ -n "${OVIM_PID:-}" ]]; then
+        kill "$OVIM_PID" 2>/dev/null || true
+        wait "$OVIM_PID" 2>/dev/null || true
     fi
-    rm -f "$TEST_FILE" "$LOG_FILE"
+    rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
@@ -63,31 +64,31 @@ echo ""
 
 # Helper functions
 send_keys() {
-    curl -s -X POST "$API_URL/keys" \
+    curl -s -X POST "$API_URL/v1/keys" \
       -H "Content-Type: application/json" \
       -d "{\"keys\": \"$1\"}"
 }
 
 get_cursor() {
-    curl -s "$API_URL/cursor"
+    curl -s "$API_URL/v1/cursor"
 }
 
 get_mode() {
-    curl -s "$API_URL/mode"
+    curl -s "$API_URL/v1/mode"
 }
 
 get_buffer() {
-    curl -s "$API_URL/buffer"
+    curl -s "$API_URL/v1/buffer"
 }
 
 set_buffer() {
-    curl -s -X PUT "$API_URL/buffer" \
+    curl -s -X PUT "$API_URL/v1/buffer" \
       -H "Content-Type: application/json" \
       -d "{\"content\": \"$1\"}"
 }
 
 get_snapshot() {
-    curl -s "$API_URL/snapshot"
+    curl -s "$API_URL/v1/snapshot"
 }
 
 test_assert() {

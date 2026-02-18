@@ -1,6 +1,16 @@
 mod helpers;
 
 use helpers::EditorTest;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Test that 'gd' command requests goto definition
 #[test]
@@ -204,14 +214,15 @@ fn main() {}
 #[test]
 fn test_file_path_for_lsp() {
     let mut test = EditorTest::new("");
+    let path = temp_test_path("test.rs");
 
     // Set a file path
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(path.clone());
 
-    // File path should be set (and normalized - on macOS /tmp -> /private/tmp)
+    // File path should be set.
     let file_path = test.editor.buffer().file_path();
     assert!(file_path.is_some());
-    assert!(file_path.unwrap().ends_with("/tmp/test.rs"));
+    assert_eq!(file_path.unwrap(), path);
 }
 
 /// Test LSP works with different file extensions
@@ -219,33 +230,21 @@ fn test_file_path_for_lsp() {
 fn test_lsp_file_type_detection() {
     // Rust file
     let mut test_rs = EditorTest::new("");
-    test_rs.set_file_path("/tmp/test.rs".to_string());
-    assert!(test_rs
-        .editor
-        .buffer()
-        .file_path()
-        .unwrap()
-        .ends_with("/tmp/test.rs"));
+    let rs_path = temp_test_path("test.rs");
+    test_rs.set_file_path(rs_path.clone());
+    assert_eq!(test_rs.editor.buffer().file_path().unwrap(), rs_path);
 
     // JavaScript file
     let mut test_js = EditorTest::new("");
-    test_js.set_file_path("/tmp/test.js".to_string());
-    assert!(test_js
-        .editor
-        .buffer()
-        .file_path()
-        .unwrap()
-        .ends_with("/tmp/test.js"));
+    let js_path = temp_test_path("test.js");
+    test_js.set_file_path(js_path.clone());
+    assert_eq!(test_js.editor.buffer().file_path().unwrap(), js_path);
 
     // Python file
     let mut test_py = EditorTest::new("");
-    test_py.set_file_path("/tmp/test.py".to_string());
-    assert!(test_py
-        .editor
-        .buffer()
-        .file_path()
-        .unwrap()
-        .ends_with("/tmp/test.py"));
+    let py_path = temp_test_path("test.py");
+    test_py.set_file_path(py_path.clone());
+    assert_eq!(test_py.editor.buffer().file_path().unwrap(), py_path);
 }
 
 /// Test snapshot of code with LSP-relevant syntax

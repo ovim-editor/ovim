@@ -2,6 +2,16 @@ use ovim::buffer::Buffer;
 use ovim::syntax::{HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Tests that Buffer.highlights_for_line returns correct Comment highlights for Java block comments
 /// This is an end-to-end test through the actual Buffer interface
@@ -11,7 +21,7 @@ fn test_buffer_java_block_comment_highlighting() {
 
     // Create a buffer with a Java file path to trigger language detection
     let mut buffer = Buffer::new_from_str(source);
-    buffer.set_file_path("/tmp/Test.java".to_string());
+    buffer.set_file_path(temp_test_path("Test.java"));
     buffer.enable_syntax_highlighting();
 
     // Verify syntax highlighting was enabled

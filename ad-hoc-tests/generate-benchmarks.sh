@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generate benchmark test files for performance testing
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BENCH_DIR="$SCRIPT_DIR/benchmarks"

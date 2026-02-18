@@ -1,5 +1,8 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-hover-debug.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Kill any existing test session
 ./ovim-ctl kill hover_test 2>/dev/null || true
@@ -42,7 +45,7 @@ sleep 2
 
 # Get the snapshot to see if hover worked
 echo "Getting snapshot..."
-curl -s http://127.0.0.1:$(cat ~/.cache/ovim/sessions/hover_test.json | grep -o '"port":[0-9]*' | cut -d: -f2)/snapshot | jq '.hover_info'
+curl -s "http://127.0.0.1:$(cat ~/.cache/ovim/sessions/hover_test.json | grep -o '\"port\":[0-9]*' | cut -d: -f2)/v1/snapshot" | jq '.hover_info'
 
 # Cleanup
 echo "Cleaning up..."

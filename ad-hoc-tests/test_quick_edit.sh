@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Quick test: Does ovim work for the "rapid open/close" workflow?
 
-set -e
+set -euo pipefail
 
 echo "=== ovim Quick Edit Workflow Test ==="
 echo ""

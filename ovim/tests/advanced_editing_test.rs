@@ -451,7 +451,12 @@ fn test_command_visual() {
 #[test]
 fn test_zz_save_quit() {
     let mut test = EditorTest::new("test\n");
-    test.set_file_path("/tmp/test_zz.txt".to_string());
+    let tmp = tempfile::Builder::new()
+        .prefix("ovim_zz_")
+        .suffix(".txt")
+        .tempfile()
+        .unwrap();
+    test.set_file_path(tmp.path().to_string_lossy().to_string());
 
     test.keys("ZZ");
 

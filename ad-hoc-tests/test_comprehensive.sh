@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -euo pipefail
 
 # Comprehensive testing script for ovim
 # Tests various Neovim features and identifies missing functionality
@@ -19,26 +21,26 @@ TESTS_FAILED=0
 # Helper functions
 send_keys() {
     local keys="$1"
-    curl -s -X POST "$API_URL/keys" \
+    curl -s -X POST "$API_URL/v1/keys" \
         -H "Content-Type: application/json" \
         -d "{\"keys\": \"$keys\"}" > /dev/null
 }
 
 get_cursor() {
-    curl -s "$API_URL/cursor"
+    curl -s "$API_URL/v1/cursor"
 }
 
 get_buffer() {
-    curl -s "$API_URL/buffer" | jq -r '.content'
+    curl -s "$API_URL/v1/buffer" | jq -r '.content'
 }
 
 get_mode() {
-    curl -s "$API_URL/mode" | jq -r '.mode'
+    curl -s "$API_URL/v1/mode" | jq -r '.mode'
 }
 
 reset_buffer() {
     local content="$1"
-    curl -s -X PUT "$API_URL/buffer" \
+    curl -s -X PUT "$API_URL/v1/buffer" \
         -H "Content-Type: application/json" \
         -d "{\"content\": \"$content\"}" > /dev/null
     send_keys "gg0"  # Go to start

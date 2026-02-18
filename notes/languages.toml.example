@@ -108,10 +108,7 @@ official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
 # This config is for reference, but java.rs takes precedence
 [language.lsp]
 command = "hyperion-lsp"
-fallback_commands = [
-    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
-    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
-]
+fallback_commands = []
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
 install_hint = "Hyperion LSP auto-download is handled automatically"
 

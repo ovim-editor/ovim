@@ -211,7 +211,7 @@ fn test_ctrl_v_undo() {
 }
 
 #[test]
-#[ignore] // TODO: Visual block dot-repeat needs relative position support
+#[ignore = "TODO: Visual block dot-repeat needs relative position support"]
 fn test_ctrl_v_dot_repeat() {
     let mut test = EditorTest::new("hello\nworld\ntest\nmore\nlines");
 

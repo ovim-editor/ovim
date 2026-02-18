@@ -1,11 +1,21 @@
 mod helpers;
 
 use helpers::EditorTest;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 #[test]
 fn undo_marks_lsp_document_modified() {
     let mut t = EditorTest::new("hello\n");
-    t.set_file_path("/tmp/ovim_sync_undo.rs".to_string());
+    t.set_file_path(temp_test_path("ovim_sync_undo.rs"));
 
     // Enter insert mode and type, then exit to finalize the change.
     t.keys("A").type_text("x").keys("<Esc>");
@@ -28,7 +38,7 @@ fn undo_marks_lsp_document_modified() {
 #[test]
 fn redo_marks_lsp_document_modified() {
     let mut t = EditorTest::new("hello\n");
-    t.set_file_path("/tmp/ovim_sync_redo.rs".to_string());
+    t.set_file_path(temp_test_path("ovim_sync_redo.rs"));
 
     t.keys("A").type_text("x").keys("<Esc>");
     t.keys("u");

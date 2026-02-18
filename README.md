@@ -15,7 +15,7 @@ cargo build --release
 ```
 
 # Development Workflow
-~/.cache/ovim/sessions/` (Mac) or `~/.cache/ovim/sessions/` (Linux)
+- Session files: macOS `~/Library/Caches/ovim/sessions/`, Linux `~/.cache/ovim/sessions/`
 - Auto-cleanup on exit or manual `./ovim-ctl kill`
 - Multiple concurrent sessions with different names
 - LSP readiness tracking per session
@@ -24,15 +24,15 @@ cargo build --release
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check with LSP readiness |
-| `/lsp/status` | GET | LSP server states & pending requests |
-| `/snapshot` | GET | Complete editor state |
-| `/buffer` | GET/PUT | Buffer content |
-| `/cursor` | GET | Cursor position |
-| `/mode` | GET | Current mode |
-| `/keys` | POST | Send keystrokes |
-| `/command` | POST | Execute ex command |
-| `/render` | GET | ANSI rendering |
+| `/v1/health` | GET | Health check with LSP readiness |
+| `/v1/lsp/status` | GET | LSP server states & pending requests |
+| `/v1/snapshot` | GET | Complete editor state |
+| `/v1/buffer` | GET/PUT | Buffer content |
+| `/v1/cursor` | GET | Cursor position |
+| `/v1/mode` | GET | Current mode |
+| `/v1/keys` | POST | Send keystrokes |
+| `/v1/command` | POST | Execute ex command |
+| `/v1/render` | GET | ANSI rendering |
 
 ### LSP Support
 
@@ -112,4 +112,4 @@ cargo test
 
 ## License
 
-[Add license]
+Not yet specified.
