@@ -80,6 +80,8 @@ pub enum RepeatAction {
     DeleteToEndOfLine,
     /// dw — delete word forward
     DeleteWordForward { count: usize },
+    /// cw delete phase — word-end semantics that prefer current word (like ce)
+    DeleteWordChange { count: usize },
     /// db — delete word backward
     DeleteWordBackward { count: usize },
     /// de — delete to end of word (inclusive)
@@ -290,6 +292,22 @@ impl RepeatAction {
             }
             Self::DeleteWordForward { count } => {
                 buffer.delete_word_forward(*count);
+            }
+            Self::DeleteWordChange { count } => {
+                let start_line = buffer.cursor().line();
+                let start_col = buffer.cursor().col();
+
+                crate::editor::Motions::word_end_forward_prefer_current(buffer, *count);
+
+                let end_line = buffer.cursor().line();
+                let line_len = buffer
+                    .line(end_line)
+                    .map(|l| l.trim_end_matches('\n').chars().count())
+                    .unwrap_or(0);
+                let end_col = (buffer.cursor().col() + 1).min(line_len);
+
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.cursor_mut().set_position(start_line, start_col);
             }
             Self::DeleteWordBackward { count } => {
                 buffer.delete_word_backward(*count);
