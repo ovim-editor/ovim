@@ -69,6 +69,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
 - [x] LSP/workspace text edits now record undo entries per edited buffer (current + non-current) without polluting dot-repeat templates.
 - [x] Visual block change dot-repeat (`Ctrl-V ... c ... .`) now uses semantic repeat geometry with active regression coverage.
+- [x] LSP workspace `ResourceOp` (create/rename/delete) now snapshots filesystem state and integrates with undo/redo.
 
 #### Remaining `add_change` callsites (current snapshot: 26 in `ovim-core/src`)
 
@@ -85,7 +86,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 #### Practical migration targets
 
-1. LSP workspace `ResourceOp` undo (create/rename/delete) remains out-of-band and is not integrated into buffer undo stacks.
+1. No open Pattern A→B migration blockers remain; remaining `add_change` callsites are intentional or infrastructural.
 
 ---
 
@@ -123,6 +124,4 @@ All paste bugs fixed: count implemented, P cursor corrected, visual paste update
 
 ## Status
 
-Items 1, 2, 3, 4, 6, 7, 8, 9 are **DONE**. Remaining work:
-
-- **Item 5** (Pattern A→B migration): Ongoing, depends on item 2 (done)
+Items 1 through 9 are **DONE**.

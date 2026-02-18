@@ -1,4 +1,6 @@
 use lsp_types::{Position, Range, TextEdit, WorkspaceEdit};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod helpers;
 use helpers::EditorTest;
@@ -27,6 +29,22 @@ fn workspace_edit_for_uri(uri: lsp_types::Uri, edit: TextEdit) -> WorkspaceEdit 
         document_changes: None,
         change_annotations: None,
     }
+}
+
+fn workspace_edit_for_resource_op(op: lsp_types::ResourceOp) -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: None,
+        document_changes: Some(lsp_types::DocumentChanges::Operations(vec![
+            lsp_types::DocumentChangeOperation::Op(op),
+        ])),
+        change_annotations: None,
+    }
+}
+
+fn unique_temp_path(name: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("ovim_lsp_resource_{}_{}", id, name))
 }
 
 #[test]
@@ -151,4 +169,115 @@ fn apply_workspace_edit_non_current_buffer_is_undoable() {
     assert_eq!(t.editor.buffer().line(0).unwrap(), "alpha\n");
     t.keys("<C-r>");
     assert_eq!(t.editor.buffer().line(0).unwrap(), "beta\n");
+}
+
+#[test]
+fn apply_workspace_resource_create_is_undoable() {
+    let anchor = unique_temp_path("anchor_create.rs");
+    std::fs::write(&anchor, "anchor\n").unwrap();
+    let anchor_str = anchor.to_string_lossy().to_string();
+
+    let created = unique_temp_path("created.txt");
+    let _ = std::fs::remove_file(&created);
+    let created_str = created.to_string_lossy().to_string();
+
+    editor_flow_test! {
+        content "anchor\n";
+        setup |test| {
+            test.set_file_path(anchor_str.clone());
+            let uri = ovim::lsp::uri_from_file_path(&created_str).expect("uri_from_file_path failed");
+            let we = workspace_edit_for_resource_op(lsp_types::ResourceOp::Create(lsp_types::CreateFile {
+                uri,
+                options: None,
+                annotation_id: None,
+            }));
+            test.editor.apply_workspace_edit(we).unwrap();
+            assert!(created.exists());
+        }
+        step "u" => |_test| {
+            assert!(!created.exists());
+        }
+        step "<C-r>" => |_test| {
+            assert!(created.exists());
+            let _ = std::fs::remove_file(&created);
+            let _ = std::fs::remove_file(&anchor);
+        }
+    }
+}
+
+#[test]
+fn apply_workspace_resource_rename_is_undoable() {
+    let anchor = unique_temp_path("anchor_rename.rs");
+    std::fs::write(&anchor, "anchor\n").unwrap();
+    let anchor_str = anchor.to_string_lossy().to_string();
+
+    let old_path = unique_temp_path("rename_old.txt");
+    let new_path = unique_temp_path("rename_new.txt");
+    let _ = std::fs::remove_file(&old_path);
+    let _ = std::fs::remove_file(&new_path);
+    std::fs::write(&old_path, "rename-me\n").unwrap();
+    let old_str = old_path.to_string_lossy().to_string();
+    let new_str = new_path.to_string_lossy().to_string();
+
+    editor_flow_test! {
+        content "anchor\n";
+        setup |test| {
+            test.set_file_path(anchor_str.clone());
+            let old_uri = ovim::lsp::uri_from_file_path(&old_str).expect("uri_from_file_path failed");
+            let new_uri = ovim::lsp::uri_from_file_path(&new_str).expect("uri_from_file_path failed");
+            let we = workspace_edit_for_resource_op(lsp_types::ResourceOp::Rename(lsp_types::RenameFile {
+                old_uri,
+                new_uri,
+                options: None,
+                annotation_id: None,
+            }));
+            test.editor.apply_workspace_edit(we).unwrap();
+            assert!(!old_path.exists());
+            assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "rename-me\n");
+        }
+        step "u" => |_test| {
+            assert_eq!(std::fs::read_to_string(&old_path).unwrap(), "rename-me\n");
+            assert!(!new_path.exists());
+        }
+        step "<C-r>" => |_test| {
+            assert!(!old_path.exists());
+            assert_eq!(std::fs::read_to_string(&new_path).unwrap(), "rename-me\n");
+            let _ = std::fs::remove_file(&new_path);
+            let _ = std::fs::remove_file(&anchor);
+        }
+    }
+}
+
+#[test]
+fn apply_workspace_resource_delete_is_undoable() {
+    let anchor = unique_temp_path("anchor_delete.rs");
+    std::fs::write(&anchor, "anchor\n").unwrap();
+    let anchor_str = anchor.to_string_lossy().to_string();
+
+    let deleted_path = unique_temp_path("delete_target.txt");
+    let _ = std::fs::remove_file(&deleted_path);
+    std::fs::write(&deleted_path, "delete-me\n").unwrap();
+    let deleted_str = deleted_path.to_string_lossy().to_string();
+
+    editor_flow_test! {
+        content "anchor\n";
+        setup |test| {
+            test.set_file_path(anchor_str.clone());
+            let uri = ovim::lsp::uri_from_file_path(&deleted_str).expect("uri_from_file_path failed");
+            let we = workspace_edit_for_resource_op(lsp_types::ResourceOp::Delete(lsp_types::DeleteFile {
+                uri,
+                options: None,
+            }));
+            test.editor.apply_workspace_edit(we).unwrap();
+            assert!(!deleted_path.exists());
+        }
+        step "u" => |_test| {
+            assert_eq!(std::fs::read_to_string(&deleted_path).unwrap(), "delete-me\n");
+        }
+        step "<C-r>" => |_test| {
+            assert!(!deleted_path.exists());
+            let _ = std::fs::remove_file(&deleted_path);
+            let _ = std::fs::remove_file(&anchor);
+        }
+    }
 }
