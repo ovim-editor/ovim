@@ -295,6 +295,25 @@ fn test_dot_repeat_di_paren() {
     test.assert_cursor(0, 16); // On closing paren after deletion
 }
 
+#[test]
+fn test_dot_repeat_ci_paren_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "func(arg1) and func(arg2)\n";
+        step "f(ci(X<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "func(X) and func(arg2)\n");
+        }
+        step "f(." => |test| {
+            assert_eq!(test.buffer_content(), "func(X) and func(X)\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "func(X) and func(arg2)\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "func(arg1) and func(arg2)\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with visual mode operations
 // ============================================================================
