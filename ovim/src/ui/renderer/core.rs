@@ -19,7 +19,10 @@ use super::file_tree_widget::render_file_tree;
 use super::helpers::char_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::line_cache::LineRenderCache;
-use super::overlays::{render_ai_review_shortcuts, render_completion_menu, render_hover_window};
+use super::overlays::{
+    render_ai_chat_permission_dialog, render_ai_review_shortcuts, render_completion_menu,
+    render_hover_window,
+};
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
     ai_prompt_panel_height, render_ai_prompt_line, render_command_line, render_margin_widgets,
@@ -419,6 +422,13 @@ fn render_overlays(
     // Path completion popup (command mode)
     if editor.path_completion().is_visible() {
         render_path_completion(frame, editor, command_chunk);
+    }
+
+    if editor.mode() == crate::mode::Mode::AiChat
+        && (editor.ai_chat_has_pending_tool_approval()
+            || editor.ai_chat_has_pending_no_repo_folder_approval())
+    {
+        render_ai_chat_permission_dialog(frame, editor, theme);
     }
 }
 

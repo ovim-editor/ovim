@@ -1003,36 +1003,25 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     used_width += 2;
 
     if pending_no_repo_approval || pending_tool_approval {
-        let summary = if pending_no_repo_approval {
-            editor.ai_chat_pending_no_repo_folder_approval_summary()
+        let label = if pending_no_repo_approval {
+            " ! folder access pending "
         } else {
-            editor.ai_chat_pending_tool_approval_summary()
+            " ! tool approval pending "
         };
-        if let Some(summary) = summary {
-            let mut label = format!(" ! {} ", summary);
-            let max_label = w.saturating_sub(4);
-            if label.chars().count() > max_label {
-                label = label
-                    .chars()
-                    .take(max_label.saturating_sub(1))
-                    .collect::<String>();
-                label.push('…');
-            }
-            let label_w = label.chars().count();
-            if used_width + label_w + 1 < w {
-                spans.push(Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    " ",
-                    Style::default().fg(TEXT_DIM).bg(BG_PANEL),
-                ));
-                used_width += label_w + 1;
-            }
+        let label_w = label.chars().count();
+        if used_width + label_w + 1 < w {
+            spans.push(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                " ",
+                Style::default().fg(TEXT_DIM).bg(BG_PANEL),
+            ));
+            used_width += label_w + 1;
         }
     }
 
@@ -1074,9 +1063,9 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     // Hints at right
     let allow_edits = editor.ai_chat_allow_edits();
     let hint = if pending_no_repo_approval {
-        " [C-y allow] [C-n deny] "
+        " [Enter allow] [Esc deny] "
     } else if pending_tool_approval {
-        " [C-y allow once] [C-a allow session] [C-n deny] "
+        " [Enter allow] [C-a allow chat] [Esc deny] "
     } else if allow_edits {
         " [Enter send] [PgUp/PgDn scroll code] [C-y copy] [Esc\u{00d7}2 close] "
     } else {
