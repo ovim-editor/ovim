@@ -86,7 +86,7 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     editor.add_command_to_history();
                     execute_command(editor)?;
                     editor.clear_command_line();
-                    if !editor.mode().is_hover() {
+                    if editor.mode() == Mode::Command {
                         editor.set_mode(Mode::Normal);
                     }
                 }
@@ -94,7 +94,7 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                 editor.add_command_to_history();
                 execute_command(editor)?;
                 editor.clear_command_line();
-                if !editor.mode().is_hover() {
+                if editor.mode() == Mode::Command {
                     editor.set_mode(Mode::Normal);
                 }
             }
