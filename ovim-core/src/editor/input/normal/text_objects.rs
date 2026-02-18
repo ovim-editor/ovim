@@ -5,7 +5,7 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Change, Editor, Operator, PendingSemanticChange, Range, RegisterType, TextObjectRange,
+    Change, Editor, Operator, PendingChangeRepeat, Range, RegisterType, TextObjectRange,
     TextObjectType, TextObjects,
 };
 use crate::mode::Mode;
@@ -260,35 +260,47 @@ fn apply_change_operator(
         (range.end_line, range.end_col),
     );
 
-    let version_before = editor.buffer().version();
-    editor.buffer_mut().delete_range(
-        range.start_line,
-        range.start_col,
-        range.end_line,
-        range.end_col,
-    );
-    if editor.buffer().version() == version_before {
-        return Ok(());
-    }
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(range.start_line, range.start_col);
-
-    editor.delete_to_register(deleted.clone());
-
     if let Some(obj_type) = object_type {
-        editor.set_pending_semantic_change(PendingSemanticChange {
-            object_type: Some(obj_type),
-            is_word_change: false,
-            is_search_match_change: false,
-            search_pattern: None,
-            search_forward: None,
-            old_text: deleted,
-            old_range: change_range,
-            cursor_before,
+        let ((), edits) = editor.buffer_mut().record(|buf| {
+            buf.delete_range(
+                range.start_line,
+                range.start_col,
+                range.end_line,
+                range.end_col,
+            );
+            buf.cursor_mut()
+                .set_position(range.start_line, range.start_col);
+        });
+        if edits.is_empty() {
+            return Ok(());
+        }
+        editor.delete_to_register(deleted);
+        let cursor_after = editor.cursor_position();
+        let delete_token =
+            editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+        editor.set_pending_change_repeat(PendingChangeRepeat {
+            delete_action: RepeatAction::DeleteTextObject {
+                object_type: obj_type,
+            },
+            linewise: false,
+            delete_token: Some(delete_token),
         });
     } else {
+        let version_before = editor.buffer().version();
+        editor.buffer_mut().delete_range(
+            range.start_line,
+            range.start_col,
+            range.end_line,
+            range.end_col,
+        );
+        if editor.buffer().version() == version_before {
+            return Ok(());
+        }
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(range.start_line, range.start_col);
+        editor.delete_to_register(deleted.clone());
         let change = Change::delete(change_range, deleted, cursor_before);
         editor.add_change(change);
     }
