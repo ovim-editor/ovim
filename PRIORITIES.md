@@ -74,6 +74,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Text-object changes (`ciw`, `ca"`, etc.) now use `PendingChangeRepeat` + `RepeatAction::Change` instead of legacy pending semantic change path.
 - [x] Completion accept path now records undo via `record()` + `push_recorded_undo()` instead of manual composite `add_change`.
 - [x] Text-object operator handlers now require concrete `TextObjectType`; dead fallback `add_change` path for change-operator text objects removed.
+- [x] Added macro regression coverage for text-object change repeat/undo granularity (`ci(` + `.` + `u`) in `dot_repeat_test`.
 
 #### Remaining `add_change` callsites (current snapshot: 22 in `ovim-core/src`)
 
