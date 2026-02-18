@@ -2,6 +2,7 @@ use ovim_core::KeyCode;
 
 mod helpers;
 use helpers::EditorTest;
+use ovim::mode::Mode;
 
 fn completion_item(label: &str) -> lsp_types::CompletionItem {
     lsp_types::CompletionItem {
@@ -12,28 +13,32 @@ fn completion_item(label: &str) -> lsp_types::CompletionItem {
 }
 
 #[test]
-fn completion_tab_accepts_and_undo_redo_work() {
-    let mut t = EditorTest::new("let x = fo");
-    t.keys("A");
-
-    // Cursor is at end; completion should replace the "fo" prefix.
-    let trigger_col = "let x = ".chars().count();
-    t.editor.completion_menu_mut().show(
-        vec![completion_item("foo")],
-        trigger_col,
-        "fo".to_string(),
-    );
-
-    t.press_key(KeyCode::Tab);
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "let x = foo\n");
-
-    // Insert-mode changes are finalized on exit, so undo after leaving insert mode.
-    t.keys("<Esc>");
-    t.keys("u");
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "let x = fo\n");
-
-    t.keys("<C-r>");
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "let x = foo\n");
+fn completion_tab_accepts_and_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "let x = fo";
+        setup |test| {
+            test.keys("A");
+            let trigger_col = "let x = ".chars().count();
+            test.editor.completion_menu_mut().show(
+                vec![completion_item("foo")],
+                trigger_col,
+                "fo".to_string(),
+            );
+        }
+        step "<Tab>" => |test| {
+            assert_eq!(test.editor.buffer().line(0).unwrap(), "let x = foo\n");
+            test.assert_mode(Mode::Insert);
+        }
+        step "<Esc>" => |test| {
+            test.assert_mode(Mode::Normal);
+        }
+        step "u" => |test| {
+            assert_eq!(test.editor.buffer().line(0).unwrap(), "let x = fo\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.editor.buffer().line(0).unwrap(), "let x = foo\n");
+        }
+    }
 }
 
 #[test]

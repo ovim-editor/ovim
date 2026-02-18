@@ -1,10 +1,9 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
 use super::{
-    Change, CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState,
-    QuickfixEntry, QuickfixList, Range,
+    CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry,
+    QuickfixList,
 };
-use crate::unicode::byte_offset_for_grapheme;
 
 impl Editor {
     /// Gets a reference to the completion menu
@@ -60,56 +59,21 @@ impl Editor {
             let trigger_col = self.completion_menu.trigger_col();
 
             let cursor_before = (cursor_line, cursor_col);
-            let mut changes = Vec::new();
-
-            // Delete the partial word from trigger position to cursor (tracked for undo)
-            if cursor_col > trigger_col {
-                let deleted_text = self
-                    .buffer()
-                    .line(cursor_line)
-                    .map(|s| {
-                        let line_text = s.trim_end_matches('\n');
-                        let start = byte_offset_for_grapheme(line_text, trigger_col).unwrap_or(0);
-                        let end = byte_offset_for_grapheme(line_text, cursor_col)
-                            .unwrap_or(line_text.len());
-                        line_text
-                            .get(start.min(line_text.len())..end.min(line_text.len()))
-                            .unwrap_or_default()
-                            .to_string()
-                    })
-                    .unwrap_or_default();
-
-                let range = Range::new((cursor_line, trigger_col), (cursor_line, cursor_col));
-                let change = Change::delete(range, deleted_text, cursor_before);
-                let version_before = self.buffer().version();
-                change.apply(self.buffer_mut());
-                if self.buffer().version() != version_before {
-                    changes.push(change);
+            let ((), edits) = self.buffer_mut().record(|buf| {
+                if cursor_col > trigger_col {
+                    buf.delete_range(cursor_line, trigger_col, cursor_line, cursor_col);
                 }
-            }
+                if !text_to_insert.is_empty() {
+                    buf.insert_text_at(cursor_line, trigger_col, &text_to_insert);
+                }
 
-            // Insert the completion text (tracked for undo)
-            let insert_change = Change::insert(
-                (cursor_line, trigger_col),
-                text_to_insert.clone(),
-                cursor_before,
-            );
-            let version_before = self.buffer().version();
-            insert_change.apply(self.buffer_mut());
-            if self.buffer().version() != version_before {
-                changes.push(insert_change);
-            }
-
-            // Move cursor to end of inserted text
-            let new_col = trigger_col + text_to_insert.chars().count();
-            self.buffer_mut()
-                .cursor_mut()
-                .set_position(cursor_line, new_col);
-
-            let cursor_after = (cursor_line, new_col);
-            if !changes.is_empty() {
-                self.add_change(Change::composite(changes, cursor_before, cursor_after));
-                self.mark_buffer_modified();
+                // Cursor moves to end of accepted completion text.
+                let new_col = trigger_col + text_to_insert.chars().count();
+                buf.cursor_mut().set_position(cursor_line, new_col);
+            });
+            if !edits.is_empty() {
+                let cursor_after = self.cursor_position();
+                self.push_recorded_undo(edits, cursor_before, cursor_after);
             }
         }
 
