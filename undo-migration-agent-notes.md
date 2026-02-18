@@ -2,7 +2,8 @@
 
 ## Context
 Undo/repeat migration work was continued on `main` and committed in scoped slices.
-The migration roadmap in `PRIORITIES.md` still treats remaining `add_change` sites as intentional/infrastructural, with one non-core text-object case path left in `text_objects.rs`.
+Recent slices removed all `add_change` callsites from `input/commands.rs` and migrated text-object case operators to semantic `RepeatAction`.
+`PRIORITIES.md` now reports 14 `add_change` callsites in `ovim-core/src` (all in insert/helpers infrastructure + replace + internals).
 
 ## Branch + Commits
 Current branch: `main`
@@ -17,6 +18,11 @@ Recent undo-migration commits:
 7. `1e5733c` - Migrate completion accept undo to recorded edits
 8. `e7871a6` - Tighten text-object change repeat contract
 9. `f8c8165` - Add ci(paren) dot-repeat undo regression test
+10. `be4878b` - Migrate text-object case ops to semantic repeat
+11. `5e1419b` - Record :global delete undo via Pattern B
+12. `ae38ea7` - Record ranged Ex delete undo via Pattern B
+13. `2db973d` - Record shell filter undo via Pattern B
+14. `67192db` - Migrate remaining Ex command undo paths
 
 ## What Landed
 
@@ -67,8 +73,28 @@ Files:
 ### F) Plan docs updated
 File:
 - `/Users/adrian/Projects/ovim/PRIORITIES.md`
-  - `add_change` snapshot now reflects recent reductions (currently 22 in `ovim-core/src`).
-  - Added notes for completion migration + text-object contract tightening + new macro regression.
+  - `add_change` snapshot now reflects recent reductions (currently 14 in `ovim-core/src`).
+  - Added notes for command-mode migration slices and new macro regressions.
+
+### G) Text-object case operators migrated
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/repeat_action.rs`
+  - Added `CaseTransform` + `RepeatAction::ChangeCaseTextObject`.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/normal/text_objects.rs`
+  - `gu/gU/g~` text-object paths now use `record_operation()` + semantic repeat.
+- `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
+  - Added `test_dot_repeat_guiw_semantic_undo_granularity_macro_flow`.
+
+### H) Ex command mutation paths migrated off `add_change`
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/commands.rs`
+  - `:global ... d`, ranged `:d`, shell filter (`:%!cmd` / `:.!cmd`), `:r !cmd`, `:sort`, `:copy`, and `:move` now use recorded undo paths.
+- `/Users/adrian/Projects/ovim/ovim/tests/command_global_test.rs`
+  - Added macro undo/redo flow for `:global` delete.
+- `/Users/adrian/Projects/ovim/ovim/tests/command_mode_test.rs`
+  - Added macro undo/redo flows for ranged delete, `:sort`, `:copy`, and `:move`.
+- `/Users/adrian/Projects/ovim/ovim/tests/shell_commands_test.rs`
+  - Added macro undo/redo flow for `:%!sort`.
 
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
@@ -82,6 +108,11 @@ File:
 - `cargo test -p ovim --test completion_menu_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_ci_paren_undo_granularity_macro_flow -- --nocapture`
 - `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_guiw_semantic_undo_granularity_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture`
+- `cargo test -p ovim --test command_global_test -- --nocapture`
+- `cargo test -p ovim --test command_mode_test -- --nocapture`
+- `cargo test -p ovim --test shell_commands_test -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
@@ -99,5 +130,5 @@ Observed modified files include:
 
 ## Suggested Continuation
 If continuing migration work, likely next slice is:
-1. Decide whether the last `add_change` in `input/normal/text_objects.rs` (case-operator text objects) should remain Pattern A for current dot-repeat behavior or get a dedicated semantic repeat design.
+1. Evaluate whether any `input/helpers.rs` insert-mode callsites can be safely converted without breaking insert-session composition.
 2. Keep commits path-scoped and avoid touching dirty AI files listed above.
