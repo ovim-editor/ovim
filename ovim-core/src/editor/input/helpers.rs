@@ -834,11 +834,18 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
+    let _ = delete_visual_selection_with_token(editor)?;
+    Ok(())
+}
+
+pub fn delete_visual_selection_with_token(
+    editor: &mut Editor,
+) -> Result<Option<crate::change::ChangeToken>> {
     let mode = editor.mode();
     let cursor_before = editor.cursor_position();
 
     let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() else {
-        return Ok(());
+        return Ok(None);
     };
 
     // Record all deletions in one shot
@@ -875,7 +882,7 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
     });
 
     if edits.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     let (deleted, register_type) = deleted_info;
@@ -911,7 +918,7 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
     }
 
     let cursor_after = editor.cursor_position();
-    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    let undo_token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
 
     // Set dot-repeat template as a semantic RepeatAction for all visual delete modes.
     match mode {
@@ -945,7 +952,7 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
         _ => editor.delete_to_register(deleted),
     }
 
-    Ok(())
+    Ok(Some(undo_token))
 }
 
 pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
