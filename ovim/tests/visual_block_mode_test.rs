@@ -226,24 +226,21 @@ fn test_ctrl_v_delete_dot_repeat_macro_flow() {
 }
 
 #[test]
-#[ignore = "TODO: Visual block dot-repeat needs relative position support"]
-fn test_ctrl_v_dot_repeat() {
-    let mut test = EditorTest::new("hello\nworld\ntest\nmore\nlines");
-
-    test.press_with(KeyCode::Char('v'), Modifiers::CONTROL)
-        .keys("j")
-        .keys("l")
-        .press('c')
-        .type_text("XX")
-        .press_esc()
-        .keys("jj") // Move down 2 lines
-        .press('.'); // Repeat block change
-
-    // NOTE: Current implementation stores absolute positions in composite changes,
-    // so dot-repeat operates on original lines instead of cursor-relative positions.
-    // Fixing this requires changes to how visual block operations are represented.
-    assert_eq!(test.buffer_content(), "XXllo\nXXrld\ntest\nXXre\nXXnes\n");
-    test.assert_cursor(3, 1);
+fn test_ctrl_v_change_dot_repeat_macro_flow() {
+    editor_flow_test! {
+        content "hello\nworld\ntest\nmore\nlines\n";
+        step "<C-v>jlcXX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "XXllo\nXXrld\ntest\nmore\nlines\n");
+            test.assert_cursor(0, 1);
+        }
+        step "jj0." => |test| {
+            assert_eq!(test.buffer_content(), "XXllo\nXXrld\nXXst\nXXre\nlines\n");
+            test.assert_cursor(2, 1);
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "XXllo\nXXrld\ntest\nmore\nlines\n");
+        }
+    }
 }
 
 #[test]

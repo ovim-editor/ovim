@@ -100,6 +100,12 @@ pub enum RepeatAction {
     DeleteVisualLine { line_count: usize },
     /// Visual-block delete (Ctrl-V...d/x)
     DeleteVisualBlock { line_count: usize, width: usize },
+    /// Visual-block change (Ctrl-V...c): delete block then insert on each line
+    ChangeVisualBlock {
+        line_count: usize,
+        width: usize,
+        inserted_text: String,
+    },
     /// Change operator — semantic delete + insert text (cc, C, s, S, cj, ck, etc.)
     Change {
         delete: Box<RepeatAction>,
@@ -359,6 +365,71 @@ impl RepeatAction {
                     0
                 };
                 buffer.cursor_mut().set_position(start_line, clamped_col);
+            }
+            Self::ChangeVisualBlock {
+                line_count,
+                width,
+                inserted_text,
+            } => {
+                let start_line = buffer.cursor().line();
+                let start_col = buffer.cursor().col();
+
+                // Delete block at current cursor geometry.
+                for i in 0..*line_count {
+                    let line_idx = start_line + i;
+                    if line_idx >= buffer.line_count() {
+                        break;
+                    }
+                    if let Some(line_text) = buffer.line(line_idx) {
+                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                        if start_col < line_len {
+                            let end_col = (start_col + width).min(line_len);
+                            buffer.delete_range(line_idx, start_col, line_idx, end_col);
+                        }
+                    }
+                }
+
+                // Reinsert captured text on each selected line.
+                if !inserted_text.is_empty() {
+                    let initial_line_count = buffer.line_count();
+                    for i in 0..*line_count {
+                        let line_idx = start_line + i;
+                        if line_idx >= initial_line_count {
+                            break;
+                        }
+                        if let Some(line_text) = buffer.line(line_idx) {
+                            let line_len = line_text.trim_end_matches('\n').chars().count();
+                            let insert_col = start_col.min(line_len);
+                            buffer.insert_text_at(line_idx, insert_col, inserted_text);
+                        }
+                    }
+
+                    let mut final_line = start_line;
+                    let mut final_col = start_col;
+                    for ch in inserted_text.chars() {
+                        if ch == '\n' {
+                            final_line += 1;
+                            final_col = 0;
+                        } else {
+                            final_col += 1;
+                        }
+                    }
+                    if final_col > 0 {
+                        final_col -= 1;
+                    }
+                    buffer.cursor_mut().set_position(final_line, final_col);
+                } else {
+                    let line_len = buffer
+                        .line(start_line)
+                        .map(|l| l.trim_end_matches('\n').chars().count())
+                        .unwrap_or(0);
+                    let clamped_col = if line_len > 0 {
+                        start_col.min(line_len - 1)
+                    } else {
+                        0
+                    };
+                    buffer.cursor_mut().set_position(start_line, clamped_col);
+                }
             }
             Self::Change {
                 delete,
