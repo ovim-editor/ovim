@@ -302,14 +302,10 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
 
     // Delete the range
     if start_col < col {
-        let version_before = editor.buffer().version();
-        let deleted = editor
-            .buffer_mut()
-            .delete_range(line_idx, start_col, line_idx, col);
-        if editor.buffer().version() != version_before {
-            let range = Range::new((line_idx, start_col), (line_idx, col));
-            let change = Change::delete(range, deleted, cursor_before);
-            editor.add_change(change);
+        let deleted_text: String = chars[start_col..col].iter().collect();
+        let range = Range::new((line_idx, start_col), (line_idx, col));
+        let change = Change::delete(range, deleted_text, cursor_before);
+        if editor.apply_change_and_record(change) {
             editor
                 .buffer_mut()
                 .cursor_mut()
@@ -332,12 +328,14 @@ pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Delete from start of line to cursor
-    let version_before = editor.buffer().version();
-    let deleted = editor.buffer_mut().delete_range(line_idx, 0, line_idx, col);
-    if editor.buffer().version() != version_before {
-        let range = Range::new((line_idx, 0), (line_idx, col));
-        let change = Change::delete(range, deleted, cursor_before);
-        editor.add_change(change);
+    let deleted_text = editor
+        .buffer()
+        .line(line_idx)
+        .map(|line| line.trim_end_matches('\n').chars().take(col).collect())
+        .unwrap_or_default();
+    let range = Range::new((line_idx, 0), (line_idx, col));
+    let change = Change::delete(range, deleted_text, cursor_before);
+    if editor.apply_change_and_record(change) {
         editor.buffer_mut().cursor_mut().set_position(line_idx, 0);
     }
 
@@ -355,11 +353,13 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let expand_tab = editor.options.expand_tab;
 
     // Insert indent at beginning of line
-    let version_before = editor.buffer().version();
-    editor
-        .buffer_mut()
-        .indent_lines_at(line_idx, line_idx + 1, shift_width, expand_tab);
-    if editor.buffer().version() == version_before {
+    let indent_str = if expand_tab {
+        " ".repeat(shift_width)
+    } else {
+        "\t".to_string()
+    };
+    let change = Change::insert((line_idx, 0), indent_str, cursor_before);
+    if !editor.apply_change_and_record(change) {
         return Ok(());
     }
 
@@ -367,15 +367,6 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let indent_width = if expand_tab { shift_width } else { 1 };
     let new_col = col + indent_width;
     editor.buffer_mut().cursor_mut().set_col(new_col);
-
-    // Create change for undo (Pattern A — composes with insert-mode undo group)
-    let indent_str = if expand_tab {
-        " ".repeat(shift_width)
-    } else {
-        "\t".to_string()
-    };
-    let change = Change::insert((line_idx, 0), indent_str, cursor_before);
-    editor.add_change(change);
 
     Ok(())
 }
@@ -417,22 +408,16 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Delete the leading whitespace
-    let version_before = editor.buffer().version();
-    let deleted = editor
-        .buffer_mut()
-        .delete_range(line_idx, 0, line_idx, chars_to_remove);
-    if editor.buffer().version() == version_before {
+    let deleted_text: String = chars.into_iter().take(chars_to_remove).collect();
+    let range = Range::new((line_idx, 0), (line_idx, chars_to_remove));
+    let change = Change::delete(range, deleted_text, cursor_before);
+    if !editor.apply_change_and_record(change) {
         return Ok(());
     }
 
     // Update cursor position - move column left by chars_to_remove
     let new_col = col.saturating_sub(chars_to_remove);
     editor.buffer_mut().cursor_mut().set_col(new_col);
-
-    // Create change for undo
-    let range = Range::new((line_idx, 0), (line_idx, chars_to_remove));
-    let change = Change::delete(range, deleted, cursor_before);
-    editor.add_change(change);
 
     Ok(())
 }

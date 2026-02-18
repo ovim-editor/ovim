@@ -52,6 +52,22 @@ fn test_ctrl_w_delete_word_insert() {
     assert_eq!(test.buffer_content(), "hello \n");
 }
 
+#[test]
+fn test_ctrl_w_insert_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "\n";
+        step "ihello world<C-w><Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello \n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "hello \n");
+        }
+    }
+}
+
 /// Test Ctrl-U (delete to line start in insert mode)
 #[test]
 fn test_ctrl_u_delete_to_start_insert() {
@@ -63,6 +79,74 @@ fn test_ctrl_u_delete_to_start_insert() {
     test.press_esc();
 
     assert_eq!(test.buffer_content(), "\n");
+}
+
+#[test]
+fn test_ctrl_u_insert_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "abc\n";
+        step "A123<C-u>Z<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "Z\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abc\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "Z\n");
+        }
+    }
+}
+
+#[test]
+fn test_ctrl_t_insert_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "line\n";
+        step "i<C-t><Esc>" => |test| {
+            let content = test.buffer_content();
+            assert!(
+                content.starts_with("    ") || content.starts_with("\t"),
+                "expected indentation, got: {:?}",
+                content
+            );
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "line\n");
+        }
+        step "<C-r>" => |test| {
+            let content = test.buffer_content();
+            assert!(
+                content.starts_with("    ") || content.starts_with("\t"),
+                "expected indentation after redo, got: {:?}",
+                content
+            );
+        }
+    }
+}
+
+#[test]
+fn test_ctrl_d_insert_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "    indented\n";
+        step "I<C-d><Esc>" => |test| {
+            let content = test.buffer_content();
+            assert!(
+                content.starts_with("indented"),
+                "expected dedented line, got: {:?}",
+                content
+            );
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "    indented\n");
+        }
+        step "<C-r>" => |test| {
+            let content = test.buffer_content();
+            assert!(
+                content.starts_with("indented"),
+                "expected dedented line after redo, got: {:?}",
+                content
+            );
+        }
+    }
 }
 
 /// Test Ctrl-H (backspace in insert mode)
