@@ -81,8 +81,7 @@ fn exit_insert_mode(editor: &mut Editor) {
     let insert_change_pushed =
         editor.buffer().change_manager().undo_stack.len() > undo_len_before_finalize;
 
-    // Check for pending change repeat (cc, C, s, S, cj, ck, etc.)
-    // Must be checked BEFORE PendingSemanticChange — they are mutually exclusive.
+    // Check for pending change repeat (cc, C, s, S, cj, ck, cw, cgn, etc.)
     if let Some(pending) = editor.take_pending_change_repeat() {
         // Pop insert composite only if this insert session actually pushed one.
         let insert_undo = if insert_change_pushed {
@@ -124,63 +123,9 @@ fn exit_insert_mode(editor: &mut Editor) {
             inserted_text,
             linewise: pending.linewise,
         });
-    }
-    // Check for pending semantic change operation (ci", cw, etc.)
-    else if let Some(pending) = editor.take_pending_semantic_change() {
-        // Remove the insert composite only if this insert session pushed one.
-        let insert_undo = if insert_change_pushed {
-            editor.pop_last_change()
-        } else {
-            None
-        };
-        let inserted_text = insert_undo
-            .as_ref()
-            .map(|c| c.get_inserted_text())
-            .unwrap_or_default();
-
-        // Create the appropriate semantic change
-        let cursor_after = (
-            editor.buffer().cursor().line(),
-            editor.buffer().cursor().col(),
-        );
-
-        let semantic_change = if pending.is_word_change {
-            Change::change_word(
-                inserted_text,
-                pending.cursor_before,
-                cursor_after,
-                pending.old_text,
-                pending.old_range,
-            )
-        } else if pending.is_search_match_change {
-            Change::change_search_match(
-                pending.search_pattern.unwrap_or_default(),
-                pending.search_forward.unwrap_or(true),
-                inserted_text,
-                pending.cursor_before,
-                cursor_after,
-                pending.old_text,
-                pending.old_range,
-            )
-        } else if let Some(obj_type) = pending.object_type {
-            Change::change_text_object(
-                obj_type,
-                inserted_text,
-                pending.cursor_before,
-                cursor_after,
-                pending.old_text,
-                pending.old_range,
-            )
-        } else {
-            // Shouldn't happen, but fall back to composite
-            if let Some(last_change) = editor.last_change() {
-                last_change.clone()
-            } else {
-                Change::composite(vec![], pending.cursor_before, cursor_after)
-            }
-        };
-
-        editor.add_change(semantic_change);
+    } else {
+        // Legacy semantic-change plumbing is deprecated; clear stale state if present.
+        let _ = editor.take_pending_semantic_change();
     }
 
     // For o/O insert sessions, use RepeatAction instead of Composite::repeat
@@ -556,45 +501,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::{PendingChangeRepeat, PendingSemanticChange};
-
-    #[test]
-    fn exit_insert_mode_semantic_no_insert_keeps_prior_undo_entry() {
-        let mut editor = Editor::with_content("word\n");
-
-        // Seed history so an accidental pop is observable.
-        let cursor = editor.cursor_position();
-        assert!(editor.apply_change_and_record(Change::insert(cursor, "X".to_string(), cursor)));
-        let undo_len_before = editor.buffer().change_manager().undo_stack.len();
-
-        // Simulate a semantic change operator (e.g., cw) entering insert mode,
-        // then immediate <Esc> (no inserted text).
-        editor.set_pending_semantic_change(PendingSemanticChange {
-            object_type: None,
-            is_word_change: true,
-            is_search_match_change: false,
-            search_pattern: None,
-            search_forward: None,
-            old_text: "word".to_string(),
-            old_range: Range::new((0, 0), (0, 4)),
-            cursor_before: (0, 0),
-        });
-        editor.start_change_building((0, 0));
-        editor.set_mode(Mode::Insert);
-
-        exit_insert_mode(&mut editor);
-
-        let undo_stack = &editor.buffer().change_manager().undo_stack;
-        assert_eq!(undo_stack.len(), undo_len_before + 1);
-        assert!(matches!(
-            undo_stack.first(),
-            Some(Change::InsertText { .. })
-        ));
-        assert!(matches!(
-            undo_stack.last(),
-            Some(Change::ChangeWord { replacement, .. }) if replacement.is_empty()
-        ));
-    }
+    use crate::editor::PendingChangeRepeat;
 
     #[test]
     fn exit_insert_mode_pending_change_repeat_no_insert_no_delete_keeps_prior_undo() {
