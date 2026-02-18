@@ -6,11 +6,22 @@ use std::path::PathBuf;
 
 #[test]
 fn test_picker_new_with_results_preserves_file_paths() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base_dir = tmp.path().join("workspace").join("ovim");
+    let picker_path = base_dir.join("src").join("editor").join("picker.rs");
+    let lsp_path = base_dir
+        .join("src")
+        .join("editor")
+        .join("lsp_integration.rs");
+    let base_dir_str = base_dir.to_string_lossy().to_string();
+    let picker_path_str = picker_path.to_string_lossy().to_string();
+    let lsp_path_str = lsp_path.to_string_lossy().to_string();
+
     // Create some PickerResult items with actual file paths
     let results = vec![
         PickerResult {
             display: "picker.rs:158:9".to_string(),
-            location: "/Users/adrian/Projects/ovim/src/editor/picker.rs".to_string(),
+            location: picker_path_str.clone(),
             line: 157,
             col: 8,
             match_positions: Vec::new(),
@@ -18,7 +29,7 @@ fn test_picker_new_with_results_preserves_file_paths() {
         },
         PickerResult {
             display: "lsp_integration.rs:2964:5".to_string(),
-            location: "/Users/adrian/Projects/ovim/src/editor/lsp_integration.rs".to_string(),
+            location: lsp_path_str.clone(),
             line: 2963,
             col: 4,
             match_positions: Vec::new(),
@@ -26,7 +37,7 @@ fn test_picker_new_with_results_preserves_file_paths() {
         },
     ];
 
-    let base_dir = PathBuf::from("/Users/adrian/Projects/ovim");
+    let base_dir = PathBuf::from(base_dir_str);
 
     // Create picker using new_with_results
     let picker = Picker::new_with_results(base_dir, results.clone());
@@ -36,23 +47,14 @@ fn test_picker_new_with_results_preserves_file_paths() {
     assert_eq!(filtered.len(), 2);
 
     // The location field should contain actual file paths, not indices like "0" or "1"
-    assert_eq!(
-        filtered[0].location,
-        "/Users/adrian/Projects/ovim/src/editor/picker.rs"
-    );
-    assert_eq!(
-        filtered[1].location,
-        "/Users/adrian/Projects/ovim/src/editor/lsp_integration.rs"
-    );
+    assert_eq!(filtered[0].location, picker_path_str);
+    assert_eq!(filtered[1].location, lsp_path_str);
 
     // Verify selected result also has the correct location
     let selected = picker
         .selected_result()
         .expect("Should have a selected result");
-    assert_eq!(
-        selected.location,
-        "/Users/adrian/Projects/ovim/src/editor/picker.rs"
-    );
+    assert_eq!(selected.location, filtered[0].location);
 }
 
 #[test]
@@ -63,7 +65,9 @@ fn test_old_new_lsp_locations_uses_indices() {
         "lsp_integration.rs:2964:5".to_string(),
     ];
 
-    let base_dir = PathBuf::from("/Users/adrian/Projects/ovim");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base_dir = tmp.path().join("workspace").join("ovim");
+    let base_dir = PathBuf::from(base_dir.to_string_lossy().to_string());
 
     // Create picker using old new_lsp_locations method
     let picker = Picker::new_lsp_locations(base_dir, display_items);

@@ -389,9 +389,9 @@ The language support system uses a declarative configuration file (`languages.to
 
 ## Related Documentation
 
-- [Architecture Analysis](/Users/adrian/Projects/ovim/notes/LANGUAGE_SUPPORT_ARCHITECTURE_ANALYSIS.md) - Design decisions and implementation details
-- [CLAUDE.md](/Users/adrian/Projects/ovim/CLAUDE.md) - Quick reference for developers
-- [CLI Reference](/Users/adrian/Projects/ovim/code-docs/CLI_SUBCOMMANDS.md) - All CLI commands
+- [Architecture Analysis](../notes/LANGUAGE_SUPPORT_ARCHITECTURE_ANALYSIS.md) - Design decisions and implementation details
+- [CLAUDE.md](../CLAUDE.md) - Quick reference for developers
+- [CLI Reference](../code-docs/CLI_SUBCOMMANDS.md) - All CLI commands
 
 ## Need Help?
 
