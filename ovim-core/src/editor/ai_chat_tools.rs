@@ -1623,21 +1623,7 @@ impl Editor {
     /// Resolves from current file (if available) or current working directory.
     pub(crate) fn ai_repo_root(&self) -> Option<PathBuf> {
         let start = self.ai_project_start_path()?;
-        let mut dir = if start.is_dir() {
-            start
-        } else {
-            start.parent()?.to_path_buf()
-        };
-
-        loop {
-            if dir.join(".git").exists() {
-                return Some(normalize_path(&dir));
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-        None
+        discover_repo_root_from_start(&start)
     }
 
     fn absolutize_path(&self, path: &Path) -> PathBuf {
@@ -2365,6 +2351,36 @@ fn normalize_path(path: &Path) -> PathBuf {
     crate::ai::path_policy::normalize_path(path)
 }
 
+fn discover_repo_root_from_start(start: &Path) -> Option<PathBuf> {
+    let probe = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start.parent()?.to_path_buf()
+    };
+
+    if let Ok(repo) = git2::Repository::discover(&probe) {
+        if let Some(workdir) = repo.workdir() {
+            return Some(normalize_path(workdir));
+        }
+        if let Some(parent) = repo.path().parent() {
+            return Some(normalize_path(parent));
+        }
+        return Some(normalize_path(repo.path()));
+    }
+
+    // Fallback for marker-only setups (e.g. tests, partial repos).
+    let mut dir = probe;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(normalize_path(&dir));
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
 fn to_relative_path_for_boundary(path: &Path, boundary_root: &Path) -> String {
     let rel = path.strip_prefix(boundary_root).unwrap_or(path);
     if rel.as_os_str().is_empty() {
@@ -3032,6 +3048,29 @@ mod tests {
             let expected = repo_b
                 .canonicalize()
                 .unwrap_or_else(|_| normalize_path(&repo_b));
+            assert_eq!(detected, expected);
+        });
+    }
+
+    #[test]
+    fn ai_repo_root_detects_git_file_marker() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let repo = dir.path().join("worktree_like_repo");
+            fs::create_dir_all(repo.join("src")).expect("mkdir src");
+            fs::write(repo.join(".git"), "gitdir: /tmp/fake\n").expect("write .git marker");
+            let file = repo.join("src").join("main.rs");
+            fs::write(&file, "fn main() {}\n").expect("write file");
+
+            let mut editor = Editor::default();
+            editor.open_file(&file).expect("open file");
+
+            let detected = editor.ai_repo_root().expect("repo root");
+            let detected = detected
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path(&detected));
+            let expected = repo.canonicalize().unwrap_or_else(|_| normalize_path(&repo));
             assert_eq!(detected, expected);
         });
     }
