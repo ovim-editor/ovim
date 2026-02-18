@@ -716,69 +716,11 @@ impl Change {
                             buffer.cursor_mut().set_col(line_len);
                         }
                     }
-                    InsertEntryMode::OpenBelow => {
-                        // o — insert newline below, position on new line
-                        // Replicate insert_line_below logic using CURRENT line's indent
-                        if !changes.is_empty() {
-                            let line_idx = buffer.cursor().line();
-                            let line_text = buffer.line(line_idx).unwrap_or_default();
-                            let indent: String = line_text
-                                .chars()
-                                .take_while(|c| c.is_whitespace() && *c != '\n')
-                                .collect();
-
-                            let (insert_pos, text) = if line_text.ends_with('\n') {
-                                ((line_idx + 1, 0), format!("{}\n", indent))
-                            } else {
-                                let line_len = line_text.chars().count();
-                                ((line_idx, line_len), format!("\n{}\n", indent))
-                            };
-
-                            buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
-                            buffer
-                                .cursor_mut()
-                                .set_position(line_idx + 1, indent.chars().count());
-                        }
-                        // Replay remaining sub-changes (skip first which was the newline)
-                        for change in changes.iter_mut().skip(1) {
-                            change.repeat(buffer);
-                        }
-                        let cursor = buffer.cursor_mut();
-                        if cursor.col() > 0 {
-                            cursor.move_left(1);
-                        }
-                        return;
-                    }
-                    InsertEntryMode::OpenAbove => {
-                        // O — insert newline above, position on new line
-                        // Replicate insert_line_above logic using CURRENT line's indent
-                        if !changes.is_empty() {
-                            let line_idx = buffer.cursor().line();
-                            let line_text = buffer.line(line_idx).unwrap_or_default();
-                            let indent: String = line_text
-                                .chars()
-                                .take_while(|c| c.is_whitespace() && *c != '\n')
-                                .collect();
-
-                            let text = format!("{}\n", indent);
-                            buffer.insert_text_at(line_idx, 0, &text);
-                            buffer
-                                .cursor_mut()
-                                .set_position(line_idx, indent.chars().count());
-                        }
-                        // Replay remaining sub-changes (skip first which was the newline)
-                        for change in changes.iter_mut().skip(1) {
-                            change.repeat(buffer);
-                        }
-                        let cursor = buffer.cursor_mut();
-                        if cursor.col() > 0 {
-                            cursor.move_left(1);
-                        }
-                        return;
-                    }
+                    InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove => {}
                 }
 
-                // For non-o/O modes: replay all sub-changes at repositioned cursor
+                // For open-line sessions (o/O), dot-repeat is handled by
+                // RepeatAction::OpenLine in insert-mode exit.
                 for change in changes.iter_mut() {
                     change.repeat(buffer);
                 }
