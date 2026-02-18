@@ -2,6 +2,7 @@
 
 use super::Editor;
 use crate::buffer::{Buffer, BufferId};
+use crate::change::Change;
 use anyhow::Result;
 
 impl Editor {
@@ -288,29 +289,54 @@ impl Editor {
                 .then(b.range.start.character.cmp(&a.range.start.character))
         });
 
-        let buffer = &mut self.buffers[buffer_index];
+        let (cursor_before, cursor_after, recorded_edits, file_path) = {
+            let buffer = &mut self.buffers[buffer_index];
+            let cursor_before = (buffer.cursor().line(), buffer.cursor().col());
 
-        for edit in sorted_edits {
-            let start_line = edit.range.start.line as usize;
-            // Convert UTF-16 positions to character positions
-            let start_col =
-                Self::utf16_to_col_for_buffer(buffer, start_line, edit.range.start.character);
-            let end_line = edit.range.end.line as usize;
-            let end_col = Self::utf16_to_col_for_buffer(buffer, end_line, edit.range.end.character);
+            let ((), recorded_edits) = buffer.record(|buf| {
+                for edit in sorted_edits {
+                    let start_line = edit.range.start.line as usize;
+                    // Convert UTF-16 positions to character positions
+                    let start_col =
+                        Self::utf16_to_col_for_buffer(buf, start_line, edit.range.start.character);
+                    let end_line = edit.range.end.line as usize;
+                    let end_col =
+                        Self::utf16_to_col_for_buffer(buf, end_line, edit.range.end.character);
 
-            // Delete the range
-            if start_line != end_line || start_col != end_col {
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-            }
+                    // Delete the range
+                    if start_line != end_line || start_col != end_col {
+                        buf.delete_range(start_line, start_col, end_line, end_col);
+                    }
 
-            // Insert new text
-            if !edit.new_text.is_empty() {
-                buffer.insert_text_at(start_line, start_col, &edit.new_text);
-            }
+                    // Insert new text
+                    if !edit.new_text.is_empty() {
+                        buf.insert_text_at(start_line, start_col, &edit.new_text);
+                    }
+                }
+            });
+
+            let cursor_after = (buffer.cursor().line(), buffer.cursor().col());
+            let file_path = buffer.file_path().map(|s| s.to_string());
+            (cursor_before, cursor_after, recorded_edits, file_path)
+        };
+
+        if recorded_edits.is_empty() {
+            return true;
+        }
+
+        // LSP-applied edits should be undoable but should not become dot-repeat
+        // templates, so we push directly to undo/redo stacks without touching
+        // last_change/last_repeat_action.
+        let change = Change::recorded(recorded_edits, cursor_before, cursor_after);
+        {
+            let cm = self.buffers[buffer_index].change_manager_mut();
+            cm.note_edit_position(cursor_before);
+            cm.undo_stack.push(change);
+            cm.redo_stack.clear();
         }
 
         // Ensure the edited document is re-synced to LSP.
-        if let Some(file_path) = buffer.file_path().map(|s| s.to_string()) {
+        if let Some(file_path) = file_path {
             let state = self.lsp_state.document_sync.entry(file_path).or_default();
             state.did_open_sent = true;
             state.mark_modified();
