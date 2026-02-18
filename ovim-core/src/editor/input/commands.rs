@@ -732,28 +732,6 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let output_text = stdout.trim_end_matches('\n');
 
-                    // Record change for undo
-                    let cursor_before = (
-                        editor.buffer().cursor().line(),
-                        editor.buffer().cursor().col(),
-                    );
-
-                    // Delete the original range
-                    let start_char = editor.buffer().rope().line_to_char(start_line);
-                    let end_char = if end_line + 1 < editor.buffer().line_count() {
-                        editor.buffer().rope().line_to_char(end_line + 1)
-                    } else {
-                        editor.buffer().rope().len_chars()
-                    };
-
-                    let deleted_text = editor
-                        .buffer()
-                        .rope()
-                        .slice(start_char..end_char)
-                        .to_string();
-
-                    editor.buffer_mut().rope_mut().remove(start_char..end_char);
-
                     // Insert the command output (with trailing newline if needed)
                     let insert_text = if output_text.is_empty() {
                         String::new()
@@ -763,28 +741,18 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                         format!("{}\n", output_text)
                     };
 
-                    if !insert_text.is_empty() {
-                        editor
-                            .buffer_mut()
-                            .rope_mut()
-                            .insert(start_char, &insert_text);
+                    let cursor_before = editor.cursor_position();
+                    let ((), edits) = editor.buffer_mut().record(|buf| {
+                        buf.delete_range(start_line, 0, end_line + 1, 0);
+                        if !insert_text.is_empty() {
+                            buf.insert_text_at(start_line, 0, &insert_text);
+                        }
+                        buf.cursor_mut().set_position(start_line, 0);
+                    });
+                    if !edits.is_empty() {
+                        let cursor_after = (start_line, 0);
+                        editor.push_recorded_undo(edits, cursor_before, cursor_after);
                     }
-
-                    // Position cursor at start of filtered range
-                    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-
-                    // Record change for undo using composite of delete + insert
-                    let range = Range::new((start_line, 0), (end_line + 1, 0));
-                    let delete_change = Change::delete(range.clone(), deleted_text, cursor_before);
-                    let insert_change =
-                        Change::insert((start_line, 0), insert_text.clone(), cursor_before);
-                    let cursor_after = (start_line, 0);
-                    let change = Change::composite(
-                        vec![delete_change, insert_change],
-                        cursor_before,
-                        cursor_after,
-                    );
-                    editor.add_change(change);
 
                     let line_count = insert_text.lines().count();
                     editor.set_lsp_status(format!("{} lines filtered", line_count));

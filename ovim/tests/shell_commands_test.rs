@@ -63,6 +63,22 @@ fn test_filter_entire_buffer() {
 }
 
 #[test]
+fn test_filter_entire_buffer_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "cherry\napple\nbanana\n";
+        step ":%!sort<Enter>" => |test| {
+            assert_eq!(test.buffer_content(), "apple\nbanana\ncherry\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "cherry\napple\nbanana\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "apple\nbanana\ncherry\n");
+        }
+    }
+}
+
+#[test]
 fn test_read_shell_command() {
     let mut test = EditorTest::new("first line\nsecond line\n");
     test.editor.buffer_mut().cursor_mut().set_position(0, 0); // First line

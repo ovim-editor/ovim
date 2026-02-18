@@ -81,12 +81,14 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `:global` delete undo/redo flow.
 - [x] Ranged Ex delete (`:1,3d` / `:delete`) now records undo via `record()` + `push_recorded_undo()`.
 - [x] Added macro regression coverage for ranged delete undo/redo flow.
+- [x] Shell filter path (`:%!cmd` / `:.!cmd`) now records undo via `record()` + `push_recorded_undo()`.
+- [x] Added macro regression coverage for shell filter undo/redo flow (`:%!sort`, `u`, `<C-r>`).
 
-#### Remaining `add_change` callsites (current snapshot: 19 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 18 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
-| `input/commands.rs` | 5 | Ex/command-mode edits; mostly intentional Pattern A |
+| `input/commands.rs` | 4 | Ex/command-mode edits; mostly intentional Pattern A |
 | `input/insert_mode.rs` | 4 | Core insert-mode batching and semantic change finalization; intentional |
 | `input/helpers.rs` | 4 | Insert-mode helper edits that intentionally compose with insert sessions |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
