@@ -323,6 +323,37 @@ fn test_dot_after_visual_line_delete() {
     test.assert_cursor(0, 0);
 }
 
+#[test]
+fn test_dot_after_visual_delete_macro_flow() {
+    editor_flow_test! {
+        content "abc def ghi\njkl mno pqr\n";
+        step "ved" => |test| {
+            assert_eq!(test.buffer_content(), " def ghi\njkl mno pqr\n");
+            test.assert_cursor(0, 0);
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "  ghi\njkl mno pqr\n");
+            test.assert_cursor(0, 1);
+        }
+    }
+}
+
+#[test]
+fn test_dot_after_visual_line_delete_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "line 1\nline 2\nline 3\nline 4\n";
+        step "Vd" => |test| {
+            assert_eq!(test.buffer_content(), "line 2\nline 3\nline 4\n");
+        }
+        step "." => |test| {
+            assert_eq!(test.buffer_content(), "line 3\nline 4\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "line 2\nline 3\nline 4\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with motion variations
 // ============================================================================

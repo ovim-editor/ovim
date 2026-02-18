@@ -928,26 +928,29 @@ pub fn delete_visual_selection(editor: &mut Editor) -> Result<()> {
     let cursor_after = editor.cursor_position();
     editor.push_recorded_undo(edits, cursor_before, cursor_after);
 
-    // Set dot-repeat template (position-relative re-application).
-    // Character-wise and line-wise use a DeleteText Change whose range
-    // encodes the offset pattern.  Block mode dot-repeat is not supported.
-    let repeat_change = match mode {
-        Mode::VisualLine => Some(Change::delete(
-            Range::new((start_line, 0), (end_line + 1, 0)),
-            deleted.clone(),
-            cursor_before,
-        )),
-        Mode::VisualBlock => None,
-        _ => Some(Change::delete(
-            Range::new((start_line, start_col), (end_line, end_col + 1)),
-            deleted.clone(),
-            cursor_before,
-        )),
-    };
-    if let Some(change) = repeat_change {
-        let cm = editor.buffer_mut().change_manager_mut();
-        cm.last_change = Some(change);
-        cm.last_repeat_action = None;
+    // Set dot-repeat template as a semantic RepeatAction for all visual delete modes.
+    match mode {
+        Mode::VisualLine => {
+            let line_count = end_line.saturating_sub(start_line) + 1;
+            editor.set_repeat_action(RepeatAction::DeleteVisualLine { line_count });
+        }
+        Mode::VisualBlock => {
+            let line_count = end_line.saturating_sub(start_line) + 1;
+            let width = end_col.saturating_sub(start_col) + 1;
+            editor.set_repeat_action(RepeatAction::DeleteVisualBlock { line_count, width });
+        }
+        _ => {
+            let line_delta = end_line.saturating_sub(start_line);
+            let offset_col = if line_delta == 0 {
+                end_col.saturating_add(1).saturating_sub(start_col)
+            } else {
+                end_col.saturating_add(1)
+            };
+            editor.set_repeat_action(RepeatAction::DeleteVisualChar {
+                line_delta,
+                offset_col,
+            });
+        }
     }
 
     // Register handling

@@ -65,8 +65,8 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 - [x] `cf/ct` with change operator now uses `PendingChangeRepeat` in `char_motion.rs`.
 - [x] Visual delete undo path uses `record()` + `push_recorded_undo()` in `helpers.rs`.
+- [x] Visual delete dot-repeat now uses `RepeatAction` across char/line/block selections.
 - [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
-- [ ] Decide whether visual delete dot-repeat should migrate to a dedicated `RepeatAction` shape (especially visual block), or remain on `last_change` templating.
 - [x] LSP/workspace text edits now record undo entries per edited buffer (current + non-current) without polluting dot-repeat templates.
 
 #### Remaining `add_change` callsites (current snapshot: 26 in `ovim-core/src`)
@@ -84,7 +84,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 #### Practical migration targets
 
-1. Visual delete repeat: either keep current hybrid behavior or add a full `RepeatAction` representation (including block semantics).
+1. Visual block change (`Ctrl-V ... c ... .`) is still TODO (ignored regression test in `visual_block_mode_test`).
 2. LSP workspace `ResourceOp` undo (create/rename/delete) remains out-of-band and is not integrated into buffer undo stacks.
 
 ---
