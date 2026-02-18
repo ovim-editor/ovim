@@ -25,6 +25,7 @@ Recent undo-migration commits:
 14. `67192db` - Migrate remaining Ex command undo paths
 15. `d473ae3` - Refactor insert helper undo paths to apply_change
 16. `bace2ba` - Token-harden visual-block change undo merge
+17. `423d936` - Migrate cw change path to tokenized repeat flow
 
 ## What Landed
 
@@ -122,6 +123,15 @@ Files:
     - `test_ctrl_v_change_undo_does_not_consume_prior_change_macro_flow`
     - `test_ctrl_v_insert_undo_does_not_consume_prior_change_macro_flow`
 
+### K) `cw` tokenized pending-change migration
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/normal/operators.rs`
+  - `handle_cw` now records delete edits with `record()` and stores a delete token in `PendingChangeRepeat`.
+- `/Users/adrian/Projects/ovim/ovim-core/src/repeat_action.rs`
+  - Added `RepeatAction::DeleteWordChange { count }` for `cw` delete-phase semantics (`word_end_forward_prefer_current` + inclusive delete).
+- `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
+  - Added macro regression: `test_dot_repeat_cw_semantic_undo_granularity_macro_flow`.
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -142,6 +152,8 @@ Files:
 - `cargo test -p ovim --test ctrl_commands_test -- --nocapture`
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture`
+- `cargo test -p ovim --test change_operations_test -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
