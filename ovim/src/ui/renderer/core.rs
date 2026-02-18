@@ -371,13 +371,15 @@ fn render_overlays(
 
     // Top-right toast overlays (diagnostics + transient notifications) — hidden during full-screen overlays
     let mode = editor.mode();
+    let blocking_modal_active = has_blocking_modal(editor);
     let hide_toasts = matches!(
         mode,
         crate::mode::Mode::Picker
             | crate::mode::Mode::LspManager
             | crate::mode::Mode::HoverPreview
             | crate::mode::Mode::HoverNavigate
-    ) || (mode == crate::mode::Mode::AiChat && editor.ai_chat_review_mode());
+    ) || (mode == crate::mode::Mode::AiChat && editor.ai_chat_review_mode())
+        || blocking_modal_active;
     if !hide_toasts {
         render_top_right_toasts(frame, editor, theme, ctx.layout.buffer_area);
     }
@@ -423,11 +425,20 @@ fn render_overlays(
     if editor.path_completion().is_visible() {
         render_path_completion(frame, editor, command_chunk);
     }
+}
 
-    if editor.mode() == crate::mode::Mode::AiChat
+fn has_blocking_modal(editor: &Editor) -> bool {
+    editor.mode() == crate::mode::Mode::AiChat
         && (editor.ai_chat_has_pending_tool_approval()
             || editor.ai_chat_has_pending_no_repo_folder_approval())
-    {
+}
+
+/// Render centered, blocking overlays after all other popup classes.
+///
+/// This tier is reserved for workflows that block agent/user progress until
+/// explicitly resolved. Keep these dialogs highly visible and singular.
+fn render_blocking_modals(frame: &mut Frame, editor: &Editor, theme: &Theme) {
+    if has_blocking_modal(editor) {
         render_ai_chat_permission_dialog(frame, editor, theme);
     }
 }
@@ -852,6 +863,7 @@ impl Renderer {
             viewport_start,
         };
         render_overlays(frame, editor, &theme, &ctx, areas.command_chunk);
+        render_blocking_modals(frame, editor, &theme);
         set_cursor_position(frame, editor, &ctx, areas.command_chunk, areas.chat_area);
     }
 
