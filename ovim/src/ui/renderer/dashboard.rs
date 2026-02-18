@@ -40,7 +40,7 @@ mod colors {
 }
 
 fn prettify_keys(keys: &str) -> String {
-    keys.replace("<Space>", "˄_˄")
+    keys.replace("<Space>", "␣")
 }
 
 /// Renders the dashboard screen
@@ -100,7 +100,7 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
 
     // Spacing + legend
     lines.push(Line::from(""));
-    let legend = "Press normal keys.  ˄_˄ means <Space>";
+    let legend = "Press normal keys.  ␣ means <Space>";
     let legend_padding = if area.width as usize > legend.len() {
         " ".repeat((area.width as usize - legend.len()) / 2)
     } else {
@@ -225,6 +225,6 @@ mod tests {
 
     #[test]
     fn test_prettify_keys() {
-        assert_eq!(prettify_keys("<Space>sf"), "˄_˄sf");
+        assert_eq!(prettify_keys("<Space>sf"), "␣sf");
     }
 }
