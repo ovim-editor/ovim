@@ -314,6 +314,25 @@ fn test_dot_repeat_ci_paren_undo_granularity_macro_flow() {
     }
 }
 
+#[test]
+fn test_dot_repeat_guiw_semantic_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "HELLO WORLD AGAIN\n";
+        step "0guiw" => |test| {
+            assert_eq!(test.buffer_content(), "hello WORLD AGAIN\n");
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "hello world AGAIN\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello WORLD AGAIN\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "HELLO WORLD AGAIN\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with visual mode operations
 // ============================================================================
