@@ -77,12 +77,14 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for text-object change repeat/undo granularity (`ci(` + `.` + `u`) in `dot_repeat_test`.
 - [x] Text-object case operators (`gu/gU/g~` + text objects) migrated to recorded undo + `RepeatAction` semantic dot-repeat.
 - [x] Added macro regression coverage for semantic `guiw` dot-repeat + undo granularity.
+- [x] `:global ... d` delete path now records undo via `record()` + `push_recorded_undo()` instead of manual composite `add_change`.
+- [x] Added macro regression coverage for `:global` delete undo/redo flow.
 
-#### Remaining `add_change` callsites (current snapshot: 21 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 20 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
-| `input/commands.rs` | 7 | Ex/command-mode edits; mostly intentional Pattern A |
+| `input/commands.rs` | 6 | Ex/command-mode edits; mostly intentional Pattern A |
 | `input/insert_mode.rs` | 4 | Core insert-mode batching and semantic change finalization; intentional |
 | `input/helpers.rs` | 4 | Insert-mode helper edits that intentionally compose with insert sessions |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
