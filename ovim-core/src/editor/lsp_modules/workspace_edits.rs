@@ -3,9 +3,10 @@
 //! This module handles applying text edits and workspace edits from LSP responses.
 //! Used by rename, code actions, formatting, and organize imports.
 
-use super::super::Editor;
+use super::super::{Change, Editor};
 use crate::lsp::uri_to_file_path;
 use anyhow::Result;
+use std::path::PathBuf;
 
 /// Extract `TextEdit` values from a slice of `OneOf<TextEdit, AnnotatedTextEdit>`.
 pub(in crate::editor) fn extract_text_edits(
@@ -38,8 +39,10 @@ impl Editor {
             for edit in sorted_edits {
                 let start_line = edit.range.start.line as usize;
                 let end_line = edit.range.end.line as usize;
-                let start_col = Self::utf16_to_col_for_buffer(buf, start_line, edit.range.start.character);
-                let end_col = Self::utf16_to_col_for_buffer(buf, end_line, edit.range.end.character);
+                let start_col =
+                    Self::utf16_to_col_for_buffer(buf, start_line, edit.range.start.character);
+                let end_col =
+                    Self::utf16_to_col_for_buffer(buf, end_line, edit.range.end.character);
 
                 if start_line != end_line || start_col != end_col {
                     buf.delete_range(start_line, start_col, end_line, end_col);
@@ -129,8 +132,13 @@ impl Editor {
                                 }
                             }
                             lsp_types::DocumentChangeOperation::Op(resource_op) => {
-                                if !Self::apply_resource_op(resource_op) {
+                                let cursor_before = self.cursor_position();
+                                let (applied, undo_change) =
+                                    Self::apply_resource_op(resource_op, cursor_before);
+                                if !applied {
                                     all_applied = false;
+                                } else if let Some(change) = undo_change {
+                                    self.push_resource_undo_change(change);
                                 }
                             }
                         }
@@ -165,13 +173,52 @@ impl Editor {
         }
     }
 
+    fn snapshot_paths(paths: &[PathBuf]) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        paths
+            .iter()
+            .map(|path| (path.clone(), Change::snapshot_file(path)))
+            .collect()
+    }
+
+    fn build_resource_undo_change(
+        before: Vec<(PathBuf, Option<Vec<u8>>)>,
+        after: Vec<(PathBuf, Option<Vec<u8>>)>,
+        cursor: (usize, usize),
+    ) -> Option<Change> {
+        let mut snapshots = Vec::new();
+        for ((path, before_bytes), (_, after_bytes)) in before.into_iter().zip(after.into_iter()) {
+            if before_bytes != after_bytes {
+                snapshots.push((path, before_bytes, after_bytes));
+            }
+        }
+
+        if snapshots.is_empty() {
+            None
+        } else {
+            Some(Change::resource_op(snapshots, cursor, cursor))
+        }
+    }
+
+    fn push_resource_undo_change(&mut self, change: Change) {
+        let edit_pos = change.edit_position();
+        let cm = self.buffer_mut().change_manager_mut();
+        cm.note_edit_position(edit_pos);
+        cm.undo_stack.push(change);
+        cm.redo_stack.clear();
+    }
+
     /// Apply a resource operation (create, rename, delete).
-    fn apply_resource_op(resource_op: lsp_types::ResourceOp) -> bool {
+    fn apply_resource_op(
+        resource_op: lsp_types::ResourceOp,
+        cursor: (usize, usize),
+    ) -> (bool, Option<Change>) {
         match resource_op {
             lsp_types::ResourceOp::Create(create_file) => {
                 let Some(file_path) = uri_to_file_path(&create_file.uri) else {
-                    return false;
+                    return (false, None);
                 };
+                let paths = vec![file_path.clone()];
+                let before = Self::snapshot_paths(&paths);
 
                 let should_create = create_file
                     .options
@@ -185,30 +232,48 @@ impl Editor {
                     })
                     .unwrap_or(!file_path.exists());
 
-                !should_create || std::fs::write(&file_path, "").is_ok()
+                let applied = !should_create || std::fs::write(&file_path, "").is_ok();
+                if !applied {
+                    return (false, None);
+                }
+                let after = Self::snapshot_paths(&paths);
+                (true, Self::build_resource_undo_change(before, after, cursor))
             }
             lsp_types::ResourceOp::Rename(rename_file) => {
                 let Some(old_path) = uri_to_file_path(&rename_file.old_uri) else {
-                    return false;
+                    return (false, None);
                 };
                 let Some(new_path) = uri_to_file_path(&rename_file.new_uri) else {
-                    return false;
+                    return (false, None);
                 };
+                let paths = vec![old_path.clone(), new_path.clone()];
+                let before = Self::snapshot_paths(&paths);
 
                 if let Some(parent) = new_path.parent() {
                     if !parent.exists() && std::fs::create_dir_all(parent).is_err() {
-                        return false;
+                        return (false, None);
                     }
                 }
 
-                std::fs::rename(&old_path, &new_path).is_ok()
+                if std::fs::rename(&old_path, &new_path).is_err() {
+                    return (false, None);
+                }
+                let after = Self::snapshot_paths(&paths);
+                (true, Self::build_resource_undo_change(before, after, cursor))
             }
             lsp_types::ResourceOp::Delete(delete_file) => {
                 let Some(file_path) = uri_to_file_path(&delete_file.uri) else {
-                    return false;
+                    return (false, None);
                 };
+                let paths = vec![file_path.clone()];
+                let before = Self::snapshot_paths(&paths);
 
-                !file_path.exists() || std::fs::remove_file(&file_path).is_ok()
+                let applied = !file_path.exists() || std::fs::remove_file(&file_path).is_ok();
+                if !applied {
+                    return (false, None);
+                }
+                let after = Self::snapshot_paths(&paths);
+                (true, Self::build_resource_undo_change(before, after, cursor))
             }
         }
     }

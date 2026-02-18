@@ -39,6 +39,7 @@ use crate::repeat_action::RepeatAction;
 use crate::search::Search;
 use crate::textobjects::TextObjects;
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 /// Position in the buffer (line, column)
 pub type Position = (usize, usize);
@@ -186,6 +187,13 @@ pub enum Change {
         /// Multiple Recorded changes with the same group_id are undone together.
         undo_group_id: Option<u64>,
     },
+    /// Filesystem snapshots for LSP workspace `ResourceOp` (create/rename/delete).
+    /// Undo restores `before` bytes; redo applies `after` bytes.
+    ResourceOp {
+        snapshots: Vec<(PathBuf, Option<Vec<u8>>, Option<Vec<u8>>)>,
+        cursor_before: Position,
+        cursor_after: Position,
+    },
 }
 
 impl Change {
@@ -311,6 +319,19 @@ impl Change {
             cursor_before,
             cursor_after,
             undo_group_id: Some(group_id),
+        }
+    }
+
+    /// Creates a ResourceOp snapshot change (filesystem-only, no buffer edits).
+    pub fn resource_op(
+        snapshots: Vec<(PathBuf, Option<Vec<u8>>, Option<Vec<u8>>)>,
+        cursor_before: Position,
+        cursor_after: Position,
+    ) -> Self {
+        Self::ResourceOp {
+            snapshots,
+            cursor_before,
+            cursor_after,
         }
     }
 
@@ -444,6 +465,18 @@ impl Change {
             } => {
                 for edit in edits {
                     edit.apply(buffer);
+                }
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_after.0, cursor_after.1);
+            }
+            Self::ResourceOp {
+                snapshots,
+                cursor_after,
+                ..
+            } => {
+                for (path, _, after) in snapshots {
+                    Self::restore_file_snapshot(path, after);
                 }
                 buffer
                     .cursor_mut()
@@ -594,6 +627,19 @@ impl Change {
                 // Apply inverse edits in reverse order
                 for edit in edits.iter().rev() {
                     edit.inverse().apply(buffer);
+                }
+                buffer
+                    .cursor_mut()
+                    .set_position(cursor_before.0, cursor_before.1);
+                buffer.validate_cursor_position();
+            }
+            Self::ResourceOp {
+                snapshots,
+                cursor_before,
+                ..
+            } => {
+                for (path, before, _) in snapshots.iter().rev() {
+                    Self::restore_file_snapshot(path, before);
                 }
                 buffer
                     .cursor_mut()
@@ -851,6 +897,9 @@ impl Change {
                     .cursor_mut()
                     .set_position(cursor_after.0, cursor_after.1);
             }
+            Self::ResourceOp { .. } => {
+                // Intentionally non-repeatable via `.`.
+            }
         }
     }
 
@@ -904,6 +953,34 @@ impl Change {
         }
     }
 
+    pub(crate) fn snapshot_file(path: &Path) -> Option<Vec<u8>> {
+        if !path.exists() || path.is_dir() {
+            return None;
+        }
+        std::fs::read(path).ok()
+    }
+
+    fn restore_file_snapshot(path: &Path, snapshot: &Option<Vec<u8>>) {
+        match snapshot {
+            Some(bytes) => {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, bytes);
+            }
+            None => {
+                if !path.exists() {
+                    return;
+                }
+                if path.is_dir() {
+                    let _ = std::fs::remove_dir_all(path);
+                } else {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+
     /// Helper to calculate end position after inserting text
     fn calculate_end_position(start: Position, text: &str) -> Position {
         let mut line = start.0;
@@ -948,6 +1025,7 @@ impl Change {
                 }
                 result
             }
+            Self::ResourceOp { .. } => String::new(),
         }
     }
 
@@ -982,6 +1060,7 @@ impl Change {
             Self::ReplaceMode { cursor_before, .. } => *cursor_before,
             Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before,
             Self::Recorded { cursor_before, .. } => *cursor_before,
+            Self::ResourceOp { cursor_before, .. } => *cursor_before,
         }
     }
 
@@ -996,6 +1075,7 @@ impl Change {
             Self::ReplaceMode { cursor_before, .. } => *cursor_before = pos,
             Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before = pos,
             Self::Recorded { cursor_before, .. } => *cursor_before = pos,
+            Self::ResourceOp { cursor_before, .. } => *cursor_before = pos,
         }
     }
 
@@ -1010,6 +1090,7 @@ impl Change {
             Self::ReplaceMode { cursor_after, .. } => *cursor_after = pos,
             Self::ChangeSearchMatch { cursor_after, .. } => *cursor_after = pos,
             Self::Recorded { cursor_after, .. } => *cursor_after = pos,
+            Self::ResourceOp { cursor_after, .. } => *cursor_after = pos,
         }
     }
 }
