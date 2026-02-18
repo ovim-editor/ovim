@@ -362,32 +362,18 @@ impl Editor {
             .cloned()
         {
             // Perform the substitution
-            let cursor_before = (self.buffer().cursor().line(), self.buffer().cursor().col());
-
-            // Delete the matched text
-            let version_before_delete = self.buffer().version();
-            let deleted = self
-                .buffer_mut()
-                .delete_range(line, start_col, line, end_col);
-            let deleted_match = self.buffer().version() != version_before_delete;
-            let delete_range = Range::new((line, start_col), (line, end_col));
-            let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-            // Insert the replacement
-            let insert_change =
-                Change::insert((line, start_col), replacement.clone(), cursor_before);
-            let version_before = self.buffer().version();
-            insert_change.apply(self.buffer_mut());
-            let inserted = self.buffer().version() != version_before;
-
-            if deleted_match {
-                self.add_change(delete_change);
-            }
-            if inserted {
-                self.add_change(insert_change);
-            }
-            if deleted_match || inserted {
-                self.mark_buffer_modified();
+            let cursor_before = self.cursor_position();
+            let ((), edits) = self.buffer_mut().record(|buf| {
+                // Always perform delete + insert for confirmed matches so undo
+                // round-trips exactly what the user confirmed.
+                buf.delete_range(line, start_col, line, end_col);
+                if !replacement.is_empty() {
+                    buf.insert_text_at(line, start_col, &replacement);
+                }
+            });
+            if !edits.is_empty() {
+                let cursor_after = self.cursor_position();
+                self.push_recorded_undo(edits, cursor_before, cursor_after);
             }
 
             self.editing.substitute_match_index += 1;

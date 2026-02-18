@@ -257,6 +257,48 @@ fn test_command_substitute_all_lines() {
     assert!(!content.contains("hello") || content.matches("hello").count() == 1);
 }
 
+#[test]
+fn test_command_substitute_confirm_yes_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "foo\n";
+        step ":%s/foo/bar/c<CR>" => |test| {
+            test.assert_mode(ovim::mode::Mode::SubstituteConfirm);
+            assert_eq!(test.buffer_content(), "foo\n");
+        }
+        step "y" => |test| {
+            test.assert_mode(ovim::mode::Mode::Normal);
+            assert_eq!(test.buffer_content(), "bar\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "foo\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "bar\n");
+        }
+    }
+}
+
+#[test]
+fn test_command_substitute_confirm_all_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "foo foo\n";
+        step ":%s/foo/bar/gc<CR>" => |test| {
+            test.assert_mode(ovim::mode::Mode::SubstituteConfirm);
+            assert_eq!(test.buffer_content(), "foo foo\n");
+        }
+        step "a" => |test| {
+            test.assert_mode(ovim::mode::Mode::Normal);
+            assert_eq!(test.buffer_content(), "bar bar\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "bar foo\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "foo foo\n");
+        }
+    }
+}
+
 /// Test :d command (delete line)
 #[test]
 fn test_command_delete() {
