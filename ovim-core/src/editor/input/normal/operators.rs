@@ -14,8 +14,8 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Change, CharMotion, Editor, InputState, Motions, Operator, PendingChangeRepeat,
-    PendingSemanticChange, Range, RegisterType,
+    CharMotion, Editor, InputState, Motions, Operator, PendingChangeRepeat, PendingSemanticChange,
+    Range, RegisterType,
 };
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
@@ -1285,30 +1285,33 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
         let end_col = (start_col + count).min(line_len);
 
         if start_col < end_col {
-            let start_pos = (line_idx, start_col);
-            let end_pos = (line_idx, end_col);
+            let (deleted, edits) = editor.buffer_mut().record(|buf| {
+                let d = buf.delete_range(line_idx, start_col, line_idx, end_col);
+                buf.cursor_mut().set_position(line_idx, start_col);
+                d
+            });
+            let delete_token = if !edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                let token =
+                    editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+                editor.delete_to_register(deleted);
+                editor.mark_buffer_modified();
+                Some(token)
+            } else {
+                None
+            };
 
-            editor.start_change_building(cursor_before);
-
-            let version_before = editor.buffer().version();
-            let deleted = editor
-                .buffer_mut()
-                .delete_range(line_idx, start_col, line_idx, end_col);
-            if editor.buffer().version() == version_before {
-                editor.clear_count();
-                return Ok(());
-            }
-            let range = Range::new(start_pos, end_pos);
-            let change = Change::delete(range, deleted.clone(), cursor_before);
-
-            editor.delete_to_register(deleted);
-            editor.add_change(change);
-            editor.mark_buffer_modified();
+            editor.set_pending_change_repeat(PendingChangeRepeat {
+                delete_action: RepeatAction::DeleteCharForward { count },
+                linewise: false,
+                delete_token,
+            });
             editor
                 .buffer_mut()
                 .cursor_mut()
                 .set_position(line_idx, start_col);
 
+            editor.start_change_building(editor.cursor_position());
             editor.clear_count();
             editor.set_mode(Mode::Insert);
             return Ok(());

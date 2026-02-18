@@ -84,6 +84,13 @@ pub enum RepeatAction {
     PasteAfter { count: usize },
     /// P — paste before cursor
     PasteBefore { count: usize },
+    /// o/O — open a line below/above, then replay inserted text
+    OpenLine {
+        above: bool,
+        inserted_text: String,
+        shift_width: usize,
+        expand_tab: bool,
+    },
     /// Change operator — semantic delete + insert text (cc, C, s, S, cj, ck, etc.)
     Change {
         delete: Box<RepeatAction>,
@@ -212,6 +219,88 @@ impl RepeatAction {
             Self::PasteAfter { .. } | Self::PasteBefore { .. } => {
                 // Intentional no-op: paste repeat is intercepted in repeat_last_change()
                 // before execute() is called, because it needs Editor-level register access.
+            }
+            Self::OpenLine {
+                above,
+                inserted_text,
+                shift_width,
+                expand_tab,
+            } => {
+                let line_idx = buffer.cursor().line();
+                let line_text = buffer.line(line_idx).unwrap_or_default();
+
+                let mut indent: String = line_text
+                    .chars()
+                    .take_while(|c| c.is_whitespace() && *c != '\n')
+                    .collect();
+
+                if !*above {
+                    // Match `o` behavior: add one extra indent level after opening delimiters.
+                    let trimmed =
+                        line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
+                    if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+                        if *expand_tab {
+                            indent.push_str(&" ".repeat(*shift_width));
+                        } else {
+                            indent.push('\t');
+                        }
+                    }
+                }
+
+                if *above {
+                    let text = format!("{}\n", indent);
+                    buffer.insert_text_at(line_idx, 0, &text);
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx, indent.chars().count());
+                } else {
+                    let (insert_pos, text) = if line_text.ends_with('\n') {
+                        ((line_idx + 1, 0), format!("{}\n", indent))
+                    } else {
+                        let line_len = line_text.chars().count();
+                        ((line_idx, line_len), format!("\n{}\n", indent))
+                    };
+                    buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx + 1, indent.chars().count());
+                }
+
+                if inserted_text.is_empty() {
+                    // Match insert-mode exit cleanup for `o/O<Esc>` on whitespace-only lines.
+                    let current_line = buffer.cursor().line();
+                    if let Some(line) = buffer.line(current_line) {
+                        let line_wo_nl = line.trim_end_matches('\n');
+                        if !line_wo_nl.is_empty()
+                            && line_wo_nl.chars().all(|c| c.is_whitespace())
+                        {
+                            let whitespace_len = line_wo_nl.chars().count();
+                            buffer.delete_range(current_line, 0, current_line, whitespace_len);
+                            buffer.cursor_mut().set_position(current_line, 0);
+                        }
+                    }
+                    return;
+                }
+
+                let line = buffer.cursor().line();
+                let col = buffer.cursor().col();
+                buffer.insert_text_at(line, col, inserted_text);
+
+                // Position cursor at end of inserted text - 1 (Vim Esc behavior)
+                let mut final_line = line;
+                let mut final_col = col;
+                for ch in inserted_text.chars() {
+                    if ch == '\n' {
+                        final_line += 1;
+                        final_col = 0;
+                    } else {
+                        final_col += 1;
+                    }
+                }
+                if final_col > 0 {
+                    final_col -= 1;
+                }
+                buffer.cursor_mut().set_position(final_line, final_col);
             }
             Self::Change {
                 delete,

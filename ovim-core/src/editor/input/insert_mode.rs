@@ -9,7 +9,7 @@
 //! - Visual block insert state handling
 //! - Tab/auto-indent
 
-use crate::editor::{Change, Editor, Range};
+use crate::editor::{Change, Editor, InsertEntryMode, Range};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent, Modifiers};
@@ -183,8 +183,51 @@ fn exit_insert_mode(editor: &mut Editor) {
         editor.add_change(semantic_change);
     }
 
+    // For o/O insert sessions, use RepeatAction instead of Composite::repeat
+    // special-casing so dot-repeat follows Pattern B semantics.
+    let open_line_repeat = editor
+        .last_change()
+        .and_then(|change| match change {
+            Change::Composite {
+                changes,
+                entry_mode: InsertEntryMode::OpenBelow,
+                ..
+            } => {
+                let mut inserted_text = String::new();
+                for ch in changes.iter().skip(1) {
+                    inserted_text.push_str(&ch.get_inserted_text());
+                }
+                Some(RepeatAction::OpenLine {
+                    above: false,
+                    inserted_text,
+                    shift_width: editor.options.shift_width,
+                    expand_tab: editor.options.expand_tab,
+                })
+            }
+            Change::Composite {
+                changes,
+                entry_mode: InsertEntryMode::OpenAbove,
+                ..
+            } => {
+                let mut inserted_text = String::new();
+                for ch in changes.iter().skip(1) {
+                    inserted_text.push_str(&ch.get_inserted_text());
+                }
+                Some(RepeatAction::OpenLine {
+                    above: true,
+                    inserted_text,
+                    shift_width: editor.options.shift_width,
+                    expand_tab: editor.options.expand_tab,
+                })
+            }
+            _ => None,
+        });
+
     // Update the . register with the last inserted text
     editor.update_last_inserted_register();
+    if let Some(action) = open_line_repeat {
+        editor.set_repeat_action(action);
+    }
 
     // If we were in visual block insert/append mode, replay the changes on all other lines
     let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
