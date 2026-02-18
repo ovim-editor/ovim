@@ -9,6 +9,7 @@ use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApproval
 use anyhow::Result;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use super::ai_chat_state::{PendingAiChatJob, PendingToolApproval, ToolEventSummary};
@@ -64,7 +65,9 @@ impl Editor {
         // Base capabilities from profile scope
         let mut caps = Capabilities {
             file_scope: profile_scope.files,
-            shell: profile_scope.shell,
+            // Enable shell capability for editable chats by default. External
+            // execution remains constrained by explicit tool allowlists.
+            shell: profile_scope.shell || allow_edits,
             network: profile_scope.network,
             allow_mutations: allow_edits,
         };
@@ -266,6 +269,7 @@ impl Editor {
 
         let tool_def = self.ai_state.tool_registry.get(&tc.name)?;
         let is_mutation = tool_def.side_effect == SideEffect::Mutation;
+        let is_external = tool_def.side_effect == SideEffect::External;
         let is_sensitive = requested_path
             .as_ref()
             .and_then(|p| sensitive_path_reason(p))
@@ -277,7 +281,10 @@ impl Editor {
         let requires = match mode {
             ToolApprovalMode::Auto => false,
             ToolApprovalMode::SensitivePrompt => {
-                is_project_scan || is_sensitive || (is_mutation && !is_current_target)
+                is_project_scan
+                    || is_sensitive
+                    || is_external
+                    || (is_mutation && !is_current_target)
             }
             ToolApprovalMode::AlwaysPrompt => true,
         };
@@ -309,6 +316,8 @@ impl Editor {
         };
         let reason = if mode == ToolApprovalMode::AlwaysPrompt {
             "policy requires explicit approval"
+        } else if is_external {
+            "shell command execution requires approval"
         } else if is_mutation {
             "mutation tools require approval"
         } else if is_project_scan {
@@ -443,9 +452,7 @@ impl Editor {
             },
             Some(SideEffect::Navigation) => self.execute_navigation_tool(&tc.name, &tc.arguments),
             Some(SideEffect::Mutation) => self.execute_mutation_tool(&tc.name, &tc.arguments),
-            Some(SideEffect::External) => {
-                ToolResult::Error("external tools not yet supported".into())
-            }
+            Some(SideEffect::External) => self.execute_external_tool(&tc.name, &tc.arguments),
             None => ToolResult::Error(format!("unknown tool: {}", tc.name)),
         };
         ToolDispatchOutcome::Completed(result)
@@ -998,6 +1005,17 @@ impl Editor {
                 ToolSummaryKind::Mutation,
                 format!("{} restored", mutation_target),
             ),
+            "bash" => {
+                let command = tc
+                    .arguments
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("bash");
+                (
+                    ToolSummaryKind::Other,
+                    format!("bash {}", compact_tool_label(command)),
+                )
+            }
             "document_symbols" | "hover" | "goto_definition" => {
                 (ToolSummaryKind::Read, tc.name.clone())
             }
@@ -1838,6 +1856,121 @@ impl Editor {
     }
 
     // -----------------------------------------------------------------
+    // External tool dispatch
+    // -----------------------------------------------------------------
+
+    /// Execute an external tool (`bash`) with explicit command allowlists.
+    pub(crate) fn execute_external_tool(
+        &mut self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> ToolResult {
+        let Some(tool_def) = self.ai_state.tool_registry.get(name).cloned() else {
+            return ToolResult::Error(format!("unknown tool: {name}"));
+        };
+
+        let caps = self.build_chat_capabilities();
+        if !caps.allows_side_effect(tool_def.side_effect) {
+            return ToolResult::Error(format!(
+                "tool '{}' blocked: shell access not allowed in current context",
+                name
+            ));
+        }
+        if !caps.contains(&tool_def.required_scope) {
+            return ToolResult::Error(format!(
+                "tool '{}' requires scope not granted by current context",
+                name
+            ));
+        }
+
+        match name {
+            "bash" => self.handle_bash_tool(args),
+            _ => ToolResult::Error(format!("unknown external tool: {name}")),
+        }
+    }
+
+    fn handle_bash_tool(&self, args: &serde_json::Value) -> ToolResult {
+        let command = match args.get("command").and_then(|v| v.as_str()).map(str::trim) {
+            Some(cmd) if !cmd.is_empty() => cmd,
+            _ => {
+                return ToolResult::Error("'command' is required and must be non-empty".to_string())
+            }
+        };
+
+        let argv = match parse_bash_command(command) {
+            Ok(tokens) => tokens,
+            Err(err) => return ToolResult::Error(err),
+        };
+        let Some(bin) = argv.first().map(String::as_str) else {
+            return ToolResult::Error("'command' is required and must be non-empty".to_string());
+        };
+        if !is_allowed_bash_binary(bin) {
+            return ToolResult::Error(format!(
+                "command '{}' is not on the bash allowlist. Allowed: {}",
+                bin,
+                DEFAULT_BASH_ALLOWLIST.join(", ")
+            ));
+        }
+
+        let workdir = self
+            .ai_effective_project_root()
+            .or_else(|| self.ai_project_start_path())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let output = match Command::new(bin)
+            .args(argv.iter().skip(1))
+            .current_dir(&workdir)
+            .output()
+        {
+            Ok(o) => o,
+            Err(err) => return ToolResult::Error(format!("failed to execute '{}': {}", bin, err)),
+        };
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut body = String::new();
+        if !stdout.trim_end().is_empty() {
+            body.push_str(stdout.trim_end());
+        }
+        if !stderr.trim_end().is_empty() {
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str("stderr:\n");
+            body.push_str(stderr.trim_end());
+        }
+
+        let status_line = match output.status.code() {
+            Some(code) => format!("exit code {code}"),
+            None => "terminated by signal".to_string(),
+        };
+        let cmd_label = compact_tool_label(command);
+
+        if output.status.success() {
+            let out = if body.is_empty() {
+                format!(
+                    "bash `{}` succeeded ({status_line}) with no output.",
+                    cmd_label
+                )
+            } else {
+                format!("bash `{}` succeeded ({status_line}).\n{}", cmd_label, body)
+            };
+            ToolResult::Success(truncate_utf8_with_notice(&out, 64 * 1024))
+        } else {
+            let out = if body.is_empty() {
+                format!(
+                    "bash `{}` failed ({status_line}) with no output.",
+                    cmd_label
+                )
+            } else {
+                format!("bash `{}` failed ({status_line}).\n{}", cmd_label, body)
+            };
+            ToolResult::Error(truncate_utf8_with_notice(&out, 64 * 1024))
+        }
+    }
+
+    // -----------------------------------------------------------------
     // LSP tool dispatch
     // -----------------------------------------------------------------
 
@@ -1938,6 +2071,14 @@ impl Editor {
                 if !mutation_tools.is_empty() {
                     prompt.push_str(&format!("Edit: {}\n", mutation_tools.join(", ")));
                 }
+            }
+            let external_tools: Vec<&str> = tools
+                .iter()
+                .filter(|t| t.side_effect == SideEffect::External)
+                .map(|t| t.name.as_str())
+                .collect();
+            if !external_tools.is_empty() {
+                prompt.push_str(&format!("Shell: {}\n", external_tools.join(", ")));
             }
 
             prompt.push_str(
@@ -2220,6 +2361,101 @@ fn to_relative_path_for_boundary(path: &Path, boundary_root: &Path) -> String {
     } else {
         rel.to_string_lossy().to_string()
     }
+}
+
+const DEFAULT_BASH_ALLOWLIST: &[&str] = &[
+    "basename", "cat", "cut", "dirname", "echo", "file", "find", "grep", "head", "ls", "nl", "pwd",
+    "readlink", "realpath", "rg", "sed", "sort", "stat", "tail", "tr", "uniq", "wc",
+];
+
+fn is_allowed_bash_binary(bin: &str) -> bool {
+    if bin.is_empty() {
+        return false;
+    }
+    if bin.contains('/') || bin.contains('\\') {
+        return false;
+    }
+    DEFAULT_BASH_ALLOWLIST.contains(&bin)
+}
+
+fn parse_bash_command(command: &str) -> std::result::Result<Vec<String>, String> {
+    if command.trim().is_empty() {
+        return Err("'command' is required and must be non-empty".to_string());
+    }
+
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = command.chars().peekable();
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum QuoteMode {
+        None,
+        Single,
+        Double,
+    }
+
+    let mut quote_mode = QuoteMode::None;
+    while let Some(ch) = chars.next() {
+        match quote_mode {
+            QuoteMode::None => match ch {
+                ' ' | '\t' | '\n' => {
+                    if !current.is_empty() {
+                        tokens.push(std::mem::take(&mut current));
+                    }
+                }
+                '\'' => quote_mode = QuoteMode::Single,
+                '"' => quote_mode = QuoteMode::Double,
+                '\\' => {
+                    let Some(next) = chars.next() else {
+                        return Err("invalid command: trailing escape".to_string());
+                    };
+                    current.push(next);
+                }
+                ';' | '|' | '&' | '<' | '>' | '$' | '`' => {
+                    return Err(
+                        "invalid command: shell operators are not allowed in bash tool input"
+                            .to_string(),
+                    )
+                }
+                _ => current.push(ch),
+            },
+            QuoteMode::Single => {
+                if ch == '\'' {
+                    quote_mode = QuoteMode::None;
+                } else {
+                    current.push(ch);
+                }
+            }
+            QuoteMode::Double => match ch {
+                '"' => quote_mode = QuoteMode::None,
+                '\\' => {
+                    let Some(next) = chars.next() else {
+                        return Err("invalid command: trailing escape".to_string());
+                    };
+                    current.push(next);
+                }
+                '$' | '`' => {
+                    return Err(
+                        "invalid command: expansions are not allowed in bash tool input"
+                            .to_string(),
+                    )
+                }
+                _ => current.push(ch),
+            },
+        }
+    }
+
+    if quote_mode != QuoteMode::None {
+        return Err("invalid command: unmatched quote".to_string());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        return Err("'command' is required and must be non-empty".to_string());
+    }
+
+    Ok(tokens)
 }
 
 // ---------------------------------------------------------------------------
@@ -2518,7 +2754,7 @@ fn compact_tool_path(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
-    use crate::ai::FileScope;
+    use crate::ai::{FileScope, ToolApprovalMode};
     use std::fs;
 
     fn set_active_profile_project_scope(editor: &mut Editor) {
@@ -2747,6 +2983,22 @@ mod tests {
                 .unwrap_or_else(|_| normalize_path(&repo_b));
             assert_eq!(detected, expected);
         });
+    }
+
+    #[test]
+    fn parse_bash_command_handles_quotes_and_rejects_operators() {
+        let parsed = parse_bash_command("rg \"hello world\" src").expect("parse");
+        assert_eq!(parsed, vec!["rg", "hello world", "src"]);
+
+        assert!(parse_bash_command("ls | head").is_err());
+        assert!(parse_bash_command("echo $HOME").is_err());
+    }
+
+    #[test]
+    fn bash_allowlist_requires_bare_command_name() {
+        assert!(is_allowed_bash_binary("rg"));
+        assert!(!is_allowed_bash_binary("/bin/rg"));
+        assert!(!is_allowed_bash_binary("rm"));
     }
 
     #[test]
@@ -3120,6 +3372,116 @@ mod tests {
         assert!(names.contains(&"open_file"));
         assert!(!names.contains(&"list_files"));
         assert!(!names.contains(&"search_project"));
+    }
+
+    #[test]
+    fn editable_chat_enables_bash_tool_by_default() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        let caps = editor.build_chat_capabilities();
+        assert!(caps.shell, "editable chat should enable shell capability");
+
+        let active = editor.ai_state.active_profile.clone();
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&active)
+            .expect("profile");
+        let names: Vec<&str> = editor
+            .ai_state
+            .tool_registry
+            .tools_for_profile(profile, &caps)
+            .into_iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert!(names.contains(&"bash"));
+    }
+
+    #[test]
+    fn bash_tool_rejects_non_allowlisted_command() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let file = dir.path().join("main.rs");
+            fs::write(&file, "fn main() {}\n").expect("seed");
+
+            let mut editor = Editor::default();
+            editor.open_file(&file).expect("open file");
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+
+            let tool_call = ToolCallInfo {
+                id: "call_bash".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({
+                    "command": "rm -rf /tmp/demo"
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                    assert!(err.contains("not on the bash allowlist"));
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
+                    panic!("expected allowlist error, got success: {ok}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn bash_tool_accepts_allowlisted_command_for_execution() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let file = dir.path().join("main.rs");
+            fs::write(&file, "fn main() {}\n").expect("seed");
+
+            let mut editor = Editor::default();
+            editor.open_file(&file).expect("open file");
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+
+            let tool_call = ToolCallInfo {
+                id: "call_bash_pwd".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({
+                    "command": "pwd"
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                    assert!(err.contains("failed to execute"));
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+        });
     }
 
     #[test]

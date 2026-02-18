@@ -59,6 +59,49 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
+    if editor.ai_chat_has_pending_no_repo_folder_approval() {
+        if key_event.code == KeyCode::Enter
+            || (key_event.code == KeyCode::Char('y')
+                && key_event.modifiers.contains(Modifiers::CONTROL))
+            || (key_event.code == KeyCode::Char('a')
+                && key_event.modifiers.contains(Modifiers::CONTROL))
+        {
+            editor.ai_chat_resolve_pending_no_repo_folder_approval(true);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Esc
+            || (key_event.code == KeyCode::Char('n')
+                && key_event.modifiers.contains(Modifiers::CONTROL))
+        {
+            editor.ai_chat_resolve_pending_no_repo_folder_approval(false);
+            return Ok(());
+        }
+        return Ok(());
+    }
+
+    if editor.ai_chat_has_pending_tool_approval() {
+        if key_event.code == KeyCode::Enter
+            || (key_event.code == KeyCode::Char('y')
+                && key_event.modifiers.contains(Modifiers::CONTROL))
+        {
+            editor.ai_chat_resolve_pending_tool_approval(true, false);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Char('a') && key_event.modifiers.contains(Modifiers::CONTROL)
+        {
+            editor.ai_chat_resolve_pending_tool_approval(true, true);
+            return Ok(());
+        }
+        if key_event.code == KeyCode::Esc
+            || (key_event.code == KeyCode::Char('n')
+                && key_event.modifiers.contains(Modifiers::CONTROL))
+        {
+            editor.ai_chat_resolve_pending_tool_approval(false, false);
+            return Ok(());
+        }
+        return Ok(());
+    }
+
     let focus = editor.ai_chat_focus();
 
     // --- Global keys (all zones) ---
@@ -78,44 +121,6 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
     }
     if key_event.code == KeyCode::PageDown {
         editor.scroll_page_down();
-        return Ok(());
-    }
-
-    if editor.ai_chat_has_pending_no_repo_folder_approval() {
-        if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL)
-        {
-            editor.ai_chat_resolve_pending_no_repo_folder_approval(true);
-            return Ok(());
-        }
-        if key_event.code == KeyCode::Char('a') && key_event.modifiers.contains(Modifiers::CONTROL)
-        {
-            editor.ai_chat_resolve_pending_no_repo_folder_approval(true);
-            return Ok(());
-        }
-        if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(Modifiers::CONTROL)
-        {
-            editor.ai_chat_resolve_pending_no_repo_folder_approval(false);
-            return Ok(());
-        }
-        return Ok(());
-    }
-
-    if editor.ai_chat_has_pending_tool_approval() {
-        if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL)
-        {
-            editor.ai_chat_resolve_pending_tool_approval(true, false);
-            return Ok(());
-        }
-        if key_event.code == KeyCode::Char('a') && key_event.modifiers.contains(Modifiers::CONTROL)
-        {
-            editor.ai_chat_resolve_pending_tool_approval(true, true);
-            return Ok(());
-        }
-        if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(Modifiers::CONTROL)
-        {
-            editor.ai_chat_resolve_pending_tool_approval(false, false);
-            return Ok(());
-        }
         return Ok(());
     }
 
@@ -512,6 +517,8 @@ fn move_cursor_vertical(input: &str, cursor: usize, direction: i8) -> usize {
 mod tests {
     use super::*;
     use crate::ai::chat_types::ChatOpts;
+    use crate::ai::chat_types::ToolCallInfo;
+    use std::path::PathBuf;
 
     fn open_test_chat(editor: &mut Editor) {
         editor
@@ -558,5 +565,70 @@ mod tests {
         let chat = editor.ai_state.chat.as_ref().expect("chat");
         assert!(chat.view_mode == crate::editor::ai_chat_state::ChatViewMode::ReviewFocused);
         assert_eq!(chat.agent_edits.total_edit_count(), 1);
+    }
+
+    #[test]
+    fn pending_folder_approval_accepts_enter_and_denies_esc() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.pending_no_repo_folder_approval = Some(PathBuf::from("/tmp/demo"));
+        }
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+            .expect("enter");
+        assert!(!editor.ai_chat_has_pending_no_repo_folder_approval());
+
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.pending_no_repo_folder_approval = Some(PathBuf::from("/tmp/demo"));
+        }
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
+            .expect("esc");
+        assert!(!editor.ai_chat_has_pending_no_repo_folder_approval());
+    }
+
+    #[test]
+    fn pending_tool_approval_accepts_enter_and_denies_esc() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let mut editor = Editor::default();
+            open_test_chat(&mut editor);
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.pending_tool_approval =
+                    Some(crate::editor::ai_chat_state::PendingToolApproval {
+                        tool_call: ToolCallInfo {
+                            id: "call1".to_string(),
+                            name: "read_file".to_string(),
+                            arguments: serde_json::json!({}),
+                        },
+                        remaining_tool_calls: Vec::new(),
+                        model_name: "test-model".to_string(),
+                        requested_path: PathBuf::from("/tmp/demo.txt"),
+                        approval_root: PathBuf::from("/tmp"),
+                    });
+            }
+
+            handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+                .expect("enter");
+            assert!(!editor.ai_chat_has_pending_tool_approval());
+
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.pending_tool_approval =
+                    Some(crate::editor::ai_chat_state::PendingToolApproval {
+                        tool_call: ToolCallInfo {
+                            id: "call2".to_string(),
+                            name: "read_file".to_string(),
+                            arguments: serde_json::json!({}),
+                        },
+                        remaining_tool_calls: Vec::new(),
+                        model_name: "test-model".to_string(),
+                        requested_path: PathBuf::from("/tmp/demo.txt"),
+                        approval_root: PathBuf::from("/tmp"),
+                    });
+            }
+            handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
+                .expect("esc");
+            assert!(!editor.ai_chat_has_pending_tool_approval());
+        });
     }
 }

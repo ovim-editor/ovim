@@ -51,6 +51,8 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     // Navigation tools (dispatched via execute_navigation_tool — always allowed)
     registry.register(open_file_def());
     registry.register(select_text_def());
+    // External tools (dispatched via execute_external_tool)
+    registry.register(bash_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
     registry.register(edit_range_def());
     registry.register(insert_lines_def());
@@ -82,6 +84,9 @@ pub fn execute_builtin(
         "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
             "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
         )),
+        "bash" => ToolResult::Error(
+            "'bash' is an external tool — must be dispatched via execute_external_tool".to_string(),
+        ),
         "edit_range"
         | "insert_lines"
         | "delete_lines"
@@ -93,6 +98,29 @@ pub fn execute_builtin(
             "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
         )),
         _ => ToolResult::Error(format!("unknown built-in tool: {name}")),
+    }
+}
+
+fn bash_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "bash".to_string(),
+        description: "Run a whitelisted shell command without shell interpolation. \
+            Use for safe project inspection commands such as pwd, ls, rg, grep, find, \
+            cat, head, tail, wc, cut, sort, uniq, tr, stat, file, realpath, dirname, basename."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::File,
+            shell: true,
+            network: false,
+        },
+        side_effect: SideEffect::External,
+        parameters: vec![ToolParam {
+            name: "command".to_string(),
+            param_type: ParamType::String,
+            required: true,
+            description: "Command string to execute (single command only; no pipes/redirection)."
+                .to_string(),
+        }],
     }
 }
 

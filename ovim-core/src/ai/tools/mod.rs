@@ -255,6 +255,8 @@ mod tests {
         // Navigation tools
         assert!(reg.get("open_file").is_some());
         assert!(reg.get("select_text").is_some());
+        // External tools
+        assert!(reg.get("bash").is_some());
         // Mutation tools
         assert!(reg.get("edit_range").is_some());
         assert!(reg.get("insert_lines").is_some());
