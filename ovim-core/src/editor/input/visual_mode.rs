@@ -469,16 +469,23 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             let visual_block_state = if editor.mode() == Mode::VisualBlock {
                 editor
                     .visual_selection()
-                    .map(|((start_line, start_col), (end_line, _))| {
-                        (start_line, end_line, start_col)
+                    .map(|((start_line, start_col), (end_line, end_col))| {
+                        let line_count = end_line.saturating_sub(start_line) + 1;
+                        let width = end_col.saturating_sub(start_col) + 1;
+                        (start_line, end_line, start_col, line_count, width)
                     })
             } else {
                 None
             };
+            editor.set_pending_visual_block_change_repeat(
+                visual_block_state
+                    .as_ref()
+                    .map(|(_, _, _, line_count, width)| (*line_count, *width)),
+            );
 
             helpers::delete_visual_selection(editor)?;
 
-            if let Some((start_line, end_line, start_col)) = visual_block_state {
+            if let Some((start_line, end_line, start_col, _, _)) = visual_block_state {
                 // Set visual block insert state for multi-line replication
                 // For 'c', move cursor to start_line (move_to_end = false)
                 let cursor_before = (start_line, start_col);

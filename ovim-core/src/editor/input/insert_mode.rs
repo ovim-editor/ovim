@@ -185,43 +185,41 @@ fn exit_insert_mode(editor: &mut Editor) {
 
     // For o/O insert sessions, use RepeatAction instead of Composite::repeat
     // special-casing so dot-repeat follows Pattern B semantics.
-    let open_line_repeat = editor
-        .last_change()
-        .and_then(|change| match change {
-            Change::Composite {
-                changes,
-                entry_mode: InsertEntryMode::OpenBelow,
-                ..
-            } => {
-                let mut inserted_text = String::new();
-                for ch in changes.iter().skip(1) {
-                    inserted_text.push_str(&ch.get_inserted_text());
-                }
-                Some(RepeatAction::OpenLine {
-                    above: false,
-                    inserted_text,
-                    shift_width: editor.options.shift_width,
-                    expand_tab: editor.options.expand_tab,
-                })
+    let open_line_repeat = editor.last_change().and_then(|change| match change {
+        Change::Composite {
+            changes,
+            entry_mode: InsertEntryMode::OpenBelow,
+            ..
+        } => {
+            let mut inserted_text = String::new();
+            for ch in changes.iter().skip(1) {
+                inserted_text.push_str(&ch.get_inserted_text());
             }
-            Change::Composite {
-                changes,
-                entry_mode: InsertEntryMode::OpenAbove,
-                ..
-            } => {
-                let mut inserted_text = String::new();
-                for ch in changes.iter().skip(1) {
-                    inserted_text.push_str(&ch.get_inserted_text());
-                }
-                Some(RepeatAction::OpenLine {
-                    above: true,
-                    inserted_text,
-                    shift_width: editor.options.shift_width,
-                    expand_tab: editor.options.expand_tab,
-                })
+            Some(RepeatAction::OpenLine {
+                above: false,
+                inserted_text,
+                shift_width: editor.options.shift_width,
+                expand_tab: editor.options.expand_tab,
+            })
+        }
+        Change::Composite {
+            changes,
+            entry_mode: InsertEntryMode::OpenAbove,
+            ..
+        } => {
+            let mut inserted_text = String::new();
+            for ch in changes.iter().skip(1) {
+                inserted_text.push_str(&ch.get_inserted_text());
             }
-            _ => None,
-        });
+            Some(RepeatAction::OpenLine {
+                above: true,
+                inserted_text,
+                shift_width: editor.options.shift_width,
+                expand_tab: editor.options.expand_tab,
+            })
+        }
+        _ => None,
+    });
 
     // Update the . register with the last inserted text
     editor.update_last_inserted_register();
@@ -229,13 +227,19 @@ fn exit_insert_mode(editor: &mut Editor) {
         editor.set_repeat_action(action);
     }
 
-    // If we were in visual block insert/append mode, replay the changes on all other lines
+    // If we were in visual block insert/append mode, replay the changes on all other lines.
+    // For visual-block change (`Ctrl-V ... c ...`), also capture a semantic repeat template.
+    let pending_visual_block_change = editor.take_pending_visual_block_change_repeat();
+    let mut visual_block_change_inserted_text: Option<String> = None;
     let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
         editor.visual_block_insert_state()
     {
         // Get the text that was inserted and the first line's change
         if let Some(last_change) = editor.last_change() {
             let inserted_text = last_change.get_inserted_text();
+            if !is_append && !move_to_end {
+                visual_block_change_inserted_text = Some(inserted_text.clone());
+            }
             let mut all_changes = vec![last_change.clone()];
 
             // Get cursor_before from first change
@@ -317,6 +321,17 @@ fn exit_insert_mode(editor: &mut Editor) {
     } else {
         None
     };
+
+    if let (Some((line_count, width)), Some(inserted_text)) = (
+        pending_visual_block_change,
+        visual_block_change_inserted_text,
+    ) {
+        editor.set_repeat_action(RepeatAction::ChangeVisualBlock {
+            line_count,
+            width,
+            inserted_text,
+        });
+    }
 
     // Mark buffer modified for LSP didChange — placed after visual block replay
     // so the server sees ALL changes (first line + replayed lines).

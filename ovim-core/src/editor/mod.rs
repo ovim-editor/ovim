@@ -1714,6 +1714,19 @@ impl Editor {
         self.editing.pending_change_repeat.take()
     }
 
+    /// Sets pending visual-block change repeat payload (line_count, width).
+    pub fn set_pending_visual_block_change_repeat(
+        &mut self,
+        pending: Option<(usize, usize)>,
+    ) {
+        self.editing.pending_visual_block_change_repeat = pending;
+    }
+
+    /// Takes and clears pending visual-block change repeat payload.
+    pub fn take_pending_visual_block_change_repeat(&mut self) -> Option<(usize, usize)> {
+        self.editing.pending_visual_block_change_repeat.take()
+    }
+
     /// Gets the leader key (default: space)
     pub fn leader_key(&self) -> char {
         self.input.leader_key

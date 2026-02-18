@@ -25,6 +25,9 @@ pub struct EditingState {
     /// Pending change repeat — describes the delete phase for dot-repeat (cc, C, s, etc.)
     /// Mutually exclusive with pending_semantic_change.
     pub pending_change_repeat: Option<PendingChangeRepeat>,
+    /// Pending visual-block change repeat payload: (line_count, width).
+    /// Set for `Ctrl-V ... c ...` and consumed when insert mode exits.
+    pub pending_visual_block_change_repeat: Option<(usize, usize)>,
     /// Replace mode tracking for dot-repeat
     pub replace_mode_state: Option<ReplaceModeState>,
     /// Substitute confirmation state: matches to confirm (line, start_col, end_col, replacement)
@@ -45,6 +48,7 @@ impl Default for EditingState {
             last_insert_position: None,
             pending_semantic_change: None,
             pending_change_repeat: None,
+            pending_visual_block_change_repeat: None,
             replace_mode_state: None,
             substitute_matches: Vec::new(),
             substitute_match_index: 0,
