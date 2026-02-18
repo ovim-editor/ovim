@@ -1918,13 +1918,24 @@ impl Editor {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let output = match Command::new(bin)
+        let binary = match resolve_bash_binary(bin) {
+            Ok(path) => path,
+            Err(err) => return ToolResult::Error(err),
+        };
+
+        let output = match Command::new(&binary)
             .args(argv.iter().skip(1))
             .current_dir(&workdir)
             .output()
         {
             Ok(o) => o,
-            Err(err) => return ToolResult::Error(format!("failed to execute '{}': {}", bin, err)),
+            Err(err) => {
+                return ToolResult::Error(format!(
+                    "failed to execute '{}': {}",
+                    binary.display(),
+                    err
+                ))
+            }
         };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2376,6 +2387,46 @@ fn is_allowed_bash_binary(bin: &str) -> bool {
         return false;
     }
     DEFAULT_BASH_ALLOWLIST.contains(&bin)
+}
+
+fn resolve_bash_binary(bin: &str) -> std::result::Result<PathBuf, String> {
+    if let Ok(found) = which::which(bin) {
+        return Ok(found);
+    }
+
+    #[cfg(unix)]
+    {
+        for dir in ["/bin", "/usr/bin", "/usr/local/bin"] {
+            let candidate = Path::new(dir).join(bin);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let mut names = Vec::new();
+        if bin.to_ascii_lowercase().ends_with(".exe") {
+            names.push(bin.to_string());
+        } else {
+            names.push(format!("{bin}.exe"));
+            names.push(bin.to_string());
+        }
+        for dir in [r"C:\Windows\System32", r"C:\Windows"] {
+            for name in &names {
+                let candidate = Path::new(dir).join(name);
+                if candidate.is_file() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "command '{}' not found on PATH or standard system locations",
+        bin
+    ))
 }
 
 fn parse_bash_command(command: &str) -> std::result::Result<Vec<String>, String> {
@@ -3002,6 +3053,12 @@ mod tests {
     }
 
     #[test]
+    fn resolve_bash_binary_reports_missing_command() {
+        let missing = resolve_bash_binary("__ovim_missing_bash_command__");
+        assert!(missing.is_err());
+    }
+
+    #[test]
     fn write_file_at_path_creates_missing_file() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
@@ -3473,9 +3530,14 @@ mod tests {
             };
 
             match editor.dispatch_tool_call_with_approval(&tool_call, None) {
-                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
+                    assert!(ok.contains("succeeded"), "{ok}");
+                }
                 ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
-                    assert!(err.contains("failed to execute"));
+                    assert!(
+                        err.contains("failed to execute"),
+                        "expected execution-attempt error, got: {err}"
+                    );
                 }
                 ToolDispatchOutcome::ApprovalRequired(req) => {
                     panic!("unexpected approval request: {}", req.message);
