@@ -3074,6 +3074,7 @@ mod tests {
                 })
                 .expect("open chat");
             set_active_profile_project_scope(&mut editor);
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =
@@ -3124,6 +3125,7 @@ mod tests {
                 })
                 .expect("open chat");
             set_active_profile_project_scope(&mut editor);
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =
@@ -3176,6 +3178,7 @@ mod tests {
                 })
                 .expect("open chat");
             set_active_profile_project_scope(&mut editor);
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =
@@ -3232,6 +3235,7 @@ mod tests {
                 })
                 .expect("open chat");
             set_active_profile_project_scope(&mut editor);
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.approved_external_roots.push(dir.path().to_path_buf());
                 let canonical =
