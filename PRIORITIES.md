@@ -85,13 +85,14 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for shell filter undo/redo flow (`:%!sort`, `u`, `<C-r>`).
 - [x] Remaining Ex command mutation paths in `commands.rs` (`:r !cmd`, `:sort`, `:copy`, `:move`) now record undo via `Edit` entries + `push_recorded_undo()`.
 - [x] Added macro regression coverage for `:sort`, `:copy`, and `:move` undo/redo flows.
+- [x] Insert-mode helper operations (`Ctrl-W/U/T/D`) now use `apply_change_and_record()` instead of manual buffer mutation + `add_change`.
+- [x] Added macro regression coverage for `Ctrl-W/U/T/D` insert-mode undo/redo flows.
 
-#### Remaining `add_change` callsites (current snapshot: 14 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 10 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
 | `input/insert_mode.rs` | 4 | Core insert-mode batching and semantic change finalization; intentional |
-| `input/helpers.rs` | 4 | Insert-mode helper edits that intentionally compose with insert sessions |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
 | `change.rs` | 2 | ChangeManager internals (`add_change` implementation/docs) |
 | `input/replace_mode.rs` | 1 | Replace-mode tracking |
