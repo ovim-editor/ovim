@@ -245,6 +245,13 @@ impl Editor {
             })
     }
 
+    fn is_active_chat_target_path(&self, path: &Path) -> bool {
+        let requested = normalize_path(path);
+        self.active_chat_target_absolute_path()
+            .map(|target| normalize_path(&target) == requested)
+            .unwrap_or(false)
+    }
+
     fn maybe_require_tool_policy_approval(
         &self,
         tc: &ToolCallInfo,
@@ -263,10 +270,15 @@ impl Editor {
             .as_ref()
             .and_then(|p| sensitive_path_reason(p))
             .is_some();
+        let is_current_target = requested_path
+            .as_ref()
+            .is_some_and(|p| self.is_active_chat_target_path(p));
 
         let requires = match mode {
             ToolApprovalMode::Auto => false,
-            ToolApprovalMode::SensitivePrompt => is_mutation || is_project_scan || is_sensitive,
+            ToolApprovalMode::SensitivePrompt => {
+                is_project_scan || is_sensitive || (is_mutation && !is_current_target)
+            }
             ToolApprovalMode::AlwaysPrompt => true,
         };
         if !requires {
@@ -1552,6 +1564,13 @@ impl Editor {
     }
 
     fn ai_project_start_path(&self) -> Option<PathBuf> {
+        let active_target_file = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| self.get_buffer_by_id(chat.active_buffer_id))
+            .and_then(|buf| buf.file_path())
+            .map(PathBuf::from);
         let origin_file = self
             .ai_state
             .chat
@@ -1561,7 +1580,7 @@ impl Editor {
             .map(PathBuf::from);
         let current_file = self.buffer().file_path().map(PathBuf::from);
 
-        if let Some(file) = origin_file.or(current_file) {
+        if let Some(file) = active_target_file.or(origin_file).or(current_file) {
             Some(self.absolutize_path(&file))
         } else {
             std::env::current_dir().ok()
@@ -2593,6 +2612,141 @@ mod tests {
         let summary = editor.build_tool_event_summary(&tc, &ToolResult::Success("ok".to_string()));
         assert_eq!(summary.kind, ToolSummaryKind::Mutation);
         assert!(summary.label.contains("+0 -1"), "{}", summary.label);
+    }
+
+    #[test]
+    fn edit_range_on_active_target_does_not_require_approval() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let file = dir.path().join("main.rs");
+            fs::write(&file, "line1\nline2\n").expect("seed");
+
+            let mut editor = Editor::default();
+            editor.open_file(&file).expect("open file");
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+
+            let tool_call = ToolCallInfo {
+                id: "call_edit".to_string(),
+                name: "edit_range".to_string(),
+                arguments: serde_json::json!({
+                    "start_line": 1,
+                    "end_line": 1,
+                    "new_text": "updated"
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn edit_range_with_other_path_requires_approval_in_sensitive_mode() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let main = dir.path().join("main.rs");
+            let other = dir.path().join("other.rs");
+            fs::write(&main, "line1\nline2\n").expect("seed main");
+            fs::write(&other, "alpha\nbeta\n").expect("seed other");
+
+            let mut editor = Editor::default();
+            editor.open_file(&main).expect("open main");
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            set_active_profile_project_scope(&mut editor);
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+
+            let tool_call = ToolCallInfo {
+                id: "call_edit_other".to_string(),
+                name: "edit_range".to_string(),
+                arguments: serde_json::json!({
+                    "path": other.to_string_lossy().to_string(),
+                    "start_line": 1,
+                    "end_line": 1,
+                    "new_text": "updated"
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    let requested = req
+                        .requested_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| normalize_path(&req.requested_path));
+                    let expected = other
+                        .canonicalize()
+                        .unwrap_or_else(|_| normalize_path(&other));
+                    assert_eq!(requested, expected);
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
+                    panic!("expected approval request, got success: {ok}");
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                    panic!("expected approval request, got error: {err}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn ai_repo_root_prefers_active_target_file() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let repo_a = dir.path().join("repo_a");
+            let repo_b = dir.path().join("repo_b");
+            fs::create_dir_all(repo_a.join(".git")).expect("mkdir repo_a/.git");
+            fs::create_dir_all(repo_b.join(".git")).expect("mkdir repo_b/.git");
+            let file_a = repo_a.join("a.rs");
+            let file_b = repo_b.join("b.rs");
+            fs::write(&file_a, "fn a() {}\n").expect("seed a");
+            fs::write(&file_b, "fn b() {}\n").expect("seed b");
+
+            let mut editor = Editor::default();
+            editor.open_file(&file_a).expect("open a");
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+
+            editor.open_file(&file_b).expect("open b");
+            let file_b_buffer_id = editor.buffer().id();
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.active_buffer_id = file_b_buffer_id;
+            }
+
+            let detected = editor.ai_repo_root().expect("repo root");
+            let detected = detected
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path(&detected));
+            let expected = repo_b
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path(&repo_b));
+            assert_eq!(detected, expected);
+        });
     }
 
     #[test]
