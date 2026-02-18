@@ -65,7 +65,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 - [x] `cf/ct` with change operator now uses `PendingChangeRepeat` in `char_motion.rs`.
 - [x] Visual delete undo path uses `record()` + `push_recorded_undo()` in `helpers.rs`.
-- [x] `o/O` now set `RepeatAction::OpenLine` on insert-mode exit (dot-repeat no longer depends on `Composite::repeat` for new edits).
+- [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
 - [ ] Decide whether visual delete dot-repeat should migrate to a dedicated `RepeatAction` shape (especially visual block), or remain on `last_change` templating.
 - [ ] Evaluate undo grouping for LSP/workspace edits and code actions (currently applied directly in workspace edit paths).
 
@@ -85,8 +85,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 #### Practical migration targets
 
 1. Visual delete repeat: either keep current hybrid behavior or add a full `RepeatAction` representation (including block semantics).
-2. `o/O` cleanup: remove legacy `InsertEntryMode::OpenBelow/OpenAbove` special-case replay fallback in `Change::repeat`.
-3. LSP/workspace edits: decide undo granularity and whether to wrap text edits in recorded undo transactions.
+2. LSP/workspace edits: decide undo granularity and whether to wrap text edits in recorded undo transactions.
 
 ---
 
