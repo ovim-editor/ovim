@@ -1196,28 +1196,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle ranged delete command (:d or :delete)
     if cmd_part == "d" || cmd_part == "delete" {
         if let Some((start_line, end_line)) = parse_range(editor, range_str) {
-            let cursor_before = (
-                editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
-            );
-
-            // Calculate character range to delete
-            let start_char = editor.buffer().rope().line_to_char(start_line);
-            let end_char = if end_line + 1 < editor.buffer().line_count() {
-                editor.buffer().rope().line_to_char(end_line + 1)
-            } else {
-                editor.buffer().rope().len_chars()
-            };
-
-            // Store deleted text
-            let deleted_text = editor
-                .buffer()
-                .rope()
-                .slice(start_char..end_char)
-                .to_string();
-
-            // Remove the lines
-            editor.buffer_mut().rope_mut().remove(start_char..end_char);
+            let cursor_before = editor.cursor_position();
+            let (deleted_text, edits) = editor.buffer_mut().record(|buf| {
+                buf.delete_range(start_line, 0, end_line + 1, 0)
+            });
 
             // Store in register (use delete, which updates " and numbered regs but not 0)
             editor.delete_to_register(deleted_text.clone());
@@ -1229,10 +1211,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 .cursor_mut()
                 .set_position(new_cursor_line, 0);
 
-            // Record change for undo
-            let range = Range::new((start_line, 0), (end_line + 1, 0));
-            let change = Change::delete(range, deleted_text, cursor_before);
-            editor.add_change(change);
+            if !edits.is_empty() {
+                let cursor_after = (new_cursor_line, 0);
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
 
             return Ok(());
         }
