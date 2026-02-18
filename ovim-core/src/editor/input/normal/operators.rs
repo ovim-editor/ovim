@@ -14,8 +14,7 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    CharMotion, Editor, InputState, Motions, Operator, PendingChangeRepeat, PendingSemanticChange,
-    Range, RegisterType,
+    CharMotion, Editor, InputState, Motions, Operator, PendingChangeRepeat, RegisterType,
 };
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
@@ -1185,50 +1184,43 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
-    let start_cursor = *editor.buffer().cursor();
-    let cursor_before = (start_cursor.line(), start_cursor.col());
-    let start_line = start_cursor.line();
-    let start_col = start_cursor.col();
+    let cursor_before = editor.cursor_position();
 
-    // cw behaves like ce
-    Motions::word_end_forward_prefer_current(editor.buffer_mut(), count);
+    // cw delete phase: ce-like behavior (prefer current word end).
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        let start_line = buf.cursor().line();
+        let start_col = buf.cursor().col();
 
-    let end_cursor = editor.buffer().cursor();
-    let end_line = end_cursor.line();
-    let line_len = if let Some(line) = editor.buffer().line(end_line) {
-        line.trim_end_matches('\n').chars().count()
+        Motions::word_end_forward_prefer_current(buf, count);
+
+        let end_line = buf.cursor().line();
+        let line_len = buf
+            .line(end_line)
+            .map(|line| line.trim_end_matches('\n').chars().count())
+            .unwrap_or(0);
+        let end_col = (buf.cursor().col() + 1).min(line_len);
+
+        let deleted = buf.delete_range(start_line, start_col, end_line, end_col);
+        buf.cursor_mut().set_position(start_line, start_col);
+        deleted
+    });
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+        Some(token)
     } else {
-        0
+        None
     };
-    let end_col = (end_cursor.col() + 1).min(line_len);
 
-    let start_pos = (start_line, start_col);
-    let end_pos = (end_line, end_col);
-
-    let deleted = editor
-        .buffer_mut()
-        .delete_range(start_line, start_col, end_line, end_col);
-    let change_range = Range::new(start_pos, end_pos);
-
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(start_line, start_col);
-    editor.delete_to_register(deleted.clone());
-
-    editor.set_pending_semantic_change(PendingSemanticChange {
-        object_type: None,
-        is_word_change: true,
-        is_search_match_change: false,
-        search_pattern: None,
-        search_forward: None,
-        old_text: deleted,
-        old_range: change_range,
-        cursor_before,
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteWordChange { count },
+        linewise: false,
+        delete_token,
     });
 
-    editor.start_change_building((start_line, start_col));
-    editor.mark_buffer_modified();
+    editor.start_change_building(editor.cursor_position());
     editor.clear_count();
     editor.set_mode(Mode::Insert);
     Ok(())

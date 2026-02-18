@@ -440,6 +440,25 @@ fn test_dot_repeat_cw_at_different_word_lengths() {
     test.assert_cursor(0, 2);
 }
 
+#[test]
+fn test_dot_repeat_cw_semantic_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "short longerword tail\n";
+        step "cwX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword tail\n");
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "X X tail\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword tail\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "short longerword tail\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot repeat edge cases
 // ============================================================================
