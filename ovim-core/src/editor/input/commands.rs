@@ -1,6 +1,7 @@
 use crate::command_result::CommandResult;
+use crate::edit::Edit;
 use crate::editor::path_completion::extract_path_from_command;
-use crate::editor::{Change, Editor, Mode, Range};
+use crate::editor::{Editor, Mode};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -871,15 +872,20 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 // Insert the text
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
-                // Record change for undo
-                let change = Change::insert((insert_line, 0), text.clone(), cursor_before);
-                editor.add_change(change);
-
                 // Position cursor at start of inserted text
+                let cursor_after = (insert_line, 0);
                 editor
                     .buffer_mut()
                     .cursor_mut()
                     .set_position(insert_line, 0);
+                editor.push_recorded_undo(
+                    vec![Edit::Insert {
+                        offset: insert_char,
+                        text: text.clone(),
+                    }],
+                    cursor_before,
+                    cursor_after,
+                );
 
                 let line_count = text.lines().count();
                 editor.set_lsp_status(format!(
@@ -1279,17 +1285,22 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             let new_text = lines.join("");
             editor.buffer_mut().rope_mut().insert(start_char, &new_text);
 
-            // Record change for undo
-            let range = Range::new((start_line, 0), (end_line + 1, 0));
-            let change = Change::composite(
-                vec![
-                    Change::delete(range.clone(), original_text, cursor_before),
-                    Change::insert((start_line, 0), new_text.clone(), cursor_before),
-                ],
-                cursor_before,
-                cursor_before,
-            );
-            editor.add_change(change);
+            let mut edits = Vec::new();
+            if !original_text.is_empty() {
+                edits.push(Edit::Delete {
+                    offset: start_char,
+                    text: original_text,
+                });
+            }
+            if !new_text.is_empty() {
+                edits.push(Edit::Insert {
+                    offset: start_char,
+                    text: new_text.clone(),
+                });
+            }
+            if !edits.is_empty() {
+                editor.push_recorded_undo(edits, cursor_before, cursor_before);
+            }
 
             let sorted_count = lines.len();
             editor.set_lsp_status(format!("{} lines sorted", sorted_count));
@@ -1350,15 +1361,20 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
-                // Record change
-                let change = Change::insert((insert_line, 0), text.clone(), cursor_before);
-                editor.add_change(change);
-
                 // Move cursor to first copied line
+                let cursor_after = (insert_line, 0);
                 editor
                     .buffer_mut()
                     .cursor_mut()
                     .set_position(insert_line, 0);
+                editor.push_recorded_undo(
+                    vec![Edit::Insert {
+                        offset: insert_char,
+                        text: text.clone(),
+                    }],
+                    cursor_before,
+                    cursor_after,
+                );
 
                 let count = lines_to_copy.len();
                 editor.set_lsp_status(format!(
@@ -1449,23 +1465,28 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
-                // Record change for undo
-                let range = Range::new((start_line, 0), (end_line + 1, 0));
-                let change = Change::composite(
-                    vec![
-                        Change::delete(range, text_to_move, cursor_before),
-                        Change::insert((insert_line, 0), text.clone(), cursor_before),
-                    ],
-                    cursor_before,
-                    (insert_line, 0),
-                );
-                editor.add_change(change);
-
                 // Move cursor to first moved line
+                let cursor_after = (insert_line, 0);
                 editor
                     .buffer_mut()
                     .cursor_mut()
                     .set_position(insert_line, 0);
+                let mut edits = Vec::new();
+                if !text_to_move.is_empty() {
+                    edits.push(Edit::Delete {
+                        offset: start_char,
+                        text: text_to_move,
+                    });
+                }
+                if !text.is_empty() {
+                    edits.push(Edit::Insert {
+                        offset: insert_char,
+                        text: text.clone(),
+                    });
+                }
+                if !edits.is_empty() {
+                    editor.push_recorded_undo(edits, cursor_before, cursor_after);
+                }
 
                 editor.set_lsp_status(format!(
                     "{} line{} moved",

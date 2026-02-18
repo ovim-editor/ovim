@@ -505,6 +505,54 @@ fn test_command_range_delete_undo_redo_macro_flow() {
     }
 }
 
+#[test]
+fn test_command_sort_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "cherry\napple\nbanana\n";
+        step ":1,3sort<Enter>" => |test| {
+            assert_eq!(test.buffer_content(), "apple\nbanana\ncherry\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "cherry\napple\nbanana\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "apple\nbanana\ncherry\n");
+        }
+    }
+}
+
+#[test]
+fn test_command_copy_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "one\ntwo\nthree\n";
+        step ":1,2copy 1<Enter>" => |test| {
+            assert_eq!(test.buffer_content(), "one\none\ntwo\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one\ntwo\nthree\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "one\none\ntwo\ntwo\nthree\n");
+        }
+    }
+}
+
+#[test]
+fn test_command_move_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "one\ntwo\nthree\n";
+        step ":1,1move 2<Enter>" => |test| {
+            assert_eq!(test.buffer_content(), "two\none\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one\ntwo\nthree\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "two\none\nthree\n");
+        }
+    }
+}
+
 /// Test range yank (:1,2y)
 #[test]
 fn test_command_range_yank() {
