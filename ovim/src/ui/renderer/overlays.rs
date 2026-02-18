@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -456,4 +456,97 @@ pub fn render_ai_review_shortcuts(frame: &mut Frame, theme: &Theme, buffer_area:
 
     frame.render_widget(ratatui::widgets::Clear, panel_area);
     frame.render_widget(card, panel_area);
+}
+
+fn centered_area(full: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(full.width).max(1);
+    let height = height.min(full.height).max(1);
+    let x = full.x + full.width.saturating_sub(width) / 2;
+    let y = full.y + full.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width, height)
+}
+
+/// Centered permission dialog for AI chat approval requests.
+///
+/// This is used for high-attention, blocking prompts (tool approval and
+/// no-repo folder approval) instead of relying on low-visibility status bars.
+pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, theme: &Theme) {
+    let pending_no_repo = editor.ai_chat_has_pending_no_repo_folder_approval();
+    let pending_tool = editor.ai_chat_has_pending_tool_approval();
+    if !pending_no_repo && !pending_tool {
+        return;
+    }
+
+    let (title, summary, hints) = if pending_no_repo {
+        (
+            " Folder Access Permission ",
+            editor
+                .ai_chat_pending_no_repo_folder_approval_summary()
+                .unwrap_or_else(|| "Allow folder access for this chat session?".to_string()),
+            "Enter/Ctrl-Y allow   Esc/Ctrl-N deny",
+        )
+    } else {
+        (
+            " Tool Permission ",
+            editor
+                .ai_chat_pending_tool_approval_summary()
+                .unwrap_or_else(|| "Allow requested tool action?".to_string()),
+            "Enter/Ctrl-Y allow once   Ctrl-A allow for chat   Esc/Ctrl-N deny",
+        )
+    };
+
+    let full = frame.area();
+    if full.width < 40 || full.height < 7 {
+        return;
+    }
+    let width = ((full.width * 70) / 100)
+        .max(48)
+        .min(100)
+        .min(full.width.saturating_sub(2));
+    let height = 9u16.min(full.height.saturating_sub(2)).max(7);
+    let area = centered_area(full, width, height);
+
+    let border_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Info));
+    let title_color =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::TabActiveFg));
+    let text_color =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::StatusLineForeground));
+    let hint_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Border));
+
+    let content = vec![
+        Line::from(Span::styled(
+            summary,
+            Style::default().fg(text_color).bg(Color::Reset),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "This request blocks agent progress until resolved.",
+            Style::default().fg(hint_color).bg(Color::Reset),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            hints,
+            Style::default()
+                .fg(title_color)
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let dialog = Paragraph::new(content).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(border_color).bg(Color::Reset))
+            .title(title)
+            .title_style(
+                Style::default()
+                    .fg(title_color)
+                    .bg(Color::Reset)
+                    .add_modifier(Modifier::BOLD),
+            ),
+    );
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(dialog, area);
 }
