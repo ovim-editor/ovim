@@ -498,9 +498,9 @@ impl Editor {
             .as_ref()
             .and_then(|c| c.pending_tool_approval.as_ref())?;
         Some(format!(
-            "Outside-project access requested: {} ({})",
-            pending.requested_path.display(),
-            pending.tool_call.name
+            "Tool approval requested: {} ({})",
+            pending.tool_call.name,
+            pending.requested_path.display()
         ))
     }
 
