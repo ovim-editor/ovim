@@ -33,16 +33,26 @@ impl Editor {
                 .then(b.range.start.character.cmp(&a.range.start.character))
         });
 
-        for edit in sorted_edits {
-            let start_line = edit.range.start.line as usize;
-            let end_line = edit.range.end.line as usize;
-            let start_col = self.utf16_to_col(start_line, edit.range.start.character);
-            let end_col = self.utf16_to_col(end_line, edit.range.end.character);
+        let cursor_before = self.cursor_position();
+        let ((), recorded_edits) = self.buffer_mut().record(|buf| {
+            for edit in sorted_edits {
+                let start_line = edit.range.start.line as usize;
+                let end_line = edit.range.end.line as usize;
+                let start_col = Self::utf16_to_col_for_buffer(buf, start_line, edit.range.start.character);
+                let end_col = Self::utf16_to_col_for_buffer(buf, end_line, edit.range.end.character);
 
-            self.buffer_mut()
-                .delete_range(start_line, start_col, end_line, end_col);
-            self.buffer_mut()
-                .insert_text_at(start_line, start_col, &edit.new_text);
+                if start_line != end_line || start_col != end_col {
+                    buf.delete_range(start_line, start_col, end_line, end_col);
+                }
+                if !edit.new_text.is_empty() {
+                    buf.insert_text_at(start_line, start_col, &edit.new_text);
+                }
+            }
+        });
+
+        if !recorded_edits.is_empty() {
+            let cursor_after = self.cursor_position();
+            self.push_recorded_undo(recorded_edits, cursor_before, cursor_after);
         }
 
         // LSP-applied edits are still edits: ensure we sync back to the server so
