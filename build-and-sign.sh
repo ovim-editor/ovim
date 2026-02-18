@@ -1,8 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build and sign ovim for local development
 # Usage: ./build-and-sign.sh [--debug|--release]
 
-set -e
+set -euo pipefail
 
 PROFILE="${1:---release}"
 PROFILE="${PROFILE#--}"  # Strip leading --
@@ -12,7 +12,7 @@ cargo build --profile "$PROFILE"
 
 BINARY="./target/$PROFILE/ovim"
 
-if [ ! -f "$BINARY" ]; then
+if [[ ! -f "$BINARY" ]]; then
     echo "Error: Binary not found at $BINARY"
     exit 1
 fi

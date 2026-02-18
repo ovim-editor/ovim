@@ -39,6 +39,7 @@ use anyhow::{bail, Context, Result};
 use ovim::session::SessionInfo;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
+use tempfile::NamedTempFile;
 
 /// RAII guard for a test session
 ///
@@ -47,6 +48,7 @@ pub struct TestSession {
     pub name: String,
     pub port: u16,
     process: Child,
+    _temp_file: NamedTempFile,
 }
 
 impl TestSession {
@@ -62,14 +64,19 @@ impl TestSession {
     /// TestSession with process handle and port number
     pub async fn start(test_name: &str) -> Result<Self> {
         // Create unique temp file for this test
-        let temp_file = format!("/tmp/ovim_test_{}.txt", test_name);
-        std::fs::write(&temp_file, "").context("Failed to create temp file")?;
+        let mut temp_file = tempfile::Builder::new()
+            .prefix(&format!("ovim_test_{}_", test_name))
+            .suffix(".txt")
+            .tempfile()
+            .context("Failed to create temp file")?;
+        std::io::Write::write_all(&mut temp_file, b"").context("Failed to seed temp file")?;
+        let temp_file_path = temp_file.path().to_string_lossy().to_string();
 
         // Start ovim headless with unique session name
         let session_name = format!("integration_test_{}", test_name);
 
         let mut process = Command::new("target/debug/ovim")
-            .args(&["--headless", "--session", &session_name, &temp_file])
+            .args(&["--headless", "--session", &session_name, &temp_file_path])
             .spawn()
             .context("Failed to spawn ovim process - did you run 'cargo build'?")?;
 
@@ -79,6 +86,7 @@ impl TestSession {
                 name: session_name,
                 port: session_info.port,
                 process,
+                _temp_file: temp_file,
             }),
             Err(e) => {
                 // Kill the process if startup failed

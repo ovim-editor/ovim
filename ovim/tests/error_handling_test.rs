@@ -1,12 +1,22 @@
 mod helpers;
 
 use helpers::EditorTest;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Test that LSP errors don't print to stdout/stderr
 #[test]
 fn test_lsp_errors_silent() {
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(temp_test_path("test.rs"));
 
     // Trigger LSP requests that might error
     test.keys("gd");
@@ -20,7 +30,7 @@ fn test_lsp_errors_silent() {
 #[test]
 fn test_lsp_connection_failure() {
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/nonexistent/path/test.rs".to_string());
+    test.set_file_path(temp_test_path("missing_test.rs"));
 
     // Try LSP operations
     test.keys("gd");
@@ -33,7 +43,7 @@ fn test_lsp_connection_failure() {
 #[test]
 fn test_lsp_invalid_response() {
     let mut test = EditorTest::new("struct Point { x: i32 }\n");
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(temp_test_path("test.rs"));
 
     // Multiple rapid requests
     test.keys("K");
@@ -359,7 +369,7 @@ fn test_delete_beyond_eol() {
 #[test]
 fn test_lsp_timeout() {
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(temp_test_path("test.rs"));
 
     // Multiple rapid requests that might timeout
     for _ in 0..10 {
@@ -373,7 +383,7 @@ fn test_lsp_timeout() {
 #[test]
 fn test_lsp_shutdown_error() {
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(temp_test_path("test.rs"));
 
     test.keys("K");
 
@@ -406,7 +416,7 @@ fn test_syntax_invalid_code() {
     let code = "fn {{{ ((( [[[  invalid rust code\n";
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/invalid.rs".to_string());
+    test.set_file_path(temp_test_path("invalid.rs"));
 
     // Navigate through invalid code
     test.keys("j");

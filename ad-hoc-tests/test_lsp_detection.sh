@@ -1,13 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test LSP language detection for Java files
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-lsp-detect.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+SRC_FILE="$TMP_DIR/test_lsp_detect.rs"
+BIN_FILE="$TMP_DIR/test_lsp_detect"
 
 echo "=== Testing LSP Language Detection ==="
 echo ""
 
 # Create a Rust test program
-cat > /tmp/test_lsp_detect.rs <<'EOF'
+cat > "$SRC_FILE" <<'EOF'
 use ovim::syntax::LanguageRegistry;
 
 fn main() {
@@ -15,7 +20,7 @@ fn main() {
     let test_files = vec![
         "TestJava.java",
         "java_test_project/src/main/java/com/example/HelloWorld.java",
-        "/workspace/java_test_project/src/main/java/com/example/HelloWorld.java",
+        "java_test_project/src/main/java/com/example/HelloWorld.java",
     ];
 
     println!("Testing LSP language detection for Java files:");
@@ -53,11 +58,11 @@ fn main() {
 EOF
 
 echo "Compiling test program..."
-rustc --edition 2021 -L target/debug/deps --extern ovim=target/debug/libovim.rlib /tmp/test_lsp_detect.rs -o /tmp/test_lsp_detect
+rustc --edition 2021 -L target/debug/deps --extern ovim=target/debug/libovim.rlib "$SRC_FILE" -o "$BIN_FILE"
 
 echo "Running LSP detection tests..."
 echo ""
-/tmp/test_lsp_detect
+"$BIN_FILE"
 
 echo ""
 echo "=== LSP detection working correctly! ==="

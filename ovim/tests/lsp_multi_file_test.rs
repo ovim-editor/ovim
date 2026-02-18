@@ -2,20 +2,29 @@ mod helpers;
 
 use helpers::EditorTest;
 use std::fs;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Test LSP goto definition across multiple files
 #[test]
 fn test_lsp_goto_definition_multi_file() {
     // Create temporary test files
-    let temp_dir = std::env::temp_dir().join("ovim_lsp_test");
-    fs::create_dir_all(&temp_dir).unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
 
     // File 1: mod.rs
-    let file1 = temp_dir.join("mod.rs");
+    let file1 = temp_dir.path().join("mod.rs");
     fs::write(&file1, "pub mod utils;\npub use utils::*;\n").unwrap();
 
     // File 2: utils.rs
-    let file2 = temp_dir.join("utils.rs");
+    let file2 = temp_dir.path().join("utils.rs");
     fs::write(
         &file2,
         "pub fn helper() -> i32 {\n    42\n}\n\npub fn caller() {\n    let x = helper();\n}\n",
@@ -23,7 +32,7 @@ fn test_lsp_goto_definition_multi_file() {
     .unwrap();
 
     // File 3: main.rs
-    let file3 = temp_dir.join("main.rs");
+    let file3 = temp_dir.path().join("main.rs");
     fs::write(
         &file3,
         "mod utils;\n\nfn main() {\n    utils::helper();\n}\n",
@@ -45,9 +54,6 @@ fn test_lsp_goto_definition_multi_file() {
 
     // Without LSP running, should handle gracefully
     test.assert_mode(ovim::mode::Mode::Normal);
-
-    // Cleanup
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 /// Test LSP hover across multiple references
@@ -70,7 +76,7 @@ fn use_point() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_hover.rs".to_string());
+    test.set_file_path(temp_test_path("test_hover.rs"));
 
     // Hover on Point in create_point return type
     test.keys("7G");
@@ -107,7 +113,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_nested.rs".to_string());
+    test.set_file_path(temp_test_path("test_nested.rs"));
 
     // Navigate to deep_function call
     test.keys("11G");
@@ -135,7 +141,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_goto_back.rs".to_string());
+    test.set_file_path(temp_test_path("test_goto_back.rs"));
 
     // Save position
     test.keys("7G");
@@ -164,7 +170,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_imports.rs".to_string());
+    test.set_file_path(temp_test_path("test_imports.rs"));
 
     // Hover on HashMap
     test.keys("2G");
@@ -181,26 +187,28 @@ fn main() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_lsp_cleanup_on_file_switch() {
     // Create test files
-    std::fs::write("/tmp/file1.rs", "fn test() {}\n").unwrap();
-    std::fs::write("/tmp/file2.rs", "fn other() {}\n").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let file1 = dir.path().join("file1.rs");
+    let file2 = dir.path().join("file2.rs");
+    std::fs::write(&file1, "fn test() {}\n").unwrap();
+    std::fs::write(&file2, "fn other() {}\n").unwrap();
+    let file1_str = file1.to_string_lossy().to_string();
+    let file2_str = file2.to_string_lossy().to_string();
 
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/file1.rs".to_string());
+    test.set_file_path(file1_str.clone());
 
     // Trigger LSP hover
     test.keys("0");
     test.keys("K");
 
     // "Switch" file by loading new content
-    test.keys(":e /tmp/file2.rs");
+    test.keys(&format!(":e {}", file2_str));
     test.press_enter();
 
     // Should still be in normal mode, LSP should handle gracefully
     test.assert_mode(ovim::mode::Mode::Normal);
 
-    // Clean up
-    std::fs::remove_file("/tmp/file1.rs").ok();
-    std::fs::remove_file("/tmp/file2.rs").ok();
 }
 
 /// Test LSP with syntax errors
@@ -213,7 +221,7 @@ fn broken( {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_errors.rs".to_string());
+    test.set_file_path(temp_test_path("test_errors.rs"));
 
     // Try to use LSP features despite errors
     test.keys("2G");
@@ -233,7 +241,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_diagnostics.rs".to_string());
+    test.set_file_path(temp_test_path("test_diagnostics.rs"));
 
     // Navigate through file
     test.keys("gg");
@@ -259,7 +267,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_completion.rs".to_string());
+    test.set_file_path(temp_test_path("test_completion.rs"));
 
     // Go to completion trigger point
     test.keys("9G");
@@ -279,7 +287,7 @@ fn test_lsp_format_document() {
     let code = "fn main(){let x=5;}\n";
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_format.rs".to_string());
+    test.set_file_path(temp_test_path("test_format.rs"));
 
     // Request format
     test.keys("gq");
@@ -296,7 +304,7 @@ fn test_lsp_long_file() {
     }
 
     let mut test = EditorTest::new(&code);
-    test.set_file_path("/tmp/test_long.rs".to_string());
+    test.set_file_path(temp_test_path("test_long.rs"));
 
     // Navigate to middle
     test.keys("500G");
@@ -311,7 +319,7 @@ fn test_lsp_long_file() {
 #[test]
 fn test_lsp_special_path() {
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/file with spaces.rs".to_string());
+    test.set_file_path(temp_test_path("file with spaces.rs"));
 
     test.keys("0");
     test.keys("K");
@@ -335,7 +343,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_comments.rs".to_string());
+    test.set_file_path(temp_test_path("test_comments.rs"));
 
     // Hover on helper in comment
     test.keys("2G");
@@ -361,7 +369,7 @@ fn main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test_macros.rs".to_string());
+    test.set_file_path(temp_test_path("test_macros.rs"));
 
     // Go to macro invocation
     test.keys("9G");
@@ -375,7 +383,7 @@ fn main() {
 #[test]
 fn test_lsp_terminates_on_quit() {
     let mut test = EditorTest::new("fn test() {}\n");
-    test.set_file_path("/tmp/test_term.rs".to_string());
+    test.set_file_path(temp_test_path("test_term.rs"));
 
     // Trigger LSP
     test.keys("K");
@@ -392,7 +400,7 @@ fn test_lsp_terminates_on_quit() {
 #[test]
 fn test_lsp_rapid_requests() {
     let mut test = EditorTest::new("fn a() {}\nfn b() {}\nfn c() {}\n");
-    test.set_file_path("/tmp/test_rapid.rs".to_string());
+    test.set_file_path(temp_test_path("test_rapid.rs"));
 
     // Rapid hover requests
     test.keys("K");
@@ -408,7 +416,7 @@ fn test_lsp_rapid_requests() {
 #[test]
 fn test_lsp_empty_file() {
     let mut test = EditorTest::new("\n");
-    test.set_file_path("/tmp/test_empty.rs".to_string());
+    test.set_file_path(temp_test_path("test_empty.rs"));
 
     test.keys("K");
 
@@ -419,7 +427,7 @@ fn test_lsp_empty_file() {
 #[test]
 fn test_lsp_tracks_modifications() {
     let mut test = EditorTest::new("fn old() {}\n");
-    test.set_file_path("/tmp/test_mod.rs".to_string());
+    test.set_file_path(temp_test_path("test_mod.rs"));
 
     // Make a change
     test.keys("i");

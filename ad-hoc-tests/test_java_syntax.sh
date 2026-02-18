@@ -1,13 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test Java syntax highlighting initialization
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-java-syntax.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+SRC_FILE="$TMP_DIR/test_syntax.rs"
+BIN_FILE="$TMP_DIR/test_syntax"
 
 echo "=== Testing Java Syntax Highlighting ==="
 echo ""
 
 # Create a simple Rust test program to verify syntax highlighting
-cat > /tmp/test_syntax.rs <<'EOF'
+cat > "$SRC_FILE" <<'EOF'
 use ovim::syntax::{LanguageRegistry, SyntaxHighlighter};
 
 fn main() {
@@ -47,11 +52,11 @@ fn main() {
 EOF
 
 echo "Compiling test program..."
-rustc --edition 2021 -L target/debug/deps --extern ovim=target/debug/libovim.rlib /tmp/test_syntax.rs -o /tmp/test_syntax
+rustc --edition 2021 -L target/debug/deps --extern ovim=target/debug/libovim.rlib "$SRC_FILE" -o "$BIN_FILE"
 
 echo "Running syntax highlighting test..."
 echo ""
-/tmp/test_syntax
+"$BIN_FILE"
 
 echo ""
 echo "=== Java syntax highlighting working correctly! ==="

@@ -1,4 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+set -euo pipefail
 
 # Start ovim in headless mode
 cargo run -- test_syntax.rs --headless 2>&1 &
@@ -20,11 +22,11 @@ echo "Found ovim on port $PORT"
 
 # Trigger live grep
 echo "Triggering live grep..."
-curl -s -X POST http://127.0.0.1:$PORT/keys -H "Content-Type: application/json" -d '{"keys": " sg"}'
+curl -s -X POST http://127.0.0.1:$PORT/v1/keys -H "Content-Type: application/json" -d '{"keys": " sg"}'
 
 # Try to render
 echo "Attempting to render..."
-curl -s http://127.0.0.1:$PORT/render | jq -r '.ansi' | head -5
+curl -s http://127.0.0.1:$PORT/v1/render | jq -r '.ansi' | head -5
 
 # Check if ovim is still running
 sleep 1

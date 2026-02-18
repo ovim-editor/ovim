@@ -2,7 +2,7 @@
 # Manual test script for ovim Java IDE features
 # Tests end-to-end workflow with real projects
 
-set -e
+set -euo pipefail
 
 echo "🧪 ovim Java IDE - Manual Test Suite"
 echo "======================================"
@@ -18,6 +18,7 @@ NC='\033[0m' # No Color
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
+TMP_BASE="$(mktemp -d "${TMPDIR:-/tmp}/ovim-java-test.XXXXXX")"
 
 # Helper functions
 test_start() {
@@ -40,7 +41,7 @@ test_fail() {
 # Clean up function
 cleanup() {
     echo "Cleaning up test projects..."
-    rm -rf /tmp/ovim_test_*
+    rm -rf "$TMP_BASE"
 }
 
 trap cleanup EXIT
@@ -50,8 +51,9 @@ echo "---------------------"
 
 # Test 1: Create Gradle Java 17 project
 test_start "Create Gradle Java 17 project and detect version"
-mkdir -p /tmp/ovim_test_gradle17
-cat > /tmp/ovim_test_gradle17/build.gradle << 'EOF'
+GRADLE_TEST_DIR="$TMP_BASE/ovim_test_gradle17"
+mkdir -p "$GRADLE_TEST_DIR"
+cat > "$GRADLE_TEST_DIR/build.gradle" << 'EOF'
 plugins {
     id 'java'
 }
@@ -63,7 +65,7 @@ java {
 }
 EOF
 
-cat > /tmp/ovim_test_gradle17/Main.java << 'EOF'
+cat > "$GRADLE_TEST_DIR/Main.java" << 'EOF'
 public class Main {
     public static void main(String[] args) {
         System.out.println("Hello from Java 17!");
@@ -80,8 +82,9 @@ fi
 
 # Test 2: Create Maven Java 21 project
 test_start "Create Maven Java 21 project and detect version"
-mkdir -p /tmp/ovim_test_maven21
-cat > /tmp/ovim_test_maven21/pom.xml << 'EOF'
+MAVEN_TEST_DIR="$TMP_BASE/ovim_test_maven21"
+mkdir -p "$MAVEN_TEST_DIR"
+cat > "$MAVEN_TEST_DIR/pom.xml" << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0">
     <modelVersion>4.0.0</modelVersion>
@@ -96,8 +99,8 @@ cat > /tmp/ovim_test_maven21/pom.xml << 'EOF'
 </project>
 EOF
 
-mkdir -p /tmp/ovim_test_maven21/src/main/java
-cat > /tmp/ovim_test_maven21/src/main/java/Main.java << 'EOF'
+mkdir -p "$MAVEN_TEST_DIR/src/main/java"
+cat > "$MAVEN_TEST_DIR/src/main/java/Main.java" << 'EOF'
 public class Main {
     public static void main(String[] args) {
         System.out.println("Hello from Java 21!");
@@ -155,7 +158,7 @@ fi
 
 # Test 5: Check JAVA_HOME
 test_start "Check JAVA_HOME environment variable"
-if [ -n "$JAVA_HOME" ]; then
+if [ -n "${JAVA_HOME:-}" ]; then
     echo "  JAVA_HOME=$JAVA_HOME"
     test_pass "JAVA_HOME is set"
 else

@@ -1,9 +1,13 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Comprehensive rust-analyzer LSP test
 # Tests: initialize, didOpen, hover on known symbols
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-ra-final.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+OUTPUT_LOG="$TMP_DIR/ra_full_output.log"
 
 WORKSPACE_ROOT="/workspace"
 TEST_FILE="$WORKSPACE_ROOT/src/buffer/mod.rs"
@@ -159,14 +163,14 @@ echo "=== Starting rust-analyzer ===" >&2
     echo ">>> Step 8: Exit" >&2
     send_message "$(create_exit)"
     sleep 1
-} | rust-analyzer 2>&1 | tee /tmp/ra_full_output.log
+} | rust-analyzer 2>&1 | tee "$OUTPUT_LOG"
 
 echo "" >&2
 echo "=== Test complete ===" >&2
-echo "Full output saved to /tmp/ra_full_output.log" >&2
+echo "Full output saved to $OUTPUT_LOG" >&2
 echo "" >&2
 echo "=== Parsing responses ===" >&2
 
 # Parse and display responses
 echo "Looking for hover responses..." >&2
-grep -A 5 '"id":2' /tmp/ra_full_output.log | head -20 || echo "No hover response found for request 2"
+grep -A 5 '"id":2' "$OUTPUT_LOG" | head -20 || echo "No hover response found for request 2"

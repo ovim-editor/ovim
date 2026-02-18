@@ -1,6 +1,16 @@
 mod helpers;
 
 use helpers::EditorTest;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Test TypeScript variable declaration and hover
 #[test]
@@ -13,7 +23,7 @@ console.log(greeting, count, flag);
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'greeting' variable
     test.keys("0");
@@ -38,7 +48,7 @@ const result = add(5, 3);
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to function name
     test.keys("0");
@@ -62,7 +72,7 @@ const product = multiply(4, 5);
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to multiply function call
     test.keys("5G0");
@@ -95,7 +105,7 @@ const person = new Person("Alice", 30);
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to class name
     test.keys("0");
@@ -123,7 +133,7 @@ const user: User = {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to interface name (using w to move by word)
     test.keys("0w");
@@ -152,7 +162,7 @@ const id: ID = 123;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'Point' type usage
     test.keys("7G0");
@@ -175,7 +185,7 @@ const favoriteColor: Color = Color.Blue;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to enum name
     test.keys("0");
@@ -197,7 +207,7 @@ const numResult = identity(42);
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'identity' function call
     test.keys("5G0");
@@ -220,7 +230,7 @@ const MyComponent: Component = () => {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'Component' in import
     test.keys("0");
@@ -245,7 +255,7 @@ async function main() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'fetchData' call
     test.keys("7G0");
@@ -271,7 +281,7 @@ class Calculator {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to @log decorator
     test.keys("6G0");
@@ -292,7 +302,7 @@ const employee: Employee = { name: "Alice", id: 1 };
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'StringOrNumber' type usage
     test.keys("4G0");
@@ -315,7 +325,7 @@ const formatted = Utils.format("hello");
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to namespace name
     test.keys("0");
@@ -340,7 +350,7 @@ const city = user.address?.city;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to optional chain usage
     test.keys("9G0");
@@ -362,7 +372,7 @@ function getValue(input: number | undefined): number {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'value' in nullish coalescing
     test.keys("2G0");
@@ -382,7 +392,7 @@ type Greeting = `Hello, ${string}`;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to template literal
     test.keys("2G0");
@@ -405,7 +415,7 @@ const config = {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'colors' usage
     test.keys("2G0");
@@ -430,7 +440,7 @@ function process(input: string | number) {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'isString' function call
     test.keys("6G0");
@@ -454,7 +464,7 @@ type PickedUser = Pick<User, 'name'>;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'User' in Readonly<User>
     test.keys("6G0");
@@ -475,7 +485,7 @@ type NonNullable<T> = T extends null | undefined ? never : T;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'IsString' usage
     test.keys("2G0");
@@ -501,7 +511,7 @@ type TodoRequired = Required<TodoOptional>;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'Todo' in Pick
     test.keys("7G0");
@@ -524,7 +534,7 @@ type AgeType = Person['age'];
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'Person' in indexed access
     test.keys("6G0");
@@ -551,7 +561,7 @@ export default Greeting;
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.tsx".to_string());
+    test.set_file_path(temp_test_path("test.tsx"));
 
     // Move to 'Props' usage
     test.keys("7G0");
@@ -585,7 +595,7 @@ const result = new StringBuilder()
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'append' method call
     test.keys("15G0");
@@ -622,7 +632,7 @@ const config: Config = {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to 'Config' usage
     test.keys("12G0");
@@ -665,7 +675,7 @@ fn test_gd_after_typescript_editing() {
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Add a call to the function
     test.keys("GA");
@@ -686,7 +696,7 @@ fn test_gd_after_typescript_editing() {
 #[test]
 fn test_hover_after_typescript_modification() {
     let mut test = EditorTest::new("let value = 100;\n");
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Modify the value
     test.keys("0");
@@ -719,7 +729,7 @@ const result = add(5, 3);
 "#;
 
     let mut test = EditorTest::new(code);
-    test.set_file_path("/tmp/test.ts".to_string());
+    test.set_file_path(temp_test_path("test.ts"));
 
     // Move to function name
     test.keys("7G0");

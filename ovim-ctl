@@ -32,6 +32,23 @@ success() {
     echo -e "${GREEN}$1${NC}"
 }
 
+read_health_ready() {
+    local port="$1"
+    local tmp_file
+    tmp_file="$(mktemp "${TMPDIR:-/tmp}/ovim-health.XXXXXX")"
+
+    if ! curl -s "http://127.0.0.1:$port/v1/health" > "$tmp_file" 2>/dev/null; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    local ready
+    ready=$(jq -r '.ready' "$tmp_file" 2>/dev/null || echo "false")
+    rm -f "$tmp_file"
+    echo "$ready"
+    return 0
+}
+
 # Get port for a session name
 get_port() {
     local session_name="$1"
@@ -79,12 +96,10 @@ list_sessions() {
 
         # Get health status
         local ready_status="${RED}not ready${NC}"
-        if curl -s "http://127.0.0.1:$port/health" > /tmp/ovim-health-$$.json 2>/dev/null; then
-            local ready=$(jq -r '.ready' /tmp/ovim-health-$$.json 2>/dev/null || echo "false")
+        if ready=$(read_health_ready "$port"); then
             if [[ "$ready" == "true" ]]; then
                 ready_status="${GREEN}ready${NC}"
             fi
-            rm -f /tmp/ovim-health-$$.json
         fi
 
         echo -e "${GREEN}${session_name}${NC} (pid: $pid, port: $port) $file [LSP: $ready_status]"
@@ -101,7 +116,7 @@ send_keys() {
     local keys="$2"
     local port=$(get_port "$session_name")
 
-    curl -s -X POST "http://127.0.0.1:$port/keys" \
+    curl -s -X POST "http://127.0.0.1:$port/v1/keys" \
         -H "Content-Type: application/json" \
         -d "{\"keys\": \"$keys\"}" | jq '.'
 }
@@ -111,7 +126,7 @@ get_health() {
     local session_name="$1"
     local port=$(get_port "$session_name")
 
-    curl -s "http://127.0.0.1:$port/health" | jq '.'
+    curl -s "http://127.0.0.1:$port/v1/health" | jq '.'
 }
 
 # Get LSP status
@@ -119,7 +134,7 @@ get_lsp_status() {
     local session_name="$1"
     local port=$(get_port "$session_name")
 
-    curl -s "http://127.0.0.1:$port/lsp/status" | jq '.'
+    curl -s "http://127.0.0.1:$port/v1/lsp/status" | jq '.'
 }
 
 # Get snapshot
@@ -127,7 +142,7 @@ get_snapshot() {
     local session_name="$1"
     local port=$(get_port "$session_name")
 
-    curl -s "http://127.0.0.1:$port/snapshot" | jq '.'
+    curl -s "http://127.0.0.1:$port/v1/snapshot" | jq '.'
 }
 
 # Kill a session
@@ -172,10 +187,7 @@ wait_ready() {
             error "Timeout waiting for LSP to be ready"
         fi
 
-        if curl -s "http://127.0.0.1:$port/health" > /tmp/ovim-health-$$.json 2>/dev/null; then
-            local ready=$(jq -r '.ready' /tmp/ovim-health-$$.json 2>/dev/null || echo "false")
-            rm -f /tmp/ovim-health-$$.json
-
+        if ready=$(read_health_ready "$port"); then
             if [[ "$ready" == "true" ]]; then
                 success "LSP is ready!"
                 return 0

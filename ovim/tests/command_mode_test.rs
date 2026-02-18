@@ -76,14 +76,19 @@ fn test_command_quit() {
 /// Test :w command
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_command_write() {
+    let file_name = format!("ovim_test_write_{}.txt", unique_test_id());
+    let file_path = std::env::temp_dir().join(file_name);
+    let file_path = file_path.to_string_lossy().to_string();
+
     let mut test = EditorTest::new("content\n");
-    test.set_file_path("/tmp/test_write.txt".to_string());
+    test.set_file_path(file_path.clone());
 
     test.press(':');
     test.type_text("w");
     test.press_enter();
 
     test.assert_mode(ovim::mode::Mode::Normal);
+    let _ = fs::remove_file(file_path);
 }
 
 /// Test :w ~/file expands tilde to home directory
@@ -144,14 +149,19 @@ async fn test_command_write_as_requests_diagnostics_refresh() {
 /// Test :wq command
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_command_write_quit() {
+    let file_name = format!("ovim_test_wq_{}.txt", unique_test_id());
+    let file_path = std::env::temp_dir().join(file_name);
+    let file_path = file_path.to_string_lossy().to_string();
+
     let mut test = EditorTest::new("content\n");
-    test.set_file_path("/tmp/test_wq.txt".to_string());
+    test.set_file_path(file_path.clone());
 
     test.press(':');
     test.type_text("wq");
     test.press_enter();
 
     assert!(test.editor.should_quit());
+    let _ = fs::remove_file(file_path);
 }
 
 /// Test :q! command (force quit)
@@ -175,18 +185,21 @@ fn test_command_force_quit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_command_edit_file() {
     // Create the file first
-    std::fs::write("/tmp/newfile.txt", "new content\n").unwrap();
+    let file_name = format!("ovim_test_edit_{}.txt", unique_test_id());
+    let file_path = std::env::temp_dir().join(file_name);
+    std::fs::write(&file_path, "new content\n").unwrap();
+    let file_path_str = file_path.to_string_lossy().to_string();
 
     let mut test = EditorTest::new("old\n");
 
     test.press(':');
-    test.type_text("e /tmp/newfile.txt");
+    test.type_text(&format!("e {}", file_path_str));
     test.press_enter();
 
     test.assert_mode(ovim::mode::Mode::Normal);
 
     // Clean up
-    std::fs::remove_file("/tmp/newfile.txt").ok();
+    std::fs::remove_file(file_path).ok();
 }
 
 /// Test :r ~/file expands tilde before reading
@@ -486,9 +499,12 @@ fn test_command_tabnew() {
 #[test]
 fn test_command_source() {
     let mut test = EditorTest::new("test\n");
+    let file_name = format!("ovim_test_source_{}.vim", unique_test_id());
+    let file_path = std::env::temp_dir().join(file_name);
+    let file_path = file_path.to_string_lossy().to_string();
 
     test.press(':');
-    test.type_text("source /tmp/config.vim");
+    test.type_text(&format!("source {}", file_path));
     test.press_enter();
 
     test.assert_mode(ovim::mode::Mode::Normal);

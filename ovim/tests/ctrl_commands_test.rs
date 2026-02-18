@@ -2,6 +2,16 @@ mod helpers;
 
 use helpers::EditorTest;
 use ovim::editor::LspAction;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Test Ctrl-T (indent in insert mode)
 #[test]
@@ -280,7 +290,7 @@ fn test_ctrl_y_scroll_line_up() {
 #[test]
 fn test_ctrl_g_goto_definition_new_tab() {
     let mut test = EditorTest::new("test content\n");
-    test.set_file_path("/tmp/test.txt".to_string());
+    test.set_file_path(temp_test_path("test.txt"));
 
     test.keys("<C-g>");
 
@@ -331,7 +341,7 @@ fn test_ctrl_p_completion_prev() {
 #[test]
 fn test_ctrl_space_completion() {
     let mut test = EditorTest::new("function test() {}\n");
-    test.set_file_path("/tmp/test.js".to_string());
+    test.set_file_path(temp_test_path("test.js"));
 
     test.keys("o");
     test.type_text("te");
@@ -345,7 +355,7 @@ fn test_ctrl_space_completion() {
 #[test]
 fn test_ctrl_bracket_jump_tag() {
     let mut test = EditorTest::new("function test() {}\ntest();\n");
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(temp_test_path("test.rs"));
 
     test.keys("j");
     test.keys("<C-]>");

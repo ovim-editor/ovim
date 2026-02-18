@@ -1,12 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Integration test for ovim REST API
 # This script tests the API with realistic Vim workflows
 
-set -e  # Exit on error
+set -euo pipefail
 
 API_URL="http://localhost:3000"
-TEST_FILE="/tmp/ovim_test_$(date +%s).txt"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-integration.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+TEST_FILE="$TMP_DIR/ovim_test.txt"
 
 # Colors
 GREEN='\033[0;32m'
@@ -19,7 +21,7 @@ echo -e "${BLUE}=== ovim REST API Integration Tests ===${NC}\n"
 
 # Check if server is running
 echo -n "Checking if API server is running... "
-if curl -s -f $API_URL/mode > /dev/null 2>&1; then
+if curl -s -f "$API_URL/v1/mode" > /dev/null 2>&1; then
     echo -e "${GREEN}✓${NC}"
 else
     echo -e "${RED}✗${NC}"
@@ -45,32 +47,32 @@ test_assert() {
 }
 
 send_keys() {
-    curl -s -X POST $API_URL/keys \
+    curl -s -X POST "$API_URL/v1/keys" \
       -H "Content-Type: application/json" \
       -d "{\"keys\": \"$1\"}" > /dev/null 2>&1
 }
 
 get_cursor_line() {
-    curl -s $API_URL/cursor | grep -o '"line":[0-9]*' | cut -d: -f2
+    curl -s "$API_URL/v1/cursor" | grep -o '"line":[0-9]*' | cut -d: -f2
 }
 
 get_cursor_col() {
-    curl -s $API_URL/cursor | grep -o '"column":[0-9]*' | cut -d: -f2
+    curl -s "$API_URL/v1/cursor" | grep -o '"column":[0-9]*' | cut -d: -f2
 }
 
 get_mode() {
-    curl -s $API_URL/mode | grep -o '"mode":"[^"]*"' | cut -d\" -f4
+    curl -s "$API_URL/v1/mode" | grep -o '"mode":"[^"]*"' | cut -d\" -f4
 }
 
 get_buffer() {
-    curl -s $API_URL/buffer | jq -r '.content' 2>/dev/null || curl -s $API_URL/buffer | grep -o '"content":"[^"]*"' | cut -d\" -f4
+    curl -s "$API_URL/v1/buffer" | jq -r '.content' 2>/dev/null || curl -s "$API_URL/v1/buffer" | grep -o '"content":"[^"]*"' | cut -d\" -f4
 }
 
 echo -e "\n${BLUE}=== Test Suite 1: Basic Navigation ===${NC}\n"
 
 # Test 1: Initialize buffer
 echo "Setting up test buffer..."
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"}' > /dev/null
 
@@ -141,7 +143,7 @@ buffer=$(get_buffer)
 test_assert "A appends at line end" "!" "$buffer"
 
 # Test 14: Delete line
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Delete me\nKeep me\nAlso keep"}' > /dev/null
 send_keys "ggdd"
@@ -150,7 +152,7 @@ test_assert "dd deletes line" "Keep me" "$buffer"
 test_assert "dd preserves next line" "Also keep" "$buffer"
 
 # Test 15: Delete word
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Delete this word please"}' > /dev/null
 send_keys "gg0dw"
@@ -160,7 +162,7 @@ test_assert "dw deletes word" "this word" "$buffer"
 echo -e "\n${BLUE}=== Test Suite 4: Yank & Paste ===${NC}\n"
 
 # Test 16: Yank and paste line
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Copy this line\nOriginal"}' > /dev/null
 send_keys "ggyy"
@@ -171,7 +173,7 @@ test_assert "yy and p duplicate line" "Copy this line" "$buffer"
 echo -e "\n${BLUE}=== Test Suite 5: Count Prefixes ===${NC}\n"
 
 # Test 17: Count with motion
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10"}' > /dev/null
 send_keys "gg"
@@ -180,7 +182,7 @@ line=$(get_cursor_line)
 test_assert "5j moves down 5 lines" "5" "$line"
 
 # Test 18: Count with delete
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"}' > /dev/null
 send_keys "gg"
@@ -191,7 +193,7 @@ test_assert "3dd deletes 3 lines" "Line 4" "$buffer"
 echo -e "\n${BLUE}=== Test Suite 6: Search ===${NC}\n"
 
 # Test 19: Forward search
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "No match here\nFound the word target\nAnother target here"}' > /dev/null
 send_keys "gg"
@@ -207,7 +209,7 @@ test_assert "n finds next match" "2" "$line"
 echo -e "\n${BLUE}=== Test Suite 7: Visual Mode ===${NC}\n"
 
 # Test 21: Visual selection and delete
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Delete these words please"}' > /dev/null
 send_keys "gg0"
@@ -218,7 +220,7 @@ test_assert "Visual delete removes selection" "these words" "$buffer"
 echo -e "\n${BLUE}=== Test Suite 8: Undo/Redo ===${NC}\n"
 
 # Test 22: Undo
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Original text"}' > /dev/null
 send_keys "ggdd"
@@ -234,7 +236,7 @@ test_assert "Ctrl-R redoes" "" "$buffer"  # Should be empty after redo
 echo -e "\n${BLUE}=== Test Suite 9: Operators + Motions ===${NC}\n"
 
 # Test 24: Delete to end of line
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Keep this delete rest"}' > /dev/null
 send_keys "gg0llllllllll"
@@ -243,7 +245,7 @@ buffer=$(get_buffer)
 test_assert "D deletes to end" "Keep this" "$buffer"
 
 # Test 25: Change word
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "Change oldword here"}' > /dev/null
 send_keys "gg0wwcwnewword<Esc>"
@@ -253,7 +255,7 @@ test_assert "cw changes word" "newword" "$buffer"
 echo -e "\n${BLUE}=== Test Suite 10: Complex Workflows ===${NC}\n"
 
 # Test 26: Realistic editing workflow
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "def hello():\n    print(world)\n    return"}' > /dev/null
 
@@ -265,7 +267,7 @@ buffer=$(get_buffer)
 test_assert "Complex edit: change function arg" 'print(hello)' "$buffer"
 
 # Test 27: Multiple operations in sequence
-curl -s -X PUT $API_URL/buffer \
+curl -s -X PUT "$API_URL/v1/buffer" \
   -H "Content-Type: application/json" \
   -d '{"content": "one two three\nfour five six"}' > /dev/null
 send_keys "gg0"      # Go to start

@@ -1,8 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Simple rust-analyzer test with a standalone file
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-ra-simple.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+OUTPUT_LOG="$TMP_DIR/simple_ra_output.log"
 
 WORKSPACE_ROOT="/workspace"
 TEST_FILE="$WORKSPACE_ROOT/fixtures/simple_test.rs"
@@ -90,12 +94,12 @@ send_message() {
 
     echo ">>> Exit" >&2
     send_message '{"jsonrpc":"2.0","method":"exit"}'
-} | rust-analyzer 2>&1 | tee /tmp/simple_ra_output.log
+} | rust-analyzer 2>&1 | tee "$OUTPUT_LOG"
 
 echo "" >&2
 echo "=== Extracting hover responses ===" >&2
 
 # Extract responses with id 2 and 3
-cat /tmp/simple_ra_output.log | grep -o '{"jsonrpc":"2.0","id":[0-9]*,"result":[^}]*}' | while read -r response; do
+cat "$OUTPUT_LOG" | grep -o '{"jsonrpc":"2.0","id":[0-9]*,"result":[^}]*}' | while read -r response; do
     echo "$response" | jq '.'
 done

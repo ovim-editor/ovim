@@ -389,9 +389,8 @@ The language support system uses a declarative configuration file (`languages.to
 
 ## Related Documentation
 
-- [Architecture Analysis](../notes/LANGUAGE_SUPPORT_ARCHITECTURE_ANALYSIS.md) - Design decisions and implementation details
-- [CLAUDE.md](../CLAUDE.md) - Quick reference for developers
-- [CLI Reference](../code-docs/CLI_SUBCOMMANDS.md) - All CLI commands
+- [Architecture & design notes](../code-docs/DESIGN.md) - design decisions and implementation details
+- [CLI usage](../README.md) - common commands and workflow
 
 ## Need Help?
 

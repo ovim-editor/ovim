@@ -4,11 +4,15 @@ use ovim::buffer::Buffer;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_rust_syntax_highlighting_enabled() {
     // Create a temporary file
-    let temp_file = "/tmp/test_syntax.rs";
-    std::fs::write(temp_file, "fn main() {\n    let x = 42;\n}\n").unwrap();
+    let temp_file = tempfile::Builder::new()
+        .prefix("ovim_syntax_")
+        .suffix(".rs")
+        .tempfile()
+        .unwrap();
+    std::fs::write(temp_file.path(), "fn main() {\n    let x = 42;\n}\n").unwrap();
 
     // Load the file into a buffer
-    let buffer = Buffer::load_file(temp_file).unwrap();
+    let buffer = Buffer::load_file(temp_file.path()).unwrap();
 
     // Check if syntax highlighting is enabled
     assert!(
@@ -16,23 +20,25 @@ async fn test_rust_syntax_highlighting_enabled() {
         "Syntax highlighting should be enabled for .rs files"
     );
 
-    // Clean up
-    std::fs::remove_file(temp_file).unwrap();
 }
 
 #[ignore = "TODO: Syntax highlighting changes in progress"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_rust_syntax_highlights_for_line() {
     // Create a temporary file with Rust code
-    let temp_file = "/tmp/test_syntax2.rs";
+    let temp_file = tempfile::Builder::new()
+        .prefix("ovim_syntax_")
+        .suffix(".rs")
+        .tempfile()
+        .unwrap();
     std::fs::write(
-        temp_file,
+        temp_file.path(),
         "fn main() {\n    let x = 42;\n    println!(\"Hello\");\n}\n",
     )
     .unwrap();
 
     // Load the file into a buffer
-    let buffer = Buffer::load_file(temp_file).unwrap();
+    let buffer = Buffer::load_file(temp_file.path()).unwrap();
 
     // Get highlights for the first line (should have "fn" as a keyword)
     let highlights = buffer.highlights_for_line(0);
@@ -52,6 +58,4 @@ async fn test_rust_syntax_highlights_for_line() {
         "Line 1 should have syntax highlights (contains 'let x = 42')"
     );
 
-    // Clean up
-    std::fs::remove_file(temp_file).unwrap();
 }

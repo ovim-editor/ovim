@@ -5,9 +5,13 @@ use helpers::EditorTest;
 
 #[test]
 fn apply_workspace_edit_marks_buffer_modified_and_requests_diagnostics_refresh() {
-    let tmp = "/tmp/ovim_lsp_edits_sync.rs";
-    std::fs::write(tmp, "hello\n").unwrap();
-    let tmp = std::fs::canonicalize(tmp).unwrap();
+    let tmp = tempfile::Builder::new()
+        .prefix("ovim_lsp_edits_sync_")
+        .suffix(".rs")
+        .tempfile()
+        .unwrap();
+    std::fs::write(tmp.path(), "hello\n").unwrap();
+    let tmp = std::fs::canonicalize(tmp.path()).unwrap();
     let tmp = tmp.to_string_lossy().to_string();
 
     let mut t = EditorTest::new("hello\n");

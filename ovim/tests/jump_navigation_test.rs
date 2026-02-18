@@ -1,6 +1,16 @@
 mod helpers;
 
 use helpers::EditorTest;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+fn temp_test_path(name: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(format!("ovim_test_{}_{}", id, name))
+        .to_string_lossy()
+        .to_string()
+}
 
 /// Test Ctrl-O (jump back)
 #[test]
@@ -278,7 +288,7 @@ fn test_ctrl_b_page_up() {
 #[test]
 fn test_gd_goto_definition() {
     let mut test = EditorTest::new("fn test() {}\ntest();\n");
-    test.set_file_path("/tmp/test.rs".to_string());
+    test.set_file_path(temp_test_path("test.rs"));
 
     test.keys("j");
     test.keys("gd");

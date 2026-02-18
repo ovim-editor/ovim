@@ -1,9 +1,13 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Script to manually test rust-analyzer LSP protocol
 # This helps understand exactly what messages rust-analyzer expects and returns
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-ra-test.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+OUTPUT_LOG="$TMP_DIR/ra_test_output.log"
 
 WORKSPACE_ROOT="/workspace"
 TEST_FILE="$WORKSPACE_ROOT/src/buffer/mod.rs"
@@ -116,8 +120,8 @@ Content-Length: 41
 EOF
 
     sleep 1
-} | tee /tmp/ra_test_output.log
+} | tee "$OUTPUT_LOG"
 
 echo ""
 echo "=== Test complete ==="
-echo "Full output saved to /tmp/ra_test_output.log"
+echo "Full output saved to $OUTPUT_LOG"

@@ -1,7 +1,10 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
 SESSION="hover_fix_test"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-hover-fix.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
+LOG_FILE="$TMP_DIR/hover_test.log"
 
 # Kill any existing test session
 ./ovim-ctl kill $SESSION 2>/dev/null || true
@@ -12,7 +15,7 @@ echo ""
 
 # Start ovim in headless mode with a Rust file
 echo "1. Starting ovim in headless mode..."
-./target/release/ovim src/editor/mod.rs --headless --session $SESSION 2>&1 | tee /tmp/hover_test.log &
+./target/release/ovim src/editor/mod.rs --headless --session $SESSION 2>&1 | tee "$LOG_FILE" &
 OVIM_PID=$!
 
 # Wait for session to be ready
@@ -38,7 +41,7 @@ timeout 60 ./ovim-ctl wait $SESSION 60 || {
 }
 
 echo "4. LSP is ready! Checking LSP status..."
-curl -s http://127.0.0.1:$PORT/lsp/status | jq '.'
+curl -s "http://127.0.0.1:$PORT/v1/lsp/status" | jq '.'
 
 echo ""
 echo "5. Testing hover functionality..."
@@ -51,7 +54,7 @@ echo "   b. Moving to a word..."
 sleep 0.5
 
 echo "   c. Getting initial snapshot..."
-BEFORE=$(curl -s http://127.0.0.1:$PORT/snapshot)
+BEFORE=$(curl -s "http://127.0.0.1:$PORT/v1/snapshot")
 echo "      Cursor position: $(echo $BEFORE | jq -r '.cursor')"
 echo "      Mode: $(echo $BEFORE | jq -r '.mode')"
 
@@ -60,7 +63,7 @@ echo "   d. Triggering hover with K..."
 sleep 2
 
 echo "   e. Getting snapshot after hover..."
-AFTER=$(curl -s http://127.0.0.1:$PORT/snapshot)
+AFTER=$(curl -s "http://127.0.0.1:$PORT/v1/snapshot")
 HOVER_INFO=$(echo $AFTER | jq -r '.hover_info')
 
 if [ "$HOVER_INFO" != "null" ] && [ "$HOVER_INFO" != "" ]; then
@@ -76,7 +79,7 @@ fi
 echo ""
 echo "6. Testing that LSP is still responsive (no blocking)..."
 echo "   Checking LSP status again..."
-LSP_STATUS=$(curl -s http://127.0.0.1:$PORT/lsp/status)
+LSP_STATUS=$(curl -s "http://127.0.0.1:$PORT/v1/lsp/status")
 echo $LSP_STATUS | jq '.'
 
 if echo $LSP_STATUS | jq -e '.servers | length > 0' > /dev/null; then

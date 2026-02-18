@@ -1,7 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Comprehensive test for all Java fixes
 
-set -e
+set -euo pipefail
+
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ovim-java-fixes.XXXXXX")"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║          Java LSP & Syntax Highlighting - Final Tests         ║"
@@ -12,12 +15,11 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test 1: Language Detection"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-./test_java_detection.sh > /tmp/test1.log 2>&1
-if [ $? -eq 0 ]; then
+if ./test_java_detection.sh > "$TMP_DIR/test1.log" 2>&1; then
     echo "✅ PASSED: Language detection working"
 else
     echo "❌ FAILED: Language detection not working"
-    cat /tmp/test1.log
+    cat "$TMP_DIR/test1.log"
     exit 1
 fi
 echo ""
@@ -26,12 +28,11 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test 2: Syntax Highlighting"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-./test_java_syntax.sh > /tmp/test2.log 2>&1
-if [ $? -eq 0 ]; then
+if ./test_java_syntax.sh > "$TMP_DIR/test2.log" 2>&1; then
     echo "✅ PASSED: Syntax highlighting working"
 else
     echo "❌ FAILED: Syntax highlighting not working"
-    cat /tmp/test2.log
+    cat "$TMP_DIR/test2.log"
     exit 1
 fi
 echo ""
@@ -40,12 +41,11 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test 3: LSP Language ID Detection"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-./test_lsp_detection.sh > /tmp/test3.log 2>&1
-if [ $? -eq 0 ]; then
+if ./test_lsp_detection.sh > "$TMP_DIR/test3.log" 2>&1; then
     echo "✅ PASSED: LSP language ID detection working"
 else
     echo "❌ FAILED: LSP language ID detection not working"
-    cat /tmp/test3.log
+    cat "$TMP_DIR/test3.log"
     exit 1
 fi
 echo ""
@@ -54,12 +54,12 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "Test 4: Build Verification"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-cargo build --lib --quiet 2>&1 | grep -i "^error" > /tmp/test4.log || true
-if [ ! -s /tmp/test4.log ]; then
+cargo build --lib --quiet 2>&1 | grep -i "^error" > "$TMP_DIR/test4.log" || true
+if [ ! -s "$TMP_DIR/test4.log" ]; then
     echo "✅ PASSED: Build successful (no errors)"
 else
     echo "❌ FAILED: Build has errors"
-    cat /tmp/test4.log
+    cat "$TMP_DIR/test4.log"
     exit 1
 fi
 echo ""
