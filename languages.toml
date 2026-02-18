@@ -168,8 +168,6 @@ official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
-    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
-    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
 install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
