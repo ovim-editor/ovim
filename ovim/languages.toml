@@ -168,8 +168,6 @@ official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
-    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
-    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
 install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
@@ -193,8 +191,6 @@ official = { crate = "tree_sitter_java", constant = "HIGHLIGHTS_QUERY" }
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
-    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
-    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
 ]
 root_markers = ["settings.gradle.kts", "settings.gradle", "pom.xml", "build.gradle.kts", "build.gradle"]
 install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
@@ -216,8 +212,6 @@ file = { path = "src/syntax/queries/groovy.scm" }
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
-    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
-    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
 install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
@@ -239,8 +233,6 @@ official = { crate = "tree_sitter_scala", constant = "HIGHLIGHTS_QUERY" }
 [language.lsp]
 command = "hyperion-lsp"
 fallback_commands = [
-    "~/Personal/hyperion-ls/target/release/hyperion-lsp",
-    "~/Personal/hyperion-ls/target/debug/hyperion-lsp"
 ]
 root_markers = ["build.sbt", "settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
 install_hint = "Hyperion LSP auto-download is handled automatically by ovim"
