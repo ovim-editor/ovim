@@ -87,12 +87,14 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `:sort`, `:copy`, and `:move` undo/redo flows.
 - [x] Insert-mode helper operations (`Ctrl-W/U/T/D`) now use `apply_change_and_record()` instead of manual buffer mutation + `add_change`.
 - [x] Added macro regression coverage for `Ctrl-W/U/T/D` insert-mode undo/redo flows.
+- [x] Visual-block change (`Ctrl-V ... c ...`) now token-redeems its delete-phase undo entry during insert-exit merge (no blind stack pop).
+- [x] Added macro regression coverage for visual-block `c`/`I` undo isolation after unrelated prior changes.
 
-#### Remaining `add_change` callsites (current snapshot: 10 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 9 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
-| `input/insert_mode.rs` | 4 | Core insert-mode batching and semantic change finalization; intentional |
+| `input/insert_mode.rs` | 3 | Core insert-mode batching and semantic change finalization; intentional |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
 | `change.rs` | 2 | ChangeManager internals (`add_change` implementation/docs) |
 | `input/replace_mode.rs` | 1 | Replace-mode tracking |

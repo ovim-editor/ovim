@@ -3,7 +3,7 @@
 ## Context
 Undo/repeat migration work was continued on `main` and committed in scoped slices.
 Recent slices removed all `add_change` callsites from `input/commands.rs` and migrated text-object case operators to semantic `RepeatAction`.
-`PRIORITIES.md` now reports 10 `add_change` callsites in `ovim-core/src` (insert-mode semantic/infrastructure + replace + internals).
+`PRIORITIES.md` now reports 9 `add_change` callsites in `ovim-core/src` (insert-mode semantic/infrastructure + replace + internals), and visual-block `c` merge now redeems delete undo by token.
 
 ## Branch + Commits
 Current branch: `main`
@@ -24,6 +24,7 @@ Recent undo-migration commits:
 13. `2db973d` - Record shell filter undo via Pattern B
 14. `67192db` - Migrate remaining Ex command undo paths
 15. `d473ae3` - Refactor insert helper undo paths to apply_change
+16. `bace2ba` - Token-harden visual-block change undo merge
 
 ## What Landed
 
@@ -74,7 +75,7 @@ Files:
 ### F) Plan docs updated
 File:
 - `/Users/adrian/Projects/ovim/PRIORITIES.md`
-  - `add_change` snapshot now reflects recent reductions (currently 14 in `ovim-core/src`).
+  - `add_change` snapshot was reduced from 14 and is now 9 in `ovim-core/src`.
   - Added notes for command-mode migration slices and new macro regressions.
 
 ### G) Text-object case operators migrated
@@ -104,7 +105,22 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/ctrl_commands_test.rs`
   - Added macro undo/redo flow coverage for `Ctrl-W/U/T/D` insert-mode behavior.
 - `/Users/adrian/Projects/ovim/PRIORITIES.md`
-  - Remaining `add_change` snapshot updated to 10.
+  - Remaining `add_change` snapshot updated to 10 in that slice (currently 9).
+
+### J) Visual-block change merge token hardening
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/editing_state.rs`
+  - Added `pending_visual_block_change_delete_token` to hold delete-phase undo token.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/helpers.rs`
+  - Added `delete_visual_selection_with_token()` so visual delete can return the recorded undo token.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/visual_mode.rs`
+  - `Ctrl-V ... c ...` now stores delete token for insert-exit merge instead of relying on stack-top assumptions.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/insert_mode.rs`
+  - Visual-block replay merge now redeems delete entry via `pop_by_token()` (no blind `pop_last_change()`).
+- `/Users/adrian/Projects/ovim/ovim/tests/visual_block_mode_test.rs`
+  - Added macro regressions for undo isolation after unrelated prior changes:
+    - `test_ctrl_v_change_undo_does_not_consume_prior_change_macro_flow`
+    - `test_ctrl_v_insert_undo_does_not_consume_prior_change_macro_flow`
 
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
@@ -124,6 +140,8 @@ Files:
 - `cargo test -p ovim --test command_mode_test -- --nocapture`
 - `cargo test -p ovim --test shell_commands_test -- --nocapture`
 - `cargo test -p ovim --test ctrl_commands_test -- --nocapture`
+- `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
+- `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
@@ -141,5 +159,5 @@ Observed modified files include:
 
 ## Suggested Continuation
 If continuing migration work, likely next slice is:
-1. Evaluate whether the remaining `input/insert_mode.rs` `add_change` sites (pending merge/composite finalization) can be token-hardened without changing semantics.
+1. Evaluate whether the remaining `input/insert_mode.rs` semantic `add_change` sites can be moved to recorded undo representation without regressing repeat semantics.
 2. Keep commits path-scoped and avoid touching dirty AI files listed above.
