@@ -82,6 +82,11 @@ pub enum RepeatAction {
     DeleteWordForward { count: usize },
     /// cw delete phase — word-end semantics that prefer current word (like ce)
     DeleteWordChange { count: usize },
+    /// cgn/cgN delete phase — delete the next/previous search match
+    DeleteSearchMatch {
+        search_pattern: String,
+        search_forward: bool,
+    },
     /// db — delete word backward
     DeleteWordBackward { count: usize },
     /// de — delete to end of word (inclusive)
@@ -308,6 +313,29 @@ impl RepeatAction {
 
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.cursor_mut().set_position(start_line, start_col);
+            }
+            Self::DeleteSearchMatch {
+                search_pattern,
+                search_forward,
+            } => {
+                let line_idx = buffer.cursor().line();
+                let col = buffer.cursor().col();
+
+                let mut search = crate::search::Search::new_with_options(
+                    search_pattern.clone(),
+                    *search_forward,
+                    true, // ignorecase
+                    true, // smartcase
+                );
+
+                if let Some((match_line, match_col, match_text)) =
+                    search.find_next(buffer, line_idx, col)
+                {
+                    let match_len = match_text.chars().count();
+                    let match_end_col = match_col + match_len;
+                    buffer.delete_range(match_line, match_col, match_line, match_end_col);
+                    buffer.cursor_mut().set_position(match_line, match_col);
+                }
             }
             Self::DeleteWordBackward { count } => {
                 buffer.delete_word_backward(*count);
@@ -577,7 +605,10 @@ impl RepeatAction {
                     let insert_at = line.min(buffer.line_count());
                     buffer.insert_text_at(insert_at, 0, "\n");
                     buffer.cursor_mut().set_position(insert_at, 0);
-                } else if !matches!(delete.as_ref(), RepeatAction::DeleteTextObject { .. }) {
+                } else if !matches!(
+                    delete.as_ref(),
+                    RepeatAction::DeleteTextObject { .. } | RepeatAction::DeleteSearchMatch { .. }
+                ) {
                     // For non-text-object changes (C, s, c$, etc.), preserve
                     // the original insert point even if delete clamped cursor.
                     buffer
