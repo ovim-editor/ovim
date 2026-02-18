@@ -118,6 +118,7 @@ Since the initial handoff above, the requested upgrade has been implemented in s
 4. `73b0a50` Harden AI bash tool binary resolution and tests
 5. `1c722ae` Stabilize AI chat tool path tests in no-repo sessions
 6. `084fa93` Prioritize blocking approval modals over overlay toasts
+7. `fc75cb9` Harden AI repo root detection with git discovery fallback
 
 ### What changed in latest two commits
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/ai_chat_tools.rs`
@@ -130,6 +131,11 @@ Since the initial handoff above, the requested upgrade has been implemented in s
 ### Validation
 - `cargo test -p ovim-core` passed (all tests).
 - `cargo test -p ovim --no-run` passed (warnings only).
+
+### Additional root-detection hardening
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/ai_chat_tools.rs`
+  - `ai_repo_root()` now resolves via `git2::Repository::discover` first, then falls back to marker walk-up (`.git` exists) for test/partial repo layouts.
+  - Added `ai_repo_root_detects_git_file_marker` regression test for `.git` file marker scenarios.
 
 ### Parallel-work safety
 - Other agents are actively modifying unrelated files (LSP migration/tests/dashboard).
