@@ -1,13 +1,16 @@
 //! Dashboard constants and animation trait for the startup screen.
 
-/// Menu items for the dashboard: (key, label, hint)
+/// Dashboard tips: (action, description, key sequence)
 pub const MENU_ITEMS: &[(&str, &str, &str)] = &[
-    ("e", "New File", "Open empty buffer"),
-    ("f", "Find File", "<Space>sf"),
-    ("r", "Recent Files", "<Space>sr"),
-    ("g", "Find Word", "<Space>sg"),
-    ("c", "Configuration", ":e ~/.config/ovim"),
-    ("q", "Quit", ":q"),
+    ("Open AI chat", "Agent with edits", "<Space><Space>"),
+    ("Open AI query", "Read-only assistant", "<Space>?"),
+    ("Find files", "Project picker", "<Space>sf"),
+    ("Live grep", "Search text in project", "<Space>sg"),
+    ("Code actions", "LSP quick fixes", "<Space>ca"),
+    ("Go to definition", "Jump to symbol", "gd"),
+    ("Hover docs", "Inspect symbol", "K"),
+    ("Command mode", "Run ex commands", ":"),
+    ("Quit", "Exit editor", ":q"),
 ];
 
 /// Trait for dashboard animations (e.g. the idle cat easter egg).

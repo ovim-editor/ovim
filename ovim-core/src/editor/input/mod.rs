@@ -190,6 +190,7 @@ impl InputHandler {
     fn active_mapping_mode(editor: &Editor) -> Option<MapMode> {
         match editor.mode() {
             Mode::Normal => Some(MapMode::Normal),
+            Mode::Dashboard => Some(MapMode::Normal),
             Mode::Insert => Some(MapMode::Insert),
             Mode::Visual | Mode::VisualLine | Mode::VisualBlock => Some(MapMode::Visual),
             Mode::Command => Some(MapMode::Command),

@@ -90,6 +90,22 @@ fn test_editor_with_content_starts_in_normal() {
     );
 }
 
+#[test]
+fn test_dashboard_key_colon_behaves_like_normal_buffer() {
+    let mut test = EditorTest::new("");
+    test.editor.set_mode(Mode::Dashboard);
+    test.keys(":");
+    assert_eq!(test.editor.mode(), Mode::Command);
+}
+
+#[test]
+fn test_dashboard_leader_sequence_opens_picker() {
+    let mut test = EditorTest::new("");
+    test.editor.set_mode(Mode::Dashboard);
+    test.keys("<Space>sf");
+    assert_eq!(test.editor.mode(), Mode::Picker);
+}
+
 // Note: test_load_file_should_exit_dashboard requires Tokio runtime
 // The bug can be demonstrated by observing that in main.rs:42-57:
 //   - Editor::new() is called (starts in Dashboard mode)
