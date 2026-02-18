@@ -71,6 +71,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Visual block change dot-repeat (`Ctrl-V ... c ... .`) now uses semantic repeat geometry with active regression coverage.
 - [x] LSP workspace `ResourceOp` (create/rename/delete) now snapshots filesystem state and integrates with undo/redo.
 - [x] Substitute-confirm (`:s/.../.../c`) now records each confirmed replacement as a single recorded undo unit.
+- [x] Text-object changes (`ciw`, `ca"`, etc.) now use `PendingChangeRepeat` + `RepeatAction::Change` instead of legacy pending semantic change path.
 
 #### Remaining `add_change` callsites (current snapshot: 24 in `ovim-core/src`)
 

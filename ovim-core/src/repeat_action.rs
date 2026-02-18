@@ -436,10 +436,6 @@ impl RepeatAction {
                 inserted_text,
                 linewise,
             } => {
-                // Save cursor position before delete (inline changes insert at original pos)
-                let pre_delete_line = buffer.cursor().line();
-                let pre_delete_col = buffer.cursor().col();
-
                 // Phase 1: Execute the semantic delete at current cursor position
                 delete.execute(buffer);
 
@@ -449,12 +445,6 @@ impl RepeatAction {
                     let insert_at = line.min(buffer.line_count());
                     buffer.insert_text_at(insert_at, 0, "\n");
                     buffer.cursor_mut().set_position(insert_at, 0);
-                } else {
-                    // Inline change: restore cursor to pre-delete column
-                    // (delete methods may clamp cursor to normal-mode bounds)
-                    buffer
-                        .cursor_mut()
-                        .set_position(pre_delete_line, pre_delete_col);
                 }
 
                 // Phase 2: Insert the captured text

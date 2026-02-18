@@ -90,6 +90,24 @@ fn test_dot_repeat_change_word() {
 }
 
 #[test]
+fn test_dot_repeat_change_word_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "one two three\n";
+        step "ciwX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "X two three\n");
+            test.assert_cursor(0, 0);
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "X X three\n");
+            test.assert_cursor(0, 2);
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "X two three\n");
+        }
+    }
+}
+
+#[test]
 fn test_dot_repeat_substitute() {
     let mut test = EditorTest::new("hello world");
 
