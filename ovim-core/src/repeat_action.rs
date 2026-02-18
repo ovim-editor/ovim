@@ -436,6 +436,12 @@ impl RepeatAction {
                 inserted_text,
                 linewise,
             } => {
+                // Inline changes usually insert at the original cursor column,
+                // except text objects (ci", ciw, etc.) which insert at the
+                // resolved object start after delete.
+                let pre_delete_line = buffer.cursor().line();
+                let pre_delete_col = buffer.cursor().col();
+
                 // Phase 1: Execute the semantic delete at current cursor position
                 delete.execute(buffer);
 
@@ -445,6 +451,12 @@ impl RepeatAction {
                     let insert_at = line.min(buffer.line_count());
                     buffer.insert_text_at(insert_at, 0, "\n");
                     buffer.cursor_mut().set_position(insert_at, 0);
+                } else if !matches!(delete.as_ref(), RepeatAction::DeleteTextObject { .. }) {
+                    // For non-text-object changes (C, s, c$, etc.), preserve
+                    // the original insert point even if delete clamped cursor.
+                    buffer
+                        .cursor_mut()
+                        .set_position(pre_delete_line, pre_delete_col);
                 }
 
                 // Phase 2: Insert the captured text
