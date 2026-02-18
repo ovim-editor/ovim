@@ -211,6 +211,21 @@ fn test_ctrl_v_undo() {
 }
 
 #[test]
+fn test_ctrl_v_delete_dot_repeat_macro_flow() {
+    editor_flow_test! {
+        content "abcde\nvwxyz\n12345\n67890\n";
+        step "<C-v>jlld" => |test| {
+            assert_eq!(test.buffer_content(), "de\nyz\n12345\n67890\n");
+            test.assert_cursor(0, 0);
+        }
+        step "jj." => |test| {
+            assert_eq!(test.buffer_content(), "de\nyz\n45\n90\n");
+            test.assert_cursor(2, 0);
+        }
+    }
+}
+
+#[test]
 #[ignore = "TODO: Visual block dot-repeat needs relative position support"]
 fn test_ctrl_v_dot_repeat() {
     let mut test = EditorTest::new("hello\nworld\ntest\nmore\nlines");

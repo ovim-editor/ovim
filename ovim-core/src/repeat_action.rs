@@ -91,6 +91,15 @@ pub enum RepeatAction {
         shift_width: usize,
         expand_tab: bool,
     },
+    /// Visual-mode character-wise delete (v...d/x)
+    DeleteVisualChar {
+        line_delta: usize,
+        offset_col: usize,
+    },
+    /// Visual-line delete (V...d/x)
+    DeleteVisualLine { line_count: usize },
+    /// Visual-block delete (Ctrl-V...d/x)
+    DeleteVisualBlock { line_count: usize, width: usize },
     /// Change operator — semantic delete + insert text (cc, C, s, S, cj, ck, etc.)
     Change {
         delete: Box<RepeatAction>,
@@ -271,9 +280,7 @@ impl RepeatAction {
                     let current_line = buffer.cursor().line();
                     if let Some(line) = buffer.line(current_line) {
                         let line_wo_nl = line.trim_end_matches('\n');
-                        if !line_wo_nl.is_empty()
-                            && line_wo_nl.chars().all(|c| c.is_whitespace())
-                        {
+                        if !line_wo_nl.is_empty() && line_wo_nl.chars().all(|c| c.is_whitespace()) {
                             let whitespace_len = line_wo_nl.chars().count();
                             buffer.delete_range(current_line, 0, current_line, whitespace_len);
                             buffer.cursor_mut().set_position(current_line, 0);
@@ -301,6 +308,57 @@ impl RepeatAction {
                     final_col -= 1;
                 }
                 buffer.cursor_mut().set_position(final_line, final_col);
+            }
+            Self::DeleteVisualChar {
+                line_delta,
+                offset_col,
+            } => {
+                let start_line = buffer.cursor().line();
+                let start_col = buffer.cursor().col();
+                let end_line = start_line + line_delta;
+                let end_col = if *line_delta == 0 {
+                    start_col + offset_col
+                } else {
+                    *offset_col
+                };
+                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.cursor_mut().set_position(start_line, start_col);
+            }
+            Self::DeleteVisualLine { line_count } => {
+                let start_line = buffer.cursor().line();
+                let end_line_exclusive = start_line + line_count;
+                buffer.delete_range(start_line, 0, end_line_exclusive, 0);
+                let new_line = start_line.min(buffer.line_count().saturating_sub(1));
+                buffer.cursor_mut().set_position(new_line, 0);
+            }
+            Self::DeleteVisualBlock { line_count, width } => {
+                let start_line = buffer.cursor().line();
+                let start_col = buffer.cursor().col();
+
+                for i in 0..*line_count {
+                    let line_idx = start_line + i;
+                    if line_idx >= buffer.line_count() {
+                        break;
+                    }
+                    if let Some(line_text) = buffer.line(line_idx) {
+                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                        if start_col < line_len {
+                            let end_col = (start_col + width).min(line_len);
+                            buffer.delete_range(line_idx, start_col, line_idx, end_col);
+                        }
+                    }
+                }
+
+                let line_len = buffer
+                    .line(start_line)
+                    .map(|l| l.trim_end_matches('\n').chars().count())
+                    .unwrap_or(0);
+                let clamped_col = if line_len > 0 {
+                    start_col.min(line_len - 1)
+                } else {
+                    0
+                };
+                buffer.cursor_mut().set_position(start_line, clamped_col);
             }
             Self::Change {
                 delete,
