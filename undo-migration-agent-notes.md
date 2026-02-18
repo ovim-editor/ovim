@@ -3,7 +3,7 @@
 ## Context
 Undo/repeat migration work was continued on `main` and committed in scoped slices.
 Recent slices removed all `add_change` callsites from `input/commands.rs` and migrated text-object case operators to semantic `RepeatAction`.
-`PRIORITIES.md` now reports 14 `add_change` callsites in `ovim-core/src` (all in insert/helpers infrastructure + replace + internals).
+`PRIORITIES.md` now reports 10 `add_change` callsites in `ovim-core/src` (insert-mode semantic/infrastructure + replace + internals).
 
 ## Branch + Commits
 Current branch: `main`
@@ -23,6 +23,7 @@ Recent undo-migration commits:
 12. `ae38ea7` - Record ranged Ex delete undo via Pattern B
 13. `2db973d` - Record shell filter undo via Pattern B
 14. `67192db` - Migrate remaining Ex command undo paths
+15. `d473ae3` - Refactor insert helper undo paths to apply_change
 
 ## What Landed
 
@@ -96,6 +97,15 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/shell_commands_test.rs`
   - Added macro undo/redo flow for `:%!sort`.
 
+### I) Insert helper migration slice
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/helpers.rs`
+  - `Ctrl-W/U/T/D` insert-mode helper edits now go through `apply_change_and_record()` instead of direct buffer mutation + manual `add_change`.
+- `/Users/adrian/Projects/ovim/ovim/tests/ctrl_commands_test.rs`
+  - Added macro undo/redo flow coverage for `Ctrl-W/U/T/D` insert-mode behavior.
+- `/Users/adrian/Projects/ovim/PRIORITIES.md`
+  - Remaining `add_change` snapshot updated to 10.
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -113,6 +123,7 @@ Files:
 - `cargo test -p ovim --test command_global_test -- --nocapture`
 - `cargo test -p ovim --test command_mode_test -- --nocapture`
 - `cargo test -p ovim --test shell_commands_test -- --nocapture`
+- `cargo test -p ovim --test ctrl_commands_test -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
@@ -130,5 +141,5 @@ Observed modified files include:
 
 ## Suggested Continuation
 If continuing migration work, likely next slice is:
-1. Evaluate whether any `input/helpers.rs` insert-mode callsites can be safely converted without breaking insert-session composition.
+1. Evaluate whether the remaining `input/insert_mode.rs` `add_change` sites (pending merge/composite finalization) can be token-hardened without changing semantics.
 2. Keep commits path-scoped and avoid touching dirty AI files listed above.
