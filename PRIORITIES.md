@@ -61,25 +61,32 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] r (replace character)
 - [x] Change operators: cc, C/c$, s, S, cj, ck, c}, c{, cG, cgg (`RepeatAction::Change` with `PendingChangeRepeat`)
 
-#### Next up
+#### Current state (updated)
 
-1. **Visual delete** — undo works (Pattern A). Just needs RepeatAction with selection geometry.
-2. **cf/ct with change operator** — wire up PendingChangeRepeat in `char_motion.rs`.
-3. **o/O** — no delete phase; needs `RepeatAction::OpenLine`.
-4. **LSP rename/code actions** — investigate undo behavior, wrap in `record()` if broken.
+- [x] `cf/ct` with change operator now uses `PendingChangeRepeat` in `char_motion.rs`.
+- [x] Visual delete undo path uses `record()` + `push_recorded_undo()` in `helpers.rs`.
+- [x] `o/O` now set `RepeatAction::OpenLine` on insert-mode exit (dot-repeat no longer depends on `Composite::repeat` for new edits).
+- [ ] Decide whether visual delete dot-repeat should migrate to a dedicated `RepeatAction` shape (especially visual block), or remain on `last_change` templating.
+- [ ] Evaluate undo grouping for LSP/workspace edits and code actions (currently applied directly in workspace edit paths).
 
-#### Remaining `add_change` callsites (~48)
+#### Remaining `add_change` callsites (current snapshot: 26 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
-| `helpers.rs` (visual delete, indent/dedent tracking, o/O) | 14 | Visual delete next; o/O needs RepeatAction::OpenLine |
-| `commands.rs` (ex commands: :d, :sort, :g, :s, :r, :t, :m) | 7 | Leave alone (Vim uses `@:`) |
-| `text_objects.rs` (change text objects: ci", ca(, etc.) | 2 | Already have semantic repeat |
-| `char_motion.rs` (cf, ct with change operator) | 1 | Wire up PendingChangeRepeat |
-| `insert_mode.rs` (insert-mode change tracking) | 4 | Core infrastructure, stays |
-| `replace_mode.rs` (R replace mode) | 1 | Evaluate separately |
-| `ui_features.rs` (LSP rename, code actions) | 3 | Investigate undo behavior |
-| `mod.rs` (undo/redo internals, add_change definition) | 3 | Infrastructure, stays |
+| `input/commands.rs` | 7 | Ex/command-mode edits; mostly intentional Pattern A |
+| `input/insert_mode.rs` | 4 | Core insert-mode batching and semantic change finalization; intentional |
+| `input/helpers.rs` | 4 | Insert-mode helper edits and visual delete repeat templating |
+| `ui_features.rs` | 3 | Completion/substitute composite edits |
+| `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
+| `input/normal/text_objects.rs` | 2 | Semantic text-object change paths |
+| `change.rs` | 2 | ChangeManager internals (`add_change` implementation/docs) |
+| `input/replace_mode.rs` | 1 | Replace-mode tracking |
+
+#### Practical migration targets
+
+1. Visual delete repeat: either keep current hybrid behavior or add a full `RepeatAction` representation (including block semantics).
+2. `o/O` cleanup: remove legacy `InsertEntryMode::OpenBelow/OpenAbove` special-case replay fallback in `Change::repeat`.
+3. LSP/workspace edits: decide undo granularity and whether to wrap text edits in recorded undo transactions.
 
 ---
 
