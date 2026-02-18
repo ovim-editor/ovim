@@ -489,6 +489,22 @@ fn test_command_range_delete() {
     assert!(content.contains("l4"));
 }
 
+#[test]
+fn test_command_range_delete_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "l1\nl2\nl3\nl4\nl5\n";
+        step ":1,3d<Enter>" => |test| {
+            assert_eq!(test.buffer_content(), "l4\nl5\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "l1\nl2\nl3\nl4\nl5\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "l4\nl5\n");
+        }
+    }
+}
+
 /// Test range yank (:1,2y)
 #[test]
 fn test_command_range_yank() {
