@@ -4,6 +4,7 @@
 
 use super::CatAnimation;
 use crate::editor::Editor;
+pub use ovim_core::dashboard::MENU_ITEMS;
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -11,16 +12,6 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
-
-/// Menu items for the dashboard
-pub const MENU_ITEMS: &[(&str, &str, &str)] = &[
-    ("e", "New File", "Open empty buffer"),
-    ("f", "Find File", "<Space>sf"),
-    ("r", "Recent Files", "<Space>sr"),
-    ("g", "Find Word", "<Space>sg"),
-    ("c", "Configuration", ":e ~/.config/ovim"),
-    ("q", "Quit", ":q"),
-];
 
 /// ASCII art logo (Block Art style)
 const LOGO: &[&str] = &[
@@ -43,18 +34,21 @@ mod colors {
     pub const MENU_KEY: Color = Color::Rgb(166, 227, 161); // Green
     pub const MENU_LABEL: Color = Color::Rgb(205, 214, 244); // Text
     pub const MENU_HINT: Color = Color::Rgb(127, 132, 156); // Overlay
-    pub const MENU_SELECTED_BG: Color = Color::Rgb(49, 50, 68); // Surface0
+    pub const MENU_DESC: Color = Color::Rgb(148, 156, 187); // Subtext
     pub const SEPARATOR: Color = Color::Rgb(88, 91, 112); // Surface2
     pub const VERSION: Color = Color::Rgb(127, 132, 156); // Overlay
 }
 
+fn prettify_keys(keys: &str) -> String {
+    keys.replace("<Space>", "˄_˄")
+}
+
 /// Renders the dashboard screen
 pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
-    let selected = editor.dashboard_selected();
-
     // Calculate vertical centering
-    // Logo (5 lines) + spacing (1) + tagline (1) + spacing (2) + separator (1) + spacing (1) + menu (6) + spacing (2) + version (1)
-    let total_height = 5 + 1 + 1 + 2 + 1 + 1 + MENU_ITEMS.len() + 2 + 1;
+    // Logo (5) + spacing (1) + tagline (1) + spacing (1) + tips legend (1)
+    // + spacing (1) + separator (1) + spacing (1) + rows + spacing (2) + version (1)
+    let total_height = 5 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + MENU_ITEMS.len() + 2 + 1;
     let vertical_offset = if area.height as usize > total_height {
         (area.height as usize - total_height) / 2
     } else {
@@ -104,8 +98,18 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
         ),
     ]));
 
-    // Spacing
+    // Spacing + legend
     lines.push(Line::from(""));
+    let legend = "Press normal keys.  ˄_˄ means <Space>";
+    let legend_padding = if area.width as usize > legend.len() {
+        " ".repeat((area.width as usize - legend.len()) / 2)
+    } else {
+        String::new()
+    };
+    lines.push(Line::from(vec![
+        Span::raw(legend_padding),
+        Span::styled(legend, Style::default().fg(colors::MENU_HINT)),
+    ]));
     lines.push(Line::from(""));
 
     // Separator line
@@ -126,68 +130,46 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     // Spacing
     lines.push(Line::from(""));
 
-    // Menu items
-    let menu_width = 45; // Fixed width for menu items
+    // Shortcut rows
+    let menu_width = 74usize;
     let menu_padding = if area.width as usize > menu_width {
         " ".repeat((area.width as usize - menu_width) / 2)
     } else {
         String::new()
     };
 
-    for (idx, (key, label, hint)) in MENU_ITEMS.iter().enumerate() {
-        let is_selected = idx == selected;
+    let action_width = MENU_ITEMS
+        .iter()
+        .map(|(action, _, _)| action.len())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let desc_width = MENU_ITEMS
+        .iter()
+        .map(|(_, desc, _)| desc.len())
+        .max()
+        .unwrap_or(0)
+        + 2;
 
-        let key_style = if is_selected {
-            Style::default()
-                .fg(colors::MENU_KEY)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(colors::MENU_KEY)
-        };
-
-        let label_style = if is_selected {
+    for (action, desc, keys) in MENU_ITEMS.iter().copied() {
+        let key_text = prettify_keys(keys);
+        let mut spans = vec![Span::raw(menu_padding.clone())];
+        spans.push(Span::styled(
+            format!("{action:<action_width$}", action = action, action_width = action_width),
             Style::default()
                 .fg(colors::MENU_LABEL)
-                .bg(colors::MENU_SELECTED_BG)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(colors::MENU_LABEL)
-        };
-
-        let hint_style = Style::default().fg(colors::MENU_HINT);
-
-        // Format: [key]  Label                    hint
-        let key_part = format!("  {}  ", key);
-        let label_len = label.len();
-        let hint_len = hint.len();
-        let spacing = menu_width.saturating_sub(4 + label_len + hint_len + 4);
-
-        let mut spans = vec![Span::raw(menu_padding.clone())];
-
-        if is_selected {
-            // Highlight the entire line for selected item
-            spans.push(Span::styled(
-                key_part,
-                key_style.bg(colors::MENU_SELECTED_BG),
-            ));
-            spans.push(Span::styled(*label, label_style));
-            spans.push(Span::styled(
-                " ".repeat(spacing),
-                Style::default().bg(colors::MENU_SELECTED_BG),
-            ));
-            spans.push(Span::styled(*hint, hint_style.bg(colors::MENU_SELECTED_BG)));
-            spans.push(Span::styled(
-                "  ",
-                Style::default().bg(colors::MENU_SELECTED_BG),
-            ));
-        } else {
-            spans.push(Span::styled(key_part, key_style));
-            spans.push(Span::styled(*label, label_style));
-            spans.push(Span::raw(" ".repeat(spacing)));
-            spans.push(Span::styled(*hint, hint_style));
-            spans.push(Span::raw("  "));
-        }
-
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!("{desc:<desc_width$}", desc = desc, desc_width = desc_width),
+            Style::default().fg(colors::MENU_DESC),
+        ));
+        spans.push(Span::styled(
+            key_text,
+            Style::default()
+                .fg(colors::MENU_KEY)
+                .add_modifier(Modifier::BOLD),
+        ));
         lines.push(Line::from(spans));
     }
 
@@ -233,11 +215,16 @@ mod tests {
 
     #[test]
     fn test_menu_items_count() {
-        assert_eq!(MENU_ITEMS.len(), 6);
+        assert!(MENU_ITEMS.len() >= 8);
     }
 
     #[test]
     fn test_logo_lines() {
         assert_eq!(LOGO.len(), 5);
+    }
+
+    #[test]
+    fn test_prettify_keys() {
+        assert_eq!(prettify_keys("<Space>sf"), "˄_˄sf");
     }
 }
