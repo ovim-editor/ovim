@@ -230,6 +230,10 @@ fn exit_insert_mode(editor: &mut Editor) {
     // If we were in visual block insert/append mode, replay the changes on all other lines.
     // For visual-block change (`Ctrl-V ... c ...`), also capture a semantic repeat template.
     let pending_visual_block_change = editor.take_pending_visual_block_change_repeat();
+    let pending_visual_block_delete_token = editor
+        .editing
+        .pending_visual_block_change_delete_token
+        .take();
     let mut visual_block_change_inserted_text: Option<String> = None;
     let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
         editor.visual_block_insert_state()
@@ -296,22 +300,22 @@ fn exit_insert_mode(editor: &mut Editor) {
                 // Create composite for all insert changes
                 let insert_composite = Change::composite(all_changes, cursor_before, cursor_before);
 
-                // Check if there's a delete composite on the stack (from visual block 'c')
-                // If so, combine delete + insert into a super-composite
-                if let Some(prev_change) = editor.pop_last_change() {
-                    // Check if previous change looks like a visual block delete
-                    // (it would be a composite or delete change)
-                    // Combine them into a super-composite
-                    let super_composite = Change::composite(
-                        vec![prev_change, insert_composite],
-                        cursor_before,
-                        cursor_before,
-                    );
-                    editor.add_change(super_composite);
+                // Only visual-block change (`c`) has a preceding delete entry.
+                // Redeem it by token so we never pop unrelated history.
+                let final_change = if let Some(token) = pending_visual_block_delete_token {
+                    if let Some(prev_change) = editor.pop_by_token(token) {
+                        Change::composite(
+                            vec![prev_change, insert_composite],
+                            cursor_before,
+                            cursor_before,
+                        )
+                    } else {
+                        insert_composite
+                    }
                 } else {
-                    // No previous change, just add the insert composite
-                    editor.add_change(insert_composite);
-                }
+                    insert_composite
+                };
+                editor.add_change(final_change);
             }
         }
 

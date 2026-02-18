@@ -244,6 +244,46 @@ fn test_ctrl_v_change_dot_repeat_macro_flow() {
 }
 
 #[test]
+fn test_ctrl_v_change_undo_does_not_consume_prior_change_macro_flow() {
+    editor_flow_test! {
+        content "abcde\nfghij\nklmno\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "abcde!\nfghij\nklmno\n");
+        }
+        step "0<C-v>jjlcX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "Xcde!\nXhij\nXmno\n");
+        }
+        step "u" => |test| {
+            // Undo should only revert the visual-block change.
+            assert_eq!(test.buffer_content(), "abcde!\nfghij\nklmno\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abcde\nfghij\nklmno\n");
+        }
+    }
+}
+
+#[test]
+fn test_ctrl_v_insert_undo_does_not_consume_prior_change_macro_flow() {
+    editor_flow_test! {
+        content "a\nb\nc\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "a!\nb\nc\n");
+        }
+        step "0<C-v>jjI><Esc>" => |test| {
+            assert_eq!(test.buffer_content(), ">a!\n>b\n>c\n");
+        }
+        step "u" => |test| {
+            // Undo should only revert the visual-block insert.
+            assert_eq!(test.buffer_content(), "a!\nb\nc\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "a\nb\nc\n");
+        }
+    }
+}
+
+#[test]
 fn test_ctrl_v_escape_cancels() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 

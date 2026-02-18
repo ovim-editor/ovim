@@ -477,15 +477,15 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 None
             };
-            editor.set_pending_visual_block_change_repeat(
-                visual_block_state
-                    .as_ref()
-                    .map(|(_, _, _, line_count, width)| (*line_count, *width)),
-            );
+            editor.set_pending_visual_block_change_repeat(None);
+            editor.editing.pending_visual_block_change_delete_token = None;
 
-            helpers::delete_visual_selection(editor)?;
+            let delete_token = helpers::delete_visual_selection_with_token(editor)?;
 
-            if let Some((start_line, end_line, start_col, _, _)) = visual_block_state {
+            if let Some((start_line, end_line, start_col, line_count, width)) = visual_block_state {
+                editor.set_pending_visual_block_change_repeat(Some((line_count, width)));
+                editor.editing.pending_visual_block_change_delete_token = delete_token;
+
                 // Set visual block insert state for multi-line replication
                 // For 'c', move cursor to start_line (move_to_end = false)
                 let cursor_before = (start_line, start_col);
