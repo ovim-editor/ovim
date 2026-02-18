@@ -89,6 +89,8 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `Ctrl-W/U/T/D` insert-mode undo/redo flows.
 - [x] Visual-block change (`Ctrl-V ... c ...`) now token-redeems its delete-phase undo entry during insert-exit merge (no blind stack pop).
 - [x] Added macro regression coverage for visual-block `c`/`I` undo isolation after unrelated prior changes.
+- [x] `cw` delete phase now uses recorded undo + tokenized `PendingChangeRepeat` (`RepeatAction::DeleteWordChange`) instead of pending semantic merge.
+- [x] Added macro regression coverage for `cw` semantic dot-repeat + undo granularity.
 
 #### Remaining `add_change` callsites (current snapshot: 9 in `ovim-core/src`)
 
