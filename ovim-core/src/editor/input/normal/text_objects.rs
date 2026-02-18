@@ -5,11 +5,11 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Change, Editor, Operator, PendingChangeRepeat, Range, RegisterType, TextObjectRange,
-    TextObjectType, TextObjects,
+    Editor, Operator, PendingChangeRepeat, RegisterType, TextObjectRange, TextObjectType,
+    TextObjects,
 };
 use crate::mode::Mode;
-use crate::repeat_action::RepeatAction;
+use crate::repeat_action::{CaseTransform, RepeatAction};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -113,25 +113,21 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             };
             TextObjectType::Quote { char: quote, inner }
         }
-        KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => {
-            TextObjectType::Paired {
-                open: '(',
-                close: ')',
-                inner,
-            }
-        }
+        KeyCode::Char('(') | KeyCode::Char(')') | KeyCode::Char('b') => TextObjectType::Paired {
+            open: '(',
+            close: ')',
+            inner,
+        },
         KeyCode::Char('[') | KeyCode::Char(']') => TextObjectType::Paired {
             open: '[',
             close: ']',
             inner,
         },
-        KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => {
-            TextObjectType::Paired {
-                open: '{',
-                close: '}',
-                inner,
-            }
-        }
+        KeyCode::Char('{') | KeyCode::Char('}') | KeyCode::Char('B') => TextObjectType::Paired {
+            open: '{',
+            close: '}',
+            inner,
+        },
         KeyCode::Char('<') | KeyCode::Char('>') => TextObjectType::Paired {
             open: '<',
             close: '>',
@@ -160,13 +156,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 apply_change_operator(editor, range, object_type)?;
             }
             Operator::Lowercase => {
-                apply_case_operator(editor, range, CaseOp::Lower)?;
+                apply_case_operator(editor, range, object_type, CaseTransform::Lower)?;
             }
             Operator::Uppercase => {
-                apply_case_operator(editor, range, CaseOp::Upper)?;
+                apply_case_operator(editor, range, object_type, CaseTransform::Upper)?;
             }
             Operator::ToggleCase => {
-                apply_case_operator(editor, range, CaseOp::Toggle)?;
+                apply_case_operator(editor, range, object_type, CaseTransform::Toggle)?;
             }
             Operator::Fold => {
                 let start_line = range.start_line.min(range.end_line);
@@ -266,7 +262,8 @@ fn apply_change_operator(
     }
     editor.delete_to_register(deleted);
     let cursor_after = editor.cursor_position();
-    let delete_token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+    let delete_token =
+        editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteTextObject { object_type },
         linewise: false,
@@ -281,72 +278,46 @@ fn apply_change_operator(
     Ok(())
 }
 
-
-enum CaseOp {
-    Lower,
-    Upper,
-    Toggle,
-}
-
-fn apply_case_operator(editor: &mut Editor, range: TextObjectRange, case_op: CaseOp) -> Result<()> {
-    let cursor_before = (
-        editor.buffer().cursor().line(),
-        editor.buffer().cursor().col(),
-    );
-
+fn apply_case_operator(
+    editor: &mut Editor,
+    range: TextObjectRange,
+    object_type: TextObjectType,
+    transform: CaseTransform,
+) -> Result<()> {
     let text = TextObjects::yank_range(editor.buffer(), range)?;
 
-    let transformed = match case_op {
-        CaseOp::Lower => text.to_lowercase(),
-        CaseOp::Upper => text.to_uppercase(),
-        CaseOp::Toggle => text
-            .chars()
-            .map(|ch| {
-                if ch.is_lowercase() {
-                    ch.to_uppercase().to_string()
-                } else {
-                    ch.to_lowercase().to_string()
-                }
-            })
-            .collect(),
-    };
+    let transformed = transform.apply_to(&text);
 
     if transformed != text {
-        let version_before = editor.buffer().version();
-        let deleted = editor.buffer_mut().delete_range(
-            range.start_line,
-            range.start_col,
-            range.end_line,
-            range.end_col,
-        );
-        if editor.buffer().version() == version_before {
-            return Ok(());
-        }
+        editor.record_operation(
+            |buf| {
+                buf.delete_range(
+                    range.start_line,
+                    range.start_col,
+                    range.end_line,
+                    range.end_col,
+                );
+                buf.insert_text_at(range.start_line, range.start_col, &transformed);
 
-        let delete_range = Range::new(
-            (range.start_line, range.start_col),
-            (range.end_line, range.end_col),
+                // Keep cursor behavior consistent with prior path: land at end
+                // of the transformed text.
+                let mut final_line = range.start_line;
+                let mut final_col = range.start_col;
+                for ch in transformed.chars() {
+                    if ch == '\n' {
+                        final_line += 1;
+                        final_col = 0;
+                    } else {
+                        final_col += 1;
+                    }
+                }
+                buf.cursor_mut().set_position(final_line, final_col);
+            },
+            Some(RepeatAction::ChangeCaseTextObject {
+                object_type,
+                transform,
+            }),
         );
-        let delete_change = Change::delete(delete_range, deleted, cursor_before);
-
-        let insert_change = Change::insert(
-            (range.start_line, range.start_col),
-            transformed,
-            cursor_before,
-        );
-        let version_before_insert = editor.buffer().version();
-        insert_change.apply(editor.buffer_mut());
-
-        let cursor_after = (
-            editor.buffer().cursor().line(),
-            editor.buffer().cursor().col(),
-        );
-        let mut changes = vec![delete_change];
-        if editor.buffer().version() != version_before_insert {
-            changes.push(insert_change);
-        }
-        let composite = Change::composite(changes, cursor_before, cursor_after);
-        editor.add_change(composite);
     }
 
     Ok(())

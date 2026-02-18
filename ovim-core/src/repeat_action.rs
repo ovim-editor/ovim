@@ -1,5 +1,32 @@
 use crate::buffer::Buffer;
 use crate::change::TextObjectType;
+use crate::textobjects::TextObjects;
+
+#[derive(Clone, Copy, Debug)]
+pub enum CaseTransform {
+    Lower,
+    Upper,
+    Toggle,
+}
+
+impl CaseTransform {
+    pub(crate) fn apply_to(self, text: &str) -> String {
+        match self {
+            Self::Lower => text.to_lowercase(),
+            Self::Upper => text.to_uppercase(),
+            Self::Toggle => text
+                .chars()
+                .map(|ch| {
+                    if ch.is_lowercase() {
+                        ch.to_uppercase().to_string()
+                    } else {
+                        ch.to_lowercase().to_string()
+                    }
+                })
+                .collect(),
+        }
+    }
+}
 
 /// Semantic repeat actions for dot-repeat (Pattern B).
 ///
@@ -27,6 +54,11 @@ pub enum RepeatAction {
     },
     /// ~ — toggle case at cursor
     ToggleCase { count: usize },
+    /// guiw / gUiw / g~iw — case transform for text object
+    ChangeCaseTextObject {
+        object_type: TextObjectType,
+        transform: CaseTransform,
+    },
     /// Ctrl-A / Ctrl-X — increment/decrement number
     NumberOperation { delta: i64 },
     /// di" / di( / diw — delete text object
@@ -151,6 +183,82 @@ impl RepeatAction {
                 for _ in 0..*count {
                     if !buffer.toggle_char_at_cursor() {
                         break;
+                    }
+                }
+            }
+            Self::ChangeCaseTextObject {
+                object_type,
+                transform,
+            } => {
+                let range = match object_type {
+                    TextObjectType::Word { inner, big } => match (*inner, *big) {
+                        (true, true) => TextObjects::inner_big_word(buffer),
+                        (true, false) => TextObjects::inner_word(buffer),
+                        (false, true) => TextObjects::around_big_word(buffer),
+                        (false, false) => TextObjects::around_word(buffer),
+                    },
+                    TextObjectType::Quote { char, inner } => {
+                        TextObjects::quoted_string(buffer, *char, !*inner)
+                    }
+                    TextObjectType::Paired { open, close, inner } => {
+                        TextObjects::paired_delimiters(buffer, *open, *close, !*inner)
+                    }
+                    TextObjectType::Paragraph { inner } => {
+                        if *inner {
+                            TextObjects::inner_paragraph(buffer)
+                        } else {
+                            TextObjects::around_paragraph(buffer)
+                        }
+                    }
+                    TextObjectType::Sentence { inner } => {
+                        if *inner {
+                            TextObjects::inner_sentence(buffer)
+                        } else {
+                            TextObjects::around_sentence(buffer)
+                        }
+                    }
+                    TextObjectType::Tag { inner } => TextObjects::tag(buffer, !*inner),
+                    TextObjectType::Indent { inner, tab_width } => {
+                        if *inner {
+                            TextObjects::inner_indent(buffer, *tab_width)
+                        } else {
+                            TextObjects::around_indent(buffer, *tab_width)
+                        }
+                    }
+                    TextObjectType::Function { inner } => {
+                        if *inner {
+                            TextObjects::inner_function(buffer)
+                        } else {
+                            TextObjects::around_function(buffer)
+                        }
+                    }
+                };
+
+                if let Some(range) = range {
+                    let Ok(original) = TextObjects::yank_range(buffer, range) else {
+                        return;
+                    };
+                    let transformed = transform.apply_to(&original);
+                    if transformed != original {
+                        buffer.delete_range(
+                            range.start_line,
+                            range.start_col,
+                            range.end_line,
+                            range.end_col,
+                        );
+                        buffer.insert_text_at(range.start_line, range.start_col, &transformed);
+
+                        let mut final_line = range.start_line;
+                        let mut final_col = range.start_col;
+                        for ch in transformed.chars() {
+                            if ch == '\n' {
+                                final_line += 1;
+                                final_col = 0;
+                            } else {
+                                final_col += 1;
+                            }
+                        }
+                        buffer.cursor_mut().set_position(final_line, final_col);
                     }
                 }
             }

@@ -75,8 +75,10 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Completion accept path now records undo via `record()` + `push_recorded_undo()` instead of manual composite `add_change`.
 - [x] Text-object operator handlers now require concrete `TextObjectType`; dead fallback `add_change` path for change-operator text objects removed.
 - [x] Added macro regression coverage for text-object change repeat/undo granularity (`ci(` + `.` + `u`) in `dot_repeat_test`.
+- [x] Text-object case operators (`gu/gU/g~` + text objects) migrated to recorded undo + `RepeatAction` semantic dot-repeat.
+- [x] Added macro regression coverage for semantic `guiw` dot-repeat + undo granularity.
 
-#### Remaining `add_change` callsites (current snapshot: 22 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 21 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
@@ -84,7 +86,6 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 | `input/insert_mode.rs` | 4 | Core insert-mode batching and semantic change finalization; intentional |
 | `input/helpers.rs` | 4 | Insert-mode helper edits that intentionally compose with insert sessions |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
-| `input/normal/text_objects.rs` | 1 | Text-object case-operator composite (`gu/gU/g~` with text objects) |
 | `change.rs` | 2 | ChangeManager internals (`add_change` implementation/docs) |
 | `input/replace_mode.rs` | 1 | Replace-mode tracking |
 
