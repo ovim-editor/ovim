@@ -104,6 +104,23 @@ fn test_command_global_percent_undo_restores_deleted_lines() {
 }
 
 #[test]
+fn test_command_global_percent_delete_undo_redo_macro_flow() {
+    editor_flow_test! {
+        content "keep\nfoo\nbar\nbaz\n";
+        step ":%g/foo|bar/d<Enter>" => |test| {
+            assert_eq!(test.buffer_content(), "keep\nbaz\n");
+            assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "keep\nfoo\nbar\nbaz\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "keep\nbaz\n");
+        }
+    }
+}
+
+#[test]
 fn test_command_global_no_matches_is_non_destructive() {
     let mut test = EditorTest::new("one\ntwo\nthree\n");
 

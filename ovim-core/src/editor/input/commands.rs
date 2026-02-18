@@ -454,27 +454,18 @@ fn handle_global_command(
     // Execute the command on matching lines
     match sub_command {
         "d" | "delete" => {
-            let cursor_before = (
-                editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
-            );
-            let mut all_deleted = Vec::new();
-            let mut changes = Vec::new();
-
-            for &line_idx in matching_lines.iter().rev() {
-                let deleted = editor
-                    .buffer_mut()
-                    .delete_range(line_idx, 0, line_idx + 1, 0);
-                if deleted.is_empty() {
-                    continue;
+            let cursor_before = editor.cursor_position();
+            let (mut all_deleted, edits) = editor.buffer_mut().record(|buf| {
+                let mut deleted_chunks = Vec::new();
+                for &line_idx in matching_lines.iter().rev() {
+                    let deleted = buf.delete_range(line_idx, 0, line_idx + 1, 0);
+                    if deleted.is_empty() {
+                        continue;
+                    }
+                    deleted_chunks.push(deleted);
                 }
-                all_deleted.push(deleted.clone());
-                changes.push(Change::delete(
-                    Range::new((line_idx, 0), (line_idx + 1, 0)),
-                    deleted,
-                    cursor_before,
-                ));
-            }
+                deleted_chunks
+            });
 
             // Store in register
             all_deleted.reverse(); // Restore original order
@@ -489,9 +480,10 @@ fn handle_global_command(
                 .cursor_mut()
                 .set_position(new_cursor_line, 0);
 
-            // Record change for undo as a composite of per-line deletions.
-            let cursor_after = (new_cursor_line, 0);
-            editor.add_change(Change::composite(changes, cursor_before, cursor_after));
+            if !edits.is_empty() {
+                let cursor_after = (new_cursor_line, 0);
+                editor.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
 
             editor.set_lsp_status(format!("Deleted {} line(s)", matching_lines.len()));
         }
