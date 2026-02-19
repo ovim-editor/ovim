@@ -52,6 +52,8 @@ Recent undo-migration commits:
 41. `85f7ed2` - Add cfo undo redo isolation and dot-repeat chain regressions
 42. `40c51b5` - Add ct undo redo isolation and dot-repeat chain regressions
 43. `c496e39` - Add backward char-motion c undo redo isolation regressions
+44. `d23fcd4` - Update undo migration ledger with char-motion coverage commits
+45. `d849915` - Constrain pending semantic-change runtime paths via hygiene test
 
 ## What Landed
 
