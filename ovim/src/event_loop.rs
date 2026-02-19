@@ -530,6 +530,10 @@ async fn handle_api_request(
             let snapshot = create_snapshot(editor);
             let _ = tx.send(ApiResponse::Snapshot(snapshot));
         }
+        ApiRequest::GetSnapshotLight(tx) => {
+            let snapshot = create_snapshot_light(editor);
+            let _ = tx.send(ApiResponse::Snapshot(snapshot));
+        }
         ApiRequest::SendKeys(keys, tx) => {
             let events_result = parse_key_string(&keys);
             let response = match events_result {
@@ -1442,10 +1446,44 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
     }
 }
 
+/// Lightweight snapshot: skips buffer content, registers, marks, and picker.
+/// Used by MCP polling and other callers that only need mode/cursor/hover.
+fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
+    let cursor = editor.buffer().cursor();
+    let cursor_pos = CursorPosition {
+        line: cursor.line(),
+        column: cursor.col(),
+    };
+
+    EditorSnapshot {
+        buffer: BufferInfo {
+            content: String::new(),
+            line_count: editor.buffer().rope().len_lines(),
+            file_path: editor.buffer().file_path().map(|s| s.to_string()),
+        },
+        cursor: cursor_pos,
+        mode: editor.mode().display_name().to_string(),
+        visual_selection: None,
+        registers: HashMap::new(),
+        marks: HashMap::new(),
+        picker: None,
+        hover_info: editor.hover_info().map(|s| s.to_string()),
+    }
+}
+
 fn create_buffer_info(editor: &Editor) -> BufferInfo {
     let buffer = editor.buffer();
-    let content = buffer.rope().to_string();
-    let line_count = buffer.rope().len_lines();
+    let rope = buffer.rope();
+
+    // Write rope chunks directly into a pre-allocated String.
+    // This avoids the intermediate allocations that rope.to_string() can cause.
+    let byte_len = rope.len_bytes();
+    let mut content = String::with_capacity(byte_len);
+    for chunk in rope.chunks() {
+        content.push_str(chunk);
+    }
+
+    let line_count = rope.len_lines();
     let file_path = buffer.file_path().map(|s| s.to_string());
 
     BufferInfo {
