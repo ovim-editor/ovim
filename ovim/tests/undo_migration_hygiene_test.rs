@@ -109,3 +109,50 @@ fn test_pending_semantic_change_apis_are_removed() {
         legacy_hits.join("\n")
     );
 }
+
+#[test]
+fn test_char_awaiting_commands_stay_on_input_state_path() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("ovim crate should live under repo root");
+
+    let normal_mod = repo_root
+        .join("ovim-core/src/editor/input/normal/mod.rs")
+        .to_string_lossy()
+        .to_string();
+    let pending_commands = repo_root
+        .join("ovim-core/src/editor/input/normal/pending_commands.rs")
+        .to_string_lossy()
+        .to_string();
+
+    let normal_mod_src = fs::read_to_string(&normal_mod).expect("read normal/mod.rs");
+    let pending_src = fs::read_to_string(&pending_commands).expect("read pending_commands.rs");
+
+    // r/m/'/` should use InputState::AwaitingChar in normal mode, not pending_command.
+    for forbidden in [
+        "set_pending_command('r')",
+        "set_pending_command('m')",
+        "set_pending_command('\\'')",
+        "set_pending_command('`')",
+    ] {
+        assert!(
+            !normal_mod_src.contains(forbidden),
+            "Found legacy pending_command setup for awaiting-char command in normal/mod.rs: {}",
+            forbidden
+        );
+    }
+
+    // pending_commands.rs should not carry first-key handlers for these commands anymore.
+    for forbidden in [
+        "('r', KeyCode::Char(",
+        "('m', KeyCode::Char(",
+        "('\'', KeyCode::Char(",
+        "('`', KeyCode::Char(",
+    ] {
+        assert!(
+            !pending_src.contains(forbidden),
+            "Found legacy pending_commands arm for awaiting-char command: {}",
+            forbidden
+        );
+    }
+}

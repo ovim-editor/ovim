@@ -112,6 +112,11 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] `change.rs` and `repeat_action.rs` architecture docs are synced to current Pattern B ownership (`cw/cgn/cc/C/R/o/O` and related change flows).
 - [x] Legacy `undo_repeat_coverage_test` assumptions for `cc`/`C`/`df` are aligned to migrated semantics with strict undo/redo assertions (no fuzzy Pattern A fallback checks).
 - [x] Added explicit `dF`/`dT` undo+redo coverage in `undo_repeat_coverage_test` to pin backward char-motion delete semantics.
+- [x] Normal-mode `r/m/'/\`` now run through `InputState::AwaitingChar` in `char_motion.rs`; legacy pending-command handlers for those keys (and dead `f/F/t/T` fallback arms) removed from `pending_commands.rs`.
+- [x] `repeat_last_change()` now routes replayed undo entries through `push_recorded_undo()` so dot-repeat updates changelist/edit-position metadata consistently.
+- [x] Added changelist regressions proving `g;`/`g,` traverse repeat entries created by both RepeatAction and Change-based `.` replay paths.
+- [x] Added `ChangeManager::push_undo_change_preserving_repeat()` and migrated non-repeat undo callsites (`push_recorded_undo`, background LSP edits, resource-op undo) to one shared stack-update path.
+- [x] Added hygiene guard that fails if normal-mode `r/m/'/\`` regress to `pending_command` setup or legacy first-key arms in `pending_commands.rs`.
 
 #### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
 
@@ -125,6 +130,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 1. No open Pattern A→B migration blockers remain; remaining `add_change` callsites are intentional or infrastructural.
 2. Added hygiene guard (`undo_migration_hygiene_test`) to fail if `add_change(...)` appears outside infrastructure files or total callsites exceed 5.
 3. Removed legacy `PendingSemanticChange` state/API entirely and added hygiene guard that fails if semantic-change symbols/calls are reintroduced.
+4. Awaiting-char command routing (`r/m/'/\``) is now state-machine enforced with hygiene protection against fallback reintroduction.
 
 ---
 
