@@ -138,6 +138,7 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
   - Added macro regression: `test_dot_repeat_cw_semantic_undo_granularity_macro_flow`.
   - Added macro regression: `test_cw_esc_undo_does_not_consume_prior_change_macro_flow`.
+  - Added macro regression: `test_cw_esc_undo_redo_isolation_macro_flow`.
 
 ### L) `cgn/cgN` migration off pending semantic merge
 Files:
@@ -150,6 +151,7 @@ Files:
   - Removed runtime `PendingSemanticChange` merge branch; insert-exit now uses tokenized pending-change path only and clears stale semantic state defensively.
 - `/Users/adrian/Projects/ovim/ovim/tests/visual_mode_test.rs`
   - Added macro regression: `test_cgn_esc_undo_does_not_consume_prior_change_macro_flow`.
+  - Added macro regression: `test_cgn_esc_undo_redo_isolation_macro_flow`.
 
 ### M) Replace-mode (`R`) migration off semantic add_change
 Files:
@@ -171,6 +173,8 @@ Files:
   - Added macro regressions:
     - `test_o_esc_undo_does_not_consume_prior_change_macro_flow`
     - `test_uppercase_o_esc_undo_does_not_consume_prior_change_macro_flow`
+    - `test_o_esc_undo_redo_isolation_macro_flow`
+    - `test_uppercase_o_esc_undo_redo_isolation_macro_flow`
 
 ### N) Insert-mode finalization callsite cleanup
 Files:
@@ -205,6 +209,10 @@ Files:
 - `cargo test -p ovim --test replace_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding open-line undo isolation macros)
+- `cargo test -p ovim --test dot_repeat_test undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test visual_mode_test test_cgn_esc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding open-line/cw undo+redo isolation macros)
+- `cargo test -p ovim --test visual_mode_test -- --nocapture` (after adding cgn undo+redo isolation macro)
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
