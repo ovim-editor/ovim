@@ -69,3 +69,65 @@ fn test_add_change_callsites_are_infrastructure_only() {
         total_hits
     );
 }
+
+#[test]
+fn test_pending_semantic_change_runtime_paths_are_constrained() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("ovim crate should live under repo root");
+    let core_src = repo_root.join("ovim-core").join("src");
+
+    let mut files = Vec::new();
+    collect_rs_files(&core_src, &mut files);
+
+    let mut set_hits = Vec::new();
+    let mut take_hits = Vec::new();
+
+    for path in files {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let relative = path
+            .strip_prefix(repo_root)
+            .expect("core source file should be under repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        for (line_number, line) in content.lines().enumerate() {
+            if line.contains("set_pending_semantic_change(") {
+                set_hits.push(format!("{}:{}", relative, line_number + 1));
+            }
+            if line.contains("take_pending_semantic_change(") {
+                take_hits.push(format!("{}:{}", relative, line_number + 1));
+            }
+        }
+    }
+
+    assert_eq!(
+        set_hits.len(),
+        1,
+        "Expected exactly one set_pending_semantic_change site (definition only), found:\n{}",
+        set_hits.join("\n")
+    );
+    assert!(
+        set_hits[0].starts_with("ovim-core/src/editor/mod.rs:"),
+        "set_pending_semantic_change should only be defined in editor/mod.rs, found:\n{}",
+        set_hits.join("\n")
+    );
+
+    assert_eq!(
+        take_hits.len(),
+        2,
+        "Expected exactly two take_pending_semantic_change sites (definition + insert-mode clear), found:\n{}",
+        take_hits.join("\n")
+    );
+    for hit in &take_hits {
+        let allowed = hit.starts_with("ovim-core/src/editor/mod.rs:")
+            || hit.starts_with("ovim-core/src/editor/input/insert_mode.rs:");
+        assert!(
+            allowed,
+            "Unexpected take_pending_semantic_change callsite: {}",
+            hit
+        );
+    }
+}
