@@ -93,15 +93,16 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `cw` semantic dot-repeat + undo granularity.
 - [x] `cgn`/`cgN` change setup now uses tokenized `PendingChangeRepeat` (`RepeatAction::DeleteSearchMatch`) instead of pending semantic merge.
 - [x] Legacy insert-exit `PendingSemanticChange` merge branch removed from runtime path.
+- [x] Replace mode (`R`) now records session edits via replace-mode change builder + `finalize_change_building()`, then sets semantic `RepeatAction::ReplaceMode`.
+- [x] Added macro regression coverage for `R` dot-repeat undo granularity and replace-mode no-op backspace undo isolation.
 
-#### Remaining `add_change` callsites (current snapshot: 8 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 7 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
 | `input/insert_mode.rs` | 2 | Core insert-mode batching/finalization for change-operator and visual-block multi-line replay |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
 | `change.rs` | 2 | ChangeManager internals (`add_change` implementation/docs) |
-| `input/replace_mode.rs` | 1 | Replace-mode tracking |
 
 #### Practical migration targets
 

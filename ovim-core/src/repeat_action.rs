@@ -119,6 +119,8 @@ pub enum RepeatAction {
     DeleteToMatchingBracket,
     /// r — replace character(s) at cursor
     ReplaceChar { ch: char, count: usize },
+    /// R — replace mode replay
+    ReplaceMode { replacements: String },
     /// p — paste after cursor
     PasteAfter { count: usize },
     /// P — paste before cursor
@@ -384,6 +386,25 @@ impl RepeatAction {
             }
             Self::ReplaceChar { ch, count } => {
                 buffer.replace_chars_at_cursor(*ch, *count);
+            }
+            Self::ReplaceMode { replacements } => {
+                let line_idx = buffer.cursor().line();
+                let col = buffer.cursor().col();
+                let replacement_len = replacements.chars().count();
+
+                if let Some(line) = buffer.line(line_idx) {
+                    let line_len = line.trim_end_matches('\n').chars().count();
+                    let delete_len = replacement_len.min(line_len.saturating_sub(col));
+                    let end_col = col + delete_len;
+
+                    if delete_len > 0 {
+                        buffer.delete_range(line_idx, col, line_idx, end_col);
+                    }
+                    buffer.insert_text_at(line_idx, col, replacements);
+
+                    let final_col = col + replacement_len.saturating_sub(1);
+                    buffer.cursor_mut().set_position(line_idx, final_col);
+                }
             }
             Self::PasteAfter { .. } | Self::PasteBefore { .. } => {
                 // Intentional no-op: paste repeat is intercepted in repeat_last_change()

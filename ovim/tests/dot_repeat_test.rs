@@ -613,6 +613,42 @@ fn test_dot_repeat_R_command() {
     test.assert_cursor(0, 7);
 }
 
+#[test]
+fn test_dot_repeat_R_semantic_undo_granularity_macro_flow() {
+    editor_flow_test! {
+        content "hello world test\n";
+        step "RHI<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world test\n");
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "HIllo HIrld test\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world test\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world test\n");
+        }
+    }
+}
+
+#[test]
+fn test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow() {
+    editor_flow_test! {
+        content "hello\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello!\n");
+        }
+        step "0RHI<BS><BS><Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello!\n");
+        }
+        step "u" => |test| {
+            // If replace mode created a no-op undo entry, this would not undo `A!`.
+            assert_eq!(test.buffer_content(), "hello\n");
+        }
+    }
+}
+
 // ============================================================================
 // Complex dot repeat scenarios
 // ============================================================================
