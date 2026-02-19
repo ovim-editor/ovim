@@ -126,9 +126,6 @@ fn exit_insert_mode(editor: &mut Editor) {
             inserted_text,
             linewise: pending.linewise,
         });
-    } else {
-        // Legacy semantic-change plumbing is deprecated; clear stale state if present.
-        let _ = editor.take_pending_semantic_change();
     }
 
     // For o/O insert sessions, use RepeatAction instead of Composite::repeat

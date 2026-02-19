@@ -233,9 +233,7 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
   - Added regression to fail if `add_change(...)` appears in `ovim-core/src` outside infrastructure files (`change.rs`, `editor/mod.rs`).
   - Added callsite cap assertion (`<= 5`) to catch infrastructure-side regression growth.
-  - Added regression to constrain pending semantic-change runtime paths:
-    - `set_pending_semantic_change(...)` appears only in definition site (`editor/mod.rs`).
-    - `take_pending_semantic_change(...)` appears only in definition + insert-exit clear path (`insert_mode.rs`).
+  - Updated to fail if legacy pending semantic-change symbols/calls are reintroduced (`PendingSemanticChange`, `pending_semantic_change`, `set_pending_semantic_change`, `take_pending_semantic_change`).
 
 ### R) Architecture docs synced with migrated boundaries
 Files:
@@ -345,6 +343,9 @@ Files:
 - `cargo test -p ovim --test undo_repeat_coverage_test test_dT_undo_redo -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after fixing backward `cF/cT` repeat anchor + till semantics)
 - `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (after adding `dF/dT` coverage)
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after removing `PendingSemanticChange` state/API)
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after removing legacy semantic-change plumbing)
+- `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (post-removal safety run)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding pending semantic-change path constraints)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
