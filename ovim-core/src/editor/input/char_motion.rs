@@ -89,10 +89,15 @@ fn handle_jump_mark_line(editor: &mut Editor, target: char) {
         return;
     }
 
-    if target.is_ascii_lowercase() || target.is_ascii_uppercase() {
-        editor.add_jump();
-        editor.jump_to_mark_line(target);
+    if !(target.is_ascii_lowercase()
+        || target.is_ascii_uppercase()
+        || matches!(target, '.' | '^'))
+    {
+        return;
     }
+
+    editor.add_jump();
+    let _ = editor.jump_to_mark_line(target);
 }
 
 fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
@@ -101,10 +106,15 @@ fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
         return;
     }
 
-    if target.is_ascii_lowercase() || target.is_ascii_uppercase() {
-        editor.add_jump();
-        editor.jump_to_mark(target);
+    if !(target.is_ascii_lowercase()
+        || target.is_ascii_uppercase()
+        || matches!(target, '.' | '^' | '[' | ']'))
+    {
+        return;
     }
+
+    editor.add_jump();
+    let _ = editor.jump_to_mark(target);
 }
 
 /// Handles `f{char}` - find character forward

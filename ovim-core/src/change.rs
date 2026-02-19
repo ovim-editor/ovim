@@ -1064,6 +1064,33 @@ impl Change {
         }
     }
 
+    /// Gets the cursor position after this change.
+    pub fn cursor_after(&self) -> Position {
+        match self {
+            Self::InsertText { position, text, .. } => {
+                let mut line = position.0;
+                let mut col = position.1;
+                for ch in text.chars() {
+                    if ch == '\n' {
+                        line += 1;
+                        col = 0;
+                    } else {
+                        col += 1;
+                    }
+                }
+                (line, col.saturating_sub(1))
+            }
+            Self::DeleteText { range, .. } => range.start,
+            Self::Composite { cursor_after, .. } => *cursor_after,
+            Self::ChangeTextObject { cursor_after, .. } => *cursor_after,
+            Self::ChangeWord { cursor_after, .. } => *cursor_after,
+            Self::ReplaceMode { cursor_after, .. } => *cursor_after,
+            Self::ChangeSearchMatch { cursor_after, .. } => *cursor_after,
+            Self::Recorded { cursor_after, .. } => *cursor_after,
+            Self::ResourceOp { cursor_after, .. } => *cursor_after,
+        }
+    }
+
     /// Sets cursor_before on this change (used by repeat to record undo position).
     pub fn set_cursor_before(&mut self, pos: Position) {
         match self {

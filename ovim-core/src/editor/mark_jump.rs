@@ -14,6 +14,44 @@ impl Editor {
 
     /// Jumps to a mark (exact position with backtick)
     pub fn jump_to_mark(&mut self, name: char) -> bool {
+        // Special exact-position marks
+        match name {
+            // `.` - last change position
+            '.' => {
+                if let Some(change) = self.last_change() {
+                    let (line, col) = change.cursor_after();
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, col.saturating_sub(1));
+                    self.center_cursor_in_viewport();
+                    return true;
+                }
+            }
+            // `^ - last insert exit position (cursor-on-char semantics)
+            '^' => {
+                if let Some(change) = self.last_change() {
+                    let inserted = change.get_inserted_text();
+                    if !inserted.is_empty() {
+                        let (line, col) = change.cursor_after();
+                        self.buffer_mut()
+                            .cursor_mut()
+                            .set_position(line, col.saturating_sub(1));
+                        self.center_cursor_in_viewport();
+                        return true;
+                    }
+                }
+
+                if let Some((line, col)) = self.editing.last_insert_position {
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, col.saturating_sub(1));
+                    self.center_cursor_in_viewport();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
             if let Some(mark) = self.nav.marks.get_mark(name) {
@@ -64,6 +102,16 @@ impl Editor {
 
     /// Jumps to mark line (apostrophe - goes to first non-blank on line)
     pub fn jump_to_mark_line(&mut self, name: char) -> bool {
+        // Linewise special marks delegate through exact-mark lookup first, then
+        // normalize to first non-blank on that line.
+        if matches!(name, '.' | '^') {
+            if self.jump_to_mark(name) {
+                Motions::first_non_blank(self.buffer_mut());
+                return true;
+            }
+            return false;
+        }
+
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
             if let Some(mark) = self.nav.marks.get_mark(name) {
