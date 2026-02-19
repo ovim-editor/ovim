@@ -1118,6 +1118,62 @@ fn test_dot_repeat_search_and_change_find() {
     }
 }
 
+#[test]
+fn test_cfo_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "hello world hello test\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test!\n");
+        }
+        step "0/hello<Enter>cfo<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), " world hello test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), " world hello test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_search_and_change_find_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "hello world hello test\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test!\n");
+        }
+        step "0/hello<Enter>cfohi<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hi world hello test!\n");
+        }
+        step "n." => |test| {
+            assert_eq!(test.buffer_content(), "hi world hi test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hi world hello test!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "hi world hi test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hi world hello test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world hello test\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with search motions
 // ============================================================================

@@ -241,6 +241,12 @@ Files:
   - Tightened `test_big_c_undo_redo` to require single-step undo/redo roundtrip.
   - Added `test_df_dot_repeat_undo_redo_chain` to verify multi-step undo/redo stability after dot-repeat.
 
+### T) Change-find (`cf/ct`) undo/repeat isolation regressions
+Files:
+- `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
+  - Added macro regression: `test_cfo_esc_undo_redo_isolation_macro_flow`.
+  - Added macro regression: `test_dot_repeat_search_and_change_find_undo_redo_isolation_macro_flow`.
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -301,6 +307,9 @@ Files:
 - `cargo test -p ovim --test undo_repeat_coverage_test test_big_c_undo_redo -- --nocapture`
 - `cargo test -p ovim --test undo_repeat_coverage_test test_df_dot_repeat_undo_redo_chain -- --nocapture`
 - `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (after tightening `cc/C/df` migrated-semantics coverage)
+- `cargo test -p ovim --test dot_repeat_test test_cfo_esc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_search_and_change_find_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding `cfo` undo+redo isolation macros)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
