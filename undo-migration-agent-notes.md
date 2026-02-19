@@ -163,6 +163,7 @@ Files:
   - Added macro regression: `test_cgn_esc_undo_does_not_consume_prior_change_macro_flow`.
   - Added macro regression: `test_cgn_esc_undo_redo_isolation_macro_flow`.
   - Added macro regression: `test_dot_repeat_cgn_undo_redo_isolation_macro_flow`.
+  - Added macro regression: `test_dot_repeat_cgn_esc_no_insert_undo_redo_isolation_macro_flow`.
 
 ### M) Replace-mode (`R`) migration off semantic add_change
 Files:
@@ -279,6 +280,8 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding no-insert dot-repeat `cc/C` undo+redo isolation macros)
 - `cargo test -p ovim --test dot_repeat_test test_replace_mode_backspace_to_empty_does_not_clobber_dot_repeat_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding replace-mode no-op dot-repeat template preservation macro)
+- `cargo test -p ovim --test visual_mode_test test_dot_repeat_cgn_esc_no_insert_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test visual_mode_test -- --nocapture` (after adding no-insert dot-repeat `cgn` undo+redo isolation macro)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
