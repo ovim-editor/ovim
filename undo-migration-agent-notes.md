@@ -46,6 +46,8 @@ Recent undo-migration commits:
 35. `f6e4163` - Add no-insert dot-repeat cc C undo redo regressions
 36. `0e4e5a3` - Protect dot-repeat template across replace no-op sessions
 37. `4ae5153` - Add no-insert cgn dot-repeat undo redo regression
+38. `691b668` - Sync undo migration ledger with latest commits
+39. `35e8cce` - Tighten undo-repeat coverage semantics for cc C df
 
 ## What Landed
 
