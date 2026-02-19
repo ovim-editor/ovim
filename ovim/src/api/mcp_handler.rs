@@ -206,13 +206,14 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
             let _ = rx.await;
 
-            // Poll snapshot: wait for mode to become HOVER (LSP response arrived)
+            // Poll snapshot: wait for mode to become HOVER (LSP response arrived).
+            // Uses GetSnapshotLight to avoid serializing the entire buffer on each poll.
             let mut hover_text = None;
             for _ in 0..10 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
                 let (snap_tx, snap_rx) = oneshot::channel();
-                if state.tx.send(ApiRequest::GetSnapshot(snap_tx)).is_err() {
+                if state.tx.send(ApiRequest::GetSnapshotLight(snap_tx)).is_err() {
                     break;
                 }
                 if let Ok(super::state::ApiResponse::Snapshot(snapshot)) = snap_rx.await {

@@ -1795,138 +1795,142 @@ pub fn render_line_with_highlights(
     control_ranges: &[std::ops::Range<usize>],
 ) -> Line<'static> {
     let chars: Vec<char> = line_text.chars().collect();
+    let num_chars = chars.len();
     let mut spans = Vec::new();
 
+    if num_chars == 0 {
+        return Line::from(spans);
+    }
+
     // Build a map from character index to byte index
-    let mut byte_indices: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    let mut byte_indices: Vec<usize> = Vec::with_capacity(num_chars + 1);
     byte_indices.push(0);
     for (byte_idx, _) in line_text.char_indices().skip(1) {
         byte_indices.push(byte_idx);
     }
     byte_indices.push(line_text.len()); // End position
 
+    // --- Pre-compute per-character style attributes in one pass each ---
+
+    // 1. Visual selection: computed inline (cheap — no array scan needed, just arithmetic)
+
+    // 2. Search matches: mark each char position
+    let mut search_flags: Vec<bool> = vec![false; num_chars];
+    for &(start, end) in search_matches {
+        let s = start.min(num_chars);
+        let e = end.min(num_chars);
+        for flag in search_flags[s..e].iter_mut() {
+            *flag = true;
+        }
+    }
+
+    // 3. Syntax highlights: resolve most-specific (smallest range) group per byte position,
+    //    then map to char positions.
+    let mut syntax_per_char: Vec<Option<crate::syntax::HighlightGroup>> = vec![None; num_chars];
+    if !syntax_highlights.is_empty() {
+        // For each byte, track (group, range_size) of the most specific highlight.
+        let byte_len = line_text.len();
+        let mut best_group: Vec<Option<(crate::syntax::HighlightGroup, usize)>> =
+            vec![None; byte_len];
+
+        for (range, group) in syntax_highlights {
+            let range_size = range.end - range.start;
+            let s = range.start.min(byte_len);
+            let e = range.end.min(byte_len);
+            for byte_pos in s..e {
+                match best_group[byte_pos] {
+                    Some((_, prev_size)) if prev_size <= range_size => {} // keep tighter
+                    _ => best_group[byte_pos] = Some((*group, range_size)),
+                }
+            }
+        }
+
+        // Map byte-level results to char positions
+        for (char_idx, &byte_idx) in byte_indices[..num_chars].iter().enumerate() {
+            if byte_idx < byte_len {
+                syntax_per_char[char_idx] = best_group[byte_idx].map(|(g, _)| g);
+            }
+        }
+    }
+
+    // 4. Diagnostics: mark each char position with underline color
+    let mut diag_per_char: Vec<Option<Color>> = vec![None; num_chars];
+    for d in diagnostics {
+        let s = d.start.min(num_chars);
+        let e = d.end.min(num_chars);
+        for slot in diag_per_char[s..e].iter_mut() {
+            if slot.is_none() {
+                *slot = Some(d.color);
+            }
+        }
+    }
+
+    // 5. Control char ranges: mark each byte position, then map to chars
+    let mut control_per_char: Vec<bool> = vec![false; num_chars];
+    if !control_ranges.is_empty() {
+        let byte_len = line_text.len();
+        let mut control_bytes: Vec<bool> = vec![false; byte_len];
+        for r in control_ranges {
+            let s = r.start.min(byte_len);
+            let e = r.end.min(byte_len);
+            for flag in control_bytes[s..e].iter_mut() {
+                *flag = true;
+            }
+        }
+        for (char_idx, &byte_idx) in byte_indices[..num_chars].iter().enumerate() {
+            if byte_idx < byte_len {
+                control_per_char[char_idx] = control_bytes[byte_idx];
+            }
+        }
+    }
+
+    // --- Helper: compute visual selection for a given column ---
+    let is_col_selected = |col: usize| -> bool {
+        if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
+            visual_selection
+        {
+            match mode {
+                crate::mode::Mode::VisualBlock => {
+                    line_idx >= sel_start_line
+                        && line_idx <= sel_end_line
+                        && col >= sel_start_col
+                        && col <= sel_end_col
+                }
+                _ => {
+                    if line_idx == sel_start_line && line_idx == sel_end_line {
+                        col >= sel_start_col && col <= sel_end_col
+                    } else if line_idx == sel_start_line {
+                        col >= sel_start_col
+                    } else if line_idx == sel_end_line {
+                        col <= sel_end_col
+                    } else {
+                        line_idx > sel_start_line && line_idx < sel_end_line
+                    }
+                }
+            }
+        } else {
+            false
+        }
+    };
+
+    // --- Main loop: group consecutive characters with identical styling ---
     let mut col_idx = 0;
-    while col_idx < chars.len() {
-        // Check if this character is in visual selection
-        let is_selected =
-            if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
-                visual_selection
-            {
-                match mode {
-                    crate::mode::Mode::VisualBlock => {
-                        // Block mode: check if within the rectangular region
-                        line_idx >= sel_start_line
-                            && line_idx <= sel_end_line
-                            && col_idx >= sel_start_col
-                            && col_idx <= sel_end_col
-                    }
-                    _ => {
-                        // Character-wise or line-wise visual mode
-                        if line_idx == sel_start_line && line_idx == sel_end_line {
-                            col_idx >= sel_start_col && col_idx <= sel_end_col
-                        } else if line_idx == sel_start_line {
-                            col_idx >= sel_start_col
-                        } else if line_idx == sel_end_line {
-                            col_idx <= sel_end_col
-                        } else {
-                            line_idx > sel_start_line && line_idx < sel_end_line
-                        }
-                    }
-                }
-            } else {
-                false
-            };
+    while col_idx < num_chars {
+        let is_selected = is_col_selected(col_idx);
+        let is_search_match = search_flags[col_idx];
+        let syntax_group = syntax_per_char[col_idx];
+        let diag_underline_color = diag_per_char[col_idx];
+        let is_control = control_per_char[col_idx];
 
-        // Check if this character is in a search match
-        let is_search_match = search_matches
-            .iter()
-            .any(|(start, end)| col_idx >= *start && col_idx < *end);
-
-        // Check if this character is in a syntax highlight (convert char index to byte index)
-        let byte_idx = byte_indices[col_idx];
-        let syntax_group = syntax_highlights
-            .iter()
-            .filter(|(range, _)| range.contains(&byte_idx))
-            .min_by_key(|(range, _)| range.end - range.start)
-            .map(|(_, group)| *group);
-
-        // Check if this character falls within a diagnostic range (underline)
-        let diag_underline_color = diagnostics.iter().find_map(|d| {
-            if col_idx >= d.start && col_idx < d.end {
-                Some(d.color)
-            } else {
-                None
-            }
-        });
-
-        // Check if this character is in a control char range
-        let is_control = control_ranges.iter().any(|r| r.contains(&byte_idx));
-
-        // Determine how many characters share the same styling
+        // Extend span while styling is identical
         let mut end_col = col_idx + 1;
-        while end_col < chars.len() {
-            let next_selected =
-                if let Some(((sel_start_line, sel_start_col), (sel_end_line, sel_end_col))) =
-                    visual_selection
-                {
-                    match mode {
-                        crate::mode::Mode::VisualBlock => {
-                            // Block mode: check if within the rectangular region
-                            line_idx >= sel_start_line
-                                && line_idx <= sel_end_line
-                                && end_col >= sel_start_col
-                                && end_col <= sel_end_col
-                        }
-                        _ => {
-                            // Character-wise or line-wise visual mode
-                            if line_idx == sel_start_line && line_idx == sel_end_line {
-                                end_col >= sel_start_col && end_col <= sel_end_col
-                            } else if line_idx == sel_start_line {
-                                end_col >= sel_start_col
-                            } else if line_idx == sel_end_line {
-                                end_col <= sel_end_col
-                            } else {
-                                line_idx > sel_start_line && line_idx < sel_end_line
-                            }
-                        }
-                    }
-                } else {
-                    false
-                };
-
-            let next_search_match = search_matches
-                .iter()
-                .any(|(start, end)| end_col >= *start && end_col < *end);
-
-            // Convert char index to byte index for syntax highlight lookup
-            let next_byte_idx = byte_indices[end_col];
-            let next_syntax_group = syntax_highlights
-                .iter()
-                .filter(|(range, _)| range.contains(&next_byte_idx))
-                .min_by_key(|(range, _)| range.end - range.start)
-                .map(|(_, group)| *group);
-
-            // Check diagnostic underline for next character
-            let next_diag_underline_color = diagnostics.iter().find_map(|d| {
-                if end_col >= d.start && end_col < d.end {
-                    Some(d.color)
-                } else {
-                    None
-                }
-            });
-
-            let next_is_control = control_ranges.iter().any(|r| r.contains(&next_byte_idx));
-
-            // If styling changes, break
-            if next_selected != is_selected
-                || next_search_match != is_search_match
-                || next_syntax_group != syntax_group
-                || next_diag_underline_color != diag_underline_color
-                || next_is_control != is_control
-            {
-                break;
-            }
-
+        while end_col < num_chars
+            && is_col_selected(end_col) == is_selected
+            && search_flags[end_col] == is_search_match
+            && syntax_per_char[end_col] == syntax_group
+            && diag_per_char[end_col] == diag_underline_color
+            && control_per_char[end_col] == is_control
+        {
             end_col += 1;
         }
 
@@ -2180,5 +2184,158 @@ mod tests {
             false,
         );
         assert_eq!(ranges, vec![(6, 10)]);
+    }
+
+    #[test]
+    fn test_render_line_empty_string() {
+        let theme = Theme::default();
+        let line = render_line_with_highlights(
+            &theme,
+            "",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        assert!(line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_render_line_plain_text_single_span() {
+        let theme = Theme::default();
+        let line = render_line_with_highlights(
+            &theme,
+            "hello world",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        // No highlights → should coalesce into one span
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content.as_ref(), "hello world");
+    }
+
+    #[test]
+    fn test_render_line_syntax_highlight_splits_spans() {
+        let theme = Theme::default();
+        // Highlight bytes 0..2 ("fn") as Keyword
+        let highlights = vec![(0..2, crate::syntax::HighlightGroup::Keyword)];
+        let line = render_line_with_highlights(
+            &theme,
+            "fn main()",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &[],
+            &highlights,
+            &[],
+            &[],
+        );
+        // Should have at least 2 spans: "fn" (highlighted) and " main()" (default)
+        assert!(line.spans.len() >= 2);
+        assert_eq!(line.spans[0].content.as_ref(), "fn");
+    }
+
+    #[test]
+    fn test_render_line_search_match_overrides_syntax() {
+        let theme = Theme::default();
+        let highlights = vec![(0..5, crate::syntax::HighlightGroup::Function)];
+        // Search match on chars 0..5 ("hello")
+        let search = vec![(0, 5)];
+        let line = render_line_with_highlights(
+            &theme,
+            "hello world",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &search,
+            &highlights,
+            &[],
+            &[],
+        );
+        // First span should be search-highlighted, not syntax-highlighted
+        assert!(line.spans.len() >= 2);
+        assert_eq!(line.spans[0].content.as_ref(), "hello");
+        // Search highlight has bg color (non-default style)
+        assert_ne!(line.spans[0].style, Style::default());
+    }
+
+    #[test]
+    fn test_render_line_multibyte_chars() {
+        let theme = Theme::default();
+        // "aé" - 'é' is 2 bytes in UTF-8. Highlight byte range 0..1 ("a" only).
+        let highlights = vec![(0..1, crate::syntax::HighlightGroup::Keyword)];
+        let line = render_line_with_highlights(
+            &theme,
+            "aéb",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &[],
+            &highlights,
+            &[],
+            &[],
+        );
+        assert!(line.spans.len() >= 2);
+        assert_eq!(line.spans[0].content.as_ref(), "a");
+    }
+
+    #[test]
+    fn test_render_line_diagnostic_underline() {
+        let theme = Theme::default();
+        let diags = vec![RemappedDiagnostic {
+            start: 0,
+            end: 5,
+            color: Color::Red,
+        }];
+        let line = render_line_with_highlights(
+            &theme,
+            "error here",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &[],
+            &[],
+            &diags,
+            &[],
+        );
+        // First span should have underline modifier
+        assert!(line.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn test_render_line_most_specific_syntax_wins() {
+        let theme = Theme::default();
+        // Two overlapping highlights: broad (0..10) and narrow (2..4).
+        // The narrow one should win for chars at byte positions 2-3.
+        let highlights = vec![
+            (0..10, crate::syntax::HighlightGroup::Variable),
+            (2..4, crate::syntax::HighlightGroup::Keyword),
+        ];
+        let line = render_line_with_highlights(
+            &theme,
+            "abcdefghij",
+            0,
+            None,
+            crate::mode::Mode::Normal,
+            &[],
+            &highlights,
+            &[],
+            &[],
+        );
+        // Should have 3 spans: "ab" (Variable), "cd" (Keyword), "efghij" (Variable)
+        assert!(line.spans.len() >= 3);
+        assert_eq!(line.spans[0].content.as_ref(), "ab");
+        assert_eq!(line.spans[1].content.as_ref(), "cd");
     }
 }

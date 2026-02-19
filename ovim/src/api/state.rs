@@ -7,6 +7,8 @@ use tokio::sync::{mpsc, oneshot};
 #[derive(Debug)]
 pub enum ApiRequest {
     GetSnapshot(oneshot::Sender<ApiResponse>),
+    /// Lightweight snapshot: returns mode, cursor, hover_info but skips buffer content
+    GetSnapshotLight(oneshot::Sender<ApiResponse>),
     SendKeys(String, oneshot::Sender<ApiResponse>),
     GetBuffer(oneshot::Sender<ApiResponse>),
     SetBuffer(String, oneshot::Sender<ApiResponse>),

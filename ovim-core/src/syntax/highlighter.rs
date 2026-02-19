@@ -83,7 +83,14 @@ impl SyntaxHighlighter {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
-        // Distribute captures to lines in a single pass
+        // Precompute line end bytes for binary search
+        let line_end_bytes: Vec<usize> = lines
+            .iter()
+            .zip(line_start_bytes.iter())
+            .map(|(line, &start)| start + line.len())
+            .collect();
+
+        // Distribute captures to lines using binary search
         while let Some(m) = matches.next() {
             for capture in m.captures {
                 let node = capture.node;
@@ -94,30 +101,31 @@ impl SyntaxHighlighter {
                 let capture_name = &self.capture_names[capture.index as usize];
                 let group = Self::capture_to_highlight_group(capture_name);
 
-                // Find which lines this capture spans
-                for (line_idx, &line_start_byte) in line_start_bytes.iter().enumerate() {
-                    if line_idx >= lines.len() {
+                // Binary search to find the first line that could overlap.
+                // A line overlaps if its end byte > start_byte.
+                let first_line = line_end_bytes
+                    .partition_point(|&line_end| line_end <= start_byte);
+
+                // Walk forward from there until lines no longer overlap
+                for line_idx in first_line..lines.len() {
+                    let line_start_byte = line_start_bytes[line_idx];
+
+                    // Past the capture — no more lines can overlap
+                    if line_start_byte >= end_byte {
                         break;
                     }
 
-                    let line_end_byte = line_start_byte + lines[line_idx].len();
+                    // Convert to column range relative to line start
+                    let col_start = start_byte.saturating_sub(line_start_byte);
+                    let line_len = lines[line_idx].len();
+                    let line_end_byte = line_start_byte + line_len;
+                    let col_end = if end_byte <= line_end_byte {
+                        end_byte - line_start_byte
+                    } else {
+                        line_len
+                    };
 
-                    // Check if this capture overlaps with this line
-                    if start_byte < line_end_byte && end_byte > line_start_byte {
-                        // Convert to column range relative to line start
-                        // Cap col_start at 0 (can't be before line start)
-                        let col_start = start_byte.saturating_sub(line_start_byte);
-
-                        // Cap col_end at line length (can't extend past line end)
-                        let line_len = lines[line_idx].len();
-                        let col_end = if end_byte <= line_end_byte {
-                            end_byte - line_start_byte
-                        } else {
-                            line_len
-                        };
-
-                        line_highlights[line_idx].push((col_start..col_end, group));
-                    }
+                    line_highlights[line_idx].push((col_start..col_end, group));
                 }
             }
         }
@@ -178,6 +186,11 @@ impl SyntaxHighlighter {
             },
         );
 
+        // Precompute line end bytes for the range (binary search target)
+        let line_end_bytes: Vec<usize> = (start_line..actual_end)
+            .map(|i| line_start_bytes[i] + lines[i].len())
+            .collect();
+
         let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
         while let Some(m) = matches.next() {
@@ -189,22 +202,29 @@ impl SyntaxHighlighter {
                 let capture_name = &self.capture_names[capture.index as usize];
                 let group = Self::capture_to_highlight_group(capture_name);
 
-                // Only process lines within our range
-                for line_idx in start_line..actual_end {
+                // Binary search within the viewport range to find first overlapping line.
+                // A line overlaps if its end byte > start_byte.
+                let first_rel = line_end_bytes
+                    .partition_point(|&line_end| line_end <= start_byte);
+
+                for rel_idx in first_rel..actual_len {
+                    let line_idx = start_line + rel_idx;
                     let line_start_byte = line_start_bytes[line_idx];
-                    let line_end_byte = line_start_byte + lines[line_idx].len();
 
-                    if start_byte < line_end_byte && end_byte > line_start_byte {
-                        let col_start = start_byte.saturating_sub(line_start_byte);
-                        let line_len = lines[line_idx].len();
-                        let col_end = if end_byte <= line_end_byte {
-                            end_byte - line_start_byte
-                        } else {
-                            line_len
-                        };
-
-                        line_highlights[line_idx - start_line].push((col_start..col_end, group));
+                    if line_start_byte >= end_byte {
+                        break;
                     }
+
+                    let col_start = start_byte.saturating_sub(line_start_byte);
+                    let line_len = lines[line_idx].len();
+                    let line_end_byte = line_start_byte + line_len;
+                    let col_end = if end_byte <= line_end_byte {
+                        end_byte - line_start_byte
+                    } else {
+                        line_len
+                    };
+
+                    line_highlights[rel_idx].push((col_start..col_end, group));
                 }
             }
         }
@@ -231,47 +251,55 @@ impl SyntaxHighlighter {
         let mut highlights = Vec::new();
         let mut cursor = QueryCursor::new();
 
-        // Calculate line byte range
-        let lines: Vec<&str> = source.lines().collect();
-        if line_idx >= lines.len() {
-            return highlights;
-        }
+        // Calculate line byte range by scanning bytes directly (avoids collecting all lines)
+        let mut line_start_byte = 0;
+        for (i, line) in source.lines().enumerate() {
+            if i == line_idx {
+                let line_end_byte = line_start_byte + line.len();
 
-        let line_start_byte: usize = lines.iter().take(line_idx).map(|l| l.len() + 1).sum();
-        let line_end_byte = line_start_byte + lines[line_idx].len();
+                // Restrict query to just this line
+                cursor.set_point_range(
+                    tree_sitter::Point {
+                        row: line_idx,
+                        column: 0,
+                    }..tree_sitter::Point {
+                        row: line_idx + 1,
+                        column: 0,
+                    },
+                );
 
-        // Query captures in this line
-        let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+                let mut matches =
+                    cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
-        while let Some(m) = matches.next() {
-            for capture in m.captures {
-                let node = capture.node;
-                let start_byte = node.start_byte();
-                let end_byte = node.end_byte();
+                while let Some(m) = matches.next() {
+                    for capture in m.captures {
+                        let node = capture.node;
+                        let start_byte = node.start_byte();
+                        let end_byte = node.end_byte();
 
-                // Check if this capture overlaps with our line
-                if start_byte < line_end_byte && end_byte > line_start_byte {
-                    // Get capture name (e.g., "keyword", "function")
-                    let capture_name = &self.capture_names[capture.index as usize];
-                    let group = Self::capture_to_highlight_group(capture_name);
+                        if start_byte < line_end_byte && end_byte > line_start_byte {
+                            let capture_name = &self.capture_names[capture.index as usize];
+                            let group = Self::capture_to_highlight_group(capture_name);
 
-                    // Convert to column range relative to line start
-                    let col_start = start_byte.saturating_sub(line_start_byte);
+                            let col_start = start_byte.saturating_sub(line_start_byte);
+                            let col_end = if end_byte <= line_end_byte {
+                                end_byte - line_start_byte
+                            } else {
+                                line.len()
+                            };
 
-                    let col_end = if end_byte <= line_end_byte {
-                        end_byte - line_start_byte
-                    } else {
-                        line_end_byte - line_start_byte
-                    };
-
-                    highlights.push((col_start..col_end, group));
+                            highlights.push((col_start..col_end, group));
+                        }
+                    }
                 }
+
+                highlights.sort_by_key(|(range, _)| range.start);
+                return highlights;
             }
+            line_start_byte += line.len() + 1; // +1 for newline
         }
 
-        // Sort by start position
-        highlights.sort_by_key(|(range, _)| range.start);
-
+        // line_idx out of bounds
         highlights
     }
 
@@ -451,5 +479,83 @@ const result = greet("World");"#;
         let highlights = h.highlights_for_all_lines(js_code);
 
         assert!(!highlights.is_empty(), "Should have highlights");
+    }
+
+    #[test]
+    fn test_line_range_matches_all_lines() {
+        // Verify highlights_for_line_range produces the same results as the
+        // corresponding slice of highlights_for_all_lines.
+        let mut h =
+            SyntaxHighlighter::new(Language::Rust).expect("Rust highlighter should be created");
+
+        let source = "fn foo() {\n    let x = 42;\n    let y = \"hello\";\n    x + y\n}\n";
+        h.parse(source);
+
+        let all = h.highlights_for_all_lines(source);
+
+        // Query a middle range
+        let range = h.highlights_for_line_range(source, 1, 4);
+        assert_eq!(range.len(), 3, "Should cover lines 1..4");
+        for i in 0..3 {
+            assert_eq!(
+                range[i], all[1 + i],
+                "Line range[{}] should match all_lines[{}]",
+                i,
+                1 + i
+            );
+        }
+    }
+
+    #[test]
+    fn test_per_line_matches_all_lines() {
+        // Verify highlights_for_line produces the same results as
+        // highlights_for_all_lines for each line.
+        let mut h =
+            SyntaxHighlighter::new(Language::Rust).expect("Rust highlighter should be created");
+
+        let source = "use std::io;\nfn main() {\n    println!(\"hi\");\n}\n";
+        h.parse(source);
+
+        let all = h.highlights_for_all_lines(source);
+        for (i, expected) in all.iter().enumerate() {
+            let per_line = h.highlights_for_line(i, source);
+            assert_eq!(
+                &per_line, expected,
+                "highlights_for_line({}) should match highlights_for_all_lines",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiline_capture_distributed_correctly() {
+        // A multi-line string literal should produce highlights on every
+        // line it spans — this exercises the binary search path.
+        let mut h =
+            SyntaxHighlighter::new(Language::Rust).expect("Rust highlighter should be created");
+
+        let source = "let s = \"\nline2\nline3\n\";\n";
+        h.parse(source);
+
+        let all = h.highlights_for_all_lines(source);
+        // The string spans lines 0-3. Each should have at least one highlight.
+        for (i, line_h) in all.iter().enumerate().take(4) {
+            assert!(
+                !line_h.is_empty(),
+                "Line {} should have highlights from the multi-line string",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_out_of_bounds_line_returns_empty() {
+        let mut h =
+            SyntaxHighlighter::new(Language::Rust).expect("Rust highlighter should be created");
+        let source = "fn main() {}";
+        h.parse(source);
+
+        assert!(h.highlights_for_line(999, source).is_empty());
+        assert!(h.highlights_for_line_range(source, 5, 10).is_empty());
     }
 }
