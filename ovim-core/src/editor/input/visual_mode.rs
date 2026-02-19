@@ -35,6 +35,53 @@ fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclus
     }
 }
 
+fn handle_visual_leader_input(
+    editor: &mut Editor,
+    key_event: KeyEvent,
+    keys: &[char],
+) -> Result<()> {
+    if key_event.code == KeyCode::Esc {
+        editor.reset_input_state();
+        return Ok(());
+    }
+
+    let KeyCode::Char(c) = key_event.code else {
+        editor.reset_input_state();
+        return Ok(());
+    };
+
+    if keys.is_empty() {
+        match c {
+            // <Space><Space> in visual mode: open chat with selection context.
+            ' ' => {
+                editor.start_ai_chat_from_visual()?;
+                editor.reset_input_state();
+            }
+            // <Space>a... visual leader prefix.
+            'a' => {
+                editor.set_input_state(InputState::Leader { keys: vec!['a'] });
+            }
+            _ => {
+                editor.reset_input_state();
+            }
+        }
+        return Ok(());
+    }
+
+    match (keys, c) {
+        // <Space>ai in visual mode: strict inline edit path.
+        (&['a'], 'i') => {
+            editor.start_ai_prompt_from_visual()?;
+            editor.reset_input_state();
+        }
+        _ => {
+            editor.reset_input_state();
+        }
+    }
+
+    Ok(())
+}
+
 /// Handles input in Visual mode (Visual, VisualLine, VisualBlock)
 pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // =====================================================================
@@ -46,6 +93,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     // a motion command instead of the search target.
     if let InputState::AwaitingChar { motion, operator } = editor.input_state().clone() {
         return char_motion::handle_char_motion(editor, key_event, motion, operator);
+    }
+    if let InputState::Leader { ref keys } = editor.input_state().clone() {
+        let keys_clone = keys.clone();
+        return handle_visual_leader_input(editor, key_event, &keys_clone);
     }
 
     // Handle pending command for visual block replace and g prefix
@@ -220,7 +271,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::exit_visual_mode_to_normal(editor);
         }
         KeyCode::Char(' ') => {
-            editor.start_ai_prompt_from_visual()?;
+            editor.set_input_state(InputState::Leader { keys: Vec::new() });
         }
         // Half-page scroll down (Ctrl-D) — must come before 'd' delete handler
         KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {

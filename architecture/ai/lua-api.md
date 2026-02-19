@@ -358,7 +358,7 @@ vim.ai.contexts.selection = "opus"
 vim.ai.contexts.chat = "gpt-codex"
 ```
 
-Changes are reflected in the status line. The contexts table only affects the built-in keybindings (`<Space><Space>`, `<Space>?`, `<Space>` in visual mode). Custom keybindings that call `vim.ai.open_chat()` directly are not affected.
+Changes are reflected in the status line. The contexts table only affects the built-in keybindings (`<Space><Space>`, `<Space>?`, `<Space><Space>` in visual mode for chat, and `<Space>ai` in visual mode for inline edit). Custom keybindings that call `vim.ai.open_chat()` directly are not affected.
 
 ## vim.ai.profiles.register()
 

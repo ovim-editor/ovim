@@ -105,7 +105,11 @@ impl Editor {
         }
 
         let len = names.len();
-        let idx = self.ai_state.prompt.model_picker_index.min(len.saturating_sub(1));
+        let idx = self
+            .ai_state
+            .prompt
+            .model_picker_index
+            .min(len.saturating_sub(1));
         self.ai_state.prompt.model_picker_index = if forward {
             (idx + 1) % len
         } else if idx == 0 {
@@ -134,14 +138,50 @@ impl Editor {
 
     /// Start AI prompt from the current visual selection.
     pub fn start_ai_prompt_from_visual(&mut self) -> Result<()> {
+        if !self.capture_ai_selection_from_visual()? {
+            return Ok(());
+        }
+
+        self.ai_state.prompt.input.clear();
+        self.ai_state.prompt.cursor = 0;
+        self.ai_state.prompt.model_picker_open = false;
+        self.ai_state.prompt.model_picker_index = 0;
+        self.set_mode(Mode::AiPrompt);
+        self.set_lsp_status("AI prompt: type instruction and press Enter".to_string());
+        Ok(())
+    }
+
+    /// Start AI chat from the current visual selection.
+    ///
+    /// Unlike inline prompt mode, chat mode can perform surrounding edits and
+    /// use tools while still keeping the visual range as high-priority context.
+    pub fn start_ai_chat_from_visual(&mut self) -> Result<()> {
+        if !self.capture_ai_selection_from_visual()? {
+            return Ok(());
+        }
+
+        self.open_ai_chat(crate::ai::chat_types::ChatOpts {
+            name: "chat".into(),
+            profile: self.ai_chat_context_profile("chat"),
+            allow_edits: true,
+            ..Default::default()
+        })?;
+        self.set_lsp_status(
+            "AI chat opened with selection context. Describe the change; surrounding edits are allowed."
+                .to_string(),
+        );
+        Ok(())
+    }
+
+    fn capture_ai_selection_from_visual(&mut self) -> Result<bool> {
         if self.mode() == Mode::VisualBlock {
             self.set_lsp_status("AI edit does not support visual block mode".to_string());
-            return Ok(());
+            return Ok(false);
         }
 
         let Some(((start_line, start_col), (end_line, end_col))) = self.visual_selection() else {
             self.set_lsp_status("No visual selection to edit".to_string());
-            return Ok(());
+            return Ok(false);
         };
 
         let rope = self.buffer().rope();
@@ -166,7 +206,7 @@ impl Editor {
 
         if end_char <= start_char {
             self.set_lsp_status("Visual selection is empty".to_string());
-            return Ok(());
+            return Ok(false);
         }
 
         let selected_text = rope.slice(start_char..end_char).to_string();
@@ -183,13 +223,7 @@ impl Editor {
         };
 
         self.ai_state.active_selection = Some(snapshot);
-        self.ai_state.prompt.input.clear();
-        self.ai_state.prompt.cursor = 0;
-        self.ai_state.prompt.model_picker_open = false;
-        self.ai_state.prompt.model_picker_index = 0;
-        self.set_mode(Mode::AiPrompt);
-        self.set_lsp_status("AI prompt: type instruction and press Enter".to_string());
-        Ok(())
+        Ok(true)
     }
 
     /// Submit current AI prompt as an async job.

@@ -89,9 +89,11 @@ vim.keymap.set('n', '<Space>?', function()
     })
 end)
 
--- <Space> in visual mode (selection context — uses the existing single-shot system)
--- This is the one context that doesn't use open_chat — it uses the existing
--- AiPrompt mode with the selection-context profile.
+-- <Space><Space> in visual mode (chat context anchored to the selection)
+-- Opens normal chat but preserves the current visual selection as high-priority context.
+
+-- <Space>ai in visual mode (selection context — single-shot inline edit)
+-- Uses the existing AiPrompt mode with the selection-context profile.
 ```
 
 These are hardcoded in the editor (Rust-side leader handler), but the profile they use is configured through `vim.ai.contexts`.
@@ -218,12 +220,23 @@ Selection edits are fundamentally different from chat:
 
 The user enters visual mode, selects text, types an instruction, and gets the result. No conversation tree, no message history, no navigation zones. This should feel instant — especially with cheap local models.
 
-### How the built-in keybinding resolves
+### How the built-in keybindings resolve
 
 ```lua
--- <Space> in visual mode
+-- <Space><Space> in visual mode
+-- (chat-style edit anchored to selected code)
+vim.keymap.set('v', '<Space><Space>', function()
+    vim.ai.open_chat({
+        name = "chat",
+        profile = vim.ai.contexts.chat or vim.ai.default_profile,
+        allow_edits = true,
+        -- The editor captures the visual selection into active_selection before opening chat.
+    })
+end)
+
+-- <Space>ai in visual mode
 -- (This is hardcoded Rust-side, but equivalent to:)
-vim.keymap.set('v', '<Space>', function()
+vim.keymap.set('v', '<Space>ai', function()
     vim.ai.edit_selection({
         profile = vim.ai.contexts.selection or vim.ai.default_profile,
     })
@@ -284,9 +297,11 @@ In `leader.rs`, `handle_first_leader_key`:
 
 Lua calls to `vim.ai.open_chat(opts)` go through the `EditorBridge`, which queues a `ChatOpts` struct. The editor processes it on the next tick, entering `Mode::AiChat` with the resolved options.
 
-### Selection (`<Space>` in visual mode)
+### Selection and chat from visual mode
 
-Unchanged from current implementation. `visual_mode.rs` calls `editor.start_ai_prompt_from_visual()`, entering `Mode::AiPrompt`. Profile comes from `vim.ai.contexts.selection`.
+- `<Space><Space>` in visual mode captures the selection and opens chat (`start_ai_chat_from_visual()`), enabling surrounding edits and tool-driven workflows.
+- `<Space>ai` in visual mode captures the selection and enters strict inline prompt mode (`start_ai_prompt_from_visual()`).
+- Inline profile still comes from `vim.ai.contexts.selection`; chat profile comes from `vim.ai.contexts.chat`.
 
 ## Exit
 
