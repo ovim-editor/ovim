@@ -36,7 +36,10 @@ fn contains_machine_specific_path(line: &str) -> bool {
         "C:\\Users\\adrian\\",
         "~/Personal/",
     ];
-    if forbidden_literals.iter().any(|needle| line.contains(needle)) {
+    if forbidden_literals
+        .iter()
+        .any(|needle| line.contains(needle))
+    {
         return true;
     }
 

@@ -19,7 +19,6 @@ async fn test_rust_syntax_highlighting_enabled() {
         buffer.has_syntax_highlighting(),
         "Syntax highlighting should be enabled for .rs files"
     );
-
 }
 
 #[ignore = "TODO: Syntax highlighting changes in progress"]
@@ -57,5 +56,4 @@ async fn test_rust_syntax_highlights_for_line() {
         !highlights.is_empty(),
         "Line 1 should have syntax highlights (contains 'let x = 42')"
     );
-
 }

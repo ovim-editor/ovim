@@ -1,8 +1,8 @@
 use ovim::buffer::Buffer;
 use ovim::syntax::{HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter};
+use std::sync::atomic::{AtomicU64, Ordering};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 fn temp_test_path(name: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
