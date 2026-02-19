@@ -23,10 +23,7 @@ fn test_ad_hoc_shell_scripts_are_portable_and_strict() {
         let shebang = content.lines().next().unwrap_or_default().trim();
 
         if shebang == "#!/bin/bash" {
-            violations.push(format!(
-                "{} uses non-portable bash shebang",
-                path.display()
-            ));
+            violations.push(format!("{} uses non-portable bash shebang", path.display()));
         }
 
         if (shebang == "#!/usr/bin/env bash" || shebang == "#!/usr/bin/env zsh")

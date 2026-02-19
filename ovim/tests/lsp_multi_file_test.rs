@@ -208,7 +208,6 @@ async fn test_lsp_cleanup_on_file_switch() {
 
     // Should still be in normal mode, LSP should handle gracefully
     test.assert_mode(ovim::mode::Mode::Normal);
-
 }
 
 /// Test LSP with syntax errors
