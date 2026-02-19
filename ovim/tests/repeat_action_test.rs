@@ -379,6 +379,30 @@ fn test_g_semicolon_after_dedent() {
     test.assert_cursor(0, 0);
 }
 
+#[test]
+fn test_g_semicolon_after_repeat_action_dot_repeat() {
+    let mut test = EditorTest::new("aaa\nbbb\nccc");
+
+    test.keys(">>"); // Original edit at line 0
+    test.keys("j."); // Dot-repeat on line 1
+    test.keys("Gg;"); // Move to older changelist entry
+    test.keys("g,"); // Move forward to newer changelist entry
+
+    assert_eq!(test.cursor().0, 1, "g, should reach the dot-repeat line");
+}
+
+#[test]
+fn test_g_semicolon_after_change_dot_repeat() {
+    let mut test = EditorTest::new("one two\nthree four\nfive six");
+
+    test.keys("dw"); // Original edit at line 0
+    test.keys("j."); // Dot-repeat at line 1
+    test.keys("Gg;"); // Move to older changelist entry
+    test.keys("g,"); // Move forward to newer changelist entry
+
+    assert_eq!(test.cursor().0, 1, "g, should reach the dot-repeat line");
+}
+
 // ============================================================================
 // Edge cases
 // ============================================================================
