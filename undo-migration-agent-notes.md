@@ -57,6 +57,9 @@ Recent undo-migration commits:
 46. `79e72ee` - Refresh undo migration ledger after hygiene hardening
 47. `1c52b49` - Fix backward char-motion repeat anchor and till semantics
 48. `bcb20cd` - Remove legacy PendingSemanticChange state and API
+49. `a39ad4e` - Migrate r/m/mark-jump char commands to AwaitingChar state
+50. `d6000a9` - Record dot-repeat edits in changelist via shared undo path
+51. `850f372` - Centralize non-repeat undo stack pushes in change manager
 
 ## What Landed
 
@@ -269,6 +272,42 @@ Files:
     - `test_dot_repeat_search_and_change_backward_find_undo_redo_isolation_macro_flow`
     - `test_dot_repeat_search_and_change_backward_till_undo_redo_isolation_macro_flow`
 
+### U) Awaiting-char state migration for `r/m/'/\``
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/normal/mod.rs`
+  - Normal-mode setup now routes `r`, `m`, `'`, and `` ` `` to `InputState::AwaitingChar` (`Replace`, `Mark`, `JumpMarkLine`, `JumpMarkExact`) instead of legacy `pending_command`.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/char_motion.rs`
+  - Implemented awaiting-char handlers for replace/mark/jump-mark flows directly in the state-machine path.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/normal/pending_commands.rs`
+  - Removed obsolete pending-command arms for `r/m/'/\`` and dead legacy `f/F/t/T` branches.
+- `/Users/adrian/Projects/ovim/ovim/tests/input_state_machine_test.rs`
+  - Added regressions:
+    - `test_g_quote_jumps_to_mark_line`
+    - `test_r_escape_cancels_pending_replace`
+
+### V) Dot-repeat changelist tracking hardened
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/change_tracking.rs`
+  - `repeat_last_change()` now pushes repeat undo entries through `push_recorded_undo()` (instead of direct stack mutation), so changelist/edit-position tracking stays consistent.
+  - Removed unconditional post-repeat `mark_buffer_modified()` in favor of edit-driven recording path.
+- `/Users/adrian/Projects/ovim/ovim/tests/repeat_action_test.rs`
+  - Added regressions:
+    - `test_g_semicolon_after_repeat_action_dot_repeat`
+    - `test_g_semicolon_after_change_dot_repeat`
+
+### W) Non-repeat undo push plumbing centralized
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/change.rs`
+  - Added `ChangeManager::push_undo_change_preserving_repeat(change)`.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/change_tracking.rs`
+  - `push_recorded_undo()` now uses the new helper.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/buffer_manager.rs`
+  - Background-buffer LSP edit undo push now uses the new helper.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/lsp_modules/workspace_edits.rs`
+  - Resource-op undo push now uses the new helper.
+- `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
+  - Added `test_char_awaiting_commands_stay_on_input_state_path` to prevent fallback regressions back to pending-command setup for `r/m/'/\``.
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -349,23 +388,20 @@ Files:
 - `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (post-removal safety run)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding pending semantic-change path constraints)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
+- `cargo test -p ovim --test input_state_machine_test -- --nocapture` (after migrating `r/m/'/\`` to awaiting-char state)
+- `cargo test -p ovim --test mark_test -- --nocapture` (awaiting-char mark/jump safety run)
+- `cargo test -p ovim --test advanced_editing_test -- --nocapture` (mark/jump/replace integration safety run)
+- `cargo test -p ovim --test repeat_action_test -- --nocapture` (after changelist dot-repeat hardening)
+- `cargo test -p ovim --test lsp_applied_edits_sync_test -- --nocapture` (after non-repeat push centralization)
+- `cargo test -p ovim --test lsp_document_sync_undo_test -- --nocapture` (after non-repeat push centralization)
+- `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (after non-repeat push centralization)
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after awaiting-char hygiene guard)
 
 ## Current Workspace Safety Notes
-There are unrelated in-progress edits from another agent. Do not revert them.
-Observed modified files include:
-- `/Users/adrian/Projects/ovim/ovim-core/src/editor/ai_chat_tools.rs`
-- `/Users/adrian/Projects/ovim/ovim-core/src/editor/ai_integration.rs`
-- `/Users/adrian/Projects/ovim/ovim-core/src/editor/lsp_integration.rs`
-- `/Users/adrian/Projects/ovim/ovim-core/src/editor/lsp_modules/workspace_edits.rs`
-- `/Users/adrian/Projects/ovim/ovim-core/src/editor/mod.rs`
-- `/Users/adrian/Projects/ovim/ovim/src/ui/renderer/dashboard.rs`
-- `/Users/adrian/Projects/ovim/ovim/tests/hygiene_ad_hoc_scripts_test.rs`
-- `/Users/adrian/Projects/ovim/ovim/tests/hygiene_paths_test.rs`
-- `/Users/adrian/Projects/ovim/ovim/tests/java_comment_test.rs`
-- `/Users/adrian/Projects/ovim/ovim/tests/lsp_multi_file_test.rs`
-- `/Users/adrian/Projects/ovim/ovim/tests/syntax_test.rs`
+No unrelated dirty files were present while landing slices U/W in this handoff.
+All edits in this batch were scoped to undo/repeat migration and its hygiene tests/docs.
 
 ## Suggested Continuation
 If continuing migration work, likely next slice is:
-1. Decide whether to keep or retire `add_change` infrastructure (`Editor::add_change` + `ChangeManager::add_change`) now that all runtime migration callsites are gone outside infrastructure.
-2. Keep commits path-scoped and avoid touching dirty AI files listed above.
+1. Decide whether to keep or retire `add_change` infrastructure (`Editor::add_change` + `ChangeManager::add_change`) now that runtime migration paths are fully on Pattern B.
+2. Continue tightening hygiene gates when a legacy fallback path is removed, mirroring the awaiting-char and pending-semantic guards.
