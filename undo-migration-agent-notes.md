@@ -48,6 +48,10 @@ Recent undo-migration commits:
 37. `4ae5153` - Add no-insert cgn dot-repeat undo redo regression
 38. `691b668` - Sync undo migration ledger with latest commits
 39. `35e8cce` - Tighten undo-repeat coverage semantics for cc C df
+40. `fe9ddb3` - Update undo migration ledger after coverage hardening
+41. `85f7ed2` - Add cfo undo redo isolation and dot-repeat chain regressions
+42. `40c51b5` - Add ct undo redo isolation and dot-repeat chain regressions
+43. `c496e39` - Add backward char-motion c undo redo isolation regressions
 
 ## What Landed
 
