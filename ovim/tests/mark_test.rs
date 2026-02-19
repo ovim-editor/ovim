@@ -211,7 +211,6 @@ line 3
 }
 
 #[test]
-#[ignore = "TODO: Implement . special mark (last change position)"]
 fn test_backtick_dot_last_change() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
@@ -253,7 +252,6 @@ line 3
 }
 
 #[test]
-#[ignore = "TODO: Implement `^ special mark (last insert position)"]
 fn test_backtick_caret_insert_exit() {
     let mut test = EditorTest::new("line 1\nline 2");
 
