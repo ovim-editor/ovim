@@ -1,10 +1,10 @@
 //! Pending command handlers in normal mode.
 //!
 //! Multi-key sequences that start with a single character:
-//! g*, z*, Z*, "*, m*, '*, `*, q*, @*, f/F/t/T, [*, ]*, W* (Ctrl-W), r*
+//! g*, z*, Z*, "*, q*, @*, [*, ]*, W* (Ctrl-W)
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, FindDirection, FindType, Motions, Operator, PendingChangeRepeat};
+use crate::editor::{Editor, Motions, Operator, PendingChangeRepeat};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent};
@@ -22,13 +22,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     editor.clear_pending_command();
 
     match (pending, key_event.code) {
-        // =====================================================================
-        // 'r' - Replace character
-        // =====================================================================
-        ('r', KeyCode::Char(ch)) => {
-            handle_replace_char(editor, ch)?;
-        }
-
         // =====================================================================
         // 'g' - Go commands
         // =====================================================================
@@ -159,8 +152,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('g', KeyCode::Char('\'')) => {
-            // g' - linewise jump to mark; reuse existing '\'' pending handler
-            editor.set_pending_command('\'');
+            editor.set_input_state(crate::editor::InputState::AwaitingChar {
+                motion: crate::editor::CharMotion::JumpMarkLine,
+                operator: None,
+            });
         }
         ('g', KeyCode::Char('t')) => {
             // gt - go to next tab
@@ -436,35 +431,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
 
         // =====================================================================
-        // 'm' - Set mark
-        // =====================================================================
-        ('m', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
-            editor.set_mark(ch);
-        }
-
-        // =====================================================================
-        // '\'' - Jump to mark line
-        // =====================================================================
-        ('\'', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
-            editor.add_jump();
-            editor.jump_to_mark_line(ch);
-        }
-        ('\'', KeyCode::Char('\'')) => {
-            editor.jump_back();
-        }
-
-        // =====================================================================
-        // '`' - Jump to mark exact position
-        // =====================================================================
-        ('`', KeyCode::Char(ch)) if ch.is_ascii_lowercase() || ch.is_ascii_uppercase() => {
-            editor.add_jump();
-            editor.jump_to_mark(ch);
-        }
-        ('`', KeyCode::Char('`')) => {
-            editor.jump_back();
-        }
-
-        // =====================================================================
         // 'q' - Start macro recording
         // =====================================================================
         ('q', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
@@ -481,38 +447,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     crate::editor::input::InputHandler::handle_key_event(editor, event)?;
                 }
             }
-        }
-
-        // =====================================================================
-        // 'f', 'F', 't', 'T' - Find character (legacy handlers for pending_command)
-        // =====================================================================
-        ('f', KeyCode::Char(ch)) => {
-            let count = editor.effective_count();
-            if Motions::find_char_forward(editor.buffer_mut(), ch, count) {
-                editor.set_last_find(ch, FindType::Find, FindDirection::Forward);
-            }
-            editor.clear_count();
-        }
-        ('F', KeyCode::Char(ch)) => {
-            let count = editor.effective_count();
-            if Motions::find_char_backward(editor.buffer_mut(), ch, count) {
-                editor.set_last_find(ch, FindType::Find, FindDirection::Backward);
-            }
-            editor.clear_count();
-        }
-        ('t', KeyCode::Char(ch)) => {
-            let count = editor.effective_count();
-            if Motions::till_char_forward(editor.buffer_mut(), ch, count) {
-                editor.set_last_find(ch, FindType::Till, FindDirection::Forward);
-            }
-            editor.clear_count();
-        }
-        ('T', KeyCode::Char(ch)) => {
-            let count = editor.effective_count();
-            if Motions::till_char_backward(editor.buffer_mut(), ch, count) {
-                editor.set_last_find(ch, FindType::Till, FindDirection::Backward);
-            }
-            editor.clear_count();
         }
 
         // =====================================================================
@@ -782,18 +716,5 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         .buffer_mut()
         .cursor_mut()
         .set_position(line_idx, target_col);
-    Ok(())
-}
-
-/// Handle r{char} - replace character under cursor
-fn handle_replace_char(editor: &mut Editor, ch: char) -> Result<()> {
-    use crate::repeat_action::RepeatAction;
-
-    let count = editor.effective_count();
-    editor.record_operation(
-        |buf| buf.replace_chars_at_cursor(ch, count),
-        Some(RepeatAction::ReplaceChar { ch, count }),
-    );
-    editor.clear_count();
     Ok(())
 }

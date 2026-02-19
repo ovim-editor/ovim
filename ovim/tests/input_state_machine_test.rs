@@ -744,6 +744,16 @@ mod marks {
     }
 
     #[test]
+    fn test_g_quote_jumps_to_mark_line() {
+        let mut test = EditorTest::new("line 1\nline 2\nline 3");
+        test.keys("j");
+        test.keys("ma");
+        test.keys("G");
+        test.keys("g'a");
+        assert_eq!(test.cursor(), (1, 0), "g' should jump to marked line");
+    }
+
+    #[test]
     fn test_m_alone_waits_for_register() {
         let mut test = EditorTest::new("hello world");
         test.keys("0");
@@ -789,6 +799,15 @@ mod replace_char {
 
         test.keys("rx");
         assert_eq!(test.buffer_content(), "hellx\n");
+    }
+
+    #[test]
+    fn test_r_escape_cancels_pending_replace() {
+        let mut test = EditorTest::new("hello");
+        test.keys("r");
+        test.keys("<Esc>");
+        test.keys("x");
+        assert_eq!(test.buffer_content(), "ello\n");
     }
 }
 

@@ -118,15 +118,24 @@ fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool>
             Ok(true)
         }
         KeyCode::Char('m') => {
-            editor.set_pending_command('m');
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::Mark,
+                operator: None,
+            });
             Ok(true)
         }
         KeyCode::Char('\'') => {
-            editor.set_pending_command('\'');
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::JumpMarkLine,
+                operator: None,
+            });
             Ok(true)
         }
         KeyCode::Char('`') => {
-            editor.set_pending_command('`');
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::JumpMarkExact,
+                operator: None,
+            });
             Ok(true)
         }
         KeyCode::Char('q') => {
@@ -142,7 +151,10 @@ fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool>
             Ok(true)
         }
         KeyCode::Char('r') => {
-            editor.set_pending_command('r');
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::Replace,
+                operator: None,
+            });
             Ok(true)
         }
         // Character motions - use new state machine
