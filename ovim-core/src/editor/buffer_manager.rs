@@ -330,9 +330,7 @@ impl Editor {
         let change = Change::recorded(recorded_edits, cursor_before, cursor_after);
         {
             let cm = self.buffers[buffer_index].change_manager_mut();
-            cm.note_edit_position(cursor_before);
-            cm.undo_stack.push(change);
-            cm.redo_stack.clear();
+            cm.push_undo_change_preserving_repeat(change);
         }
 
         // Ensure the edited document is re-synced to LSP.

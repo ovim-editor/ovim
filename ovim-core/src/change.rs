@@ -1236,11 +1236,19 @@ impl ChangeManager {
 
     /// Pushes a change to the undo stack
     pub fn push_change(&mut self, change: Change) {
-        self.note_edit_position(change.edit_position());
-        self.undo_stack.push(change.clone());
-        self.redo_stack.clear(); // Clear redo stack on new change
+        self.push_undo_change_preserving_repeat(change.clone());
         self.last_change = Some(change);
         self.last_repeat_action = None; // Mutual exclusion: Change-based repeat wins
+    }
+
+    /// Pushes an undo entry while preserving current dot-repeat templates.
+    ///
+    /// This is for non-repeat operations (LSP edits, replayed recorded undo, resource ops)
+    /// that must be undoable without becoming the new `.` target.
+    pub fn push_undo_change_preserving_repeat(&mut self, change: Change) {
+        self.note_edit_position(change.edit_position());
+        self.undo_stack.push(change);
+        self.redo_stack.clear();
     }
 
     /// Records an edit position in the changelist and moves current index to newest.

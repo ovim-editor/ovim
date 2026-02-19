@@ -200,11 +200,9 @@ impl Editor {
     }
 
     fn push_resource_undo_change(&mut self, change: Change) {
-        let edit_pos = change.edit_position();
-        let cm = self.buffer_mut().change_manager_mut();
-        cm.note_edit_position(edit_pos);
-        cm.undo_stack.push(change);
-        cm.redo_stack.clear();
+        self.buffer_mut()
+            .change_manager_mut()
+            .push_undo_change_preserving_repeat(change);
     }
 
     /// Apply a resource operation (create, rename, delete).

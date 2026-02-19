@@ -146,9 +146,7 @@ impl Editor {
             Change::recorded(edits, cursor_before, cursor_after)
         };
         let cm = self.buffer_mut().change_manager_mut();
-        cm.note_edit_position(cursor_before);
-        cm.undo_stack.push(change);
-        cm.redo_stack.clear();
+        cm.push_undo_change_preserving_repeat(change);
         // Ensure LSP is notified of buffer changes — callers that use record()
         // directly instead of record_operation() were previously missing this.
         self.mark_buffer_modified();
