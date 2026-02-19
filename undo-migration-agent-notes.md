@@ -176,6 +176,7 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
   - Added macro regressions:
     - `test_dot_repeat_R_semantic_undo_granularity_macro_flow`
+    - `test_dot_repeat_R_undo_redo_isolation_macro_flow`
     - `test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow`
     - `test_R_esc_undo_redo_isolation_macro_flow`
     - `test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow`
@@ -197,6 +198,8 @@ Files:
   - Added macro regressions:
     - `test_cc_esc_undo_redo_isolation_macro_flow`
     - `test_C_esc_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_cc_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_C_undo_redo_isolation_macro_flow`
     - `test_cc_esc_no_insert_undo_redo_isolation_macro_flow`
     - `test_C_esc_no_insert_undo_redo_isolation_macro_flow`
 
@@ -264,6 +267,10 @@ Files:
 - `cargo test -p ovim --test visual_mode_test test_dot_repeat_cgn_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding dot-repeat `cw` undo+redo chain isolation macro)
 - `cargo test -p ovim --test visual_mode_test -- --nocapture` (after adding dot-repeat `cgn` undo+redo chain isolation macro)
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_cc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_C_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_R_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding dot-repeat `cc/C/R` undo+redo chain isolation macros)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes

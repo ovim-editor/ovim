@@ -535,6 +535,37 @@ fn test_cc_esc_undo_redo_isolation_macro_flow() {
 }
 
 #[test]
+fn test_dot_repeat_cc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "alpha\nbeta\ngamma\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha!\nbeta\ngamma\n");
+        }
+        step "0ccNEW<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nbeta\ngamma\n");
+        }
+        step "j." => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nNEW\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nbeta\ngamma\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nNEW\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nbeta\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha!\nbeta\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha\nbeta\ngamma\n");
+        }
+    }
+}
+
+#[test]
 fn test_C_esc_undo_redo_isolation_macro_flow() {
     editor_flow_test! {
         content "alpha beta\n";
@@ -555,6 +586,37 @@ fn test_C_esc_undo_redo_isolation_macro_flow() {
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "alpha beta\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_C_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "alpha one\nbeta two\ngamma three\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha one!\nbeta two\ngamma three\n");
+        }
+        step "0CNEW<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nbeta two\ngamma three\n");
+        }
+        step "j0." => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nNEW\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nbeta two\ngamma three\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nNEW\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "NEW\nbeta two\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha one!\nbeta two\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha one\nbeta two\ngamma three\n");
         }
     }
 }
@@ -803,6 +865,37 @@ fn test_R_esc_undo_redo_isolation_macro_flow() {
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "hello world\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_R_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "hello world\nalpha beta\nomega zeta\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello world!\nalpha beta\nomega zeta\n");
+        }
+        step "0RHI<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\nalpha beta\nomega zeta\n");
+        }
+        step "j0." => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\nHIpha beta\nomega zeta\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\nalpha beta\nomega zeta\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\nHIpha beta\nomega zeta\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\nalpha beta\nomega zeta\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world!\nalpha beta\nomega zeta\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world\nalpha beta\nomega zeta\n");
         }
     }
 }
