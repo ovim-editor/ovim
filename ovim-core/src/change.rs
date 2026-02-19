@@ -2,35 +2,35 @@
 //!
 //! Two patterns coexist on the same undo/redo stacks:
 //!
-//! ## Pattern A: Semantic Change (`add_change()`)
-//! Use for operations that:
-//! - Enter insert mode (ci", cw, cgn, R, s, S, o, O, a, A, i, I, C)
-//! - Need ChangeBuilder composition (insert-mode keystroke batching)
-//! - Need semantic post-processing on insert-mode exit (ChangeTextObject, ChangeWord, ChangeSearchMatch)
-//! - Are complex bracket-matching operations (d%)
+//! ## Pattern A: `Change` stack entries (`add_change()`)
+//! Use for undo representation and infrastructure-level pushes:
+//! - Insert/delete/composite entries produced by normal editing flow
+//! - Insert-mode keystroke batching and merge/finalize flows
+//! - Recorded edit batches (`Change::Recorded`)
+//! - Infrastructure wrappers (`Editor::add_change`, `ChangeManager::add_change`)
 //!
 //! Variants: InsertText, DeleteText, Composite, ChangeTextObject, ChangeWord,
 //! ChangeSearchMatch, ReplaceMode, Recorded
 //!
 //! ## Pattern B: Recorded Undo + RepeatAction (`record()` + `push_recorded_undo()`)
-//! **Default for normal-mode operations.** Use when:
+//! **Default for semantic dot-repeat behavior.** Use when:
 //! - Repeat should re-evaluate at the current cursor position
-//! - No insert-mode entry needed
 //! - Undo should be mechanical (inverse the exact edits)
+//! - Operation benefits from explicit repeat intent (delete/change/open/replace)
 //!
 //! Operations: x, X, dd, D/d$, dw, dj, dk, d}, d{, dl,
 //! di"/di(/diw/dip/dap/dis/das/dit/dii/dif (all text object deletes),
-//! df/dt/dF/dT, ~, J, gJ, >>, <<, Ctrl-A/X, p, P
+//! df/dt/dF/dT, ~, J, gJ, >>, <<, Ctrl-A/X, p, P,
+//! cc/C/s/S/cw/cgn/text-object changes, R, o/O, visual-block change
 //!
 //! ## Mutual Exclusion
 //! `last_change` (Pattern A) and `last_repeat_action` (Pattern B) are mutually
 //! exclusive. Setting one clears the other. Dot-repeat checks RepeatAction first.
 //!
 //! ## Pattern choice guide
-//! - Does it enter insert mode? → Pattern A
-//! - Does it need semantic re-evaluation on repeat (ci", cw, cgn)? → Pattern A
-//! - Does it store a replacement sequence (R mode)? → Pattern A
-//! - Everything else → Pattern B
+//! - Does repeat need semantic intent at current cursor? → Pattern B
+//! - Is this a direct insert-mode editing session (`i/a/A/I`) with batched keystrokes? → Pattern A
+//! - Is this an infrastructure push of an already-built change? → Pattern A (`add_change`)
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;

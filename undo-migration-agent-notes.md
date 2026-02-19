@@ -198,6 +198,13 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
   - Added regression to fail if `add_change(...)` appears in `ovim-core/src` outside infrastructure files (`change.rs`, `editor/mod.rs`).
 
+### R) Architecture docs synced with migrated boundaries
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/change.rs`
+  - Updated top-level Pattern A/B guide to reflect current migration state (semantic repeat ownership for `cw/cgn/cc/C/R/o/O` paths).
+- `/Users/adrian/Projects/ovim/ovim-core/src/repeat_action.rs`
+  - Updated `RepeatAction` overview comment to clarify Pattern B covers semantic repeat flows that may pass through insert mode.
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -234,6 +241,8 @@ Files:
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test no_insert_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding no-insert `cc/C` isolation macros)
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after architecture doc sync)
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
