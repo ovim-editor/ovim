@@ -166,6 +166,8 @@ Files:
   - Added macro regressions:
     - `test_dot_repeat_R_semantic_undo_granularity_macro_flow`
     - `test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow`
+    - `test_R_esc_undo_redo_isolation_macro_flow`
+    - `test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow`
 
 ### O) Open-line undo isolation regressions (`o` / `O`)
 Files:
@@ -181,6 +183,11 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/insert_mode.rs`
   - Replaced final composite pushes (`pending_change_repeat` merge and visual-block replay) with direct `ChangeManager::push_change(...)`.
   - This removes all runtime `add_change` usage from insert mode while preserving existing undo/repeat behavior.
+
+### P) Migration hygiene guard (infrastructure-only `add_change` usage)
+Files:
+- `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
+  - Added regression to fail if `add_change(...)` appears in `ovim-core/src` outside infrastructure files (`change.rs`, `editor/mod.rs`).
 
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
@@ -213,6 +220,9 @@ Files:
 - `cargo test -p ovim --test visual_mode_test test_cgn_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding open-line/cw undo+redo isolation macros)
 - `cargo test -p ovim --test visual_mode_test -- --nocapture` (after adding cgn undo+redo isolation macro)
+- `cargo test -p ovim --test dot_repeat_test test_R_esc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.

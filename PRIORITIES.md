@@ -98,6 +98,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `cgn<Esc>` undo+redo isolation after unrelated prior changes.
 - [x] Replace mode (`R`) now records session edits via replace-mode change builder + `finalize_change_building()`, then sets semantic `RepeatAction::ReplaceMode`.
 - [x] Added macro regression coverage for `R` dot-repeat undo granularity and replace-mode no-op backspace undo isolation.
+- [x] Added macro regression coverage for `R<Esc>` undo+redo isolation and replace-mode no-op backspace redo-chain isolation.
 - [x] Insert-exit merge/replay composites now push directly through `ChangeManager::push_change()`; no remaining `add_change` callsites in `insert_mode.rs`.
 
 #### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
@@ -110,6 +111,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 #### Practical migration targets
 
 1. No open Pattern A→B migration blockers remain; remaining `add_change` callsites are intentional or infrastructural.
+2. Added hygiene guard (`undo_migration_hygiene_test`) to fail if `add_change(...)` appears outside infrastructure files.
 
 ---
 
