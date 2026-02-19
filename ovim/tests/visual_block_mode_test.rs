@@ -139,6 +139,40 @@ fn test_ctrl_v_single_column() {
 }
 
 #[test]
+fn test_ctrl_v_replace_escape_cancels_pending_char_macro_flow() {
+    let mut test = EditorTest::new("hello\nworld\ntest");
+
+    test.keys("ll")
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
+        .keys("j")
+        .press('r')
+        .press_esc();
+
+    assert_eq!(test.buffer_content(), "hello\nworld\ntest\n");
+    test.assert_mode(ovim::mode::Mode::VisualBlock);
+
+    // A second Esc exits visual mode cleanly.
+    test.press_esc();
+    test.assert_mode(ovim::mode::Mode::Normal);
+}
+
+#[test]
+fn test_ctrl_v_replace_after_cancel_still_replaces_block_macro_flow() {
+    let mut test = EditorTest::new("hello\nworld\ntest");
+
+    test.keys("ll")
+        .press_with(KeyCode::Char('v'), Modifiers::CONTROL)
+        .keys("j")
+        .press('r')
+        .press_esc() // cancel pending replace char
+        .press('r')
+        .press('X');
+
+    assert_eq!(test.buffer_content(), "heXlo\nwoXld\ntest\n");
+    test.assert_mode(ovim::mode::Mode::Normal);
+}
+
+#[test]
 fn test_ctrl_v_o_flip_corners() {
     let mut test = EditorTest::new("hello\nworld\ntest");
 

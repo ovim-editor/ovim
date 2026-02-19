@@ -49,7 +49,7 @@ pub fn handle_char_motion(
         CharMotion::Till => handle_till_forward(editor, target, count, operator),
         CharMotion::FindBack => handle_find_backward(editor, target, count, operator),
         CharMotion::TillBack => handle_till_backward(editor, target, count, operator),
-        CharMotion::Replace => handle_replace_char(editor, target, count),
+        CharMotion::Replace => handle_replace_char(editor, target, count)?,
         CharMotion::Mark => handle_set_mark(editor, target),
         CharMotion::JumpMarkLine => handle_jump_mark_line(editor, target),
         CharMotion::JumpMarkExact => handle_jump_mark_exact(editor, target),
@@ -63,11 +63,18 @@ pub fn handle_char_motion(
     Ok(())
 }
 
-fn handle_replace_char(editor: &mut Editor, target: char, count: usize) {
+fn handle_replace_char(editor: &mut Editor, target: char, count: usize) -> Result<()> {
+    if editor.mode() == Mode::VisualBlock {
+        crate::editor::input::helpers::replace_visual_selection(editor, target)?;
+        crate::editor::input::helpers::exit_visual_mode_to_normal(editor);
+        return Ok(());
+    }
+
     editor.record_operation(
         |buf| buf.replace_chars_at_cursor(target, count),
         Some(RepeatAction::ReplaceChar { ch: target, count }),
     );
+    Ok(())
 }
 
 fn handle_set_mark(editor: &mut Editor, target: char) {

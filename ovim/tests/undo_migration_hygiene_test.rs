@@ -120,12 +120,17 @@ fn test_char_awaiting_commands_stay_on_input_state_path() {
         .join("ovim-core/src/editor/input/normal/mod.rs")
         .to_string_lossy()
         .to_string();
+    let visual_mode = repo_root
+        .join("ovim-core/src/editor/input/visual_mode.rs")
+        .to_string_lossy()
+        .to_string();
     let pending_commands = repo_root
         .join("ovim-core/src/editor/input/normal/pending_commands.rs")
         .to_string_lossy()
         .to_string();
 
     let normal_mod_src = fs::read_to_string(&normal_mod).expect("read normal/mod.rs");
+    let visual_mode_src = fs::read_to_string(&visual_mode).expect("read visual_mode.rs");
     let pending_src = fs::read_to_string(&pending_commands).expect("read pending_commands.rs");
 
     // r/m/'/` should use InputState::AwaitingChar in normal mode, not pending_command.
@@ -142,6 +147,12 @@ fn test_char_awaiting_commands_stay_on_input_state_path() {
         );
     }
 
+    // Visual-block r{char} should use InputState::AwaitingChar::Replace.
+    assert!(
+        !visual_mode_src.contains("set_pending_command('r')"),
+        "Found legacy pending_command setup for visual-block replace in visual_mode.rs"
+    );
+
     // pending_commands.rs should not carry first-key handlers for these commands anymore.
     for forbidden in [
         "('r', KeyCode::Char(",
@@ -155,4 +166,10 @@ fn test_char_awaiting_commands_stay_on_input_state_path() {
             forbidden
         );
     }
+
+    // visual_mode.rs should not carry a pending-command replace arm either.
+    assert!(
+        !visual_mode_src.contains("('r', KeyCode::Char("),
+        "Found legacy pending-command replace arm in visual_mode.rs"
+    );
 }

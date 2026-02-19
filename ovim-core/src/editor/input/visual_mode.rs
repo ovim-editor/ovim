@@ -16,7 +16,7 @@ use anyhow::Result;
 use super::char_motion;
 use super::helpers;
 use super::numbers;
-use crate::editor::input_state::InputState;
+use crate::editor::input_state::{CharMotion, InputState};
 
 /// Apply a text object range to the visual selection.
 /// If `inclusive` is true, end_col is used directly; otherwise it's decremented by 1.
@@ -99,7 +99,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         return handle_visual_leader_input(editor, key_event, &keys_clone);
     }
 
-    // Handle pending command for visual block replace and g prefix
+    // Handle pending command prefixes (g, i/a text-objects, etc.)
     if let Some(pending) = editor.pending_command() {
         editor.clear_pending_command();
         match (pending, key_event.code) {
@@ -155,14 +155,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
                 editor.clear_count();
                 return Ok(());
-            }
-            ('r', KeyCode::Char(ch)) => {
-                // r{char} in visual block - replace all characters in selection with ch
-                if editor.mode() == Mode::VisualBlock {
-                    helpers::replace_visual_selection(editor, ch)?;
-                    helpers::exit_visual_mode_to_normal(editor);
-                    return Ok(());
-                }
             }
             ('i', KeyCode::Char('w')) => {
                 apply_text_object(editor, TextObjects::inner_word(editor.buffer()), false);
@@ -729,8 +721,11 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Replace in visual block mode
         KeyCode::Char('r') => {
             if editor.mode() == Mode::VisualBlock {
-                // r{char} in visual block - wait for next char to replace selection
-                editor.set_pending_command('r');
+                // r{char} in visual block - wait for replacement character via input state.
+                editor.set_input_state(InputState::AwaitingChar {
+                    motion: CharMotion::Replace,
+                    operator: None,
+                });
             } else {
                 // Regular visual mode - not supported in standard vim, just delete and enter insert
                 helpers::delete_visual_selection(editor)?;
