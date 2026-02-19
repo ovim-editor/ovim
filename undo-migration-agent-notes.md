@@ -202,6 +202,8 @@ Files:
     - `test_dot_repeat_C_undo_redo_isolation_macro_flow`
     - `test_cc_esc_no_insert_undo_redo_isolation_macro_flow`
     - `test_C_esc_no_insert_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_cc_esc_no_insert_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_C_esc_no_insert_undo_redo_isolation_macro_flow`
 
 ### N) Insert-mode finalization callsite cleanup
 Files:
@@ -271,6 +273,9 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_C_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_R_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding dot-repeat `cc/C/R` undo+redo chain isolation macros)
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_cc_esc_no_insert_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_C_esc_no_insert_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding no-insert dot-repeat `cc/C` undo+redo isolation macros)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
