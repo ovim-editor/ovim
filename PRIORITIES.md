@@ -94,6 +94,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `cw` semantic dot-repeat + undo granularity.
 - [x] `cgn`/`cgN` change setup now uses tokenized `PendingChangeRepeat` (`RepeatAction::DeleteSearchMatch`) instead of pending semantic merge.
 - [x] Legacy insert-exit `PendingSemanticChange` merge branch removed from runtime path.
+- [x] Added macro regression coverage for `cgn<Esc>` undo isolation after unrelated prior changes.
 - [x] Replace mode (`R`) now records session edits via replace-mode change builder + `finalize_change_building()`, then sets semantic `RepeatAction::ReplaceMode`.
 - [x] Added macro regression coverage for `R` dot-repeat undo granularity and replace-mode no-op backspace undo isolation.
 - [x] Insert-exit merge/replay composites now push directly through `ChangeManager::push_change()`; no remaining `add_change` callsites in `insert_mode.rs`.

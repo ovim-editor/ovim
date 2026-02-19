@@ -1052,6 +1052,25 @@ fn test_cgn_dot_repeat() {
 }
 
 #[test]
+fn test_cgn_esc_undo_does_not_consume_prior_change_macro_flow() {
+    editor_flow_test! {
+        content "foo bar foo\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "foo bar foo!\n");
+        }
+        step "0/foo<Enter>cgn<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), " bar foo!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "foo bar foo!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "foo bar foo\n");
+        }
+    }
+}
+
+#[test]
 fn test_gn_with_regex_pattern() {
     let mut test = EditorTest::new("test123 word test456 end");
 
