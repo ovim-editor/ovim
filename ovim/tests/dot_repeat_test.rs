@@ -1230,6 +1230,56 @@ fn test_dot_repeat_search_and_change_till_undo_redo_isolation_macro_flow() {
     }
 }
 
+#[test]
+fn test_cFX_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "aXbXcY\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY!\n");
+        }
+        step "cFX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXb\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "aXb\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY\n");
+        }
+    }
+}
+
+#[test]
+fn test_cTX_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "aXbXcY\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY!\n");
+        }
+        step "cTX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbX\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbX\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with search motions
 // ============================================================================
