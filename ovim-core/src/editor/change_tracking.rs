@@ -76,48 +76,50 @@ impl Editor {
                 _ => {}
             }
 
-            let buf = self.buffer_mut();
-            let before = (buf.cursor().line(), buf.cursor().col());
-            let ((), edits) = buf.record(|b| {
-                action.execute(b);
-            });
-            let after = (buf.cursor().line(), buf.cursor().col());
+            let (before, after, edits) = {
+                let buf = self.buffer_mut();
+                let before = (buf.cursor().line(), buf.cursor().col());
+                let ((), edits) = buf.record(|b| {
+                    action.execute(b);
+                });
+                let after = (buf.cursor().line(), buf.cursor().col());
+                (before, after, edits)
+            };
+
             if !edits.is_empty() {
-                let undo_change = Change::recorded(edits, before, after);
-                buf.change_manager_mut().undo_stack.push(undo_change);
-                buf.change_manager_mut().redo_stack.clear();
+                self.push_recorded_undo(edits, before, after);
             }
-            self.mark_buffer_modified();
             return;
         }
 
         // Fall back to Change-based repeat
-        let buf = self.buffer_mut();
-        if let Some(change) = buf.change_manager().last_change().cloned() {
-            let mut repeated = change;
-            let before = (buf.cursor().line(), buf.cursor().col());
+        if let Some(mut repeated) = self.buffer().change_manager().last_change().cloned() {
+            let (before, after, edits) = {
+                let buf = self.buffer_mut();
+                let before = (buf.cursor().line(), buf.cursor().col());
 
-            // Record the repeat's buffer mutations for mechanical undo
-            let ((), edits) = buf.record(|b| {
-                // Call repeat() BEFORE set_cursor_before() — repeat() uses the
-                // original cursor_before to detect deletion direction (forward vs
-                // backward).  It also updates range/deleted_text so undo works.
-                repeated.repeat(b);
-            });
+                // Record the repeat's buffer mutations for mechanical undo.
+                let ((), edits) = buf.record(|b| {
+                    // Call repeat() BEFORE set_cursor_before() — repeat() uses the
+                    // original cursor_before to detect deletion direction (forward vs
+                    // backward). It also updates range/deleted_text so undo works.
+                    repeated.repeat(b);
+                });
 
-            let after = (buf.cursor().line(), buf.cursor().col());
+                let after = (buf.cursor().line(), buf.cursor().col());
+                (before, after, edits)
+            };
 
-            // Push recorded undo (mechanical) — single `u` undoes the whole repeat
-            let undo_change = Change::recorded(edits, before, after);
-            buf.change_manager_mut().undo_stack.push(undo_change);
-            buf.change_manager_mut().redo_stack.clear();
+            if !edits.is_empty() {
+                // Push recorded undo (mechanical) — single `u` undoes the whole repeat.
+                self.push_recorded_undo(edits, before, after);
 
-            // Update repeat template positions for next repeat
-            repeated.set_cursor_before(before);
-            repeated.set_cursor_after(after);
-            buf.change_manager_mut().last_change = Some(repeated);
+                // Update repeat template positions for next repeat.
+                repeated.set_cursor_before(before);
+                repeated.set_cursor_after(after);
+                self.buffer_mut().change_manager_mut().last_change = Some(repeated);
+            }
         }
-        self.mark_buffer_modified();
     }
 
     /// Pushes a recorded undo entry without setting the repeat register.
