@@ -231,6 +231,14 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim-core/src/repeat_action.rs`
   - Updated `RepeatAction` overview comment to clarify Pattern B covers semantic repeat flows that may pass through insert mode.
 
+### S) Coverage-suite alignment for migrated change semantics
+Files:
+- `/Users/adrian/Projects/ovim/ovim/tests/undo_repeat_coverage_test.rs`
+  - Updated stale Pattern A commentary for `cc`, `C`, and `df/dt` sections to match current semantic-repeat behavior.
+  - Tightened `test_cc_dot_repeat` from fuzzy/no-panic checks to strict content + undo/redo assertions.
+  - Tightened `test_big_c_undo_redo` to require single-step undo/redo roundtrip.
+  - Added `test_df_dot_repeat_undo_redo_chain` to verify multi-step undo/redo stability after dot-repeat.
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -287,6 +295,10 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding replace-mode no-op dot-repeat template preservation macro)
 - `cargo test -p ovim --test visual_mode_test test_dot_repeat_cgn_esc_no_insert_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test visual_mode_test -- --nocapture` (after adding no-insert dot-repeat `cgn` undo+redo isolation macro)
+- `cargo test -p ovim --test undo_repeat_coverage_test test_cc_dot_repeat -- --nocapture`
+- `cargo test -p ovim --test undo_repeat_coverage_test test_big_c_undo_redo -- --nocapture`
+- `cargo test -p ovim --test undo_repeat_coverage_test test_df_dot_repeat_undo_redo_chain -- --nocapture`
+- `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (after tightening `cc/C/df` migrated-semantics coverage)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
