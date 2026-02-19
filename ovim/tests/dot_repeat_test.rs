@@ -459,6 +459,25 @@ fn test_dot_repeat_cw_semantic_undo_granularity_macro_flow() {
     }
 }
 
+#[test]
+fn test_cw_esc_undo_does_not_consume_prior_change_macro_flow() {
+    editor_flow_test! {
+        content "alpha beta\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "0cw<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), " beta!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot repeat edge cases
 // ============================================================================
