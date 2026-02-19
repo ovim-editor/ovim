@@ -54,6 +54,8 @@ Recent undo-migration commits:
 43. `c496e39` - Add backward char-motion c undo redo isolation regressions
 44. `d23fcd4` - Update undo migration ledger with char-motion coverage commits
 45. `d849915` - Constrain pending semantic-change runtime paths via hygiene test
+46. `79e72ee` - Refresh undo migration ledger after hygiene hardening
+47. `1c52b49` - Fix backward char-motion repeat anchor and till semantics
 
 ## What Landed
 
