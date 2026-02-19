@@ -202,6 +202,7 @@ Files:
 Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
   - Added regression to fail if `add_change(...)` appears in `ovim-core/src` outside infrastructure files (`change.rs`, `editor/mod.rs`).
+  - Added callsite cap assertion (`<= 5`) to catch infrastructure-side regression growth.
 
 ### R) Architecture docs synced with migrated boundaries
 Files:
@@ -248,6 +249,7 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test no_insert_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding no-insert `cc/C` isolation macros)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after architecture doc sync)
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.

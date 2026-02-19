@@ -113,7 +113,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 #### Practical migration targets
 
 1. No open Pattern A→B migration blockers remain; remaining `add_change` callsites are intentional or infrastructural.
-2. Added hygiene guard (`undo_migration_hygiene_test`) to fail if `add_change(...)` appears outside infrastructure files.
+2. Added hygiene guard (`undo_migration_hygiene_test`) to fail if `add_change(...)` appears outside infrastructure files or total callsites exceed 5.
 
 ---
 
