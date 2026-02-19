@@ -237,7 +237,10 @@ impl Editor {
                     return (false, None);
                 }
                 let after = Self::snapshot_paths(&paths);
-                (true, Self::build_resource_undo_change(before, after, cursor))
+                (
+                    true,
+                    Self::build_resource_undo_change(before, after, cursor),
+                )
             }
             lsp_types::ResourceOp::Rename(rename_file) => {
                 let Some(old_path) = uri_to_file_path(&rename_file.old_uri) else {
@@ -259,7 +262,10 @@ impl Editor {
                     return (false, None);
                 }
                 let after = Self::snapshot_paths(&paths);
-                (true, Self::build_resource_undo_change(before, after, cursor))
+                (
+                    true,
+                    Self::build_resource_undo_change(before, after, cursor),
+                )
             }
             lsp_types::ResourceOp::Delete(delete_file) => {
                 let Some(file_path) = uri_to_file_path(&delete_file.uri) else {
@@ -273,7 +279,10 @@ impl Editor {
                     return (false, None);
                 }
                 let after = Self::snapshot_paths(&paths);
-                (true, Self::build_resource_undo_change(before, after, cursor))
+                (
+                    true,
+                    Self::build_resource_undo_change(before, after, cursor),
+                )
             }
         }
     }

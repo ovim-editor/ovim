@@ -155,7 +155,11 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
         let key_text = prettify_keys(keys);
         let mut spans = vec![Span::raw(menu_padding.clone())];
         spans.push(Span::styled(
-            format!("{action:<action_width$}", action = action, action_width = action_width),
+            format!(
+                "{action:<action_width$}",
+                action = action,
+                action_width = action_width
+            ),
             Style::default()
                 .fg(colors::MENU_LABEL)
                 .add_modifier(Modifier::BOLD),

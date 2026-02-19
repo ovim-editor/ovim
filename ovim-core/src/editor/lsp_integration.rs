@@ -933,8 +933,7 @@ impl Editor {
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id =
-                match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
             {
                 Some(id) => id,
                 None => return,
@@ -990,8 +989,7 @@ impl Editor {
             let content = self.buffer().rope().to_string();
 
             // Get language_id from file extension
-            let language_id =
-                match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+            let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
             {
                 Some(id) => id,
                 None => return,

@@ -3070,7 +3070,9 @@ mod tests {
             let detected = detected
                 .canonicalize()
                 .unwrap_or_else(|_| normalize_path(&detected));
-            let expected = repo.canonicalize().unwrap_or_else(|_| normalize_path(&repo));
+            let expected = repo
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path(&repo));
             assert_eq!(detected, expected);
         });
     }

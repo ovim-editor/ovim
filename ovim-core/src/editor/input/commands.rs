@@ -1171,9 +1171,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     if cmd_part == "d" || cmd_part == "delete" {
         if let Some((start_line, end_line)) = parse_range(editor, range_str) {
             let cursor_before = editor.cursor_position();
-            let (deleted_text, edits) = editor.buffer_mut().record(|buf| {
-                buf.delete_range(start_line, 0, end_line + 1, 0)
-            });
+            let (deleted_text, edits) = editor
+                .buffer_mut()
+                .record(|buf| buf.delete_range(start_line, 0, end_line + 1, 0));
 
             // Store in register (use delete, which updates " and numbered regs but not 0)
             editor.delete_to_register(deleted_text.clone());
