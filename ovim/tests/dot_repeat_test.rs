@@ -980,6 +980,28 @@ fn test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow() 
 }
 
 #[test]
+fn test_replace_mode_backspace_to_empty_does_not_clobber_dot_repeat_macro_flow() {
+    editor_flow_test! {
+        content "short longerword\n";
+        step "0cwX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword\n");
+        }
+        step "0RHI<BS><BS><Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword\n");
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "X X\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "short longerword\n");
+        }
+    }
+}
+
+#[test]
 fn test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow() {
     editor_flow_test! {
         content "hello\n";

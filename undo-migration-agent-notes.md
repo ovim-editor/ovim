@@ -178,6 +178,7 @@ Files:
     - `test_dot_repeat_R_semantic_undo_granularity_macro_flow`
     - `test_dot_repeat_R_undo_redo_isolation_macro_flow`
     - `test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow`
+    - `test_replace_mode_backspace_to_empty_does_not_clobber_dot_repeat_macro_flow`
     - `test_R_esc_undo_redo_isolation_macro_flow`
     - `test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow`
 
@@ -276,6 +277,8 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_cc_esc_no_insert_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_C_esc_no_insert_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding no-insert dot-repeat `cc/C` undo+redo isolation macros)
+- `cargo test -p ovim --test dot_repeat_test test_replace_mode_backspace_to_empty_does_not_clobber_dot_repeat_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding replace-mode no-op dot-repeat template preservation macro)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
