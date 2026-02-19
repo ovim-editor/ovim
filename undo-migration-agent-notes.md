@@ -37,6 +37,10 @@ Recent undo-migration commits:
 26. `aa833aa` - Add cc and C undo redo isolation regressions
 27. `0c2349a` - Add no-insert cc C undo redo isolation tests
 28. `da5f26e` - Sync undo repeat architecture docs with migrated flows
+29. `4e6210b` - Update undo migration handoff commit ledger
+30. `c364f04` - Tighten add_change migration hygiene gate
+31. `1804ac2` - Add dot-repeat open-line undo redo isolation tests
+32. `e796df8` - Add dot-repeat cw cgn undo redo chain regressions
 
 ## What Landed
 
