@@ -652,6 +652,31 @@ fn test_dot_repeat_R_semantic_undo_granularity_macro_flow() {
 }
 
 #[test]
+fn test_R_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "hello world\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello world!\n");
+        }
+        step "0RHI<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "HIllo world!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello world\n");
+        }
+    }
+}
+
+#[test]
 fn test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow() {
     editor_flow_test! {
         content "hello\n";
@@ -664,6 +689,25 @@ fn test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow() 
         step "u" => |test| {
             // If replace mode created a no-op undo entry, this would not undo `A!`.
             assert_eq!(test.buffer_content(), "hello\n");
+        }
+    }
+}
+
+#[test]
+fn test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "hello\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello!\n");
+        }
+        step "0RHI<BS><BS><Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hello!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hello\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "hello!\n");
         }
     }
 }
