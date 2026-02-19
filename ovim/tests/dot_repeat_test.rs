@@ -671,6 +671,68 @@ fn test_C_esc_no_insert_undo_redo_isolation_macro_flow() {
     }
 }
 
+#[test]
+fn test_dot_repeat_cc_esc_no_insert_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "alpha\nbeta\ngamma\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha!\nbeta\ngamma\n");
+        }
+        step "0cc<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "\nbeta\ngamma\n");
+        }
+        step "j." => |test| {
+            assert_eq!(test.buffer_content(), "\n\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\nbeta\ngamma\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "\n\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\nbeta\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha!\nbeta\ngamma\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha\nbeta\ngamma\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_C_esc_no_insert_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "alpha one\nbeta two\ngamma three\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha one!\nbeta two\ngamma three\n");
+        }
+        step "0C<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "\nbeta two\ngamma three\n");
+        }
+        step "j0." => |test| {
+            assert_eq!(test.buffer_content(), "\n\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\nbeta two\ngamma three\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "\n\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\nbeta two\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha one!\nbeta two\ngamma three\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha one\nbeta two\ngamma three\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot repeat edge cases
 // ============================================================================

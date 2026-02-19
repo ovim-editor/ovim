@@ -96,7 +96,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for `cw<Esc>` undo+redo isolation after unrelated prior changes.
 - [x] Added macro regression coverage for `cw` dot-repeat (`w.`) undo+redo chain isolation after unrelated prior changes.
 - [x] Added macro regression coverage for `cc`/`C` undo+redo isolation after unrelated prior changes, including no-insert (`cc<Esc>`, `C<Esc>`) paths.
-- [x] Added macro regression coverage for `cc`/`C` dot-repeat chains (`j.` / `j0.`) undo+redo isolation after unrelated prior changes.
+- [x] Added macro regression coverage for `cc`/`C` dot-repeat chains (`j.` / `j0.`), including no-insert (`cc<Esc>`, `C<Esc>`) flows, with undo+redo isolation after unrelated prior changes.
 - [x] `cgn`/`cgN` change setup now uses tokenized `PendingChangeRepeat` (`RepeatAction::DeleteSearchMatch`) instead of pending semantic merge.
 - [x] Legacy insert-exit `PendingSemanticChange` merge branch removed from runtime path.
 - [x] Added macro regression coverage for `cgn<Esc>` undo+redo isolation after unrelated prior changes.
