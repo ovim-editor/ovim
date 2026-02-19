@@ -1591,7 +1591,7 @@ impl Editor {
         (text, reg_type)
     }
 
-    /// Handles a bracketed paste event (cmd-v / ctrl-shift-v in terminal)
+    /// Handles a bracketed paste event (for all supported modes, including chat input).
     pub fn handle_paste_event(&mut self, text: &str) -> Result<()> {
         if text.is_empty() {
             return Ok(());
@@ -1605,6 +1605,17 @@ impl Editor {
                 let position = (cursor.line(), cursor.col());
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
+            }
+            Mode::AiChat => {
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    if matches!(
+                        chat.focus,
+                        crate::ai::chat_types::ChatFocus::TextInput
+                    ) {
+                        chat.input.insert_str(chat.input_cursor, text);
+                        chat.input_cursor += text.len();
+                    }
+                }
             }
             Mode::Normal => {
                 // Set unnamed register and paste after cursor

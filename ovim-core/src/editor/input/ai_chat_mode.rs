@@ -188,6 +188,15 @@ fn handle_escape(editor: &mut Editor, focus: ChatFocus) -> Result<()> {
 
 fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
+        KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL)
+            || key_event.modifiers.contains(Modifiers::SUPER) =>
+        {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                let pasted = editor.registers.get_clipboard();
+                chat.input.insert_str(chat.input_cursor, &pasted);
+                chat.input_cursor += pasted.len();
+            }
+        }
         KeyCode::Char(ch)
             if !key_event.modifiers.contains(Modifiers::CONTROL)
                 && !key_event.modifiers.contains(Modifiers::ALT) =>
