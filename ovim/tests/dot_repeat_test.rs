@@ -1280,6 +1280,68 @@ fn test_cTX_esc_undo_redo_isolation_macro_flow() {
     }
 }
 
+#[test]
+fn test_dot_repeat_search_and_change_backward_find_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "aXbXcY aXbXcY tail\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
+        }
+        step "0/aXbXcY<Enter>fYcFXhi<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbhi aXbXcY tail!\n");
+        }
+        step "ne." => |test| {
+            assert_eq!(test.buffer_content(), "aXbhi aXbhi tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbhi aXbXcY tail!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbhi aXbhi tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbhi aXbXcY tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_search_and_change_backward_till_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "aXbXcY aXbXcY tail\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
+        }
+        step "0/aXbXcY<Enter>fYcTXhi<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXhi aXbXcY tail!\n");
+        }
+        step "ne." => |test| {
+            assert_eq!(test.buffer_content(), "aXbXhi aXbXhi tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXhi aXbXcY tail!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXhi aXbXhi tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXhi aXbXcY tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with search motions
 // ============================================================================

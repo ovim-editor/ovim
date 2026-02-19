@@ -590,6 +590,32 @@ fn test_dt_undo_redo() {
 }
 
 #[test]
+fn test_dF_undo_redo() {
+    let mut test = EditorTest::new("aXbXcY");
+    test.keys("$dFX");
+    assert_eq!(test.buffer_content(), "aXb\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aXbXcY\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "aXb\n");
+}
+
+#[test]
+fn test_dT_undo_redo() {
+    let mut test = EditorTest::new("aXbXcY");
+    test.keys("$dTX");
+    assert_eq!(test.buffer_content(), "aXbX\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "aXbXcY\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "aXbX\n");
+}
+
+#[test]
 fn test_df_dot_repeat() {
     let mut test = EditorTest::new("a,b,c,d");
     test.keys("df,");

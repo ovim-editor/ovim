@@ -249,9 +249,14 @@ Files:
   - Tightened `test_cc_dot_repeat` from fuzzy/no-panic checks to strict content + undo/redo assertions.
   - Tightened `test_big_c_undo_redo` to require single-step undo/redo roundtrip.
   - Added `test_df_dot_repeat_undo_redo_chain` to verify multi-step undo/redo stability after dot-repeat.
+  - Added `test_dF_undo_redo` and `test_dT_undo_redo` to pin backward char-motion delete semantics.
 
 ### T) Change-find (`cf/ct`) undo/repeat isolation regressions
 Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/repeat_action.rs`
+  - `RepeatAction::Change` now keeps delete-resolved insertion anchor for backward char-motion deletes (`DeleteCharMotion { forward: false, .. }`) instead of restoring pre-delete cursor.
+- `/Users/adrian/Projects/ovim/ovim-core/src/buffer/text_ops.rs`
+  - Fixed backward till-motion delete semantics in `delete_char_motion` (`T` path now deletes from just after target through cursor).
 - `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
   - Added macro regression: `test_cfo_esc_undo_redo_isolation_macro_flow`.
   - Added macro regression: `test_dot_repeat_search_and_change_find_undo_redo_isolation_macro_flow`.
@@ -259,6 +264,9 @@ Files:
   - Added macro regression: `test_dot_repeat_search_and_change_till_undo_redo_isolation_macro_flow`.
   - Added macro regression: `test_cFX_esc_undo_redo_isolation_macro_flow`.
   - Added macro regression: `test_cTX_esc_undo_redo_isolation_macro_flow`.
+  - Added macro regressions:
+    - `test_dot_repeat_search_and_change_backward_find_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_search_and_change_backward_till_undo_redo_isolation_macro_flow`
 
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
@@ -329,6 +337,12 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test test_cFX_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_cTX_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding backward `cF/cT` undo+redo isolation macros)
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_search_and_change_backward_find_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_search_and_change_backward_till_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test undo_repeat_coverage_test test_dF_undo_redo -- --nocapture`
+- `cargo test -p ovim --test undo_repeat_coverage_test test_dT_undo_redo -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after fixing backward `cF/cT` repeat anchor + till semantics)
+- `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (after adding `dF/dT` coverage)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding pending semantic-change path constraints)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 

@@ -65,6 +65,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 
 - [x] `cf/ct` with change operator now uses `PendingChangeRepeat` in `char_motion.rs`.
 - [x] Added macro regression coverage for char-motion changes (`cf`/`ct` + backward `cF`/`cT`) undo+redo isolation, including no-insert `cfo<Esc>`/`ctX<Esc>`/`cFX<Esc>`/`cTX<Esc>` and `/search ... n.` dot-repeat chains.
+- [x] `RepeatAction::Change` replay now preserves delete-resolved insertion point for backward char-motion deletes (`cF`/`cT`) so dot-repeat inserts at the correct anchor.
 - [x] Visual delete undo path uses `record()` + `push_recorded_undo()` in `helpers.rs`.
 - [x] Visual delete dot-repeat now uses `RepeatAction` across char/line/block selections.
 - [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
@@ -110,6 +111,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Insert-exit merge/replay composites now push directly through `ChangeManager::push_change()`; no remaining `add_change` callsites in `insert_mode.rs`.
 - [x] `change.rs` and `repeat_action.rs` architecture docs are synced to current Pattern B ownership (`cw/cgn/cc/C/R/o/O` and related change flows).
 - [x] Legacy `undo_repeat_coverage_test` assumptions for `cc`/`C`/`df` are aligned to migrated semantics with strict undo/redo assertions (no fuzzy Pattern A fallback checks).
+- [x] Added explicit `dF`/`dT` undo+redo coverage in `undo_repeat_coverage_test` to pin backward char-motion delete semantics.
 
 #### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
 

@@ -630,7 +630,14 @@ impl RepeatAction {
                     buffer.cursor_mut().set_position(insert_at, 0);
                 } else if !matches!(
                     delete.as_ref(),
-                    RepeatAction::DeleteTextObject { .. } | RepeatAction::DeleteSearchMatch { .. }
+                    RepeatAction::DeleteTextObject { .. }
+                        | RepeatAction::DeleteSearchMatch { .. }
+                        // Backward char motions (cF/cT) resolve insertion at the
+                        // delete start, not at the original cursor column.
+                        | RepeatAction::DeleteCharMotion {
+                            forward: false,
+                            ..
+                        }
                 ) {
                     // For non-text-object changes (C, s, c$, etc.), preserve
                     // the original insert point even if delete clamped cursor.
