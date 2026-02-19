@@ -63,6 +63,8 @@ Recent undo-migration commits:
 52. `32efb17` - Harden awaiting-char migration with hygiene guard and docs
 53. `30f5ba1` - Migrate visual-block r replace to AwaitingChar state
 54. `aa02bf3` - Allow unnamed global marks and unignore mark regressions
+55. `9c61512` - Document visual-block replace migration and mark un-ignore progress
+56. `b2f7394` - Implement special mark jumps (`\`.\` and `\`^\`) and unignore tests
 
 ## What Landed
 
@@ -339,6 +341,22 @@ Files:
     - `test_mark_at_eof` (cursor assertion aligned to actual end-of-line position)
     - `test_global_mark`
 
+### Z) Special exact-mark support expanded (`\`.\`` and `\`^\``)
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/mark_jump.rs`
+  - Added special-mark handling:
+    - `` `. `` jumps to last change cursor position (cursor-on-char normalization).
+    - `` `^ `` jumps to last insert-exit position (prefers insert change cursor_after when available).
+  - Added linewise delegation for `'.` / `'^` through `jump_to_mark_line`.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/char_motion.rs`
+  - Mark-jump awaiting-char flow now allows special mark chars (`.`/`^` plus `[`/`]` placeholders) instead of only ASCII letters.
+- `/Users/adrian/Projects/ovim/ovim-core/src/change.rs`
+  - Added `Change::cursor_after()` accessor used by special-mark jumps.
+- `/Users/adrian/Projects/ovim/ovim/tests/mark_test.rs`
+  - Un-ignored and passing:
+    - `test_backtick_dot_last_change`
+    - `test_backtick_caret_insert_exit`
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -432,6 +450,8 @@ Files:
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after extending visual-mode pending-command guard)
 - `cargo test -p ovim --test mark_test -- --ignored --nocapture` (baseline for un-ignore phase)
 - `cargo test -p ovim --test mark_test -- --nocapture` (after un-ignoring stable mark subset)
+- `cargo test -p ovim --test input_state_machine_test -- --nocapture` (after special-mark awaiting-char expansion)
+- `cargo test -p ovim --test mark_test -- --nocapture` (after enabling `\`.\`` and `\`^\``)
 
 ## Current Workspace Safety Notes
 No unrelated dirty files were present while landing slices U/W in this handoff.
