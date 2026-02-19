@@ -68,6 +68,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Visual delete dot-repeat now uses `RepeatAction` across char/line/block selections.
 - [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
 - [x] Added macro regression coverage for `o<Esc>`/`O<Esc>` undo+redo isolation after unrelated prior changes.
+- [x] Added macro regression coverage for dot-repeat of `o<Esc>`/`O<Esc>` (`j.`) undo+redo chain isolation.
 - [x] LSP/workspace text edits now record undo entries per edited buffer (current + non-current) without polluting dot-repeat templates.
 - [x] Visual block change dot-repeat (`Ctrl-V ... c ... .`) now uses semantic repeat geometry with active regression coverage.
 - [x] LSP workspace `ResourceOp` (create/rename/delete) now snapshots filesystem state and integrates with undo/redo.
