@@ -1052,6 +1052,37 @@ fn test_cgn_dot_repeat() {
 }
 
 #[test]
+fn test_dot_repeat_cgn_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "foo bar foo baz foo\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "foo bar foo baz foo!\n");
+        }
+        step "0/foo<Enter>cgnFOO<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "FOO bar foo baz foo!\n");
+        }
+        step "n." => |test| {
+            assert_eq!(test.buffer_content(), "FOO bar FOO baz foo!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "FOO bar foo baz foo!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "FOO bar FOO baz foo!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "FOO bar foo baz foo!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "foo bar foo baz foo!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "foo bar foo baz foo\n");
+        }
+    }
+}
+
+#[test]
 fn test_cgn_esc_undo_does_not_consume_prior_change_macro_flow() {
     editor_flow_test! {
         content "foo bar foo\n";

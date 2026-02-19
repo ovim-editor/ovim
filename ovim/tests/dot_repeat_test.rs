@@ -460,6 +460,37 @@ fn test_dot_repeat_cw_semantic_undo_granularity_macro_flow() {
 }
 
 #[test]
+fn test_dot_repeat_cw_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "short longerword tail\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "short longerword tail!\n");
+        }
+        step "0cwX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword tail!\n");
+        }
+        step "w." => |test| {
+            assert_eq!(test.buffer_content(), "X X tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword tail!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "X X tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "X longerword tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "short longerword tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "short longerword tail\n");
+        }
+    }
+}
+
+#[test]
 fn test_cw_esc_undo_does_not_consume_prior_change_macro_flow() {
     editor_flow_test! {
         content "alpha beta\n";

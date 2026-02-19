@@ -144,6 +144,7 @@ Files:
   - Added macro regression: `test_dot_repeat_cw_semantic_undo_granularity_macro_flow`.
   - Added macro regression: `test_cw_esc_undo_does_not_consume_prior_change_macro_flow`.
   - Added macro regression: `test_cw_esc_undo_redo_isolation_macro_flow`.
+  - Added macro regression: `test_dot_repeat_cw_undo_redo_isolation_macro_flow`.
 
 ### L) `cgn/cgN` migration off pending semantic merge
 Files:
@@ -157,6 +158,7 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/visual_mode_test.rs`
   - Added macro regression: `test_cgn_esc_undo_does_not_consume_prior_change_macro_flow`.
   - Added macro regression: `test_cgn_esc_undo_redo_isolation_macro_flow`.
+  - Added macro regression: `test_dot_repeat_cgn_undo_redo_isolation_macro_flow`.
 
 ### M) Replace-mode (`R`) migration off semantic add_change
 Files:
@@ -254,6 +256,10 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_o_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_repeat_uppercase_o_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding dot-repeat `o/O` undo+redo isolation macros)
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_cw_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test visual_mode_test test_dot_repeat_cgn_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding dot-repeat `cw` undo+redo chain isolation macro)
+- `cargo test -p ovim --test visual_mode_test -- --nocapture` (after adding dot-repeat `cgn` undo+redo chain isolation macro)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
