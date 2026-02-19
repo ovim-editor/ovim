@@ -907,6 +907,44 @@ fn test_dot_repeat_o_esc_no_text() {
 }
 
 #[test]
+fn test_o_esc_undo_does_not_consume_prior_change_macro_flow() {
+    editor_flow_test! {
+        content "one\ntwo\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\n");
+        }
+        step "o<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\n\ntwo\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one\ntwo\n");
+        }
+    }
+}
+
+#[test]
+fn test_uppercase_o_esc_undo_does_not_consume_prior_change_macro_flow() {
+    editor_flow_test! {
+        content "one\ntwo\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\n");
+        }
+        step "O<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "\none!\ntwo\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one\ntwo\n");
+        }
+    }
+}
+
+#[test]
 fn test_dot_repeat_o_uses_current_line_indent() {
     // Dot-repeat of 'o' should use the CURRENT line's indent, not the
     // indent from the original 'o' command.

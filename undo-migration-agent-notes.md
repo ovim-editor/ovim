@@ -159,6 +159,13 @@ Files:
     - `test_dot_repeat_R_semantic_undo_granularity_macro_flow`
     - `test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow`
 
+### O) Open-line undo isolation regressions (`o` / `O`)
+Files:
+- `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
+  - Added macro regressions:
+    - `test_o_esc_undo_does_not_consume_prior_change_macro_flow`
+    - `test_uppercase_o_esc_undo_does_not_consume_prior_change_macro_flow`
+
 ### N) Insert-mode finalization callsite cleanup
 Files:
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/insert_mode.rs`
@@ -190,6 +197,7 @@ Files:
 - `cargo test -p ovim --test visual_mode_test -- --nocapture`
 - `cargo test -p ovim --test replace_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding open-line undo isolation macros)
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
