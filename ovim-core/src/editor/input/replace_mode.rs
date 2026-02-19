@@ -5,6 +5,7 @@
 use super::helpers;
 use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
+use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -17,30 +18,24 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             let cursor_col = editor.buffer().cursor().col();
             editor.editing.last_insert_position = Some((cursor_line, cursor_col));
 
-            // Create ReplaceMode change for dot-repeat
+            // Finalize replace-mode undo and semantic repeat payload.
             if let Some(state) = editor.editing.replace_mode_state.take() {
                 if !state.replacements.is_empty() {
-                    let cursor_after = (cursor_line, cursor_col);
-                    let replacement_len = state.replacements.chars().count();
-                    let old_range = Range::new(
-                        state.start_position,
-                        (
-                            state.start_position.0,
-                            state.start_position.1 + replacement_len,
-                        ),
-                    );
-                    let change = Change::replace_mode(
-                        state.replacements,
-                        state.start_position,
-                        cursor_after,
-                        state.old_text,
-                        old_range,
-                    );
-                    editor.add_change(change);
+                    editor.finalize_change_building();
+                    editor
+                        .registers
+                        .set_last_inserted(state.replacements.clone());
+                    editor.set_repeat_action(RepeatAction::ReplaceMode {
+                        replacements: state.replacements,
+                    });
+                } else {
+                    // Typed/backspaced back to original: discard accumulated no-op edits.
+                    editor.buffer_mut().change_manager_mut().current_builder = None;
                 }
+            } else {
+                editor.buffer_mut().change_manager_mut().current_builder = None;
             }
 
-            editor.update_last_inserted_register();
             editor.mark_buffer_modified();
 
             // Move cursor left one position (unless at column 0)
@@ -62,17 +57,19 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                 if col < chars.len() {
                     // Track the original character for undo
                     let old_char = chars[col];
-                    let version_before = editor.buffer().version();
+                    let cursor_before = (line_idx, col);
+                    let delete_change = Change::delete(
+                        Range::new((line_idx, col), (line_idx, col + 1)),
+                        old_char.to_string(),
+                        cursor_before,
+                    );
+                    if !editor.apply_change_and_record(delete_change) {
+                        return Ok(());
+                    }
 
-                    // Delete character under cursor
-                    editor
-                        .buffer_mut()
-                        .delete_range(line_idx, col, line_idx, col + 1);
-
-                    // Insert new character
                     let new_char = c.to_string();
-                    editor.buffer_mut().insert_text_at(line_idx, col, &new_char);
-                    if editor.buffer().version() == version_before {
+                    let insert_change = Change::insert((line_idx, col), new_char, cursor_before);
+                    if !editor.apply_change_and_record(insert_change) {
                         return Ok(());
                     }
 
@@ -81,14 +78,12 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                         state.replacements.push(c);
                         state.old_text.push(old_char);
                     }
-
-                    // Move cursor forward
-                    editor.buffer_mut().cursor_mut().move_right(1);
                 } else {
                     // At end of line, just insert (like append)
-                    let version_before = editor.buffer().version();
-                    helpers::insert_char(editor, c)?;
-                    if editor.buffer().version() == version_before {
+                    let cursor_before = (line_idx, col);
+                    let insert_change =
+                        Change::insert((line_idx, col), c.to_string(), cursor_before);
+                    if !editor.apply_change_and_record(insert_change) {
                         return Ok(());
                     }
                     // Also track for dot-repeat
@@ -117,37 +112,45 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     && !state.replacements.is_empty()
                 {
                     // Pop the last replacement
-                    state.replacements.pop();
+                    let replaced_char = state.replacements.pop().unwrap();
 
                     // If there's an old character to restore, restore it
                     if let Some(old_char) = state.old_text.pop() {
                         let restore_col = cursor_col - 1;
-                        // Delete the current character at restore position
-                        editor.buffer_mut().delete_range(
-                            cursor_line,
-                            restore_col,
-                            cursor_line,
-                            restore_col + 1,
+                        let cursor_before = (cursor_line, restore_col);
+                        let delete_change = Change::delete(
+                            Range::new((cursor_line, restore_col), (cursor_line, restore_col + 1)),
+                            replaced_char.to_string(),
+                            cursor_before,
                         );
-                        // Insert the original character
-                        editor.buffer_mut().insert_text_at(
-                            cursor_line,
-                            restore_col,
-                            &old_char.to_string(),
+                        if !editor.apply_change_and_record(delete_change) {
+                            return Ok(());
+                        }
+
+                        let insert_change = Change::insert(
+                            (cursor_line, restore_col),
+                            old_char.to_string(),
+                            cursor_before,
                         );
+                        if !editor.apply_change_and_record(insert_change) {
+                            return Ok(());
+                        }
+
+                        // Change::insert leaves cursor after inserted char; move back one.
+                        editor.buffer_mut().cursor_mut().move_left(1);
                     } else {
                         // No old_text means this was an insertion at end of line, delete it
                         let delete_col = cursor_col - 1;
-                        editor.buffer_mut().delete_range(
-                            cursor_line,
-                            delete_col,
-                            cursor_line,
-                            delete_col + 1,
+                        let cursor_before = (cursor_line, delete_col);
+                        let delete_change = Change::delete(
+                            Range::new((cursor_line, delete_col), (cursor_line, delete_col + 1)),
+                            replaced_char.to_string(),
+                            cursor_before,
                         );
+                        if !editor.apply_change_and_record(delete_change) {
+                            return Ok(());
+                        }
                     }
-
-                    // Move cursor left
-                    editor.buffer_mut().cursor_mut().move_left(1);
                 } else if cursor_col > 0 {
                     // We're before the start position or no replacements, just move left
                     editor.buffer_mut().cursor_mut().move_left(1);

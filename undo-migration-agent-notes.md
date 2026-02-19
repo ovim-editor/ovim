@@ -3,7 +3,7 @@
 ## Context
 Undo/repeat migration work was continued on `main` and committed in scoped slices.
 Recent slices removed all `add_change` callsites from `input/commands.rs` and migrated text-object case operators to semantic `RepeatAction`.
-`PRIORITIES.md` now reports 8 `add_change` callsites in `ovim-core/src` (insert-mode semantic/infrastructure + replace + internals), and visual-block `c` merge now redeems delete undo by token.
+`PRIORITIES.md` now reports 7 `add_change` callsites in `ovim-core/src` (insert-mode semantic/infrastructure + internals), and visual-block `c` merge now redeems delete undo by token.
 
 ## Branch + Commits
 Current branch: `main`
@@ -27,6 +27,7 @@ Recent undo-migration commits:
 16. `bace2ba` - Token-harden visual-block change undo merge
 17. `423d936` - Migrate cw change path to tokenized repeat flow
 18. `a32732d` - Migrate cgn change flow off pending semantic merge
+19. This slice - Migrate replace-mode `R` off semantic add_change path
 
 ## What Landed
 
@@ -77,7 +78,7 @@ Files:
 ### F) Plan docs updated
 File:
 - `/Users/adrian/Projects/ovim/PRIORITIES.md`
-  - `add_change` snapshot was reduced from 14 and is now 8 in `ovim-core/src`.
+  - `add_change` snapshot was reduced from 14 and is now 7 in `ovim-core/src`.
   - Added notes for command-mode migration slices and new macro regressions.
 
 ### G) Text-object case operators migrated
@@ -107,7 +108,7 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/ctrl_commands_test.rs`
   - Added macro undo/redo flow coverage for `Ctrl-W/U/T/D` insert-mode behavior.
 - `/Users/adrian/Projects/ovim/PRIORITIES.md`
-  - Remaining `add_change` snapshot updated to 10 in that slice (currently 8).
+  - Remaining `add_change` snapshot updated to 10 in that slice (currently 7).
 
 ### J) Visual-block change merge token hardening
 Files:
@@ -143,6 +144,20 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/insert_mode.rs`
   - Removed runtime `PendingSemanticChange` merge branch; insert-exit now uses tokenized pending-change path only and clears stale semantic state defensively.
 
+### M) Replace-mode (`R`) migration off semantic add_change
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/normal/mode_transitions.rs`
+  - Entering `R` now starts replace-mode change building at cursor.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/replace_mode.rs`
+  - Replace typing/backspace mutations now use `apply_change_and_record()` into replace-mode builder.
+  - On `<Esc>`, non-empty replace sessions finalize recorded undo and set `RepeatAction::ReplaceMode`; empty backspaced sessions discard builder.
+- `/Users/adrian/Projects/ovim/ovim-core/src/repeat_action.rs`
+  - Added `RepeatAction::ReplaceMode { replacements }`.
+- `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
+  - Added macro regressions:
+    - `test_dot_repeat_R_semantic_undo_granularity_macro_flow`
+    - `test_replace_mode_backspace_to_empty_does_not_create_undo_entry_macro_flow`
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -166,10 +181,12 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture`
 - `cargo test -p ovim --test change_operations_test -- --nocapture`
 - `cargo test -p ovim --test visual_mode_test -- --nocapture`
+- `cargo test -p ovim --test replace_mode_test -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.
 Observed modified files include:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/ai_chat_tools.rs`
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/ai_integration.rs`
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/lsp_integration.rs`
 - `/Users/adrian/Projects/ovim/ovim-core/src/editor/lsp_modules/workspace_edits.rs`
@@ -183,5 +200,5 @@ Observed modified files include:
 
 ## Suggested Continuation
 If continuing migration work, likely next slice is:
-1. Evaluate whether the remaining `input/insert_mode.rs` and `input/replace_mode.rs` semantic `add_change` sites can be moved to recorded undo representation without regressing repeat semantics.
+1. Evaluate whether the remaining `input/insert_mode.rs` semantic `add_change` sites can be moved to recorded undo representation without regressing repeat semantics.
 2. Keep commits path-scoped and avoid touching dirty AI files listed above.
