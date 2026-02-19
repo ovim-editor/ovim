@@ -71,7 +71,7 @@ fn test_add_change_callsites_are_infrastructure_only() {
 }
 
 #[test]
-fn test_pending_semantic_change_runtime_paths_are_constrained() {
+fn test_pending_semantic_change_apis_are_removed() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("ovim crate should live under repo root");
@@ -80,8 +80,7 @@ fn test_pending_semantic_change_runtime_paths_are_constrained() {
     let mut files = Vec::new();
     collect_rs_files(&core_src, &mut files);
 
-    let mut set_hits = Vec::new();
-    let mut take_hits = Vec::new();
+    let mut legacy_hits = Vec::new();
 
     for path in files {
         let Ok(content) = fs::read_to_string(&path) else {
@@ -94,40 +93,19 @@ fn test_pending_semantic_change_runtime_paths_are_constrained() {
             .replace('\\', "/");
 
         for (line_number, line) in content.lines().enumerate() {
-            if line.contains("set_pending_semantic_change(") {
-                set_hits.push(format!("{}:{}", relative, line_number + 1));
-            }
-            if line.contains("take_pending_semantic_change(") {
-                take_hits.push(format!("{}:{}", relative, line_number + 1));
+            if line.contains("set_pending_semantic_change(")
+                || line.contains("take_pending_semantic_change(")
+                || line.contains("pending_semantic_change")
+                || line.contains("PendingSemanticChange")
+            {
+                legacy_hits.push(format!("{}:{}", relative, line_number + 1));
             }
         }
     }
 
-    assert_eq!(
-        set_hits.len(),
-        1,
-        "Expected exactly one set_pending_semantic_change site (definition only), found:\n{}",
-        set_hits.join("\n")
-    );
     assert!(
-        set_hits[0].starts_with("ovim-core/src/editor/mod.rs:"),
-        "set_pending_semantic_change should only be defined in editor/mod.rs, found:\n{}",
-        set_hits.join("\n")
+        legacy_hits.is_empty(),
+        "Legacy pending semantic-change APIs/state should be removed, found:\n{}",
+        legacy_hits.join("\n")
     );
-
-    assert_eq!(
-        take_hits.len(),
-        2,
-        "Expected exactly two take_pending_semantic_change sites (definition + insert-mode clear), found:\n{}",
-        take_hits.join("\n")
-    );
-    for hit in &take_hits {
-        let allowed = hit.starts_with("ovim-core/src/editor/mod.rs:")
-            || hit.starts_with("ovim-core/src/editor/input/insert_mode.rs:");
-        assert!(
-            allowed,
-            "Unexpected take_pending_semantic_change callsite: {}",
-            hit
-        );
-    }
 }

@@ -341,27 +341,6 @@ pub struct ReplaceModeState {
     pub old_text: String,
 }
 
-/// Tracks a pending semantic change operation
-#[derive(Clone, Debug)]
-pub struct PendingSemanticChange {
-    /// The type of text object being changed
-    pub object_type: Option<TextObjectType>,
-    /// True if this is a word change (cw)
-    pub is_word_change: bool,
-    /// True if this is a search match change (cgn)
-    pub is_search_match_change: bool,
-    /// Search pattern for cgn repeat
-    pub search_pattern: Option<String>,
-    /// Search direction for cgn repeat
-    pub search_forward: Option<bool>,
-    /// The original text that was deleted
-    pub old_text: String,
-    /// The original range of the deletion
-    pub old_range: Range,
-    /// Cursor position before the change
-    pub cursor_before: Position,
-}
-
 /// Cached preview data for the picker
 #[derive(Clone)]
 pub struct PreviewCache {
@@ -1692,16 +1671,6 @@ impl Editor {
         self.buffer_mut()
             .change_manager_mut()
             .finalize_building_at(cursor_pos);
-    }
-
-    /// Sets a pending semantic change operation
-    pub fn set_pending_semantic_change(&mut self, pending: PendingSemanticChange) {
-        self.editing.pending_semantic_change = Some(pending);
-    }
-
-    /// Takes and clears the pending semantic change operation
-    pub fn take_pending_semantic_change(&mut self) -> Option<PendingSemanticChange> {
-        self.editing.pending_semantic_change.take()
     }
 
     /// Sets a pending change repeat (for cc, C, s, cj, etc. dot-repeat)

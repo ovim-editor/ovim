@@ -1,4 +1,4 @@
-use super::{PendingSemanticChange, ReplaceModeState};
+use super::ReplaceModeState;
 use crate::change::ChangeToken;
 use crate::repeat_action::RepeatAction;
 
@@ -19,11 +19,7 @@ pub struct PendingChangeRepeat {
 pub struct EditingState {
     /// Last insert position (line, col) for gi command
     pub last_insert_position: Option<(usize, usize)>,
-    /// Pending semantic change operation (for ci", cw, etc.)
-    /// When Some, insert mode exit will create a semantic change instead of composite
-    pub pending_semantic_change: Option<PendingSemanticChange>,
-    /// Pending change repeat — describes the delete phase for dot-repeat (cc, C, s, etc.)
-    /// Mutually exclusive with pending_semantic_change.
+    /// Pending change repeat — describes the delete phase for dot-repeat (cc, C, s, etc.).
     pub pending_change_repeat: Option<PendingChangeRepeat>,
     /// Pending visual-block change repeat payload: (line_count, width).
     /// Set for `Ctrl-V ... c ...` and consumed when insert mode exits.
@@ -50,7 +46,6 @@ impl Default for EditingState {
     fn default() -> Self {
         Self {
             last_insert_position: None,
-            pending_semantic_change: None,
             pending_change_repeat: None,
             pending_visual_block_change_repeat: None,
             pending_visual_block_change_delete_token: None,
