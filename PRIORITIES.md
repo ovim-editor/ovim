@@ -95,12 +95,12 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Legacy insert-exit `PendingSemanticChange` merge branch removed from runtime path.
 - [x] Replace mode (`R`) now records session edits via replace-mode change builder + `finalize_change_building()`, then sets semantic `RepeatAction::ReplaceMode`.
 - [x] Added macro regression coverage for `R` dot-repeat undo granularity and replace-mode no-op backspace undo isolation.
+- [x] Insert-exit merge/replay composites now push directly through `ChangeManager::push_change()`; no remaining `add_change` callsites in `insert_mode.rs`.
 
-#### Remaining `add_change` callsites (current snapshot: 7 in `ovim-core/src`)
+#### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
 
 | Area | Count | Notes |
 |------|-------|-------|
-| `input/insert_mode.rs` | 2 | Core insert-mode batching/finalization for change-operator and visual-block multi-line replay |
 | `editor/mod.rs` | 3 | Infrastructure (`apply_change_and_record`, wrapper methods) |
 | `change.rs` | 2 | ChangeManager internals (`add_change` implementation/docs) |
 

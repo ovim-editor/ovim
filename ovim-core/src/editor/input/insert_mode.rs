@@ -114,7 +114,10 @@ fn exit_insert_mode(editor: &mut Editor) {
             merged.push(i);
         }
         if !merged.is_empty() {
-            editor.add_change(Change::composite(merged, cursor_before, cursor_after));
+            editor
+                .buffer_mut()
+                .change_manager_mut()
+                .push_change(Change::composite(merged, cursor_before, cursor_after));
         }
 
         // Set semantic repeat action
@@ -260,7 +263,10 @@ fn exit_insert_mode(editor: &mut Editor) {
                 } else {
                     insert_composite
                 };
-                editor.add_change(final_change);
+                editor
+                    .buffer_mut()
+                    .change_manager_mut()
+                    .push_change(final_change);
             }
         }
 
