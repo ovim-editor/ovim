@@ -229,6 +229,9 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
   - Added regression to fail if `add_change(...)` appears in `ovim-core/src` outside infrastructure files (`change.rs`, `editor/mod.rs`).
   - Added callsite cap assertion (`<= 5`) to catch infrastructure-side regression growth.
+  - Added regression to constrain pending semantic-change runtime paths:
+    - `set_pending_semantic_change(...)` appears only in definition site (`editor/mod.rs`).
+    - `take_pending_semantic_change(...)` appears only in definition + insert-exit clear path (`insert_mode.rs`).
 
 ### R) Architecture docs synced with migrated boundaries
 Files:
@@ -324,6 +327,7 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test test_cFX_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_cTX_esc_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding backward `cF/cT` undo+redo isolation macros)
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding pending semantic-change path constraints)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes
