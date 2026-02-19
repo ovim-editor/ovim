@@ -34,8 +34,10 @@ impl CaseTransform {
 /// captures only the intent needed to re-execute an operation at the
 /// current cursor position. Undo is handled separately via `Change::Recorded`.
 ///
-/// Use Pattern B for normal-mode-only operations where repeat is
-/// position-independent and no insert-mode entry is needed.
+/// Use Pattern B for operations where repeat should be semantic at the
+/// current cursor position. This includes both normal-mode-only edits and
+/// change/open/replace flows that pass through insert mode before finalizing
+/// a repeat intent.
 /// See the module doc in `change.rs` for the full boundary guide.
 #[derive(Clone, Debug)]
 pub enum RepeatAction {
