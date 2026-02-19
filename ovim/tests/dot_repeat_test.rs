@@ -528,6 +528,56 @@ fn test_C_esc_undo_redo_isolation_macro_flow() {
     }
 }
 
+#[test]
+fn test_cc_esc_no_insert_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "alpha beta\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "0cc<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta\n");
+        }
+    }
+}
+
+#[test]
+fn test_C_esc_no_insert_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "alpha beta\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "0C<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "alpha beta\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot repeat edge cases
 // ============================================================================

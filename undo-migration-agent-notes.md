@@ -184,6 +184,8 @@ Files:
   - Added macro regressions:
     - `test_cc_esc_undo_redo_isolation_macro_flow`
     - `test_C_esc_undo_redo_isolation_macro_flow`
+    - `test_cc_esc_no_insert_undo_redo_isolation_macro_flow`
+    - `test_C_esc_no_insert_undo_redo_isolation_macro_flow`
 
 ### N) Insert-mode finalization callsite cleanup
 Files:
@@ -231,6 +233,7 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test test_replace_mode_backspace_to_empty_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test esc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test no_insert_undo_redo_isolation_macro_flow -- --nocapture`
 
 ## Current Workspace Safety Notes
 There are unrelated in-progress edits from another agent. Do not revert them.

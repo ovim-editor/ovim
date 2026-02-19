@@ -93,7 +93,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] `cw` delete phase now uses recorded undo + tokenized `PendingChangeRepeat` (`RepeatAction::DeleteWordChange`) instead of pending semantic merge.
 - [x] Added macro regression coverage for `cw` semantic dot-repeat + undo granularity.
 - [x] Added macro regression coverage for `cw<Esc>` undo+redo isolation after unrelated prior changes.
-- [x] Added macro regression coverage for `cc<Esc>`/`C<Esc>` undo+redo isolation after unrelated prior changes.
+- [x] Added macro regression coverage for `cc`/`C` undo+redo isolation after unrelated prior changes, including no-insert (`cc<Esc>`, `C<Esc>`) paths.
 - [x] `cgn`/`cgN` change setup now uses tokenized `PendingChangeRepeat` (`RepeatAction::DeleteSearchMatch`) instead of pending semantic merge.
 - [x] Legacy insert-exit `PendingSemanticChange` merge branch removed from runtime path.
 - [x] Added macro regression coverage for `cgn<Esc>` undo+redo isolation after unrelated prior changes.
