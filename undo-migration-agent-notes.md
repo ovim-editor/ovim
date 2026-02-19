@@ -60,6 +60,9 @@ Recent undo-migration commits:
 49. `a39ad4e` - Migrate r/m/mark-jump char commands to AwaitingChar state
 50. `d6000a9` - Record dot-repeat edits in changelist via shared undo path
 51. `850f372` - Centralize non-repeat undo stack pushes in change manager
+52. `32efb17` - Harden awaiting-char migration with hygiene guard and docs
+53. `30f5ba1` - Migrate visual-block r replace to AwaitingChar state
+54. `aa02bf3` - Allow unnamed global marks and unignore mark regressions
 
 ## What Landed
 
@@ -308,6 +311,34 @@ Files:
 - `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
   - Added `test_char_awaiting_commands_stay_on_input_state_path` to prevent fallback regressions back to pending-command setup for `r/m/'/\``.
 
+### X) Visual-block `r{char}` migrated off pending-command fallback
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/visual_mode.rs`
+  - Visual-block `r` now enters `InputState::AwaitingChar { motion: Replace }`.
+  - Removed legacy pending-command replace arm (`('r', KeyCode::Char(..))`).
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/input/char_motion.rs`
+  - `CharMotion::Replace` now handles visual-block selection replacement via `replace_visual_selection(...)` + visual-mode exit.
+- `/Users/adrian/Projects/ovim/ovim/tests/visual_block_mode_test.rs`
+  - Added regressions:
+    - `test_ctrl_v_replace_escape_cancels_pending_char_macro_flow`
+    - `test_ctrl_v_replace_after_cancel_still_replaces_block_macro_flow`
+- `/Users/adrian/Projects/ovim/ovim/tests/undo_migration_hygiene_test.rs`
+  - Extended awaiting-char hygiene guard to fail if `visual_mode.rs` reintroduces `set_pending_command('r')` or a pending-command replace arm.
+
+### Y) Mark-system un-ignore progress (stable subset)
+Files:
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/marks.rs`
+  - Global marks now allow unnamed buffers by storing optional mark path (`Option<String>`) instead of hard-requiring file path.
+- `/Users/adrian/Projects/ovim/ovim-core/src/editor/mark_jump.rs`
+  - Global-mark jumps only trigger file load when mark carries a concrete path; unnamed global marks resolve in current buffer.
+- `/Users/adrian/Projects/ovim/ovim-core/src/commands.rs`
+  - `:marks` output now formats unnamed global marks as `[No Name]`.
+- `/Users/adrian/Projects/ovim/ovim/tests/mark_test.rs`
+  - Un-ignored and passing:
+    - `test_backtick_exact_position`
+    - `test_mark_at_eof` (cursor assertion aligned to actual end-of-line position)
+    - `test_global_mark`
+
 ## Tests Run (Passing)
 - `cargo test -p ovim --test visual_block_mode_test -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test test_dot_after_visual_delete_macro_flow -- --nocapture`
@@ -396,6 +427,11 @@ Files:
 - `cargo test -p ovim --test lsp_document_sync_undo_test -- --nocapture` (after non-repeat push centralization)
 - `cargo test -p ovim --test undo_repeat_coverage_test -- --nocapture` (after non-repeat push centralization)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after awaiting-char hygiene guard)
+- `cargo test -p ovim --test visual_block_mode_test -- --nocapture` (after visual-block `r` awaiting-char migration)
+- `cargo test -p ovim --test visual_mode_test -- --nocapture` (visual-mode regression sweep after visual-block `r` migration)
+- `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after extending visual-mode pending-command guard)
+- `cargo test -p ovim --test mark_test -- --ignored --nocapture` (baseline for un-ignore phase)
+- `cargo test -p ovim --test mark_test -- --nocapture` (after un-ignoring stable mark subset)
 
 ## Current Workspace Safety Notes
 No unrelated dirty files were present while landing slices U/W in this handoff.

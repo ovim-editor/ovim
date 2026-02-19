@@ -117,6 +117,9 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added changelist regressions proving `g;`/`g,` traverse repeat entries created by both RepeatAction and Change-based `.` replay paths.
 - [x] Added `ChangeManager::push_undo_change_preserving_repeat()` and migrated non-repeat undo callsites (`push_recorded_undo`, background LSP edits, resource-op undo) to one shared stack-update path.
 - [x] Added hygiene guard that fails if normal-mode `r/m/'/\`` regress to `pending_command` setup or legacy first-key arms in `pending_commands.rs`.
+- [x] Visual-block `r{char}` now uses `InputState::AwaitingChar::Replace`; legacy pending-command replace arm removed from `visual_mode.rs`.
+- [x] Added visual-block replace cancellation regressions (`r<Esc>` stays in visual block, retry path still replaces) plus hygiene guard preventing `visual_mode.rs` fallback to `pending_command('r')`.
+- [x] Un-ignored stable mark regressions (`test_backtick_exact_position`, `test_mark_at_eof`, `test_global_mark`) after tightening global-mark behavior for unnamed buffers.
 
 #### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
 
