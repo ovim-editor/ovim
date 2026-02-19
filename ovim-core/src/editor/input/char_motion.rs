@@ -1,8 +1,8 @@
-//! Character motion handler for f, t, F, T motions.
+//! Character motion handler for f/t/F/T and other awaiting-char commands.
 //!
 //! This module handles the AwaitingChar input state, processing the target
 //! character for find/till motions. It also handles operator combinations
-//! like df, dt, cf, ct.
+//! like df, dt, cf, ct, plus r/m/'/` commands.
 
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
@@ -49,14 +49,10 @@ pub fn handle_char_motion(
         CharMotion::Till => handle_till_forward(editor, target, count, operator),
         CharMotion::FindBack => handle_find_backward(editor, target, count, operator),
         CharMotion::TillBack => handle_till_backward(editor, target, count, operator),
-        // Mark and replace operations - delegate to legacy handler for now
-        CharMotion::Replace
-        | CharMotion::Mark
-        | CharMotion::JumpMarkLine
-        | CharMotion::JumpMarkExact => {
-            // These will be handled by the legacy pending_command system for now
-            // TODO: Migrate these to new state machine
-        }
+        CharMotion::Replace => handle_replace_char(editor, target, count),
+        CharMotion::Mark => handle_set_mark(editor, target),
+        CharMotion::JumpMarkLine => handle_jump_mark_line(editor, target),
+        CharMotion::JumpMarkExact => handle_jump_mark_exact(editor, target),
     }
 
     // Clear state
@@ -65,6 +61,43 @@ pub fn handle_char_motion(
     editor.clear_count();
 
     Ok(())
+}
+
+fn handle_replace_char(editor: &mut Editor, target: char, count: usize) {
+    editor.record_operation(
+        |buf| buf.replace_chars_at_cursor(target, count),
+        Some(RepeatAction::ReplaceChar { ch: target, count }),
+    );
+}
+
+fn handle_set_mark(editor: &mut Editor, target: char) {
+    if target.is_ascii_lowercase() || target.is_ascii_uppercase() {
+        editor.set_mark(target);
+    }
+}
+
+fn handle_jump_mark_line(editor: &mut Editor, target: char) {
+    if target == '\'' {
+        editor.jump_back();
+        return;
+    }
+
+    if target.is_ascii_lowercase() || target.is_ascii_uppercase() {
+        editor.add_jump();
+        editor.jump_to_mark_line(target);
+    }
+}
+
+fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
+    if target == '`' {
+        editor.jump_back();
+        return;
+    }
+
+    if target.is_ascii_lowercase() || target.is_ascii_uppercase() {
+        editor.add_jump();
+        editor.jump_to_mark(target);
+    }
 }
 
 /// Handles `f{char}` - find character forward
