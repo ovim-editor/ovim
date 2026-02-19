@@ -56,6 +56,7 @@ Recent undo-migration commits:
 45. `d849915` - Constrain pending semantic-change runtime paths via hygiene test
 46. `79e72ee` - Refresh undo migration ledger after hygiene hardening
 47. `1c52b49` - Fix backward char-motion repeat anchor and till semantics
+48. `bcb20cd` - Remove legacy PendingSemanticChange state and API
 
 ## What Landed
 
