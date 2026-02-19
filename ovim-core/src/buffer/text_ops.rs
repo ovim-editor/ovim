@@ -621,9 +621,12 @@ impl Buffer {
         let (start_col, end_col) = if forward {
             let end_excl = if till { found_idx } else { found_idx + 1 };
             (col, end_excl)
+        } else if till {
+            // Backward till-motion (T): delete from just after target through cursor.
+            (found_idx.saturating_add(1), col + 1)
         } else {
-            let end_excl = if till { col } else { col + 1 };
-            (found_idx, end_excl)
+            // Backward find-motion (F): delete from target through cursor.
+            (found_idx, col + 1)
         };
 
         let deleted = self.delete_range(line_idx, start_col, line_idx, end_col);
