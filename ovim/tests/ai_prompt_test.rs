@@ -65,10 +65,10 @@ fn generated_region(
 }
 
 #[test]
-fn test_visual_space_enters_ai_prompt_mode() {
+fn test_visual_space_ai_enters_ai_prompt_mode() {
     let mut test = EditorTest::new("hello world\n");
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
 
     test.assert_mode(Mode::AiPrompt);
     let selection = test
@@ -85,7 +85,7 @@ fn test_visual_space_enters_ai_prompt_mode() {
 fn test_visual_line_ai_selection_keeps_indent_and_trailing_newline() {
     let mut test = EditorTest::new("    one\n    two\nnext\n");
 
-    test.keys("Vj<Space>");
+    test.keys("Vj<Space>ai");
 
     test.assert_mode(Mode::AiPrompt);
     let selection = test
@@ -98,10 +98,27 @@ fn test_visual_line_ai_selection_keeps_indent_and_trailing_newline() {
 }
 
 #[test]
+fn test_visual_space_space_opens_ai_chat_with_selection_context() {
+    let mut test = EditorTest::new("hello world\n");
+
+    test.keys("vll<Space><Space>");
+
+    test.assert_mode(Mode::AiChat);
+    let selection = test
+        .editor
+        .ai_state
+        .active_selection
+        .as_ref()
+        .expect("expected active AI selection");
+    assert_eq!(selection.selected_text, "hel");
+    assert_eq!(test.editor.ai_chat_input(), "");
+}
+
+#[test]
 fn test_ai_prompt_escape_clears_state() {
     let mut test = EditorTest::new("hello world\n");
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.type_text("rewrite it");
     test.press_esc();
 
@@ -114,7 +131,7 @@ fn test_ai_prompt_escape_clears_state() {
 fn test_ai_prompt_arrow_navigation_edits_prompt() {
     let mut test = EditorTest::new("hello world\n");
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.type_text("abc");
     test.press_key(KeyCode::Left);
     test.press('X');
@@ -240,7 +257,7 @@ async fn test_ai_prompt_submit_creates_lock_and_returns_to_normal() {
         .profiles
         .insert("test".to_string(), profile);
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.type_text("replace with short word");
     test.press_enter();
 
@@ -275,7 +292,7 @@ async fn test_ai_prompt_submit_applies_context_budget_trace() {
         .profiles
         .insert("budget".to_string(), profile);
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.type_text("rewrite");
     test.press_enter();
 
@@ -314,7 +331,7 @@ fn test_ai_prompt_keyboard_model_picker_cycles_profiles() {
     test.editor.ai_state.active_profile = "alpha".to_string();
     test.editor.ai_state.edit_format = EditFormat::Json;
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.press_key(KeyCode::Tab);
     assert_eq!(test.editor.ai_state.active_profile, "beta");
     assert_eq!(test.editor.ai_state.edit_format, EditFormat::Codeblock);
@@ -354,7 +371,7 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
     test.editor.ai_state.active_profile = "alpha".to_string();
     test.editor.ai_state.edit_format = EditFormat::Json;
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.editor.ai_state.prompt.model_picker_open = true;
     test.editor.render_cache.ai_prompt_model_hitboxes = vec![
         (
@@ -395,7 +412,7 @@ fn test_ai_prompt_mouse_model_picker_selects_profile() {
 #[test]
 fn test_ai_prompt_mouse_model_picker_trigger_toggles_open_state() {
     let mut test = EditorTest::new("hello world\n");
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.editor.render_cache.ai_prompt_model_trigger_hitbox = Some(Rect {
         x: 10,
         y: 20,
@@ -445,7 +462,7 @@ fn test_ai_prompt_enter_applies_open_picker_selection_instead_of_submitting() {
         .profiles
         .insert("beta".to_string(), beta);
 
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.editor.ai_state.prompt.input = "rewrite".to_string();
     test.editor.ai_state.prompt.cursor = 7;
     test.editor.ai_state.prompt.model_picker_open = true;
@@ -460,7 +477,7 @@ fn test_ai_prompt_enter_applies_open_picker_selection_instead_of_submitting() {
 #[test]
 fn test_ai_prompt_ctrl_m_toggles_picker_and_esc_closes_picker_first() {
     let mut test = EditorTest::new("hello world\n");
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.press_with(KeyCode::Char('m'), Modifiers::CONTROL);
     assert!(test.editor.ai_state.prompt.model_picker_open);
 
@@ -472,7 +489,7 @@ fn test_ai_prompt_ctrl_m_toggles_picker_and_esc_closes_picker_first() {
 #[test]
 fn test_ai_prompt_mouse_click_sets_cursor_on_wrapped_rows() {
     let mut test = EditorTest::new("hello world\n");
-    test.keys("vll<Space>");
+    test.keys("vll<Space>ai");
     test.editor.ai_state.prompt.input = "abcdefghij".to_string();
     test.editor.ai_state.prompt.cursor = 0;
     test.editor.render_cache.ai_prompt_input_rows = vec![
