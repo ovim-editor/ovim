@@ -30,6 +30,7 @@ fn test_add_change_callsites_are_infrastructure_only() {
 
     let allowed_files = ["ovim-core/src/change.rs", "ovim-core/src/editor/mod.rs"];
     let mut violations = Vec::new();
+    let mut total_hits = 0usize;
 
     for path in files {
         let Ok(content) = fs::read_to_string(&path) else {
@@ -45,6 +46,7 @@ fn test_add_change_callsites_are_infrastructure_only() {
             if !line.contains("add_change(") {
                 continue;
             }
+            total_hits += 1;
             if !allowed_files.contains(&relative.as_str()) {
                 violations.push(format!(
                     "{}:{} contains forbidden add_change callsite: {}",
@@ -60,5 +62,10 @@ fn test_add_change_callsites_are_infrastructure_only() {
         violations.is_empty(),
         "Pattern A add_change callsites escaped infrastructure-only files:\n{}",
         violations.join("\n")
+    );
+    assert!(
+        total_hits <= 5,
+        "Expected add_change callsites to stay at or below 5, found {}",
+        total_hits
     );
 }
