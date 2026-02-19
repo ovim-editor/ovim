@@ -1715,10 +1715,7 @@ impl Editor {
     }
 
     /// Sets pending visual-block change repeat payload (line_count, width).
-    pub fn set_pending_visual_block_change_repeat(
-        &mut self,
-        pending: Option<(usize, usize)>,
-    ) {
+    pub fn set_pending_visual_block_change_repeat(&mut self, pending: Option<(usize, usize)>) {
         self.editing.pending_visual_block_change_repeat = pending;
     }
 
