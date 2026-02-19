@@ -108,6 +108,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage ensuring no-op replace sessions (`R...<BS><BS><Esc>`) do not clobber prior dot-repeat templates.
 - [x] Insert-exit merge/replay composites now push directly through `ChangeManager::push_change()`; no remaining `add_change` callsites in `insert_mode.rs`.
 - [x] `change.rs` and `repeat_action.rs` architecture docs are synced to current Pattern B ownership (`cw/cgn/cc/C/R/o/O` and related change flows).
+- [x] Legacy `undo_repeat_coverage_test` assumptions for `cc`/`C`/`df` are aligned to migrated semantics with strict undo/redo assertions (no fuzzy Pattern A fallback checks).
 
 #### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
 

@@ -490,7 +490,7 @@ fn test_paste_line_undo_redo_cycle() {
 }
 
 // ============================================================================
-// cc (change line) — Pattern A, tests undo roundtrip
+// cc (change line) — semantic change repeat coverage
 // ============================================================================
 
 #[test]
@@ -512,22 +512,18 @@ fn test_cc_dot_repeat() {
     test.keys("ccXXX<Esc>");
     assert_eq!(test.buffer_content(), "XXX\nbbb\nccc\n");
 
-    // cc dot-repeat: move to next line and repeat
     test.keys("j.");
-    // Note: cc uses Pattern A (Change-based repeat). The repeat replays
-    // the delete+insert at the new cursor position.
-    let result = test.buffer_content();
-    // Just verify the operation completed without panic and line count is stable
-    assert_eq!(test.editor.buffer().line_count(), 3);
-    assert!(
-        result.contains("XXX"),
-        "Expected at least one XXX line, got: {}",
-        result
-    );
+    assert_eq!(test.buffer_content(), "XXX\nXXX\nccc\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "XXX\nbbb\nccc\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "XXX\nXXX\nccc\n");
 }
 
 // ============================================================================
-// C (change to end of line) — Pattern A, tests undo roundtrip
+// C (change to end of line) — semantic change repeat coverage
 // ============================================================================
 
 #[test]
@@ -536,15 +532,11 @@ fn test_big_c_undo_redo() {
     test.keys("wCnew<Esc>");
     assert_eq!(test.buffer_content(), "hello new\n");
 
-    // C uses Pattern A. Undo may require two presses (delete and insert
-    // are separate undo entries in the current implementation).
     test.keys("u");
-    let after_first_undo = test.buffer_content();
-    if after_first_undo != "hello world\n" {
-        // First undo only reverted the insert — try second undo for the delete
-        test.keys("u");
-    }
     assert_eq!(test.buffer_content(), "hello world\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "hello new\n");
 }
 
 // ============================================================================
@@ -568,7 +560,7 @@ fn test_x_dot_repeat_undo_chain() {
 }
 
 // ============================================================================
-// df, dt (char motion deletes) — still Pattern A
+// df, dt (char motion deletes) — semantic repeat coverage
 // ============================================================================
 
 #[test]
@@ -608,6 +600,25 @@ fn test_df_dot_repeat() {
 
     test.keys(".");
     assert_eq!(test.buffer_content(), "d\n");
+}
+
+#[test]
+fn test_df_dot_repeat_undo_redo_chain() {
+    let mut test = EditorTest::new("a,b,c,d");
+    test.keys("df,.");
+    assert_eq!(test.buffer_content(), "c,d\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "b,c,d\n");
+
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "a,b,c,d\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "b,c,d\n");
+
+    test.keys("<C-r>");
+    assert_eq!(test.buffer_content(), "c,d\n");
 }
 
 // ============================================================================
