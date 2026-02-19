@@ -64,7 +64,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 #### Current state (updated)
 
 - [x] `cf/ct` with change operator now uses `PendingChangeRepeat` in `char_motion.rs`.
-- [x] Added macro regression coverage for char-motion changes (`cf`/`ct`) undo+redo isolation, including no-insert `cfo<Esc>`/`ctX<Esc>` and `/search ... n.` dot-repeat chains.
+- [x] Added macro regression coverage for char-motion changes (`cf`/`ct` + backward `cF`/`cT`) undo+redo isolation, including no-insert `cfo<Esc>`/`ctX<Esc>`/`cFX<Esc>`/`cTX<Esc>` and `/search ... n.` dot-repeat chains.
 - [x] Visual delete undo path uses `record()` + `push_recorded_undo()` in `helpers.rs`.
 - [x] Visual delete dot-repeat now uses `RepeatAction` across char/line/block selections.
 - [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
