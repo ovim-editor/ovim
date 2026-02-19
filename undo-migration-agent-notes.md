@@ -182,6 +182,8 @@ Files:
     - `test_uppercase_o_esc_undo_does_not_consume_prior_change_macro_flow`
     - `test_o_esc_undo_redo_isolation_macro_flow`
     - `test_uppercase_o_esc_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_o_esc_undo_redo_isolation_macro_flow`
+    - `test_dot_repeat_uppercase_o_esc_undo_redo_isolation_macro_flow`
 
 ### Q) Change-operator isolation regressions (`cc` / `C`)
 Files:
@@ -249,6 +251,9 @@ Files:
 - `cargo test -p ovim --test dot_repeat_test no_insert_undo_redo_isolation_macro_flow -- --nocapture`
 - `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding no-insert `cc/C` isolation macros)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after architecture doc sync)
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_o_esc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test test_dot_repeat_uppercase_o_esc_undo_redo_isolation_macro_flow -- --nocapture`
+- `cargo test -p ovim --test dot_repeat_test -- --nocapture` (after adding dot-repeat `o/O` undo+redo isolation macros)
 - `cargo test -p ovim --test undo_migration_hygiene_test -- --nocapture` (after adding add_change callsite cap assertion)
 
 ## Current Workspace Safety Notes

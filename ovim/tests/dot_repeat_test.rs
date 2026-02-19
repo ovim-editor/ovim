@@ -1114,6 +1114,37 @@ fn test_o_esc_undo_redo_isolation_macro_flow() {
 }
 
 #[test]
+fn test_dot_repeat_o_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "one\ntwo\nthree\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\nthree\n");
+        }
+        step "o<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\n\ntwo\nthree\n");
+        }
+        step "j." => |test| {
+            assert_eq!(test.buffer_content(), "one!\n\ntwo\n\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one!\n\ntwo\nthree\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\n\ntwo\n\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one!\n\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one\ntwo\nthree\n");
+        }
+    }
+}
+
+#[test]
 fn test_uppercase_o_esc_undo_does_not_consume_prior_change_macro_flow() {
     editor_flow_test! {
         content "one\ntwo\n";
@@ -1128,6 +1159,37 @@ fn test_uppercase_o_esc_undo_does_not_consume_prior_change_macro_flow() {
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "one\ntwo\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_uppercase_o_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "one\ntwo\nthree\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\nthree\n");
+        }
+        step "O<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "\none!\ntwo\nthree\n");
+        }
+        step "j." => |test| {
+            assert_eq!(test.buffer_content(), "\n\none!\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\none!\ntwo\nthree\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "\n\none!\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "\none!\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one!\ntwo\nthree\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "one\ntwo\nthree\n");
         }
     }
 }
