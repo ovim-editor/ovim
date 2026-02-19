@@ -32,6 +32,11 @@ Recent undo-migration commits:
 21. `6d85c16` - Add open-line undo isolation macro regressions
 22. `4323c97` - Add cgn undo isolation macro regression
 23. `b000ea2` - Add cw no-insert undo isolation macro regression
+24. `61a6669` - Add undo redo isolation regressions for o O cw cgn
+25. `2b07e49` - Add replace mode isolation regressions and migration hygiene guard
+26. `aa833aa` - Add cc and C undo redo isolation regressions
+27. `0c2349a` - Add no-insert cc C undo redo isolation tests
+28. `da5f26e` - Sync undo repeat architecture docs with migrated flows
 
 ## What Landed
 
