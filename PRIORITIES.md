@@ -120,6 +120,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Visual-block `r{char}` now uses `InputState::AwaitingChar::Replace`; legacy pending-command replace arm removed from `visual_mode.rs`.
 - [x] Added visual-block replace cancellation regressions (`r<Esc>` stays in visual block, retry path still replaces) plus hygiene guard preventing `visual_mode.rs` fallback to `pending_command('r')`.
 - [x] Un-ignored stable mark regressions (`test_backtick_exact_position`, `test_mark_at_eof`, `test_global_mark`) after tightening global-mark behavior for unnamed buffers.
+- [x] Implemented special exact marks `` `. `` (last change) and `` `^ `` (last insert-exit), and un-ignored corresponding regressions in `mark_test`.
 
 #### Remaining `add_change` callsites (current snapshot: 5 in `ovim-core/src`)
 
