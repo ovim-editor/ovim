@@ -28,7 +28,10 @@ Recent undo-migration commits:
 17. `423d936` - Migrate cw change path to tokenized repeat flow
 18. `a32732d` - Migrate cgn change flow off pending semantic merge
 19. `cdd2d5e` - Migrate replace-mode `R` to recorded undo and repeat action
-20. This slice - Remove remaining insert-mode `add_change` callsites
+20. `684a0b3` - Remove insert-mode add_change callsites
+21. `6d85c16` - Add open-line undo isolation macro regressions
+22. `4323c97` - Add cgn undo isolation macro regression
+23. `b000ea2` - Add cw no-insert undo isolation macro regression
 
 ## What Landed
 
