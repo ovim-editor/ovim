@@ -67,7 +67,7 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Visual delete undo path uses `record()` + `push_recorded_undo()` in `helpers.rs`.
 - [x] Visual delete dot-repeat now uses `RepeatAction` across char/line/block selections.
 - [x] `o/O` now use `RepeatAction::OpenLine`; legacy `Change::Composite` open-line repeat fallback removed.
-- [x] Added macro regression coverage for `o<Esc>`/`O<Esc>` undo isolation after unrelated prior changes.
+- [x] Added macro regression coverage for `o<Esc>`/`O<Esc>` undo+redo isolation after unrelated prior changes.
 - [x] LSP/workspace text edits now record undo entries per edited buffer (current + non-current) without polluting dot-repeat templates.
 - [x] Visual block change dot-repeat (`Ctrl-V ... c ... .`) now uses semantic repeat geometry with active regression coverage.
 - [x] LSP workspace `ResourceOp` (create/rename/delete) now snapshots filesystem state and integrates with undo/redo.
@@ -92,10 +92,10 @@ Migrating operations from Pattern A (manual `Change::delete` + `add_change`) to 
 - [x] Added macro regression coverage for visual-block `c`/`I` undo isolation after unrelated prior changes.
 - [x] `cw` delete phase now uses recorded undo + tokenized `PendingChangeRepeat` (`RepeatAction::DeleteWordChange`) instead of pending semantic merge.
 - [x] Added macro regression coverage for `cw` semantic dot-repeat + undo granularity.
-- [x] Added macro regression coverage for `cw<Esc>` undo isolation after unrelated prior changes.
+- [x] Added macro regression coverage for `cw<Esc>` undo+redo isolation after unrelated prior changes.
 - [x] `cgn`/`cgN` change setup now uses tokenized `PendingChangeRepeat` (`RepeatAction::DeleteSearchMatch`) instead of pending semantic merge.
 - [x] Legacy insert-exit `PendingSemanticChange` merge branch removed from runtime path.
-- [x] Added macro regression coverage for `cgn<Esc>` undo isolation after unrelated prior changes.
+- [x] Added macro regression coverage for `cgn<Esc>` undo+redo isolation after unrelated prior changes.
 - [x] Replace mode (`R`) now records session edits via replace-mode change builder + `finalize_change_building()`, then sets semantic `RepeatAction::ReplaceMode`.
 - [x] Added macro regression coverage for `R` dot-repeat undo granularity and replace-mode no-op backspace undo isolation.
 - [x] Insert-exit merge/replay composites now push directly through `ChangeManager::push_change()`; no remaining `add_change` callsites in `insert_mode.rs`.
