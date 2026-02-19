@@ -1174,6 +1174,62 @@ fn test_dot_repeat_search_and_change_find_undo_redo_isolation_macro_flow() {
     }
 }
 
+#[test]
+fn test_ctX_esc_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "abcdX abcdX tail\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
+        }
+        step "0/abcdX<Enter>ctX<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "X abcdX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "X abcdX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail\n");
+        }
+    }
+}
+
+#[test]
+fn test_dot_repeat_search_and_change_till_undo_redo_isolation_macro_flow() {
+    editor_flow_test! {
+        content "abcdX abcdX tail\n";
+        step "A!<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
+        }
+        step "0/abcdX<Enter>ctXhi<Esc>" => |test| {
+            assert_eq!(test.buffer_content(), "hiX abcdX tail!\n");
+        }
+        step "n." => |test| {
+            assert_eq!(test.buffer_content(), "hiX hiX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hiX abcdX tail!\n");
+        }
+        step "<C-r>" => |test| {
+            assert_eq!(test.buffer_content(), "hiX hiX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "hiX abcdX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
+        }
+        step "u" => |test| {
+            assert_eq!(test.buffer_content(), "abcdX abcdX tail\n");
+        }
+    }
+}
+
 // ============================================================================
 // Dot with search motions
 // ============================================================================
