@@ -874,12 +874,13 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             let mut global_marks: Vec<_> = editor.marks().iter_global().collect();
             global_marks.sort_by_key(|(c, _)| *c);
             for (name, mark) in global_marks {
+                let file = mark.file_path.as_deref().unwrap_or("[No Name]");
                 lines.push(format!(
                     " '{}  {:>5}  {:>3}  {}",
                     name,
                     mark.line + 1,
                     mark.col,
-                    mark.file_path
+                    file
                 ));
             }
 

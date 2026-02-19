@@ -10,7 +10,9 @@ pub struct Mark {
 /// Represents a global mark (includes file path)
 #[derive(Clone, Debug)]
 pub struct GlobalMark {
-    pub file_path: String,
+    /// File path for cross-file global marks. `None` means mark was set in an
+    /// unnamed buffer and should resolve against the current buffer only.
+    pub file_path: Option<String>,
     pub line: usize,
     pub col: usize,
 }
@@ -45,20 +47,15 @@ impl MarkManager {
             self.marks.insert(name, Mark { line, col });
             true
         } else if name.is_ascii_uppercase() {
-            // Global marks require a file path
-            if let Some(path) = file_path {
-                self.global_marks.insert(
-                    name,
-                    GlobalMark {
-                        file_path: path.to_string(),
-                        line,
-                        col,
-                    },
-                );
-                true
-            } else {
-                false
-            }
+            self.global_marks.insert(
+                name,
+                GlobalMark {
+                    file_path: file_path.map(str::to_string),
+                    line,
+                    col,
+                },
+            );
+            true
         } else {
             false
         }
@@ -114,7 +111,7 @@ impl MarkManager {
         let mut global: Vec<_> = self.global_marks.iter().collect();
         global.sort_by_key(|(k, _)| *k);
         for (name, mark) in global {
-            result.push((*name, mark.line, mark.col, Some(mark.file_path.clone())));
+            result.push((*name, mark.line, mark.col, mark.file_path.clone()));
         }
 
         result

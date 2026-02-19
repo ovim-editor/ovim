@@ -74,7 +74,6 @@ line 3
 }
 
 #[test]
-#[ignore = "TODO: Fix column clamping in global marks"]
 fn test_backtick_exact_position() {
     let mut test = EditorTest::new("hello world test");
 
@@ -541,7 +540,6 @@ line 3
 }
 
 #[test]
-#[ignore = "TODO: Fix column clamping in global marks"]
 fn test_mark_at_eof() {
     let mut test = EditorTest::new("line 1\nline 2");
 
@@ -558,7 +556,7 @@ fn test_mark_at_eof() {
 line 2
 "
     );
-    test.assert_cursor(1, 6);
+    test.assert_cursor(1, 5);
 }
 
 #[test]
@@ -704,7 +702,6 @@ line 2
 // ============================================================================
 
 #[test]
-#[ignore = "TODO: Fix global mark column clamping"]
 fn test_global_mark() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 

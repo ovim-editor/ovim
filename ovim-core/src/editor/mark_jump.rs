@@ -29,12 +29,13 @@ impl Editor {
         // Try global mark (A-Z)
         if name.is_ascii_uppercase() {
             if let Some(global_mark) = self.nav.marks.get_global_mark(name).cloned() {
-                // Load the file if it's different from current file
-                let current_file = self.buffer().file_path().map(|s| s.to_string());
-                if current_file.as_deref() != Some(&global_mark.file_path)
-                    && self.load_file(&global_mark.file_path).is_err()
-                {
-                    return false; // Failed to load file
+                // Load the file if mark targets a concrete path different from current.
+                if let Some(mark_path) = global_mark.file_path.as_deref() {
+                    let current_file = self.buffer().file_path().map(|s| s.to_string());
+                    if current_file.as_deref() != Some(mark_path) && self.load_file(mark_path).is_err()
+                    {
+                        return false; // Failed to load file
+                    }
                 }
 
                 // Validate and clamp mark position to buffer bounds
@@ -88,12 +89,13 @@ impl Editor {
         // Try global mark (A-Z)
         if name.is_ascii_uppercase() {
             if let Some(global_mark) = self.nav.marks.get_global_mark(name).cloned() {
-                // Load the file if it's different from current file
-                let current_file = self.buffer().file_path().map(|s| s.to_string());
-                if current_file.as_deref() != Some(&global_mark.file_path)
-                    && self.load_file(&global_mark.file_path).is_err()
-                {
-                    return false; // Failed to load file
+                // Load the file if mark targets a concrete path different from current.
+                if let Some(mark_path) = global_mark.file_path.as_deref() {
+                    let current_file = self.buffer().file_path().map(|s| s.to_string());
+                    if current_file.as_deref() != Some(mark_path) && self.load_file(mark_path).is_err()
+                    {
+                        return false; // Failed to load file
+                    }
                 }
 
                 // Validate and clamp mark line to buffer bounds
