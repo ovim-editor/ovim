@@ -41,6 +41,11 @@ Recent undo-migration commits:
 30. `c364f04` - Tighten add_change migration hygiene gate
 31. `1804ac2` - Add dot-repeat open-line undo redo isolation tests
 32. `e796df8` - Add dot-repeat cw cgn undo redo chain regressions
+33. `a67ae45` - Update undo migration ledger with latest slices
+34. `e2d5b52` - Add dot-repeat cc C R undo redo chain regressions
+35. `f6e4163` - Add no-insert dot-repeat cc C undo redo regressions
+36. `0e4e5a3` - Protect dot-repeat template across replace no-op sessions
+37. `4ae5153` - Add no-insert cgn dot-repeat undo redo regression
 
 ## What Landed
 
