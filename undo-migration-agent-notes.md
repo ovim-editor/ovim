@@ -134,6 +134,7 @@ Files:
   - Added `RepeatAction::DeleteWordChange { count }` for `cw` delete-phase semantics (`word_end_forward_prefer_current` + inclusive delete).
 - `/Users/adrian/Projects/ovim/ovim/tests/dot_repeat_test.rs`
   - Added macro regression: `test_dot_repeat_cw_semantic_undo_granularity_macro_flow`.
+  - Added macro regression: `test_cw_esc_undo_does_not_consume_prior_change_macro_flow`.
 
 ### L) `cgn/cgN` migration off pending semantic merge
 Files:
