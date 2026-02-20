@@ -390,6 +390,8 @@ pub async fn parse_ollama_stream<E: Display>(
     use std::future::poll_fn;
 
     let mut buf = SseLineBuffer::new();
+    let mut accumulated_content = String::new();
+    let mut got_structured_tool_calls = false;
 
     loop {
         let item = poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await;
@@ -409,6 +411,7 @@ pub async fn parse_ollama_stream<E: Display>(
                             .and_then(|c| c.as_str())
                         {
                             if !content.is_empty() {
+                                accumulated_content.push_str(content);
                                 let _ = tx.send(StreamChunk::Content(content.to_string()));
                             }
                         }
@@ -432,6 +435,7 @@ pub async fn parse_ollama_stream<E: Display>(
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Object(Default::default()));
                                 if !name.is_empty() {
+                                    got_structured_tool_calls = true;
                                     let _ = tx.send(StreamChunk::ToolCallComplete {
                                         id: format!("ollama-tc-{}", i),
                                         name: name.to_string(),
@@ -443,6 +447,16 @@ pub async fn parse_ollama_stream<E: Display>(
 
                         // Check if done
                         if value.get("done").and_then(|d| d.as_bool()) == Some(true) {
+                            // If no structured tool_calls were received, try to
+                            // parse the accumulated content as tool-call JSON.
+                            // Some models emit raw JSON in content instead of
+                            // using the structured tool_calls field.
+                            if !got_structured_tool_calls {
+                                try_extract_tool_calls_from_content(
+                                    &accumulated_content,
+                                    &tx,
+                                );
+                            }
                             let _ = tx.send(StreamChunk::Done);
                             return;
                         }
@@ -457,6 +471,68 @@ pub async fn parse_ollama_stream<E: Display>(
                 let _ = tx.send(StreamChunk::Done);
                 return;
             }
+        }
+    }
+}
+
+/// Attempt to parse tool call JSON that a model emitted in `message.content`
+/// instead of using structured `tool_calls`. Supports two patterns:
+///
+/// 1. A single object: `{"name": "tool", "arguments": {...}}`
+/// 2. An array of objects: `[{"name": "tool", "arguments": {...}}, ...]`
+///
+/// If parsing succeeds, sends `ToolCallComplete` chunks. The content chunks
+/// were already sent to the consumer, so the consumer will see both — the
+/// `ToolCallComplete` presence will cause the tool-call path to be taken,
+/// and the raw text content is ignored for that turn.
+fn try_extract_tool_calls_from_content(
+    content: &str,
+    tx: &UnboundedSender<StreamChunk>,
+) {
+    let trimmed = content.trim();
+    if trimmed.is_empty() || !trimmed.starts_with(['{', '[']) {
+        return;
+    }
+
+    // Try to parse as JSON
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return;
+    };
+
+    let calls: Vec<&serde_json::Value> = if let Some(arr) = value.as_array() {
+        arr.iter().collect()
+    } else if value.is_object() {
+        vec![&value]
+    } else {
+        return;
+    };
+
+    for (i, tc) in calls.iter().enumerate() {
+        // Accept both {"name": ..., "arguments": ...} and
+        // {"function": {"name": ..., "arguments": ...}} formats
+        let (name, arguments) = if let Some(func) = tc.get("function") {
+            let n = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let a = func
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            (n, a)
+        } else {
+            let n = tc.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let a = tc
+                .get("arguments")
+                .or_else(|| tc.get("parameters"))
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(Default::default()));
+            (n, a)
+        };
+
+        if !name.is_empty() {
+            let _ = tx.send(StreamChunk::ToolCallComplete {
+                id: format!("ollama-content-tc-{}", i),
+                name: name.to_string(),
+                arguments,
+            });
         }
     }
 }
@@ -890,5 +966,76 @@ mod tests {
             other => panic!("expected ToolCallComplete, got: {:?}", other),
         }
         assert!(matches!(&chunks[1], StreamChunk::Done));
+    }
+
+    // ---- Ollama content-based tool call extraction ----
+
+    #[tokio::test]
+    async fn ollama_content_tool_call_single_object() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Model emits tool call JSON as content text, no structured tool_calls
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"{\\\"name\\\": \\\"read_file\\\", \\\"arguments\\\": {\\\"path\\\": \\\"src/main.rs\\\"}}\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        // Content + ToolCallComplete + Done
+        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::ToolCallComplete { name, .. } if name == "read_file")));
+        assert!(matches!(chunks.last().unwrap(), StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn ollama_content_tool_call_array() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"[{\\\"name\\\": \\\"read_file\\\", \\\"arguments\\\": {}}, {\\\"name\\\": \\\"list_files\\\", \\\"arguments\\\": {}}]\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        let tc_count = chunks
+            .iter()
+            .filter(|c| matches!(c, StreamChunk::ToolCallComplete { .. }))
+            .count();
+        assert_eq!(tc_count, 2);
+    }
+
+    #[tokio::test]
+    async fn ollama_content_not_tool_call_json() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Normal text that happens to start with { but isn't a tool call
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"Here is some code: {}\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        let tc_count = chunks
+            .iter()
+            .filter(|c| matches!(c, StreamChunk::ToolCallComplete { .. }))
+            .count();
+        // No tool calls extracted — `Here is some code: {}` has no "name" field
+        assert_eq!(tc_count, 0);
+    }
+
+    #[tokio::test]
+    async fn ollama_structured_tool_calls_skip_content_parsing() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Has BOTH structured tool_calls AND JSON-looking content — structured wins
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"{\\\"name\\\": \\\"wrong_tool\\\", \\\"arguments\\\": {}}\",\"tool_calls\":[{\"function\":{\"name\":\"real_tool\",\"arguments\":{}}}]},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        let tc_names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::ToolCallComplete { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Only the structured tool call, not the content-parsed one
+        assert_eq!(tc_names, vec!["real_tool"]);
     }
 }

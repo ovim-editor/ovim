@@ -503,7 +503,7 @@ pub async fn stream_ai_chat(
     }
 }
 
-/// Serialize chat messages to OpenAI format (also used by Ollama).
+/// Serialize chat messages to OpenAI format.
 fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
     use super::chat_types::ChatRole;
     messages
@@ -541,6 +541,71 @@ fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> 
                     "role": "tool",
                     "content": m.content,
                     "tool_call_id": m.tool_call_id.as_deref().unwrap_or(""),
+                })
+            }
+            ChatRole::Error | ChatRole::Thinking => unreachable!(),
+        })
+        .collect()
+}
+
+/// Serialize chat messages to Ollama native `/api/chat` format.
+///
+/// Key differences from OpenAI:
+/// - Tool response messages use `tool_name` instead of `tool_call_id`
+/// - Function arguments are objects, not stringified JSON
+fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
+    use super::chat_types::ChatRole;
+
+    // Build a map from tool_call_id → tool_name so we can emit `tool_name`
+    // on Tool role messages (Ollama doesn't use `tool_call_id`).
+    let mut id_to_name: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+    for m in messages {
+        if m.role == ChatRole::Assistant {
+            for tc in &m.tool_calls {
+                id_to_name.insert(&tc.id, &tc.name);
+            }
+        }
+    }
+
+    messages
+        .iter()
+        .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
+        .map(|m| match m.role {
+            ChatRole::User => json!({ "role": "user", "content": m.content }),
+            ChatRole::Assistant => {
+                if m.tool_calls.is_empty() {
+                    json!({ "role": "assistant", "content": m.content })
+                } else {
+                    let tc: Vec<Value> = m
+                        .tool_calls
+                        .iter()
+                        .map(|tc| {
+                            json!({
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                }
+                            })
+                        })
+                        .collect();
+                    let mut msg = json!({ "role": "assistant", "tool_calls": tc });
+                    if !m.content.is_empty() {
+                        msg["content"] = json!(m.content);
+                    }
+                    msg
+                }
+            }
+            ChatRole::Tool => {
+                let tool_name = m
+                    .tool_call_id
+                    .as_deref()
+                    .and_then(|id| id_to_name.get(id).copied())
+                    .unwrap_or("");
+                json!({
+                    "role": "tool",
+                    "content": m.content,
+                    "tool_name": tool_name,
                 })
             }
             ChatRole::Error | ChatRole::Thinking => unreachable!(),
@@ -716,7 +781,7 @@ async fn stream_ollama_chat(
     if let Some(sp) = sys {
         api_messages.push(json!({ "role": "system", "content": sp }));
     }
-    api_messages.extend(chat_messages_to_openai_json(messages));
+    api_messages.extend(chat_messages_to_ollama_json(messages));
 
     let mut body = json!({
         "model": profile.model,
