@@ -14,11 +14,12 @@ use ovim::api::{
     LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo,
     RenderInfo, SuccessResponse, VisualSelection,
 };
+use ovim::buffer::{BufferId, LineHighlights};
 use ovim::commands;
 use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim::session::SessionInfo;
-use ovim::syntax::LanguageRegistry;
+use ovim::syntax::{Language, LanguageRegistry, SyntaxHighlighter};
 use ovim::ui::UI;
 
 /// Shared editor tick for both loops.
@@ -28,6 +29,8 @@ async fn process_editor_tick(
     java_status_rx: &mut mpsc::UnboundedReceiver<String>,
     preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
     file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
+    syntax_tx: &tokio::sync::mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
+    syntax_rx: &mut tokio::sync::mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
 ) {
     while let Ok(status) = java_status_rx.try_recv() {
         editor.set_lsp_status(status);
@@ -75,9 +78,45 @@ async fn process_editor_tick(
         }
     }
 
+    // Spawn background syntax highlighting instead of blocking the main thread.
+    // This eliminates the flash of unstyled content (FOUC) on file open.
     if editor.buffer().should_init_syntax() {
-        editor.buffer_mut().enable_syntax_highlighting();
-        editor.mark_dirty(); // Redraw when syntax highlighting is enabled
+        let buf = editor.buffer();
+        let buffer_id = buf.id();
+        let source = buf.rope().to_string();
+        let version = buf.highlight_version();
+        if let Some(path) = buf.file_path() {
+            if let Some(lang) = LanguageRegistry::detect_from_path(path) {
+                editor.buffer_mut().mark_syntax_loading();
+                let tx = syntax_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let highlights = if let Ok(mut h) = SyntaxHighlighter::new(lang) {
+                        h.parse(&source);
+                        Some(h.highlights_for_all_lines(&source))
+                    } else {
+                        None
+                    };
+                    let _ = tx.blocking_send((buffer_id, lang, highlights, version));
+                });
+            }
+        }
+    }
+
+    // Drain completed background syntax results
+    while let Ok((buffer_id, lang, highlights, version)) = syntax_rx.try_recv() {
+        let is_current = editor.buffer().id() == buffer_id;
+        if let Some(buffer) = editor.get_buffer_by_id_mut(buffer_id) {
+            let applied = if let Some(highlights) = highlights {
+                buffer.apply_background_syntax(lang, highlights, version)
+            } else {
+                buffer.clear_syntax_loading();
+                false
+            };
+
+            if is_current && applied {
+                editor.mark_dirty();
+            }
+        }
     }
 
     // Poll pending LSP responses (non-blocking)
@@ -246,6 +285,8 @@ pub async fn run_headless_loop(
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
+    let (syntax_tx, mut syntax_rx) =
+        tokio::sync::mpsc::channel::<(BufferId, Language, Option<LineHighlights>, u64)>(16);
     let mut lsp_interval = interval(Duration::from_millis(50));
     lsp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -263,7 +304,7 @@ pub async fn run_headless_loop(
                 if let Some(picker) = editor.picker_mut() { picker.add_file_result(result); }
             }
             _ = lsp_interval.tick() => {
-                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
+                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
             }
         }
     }
@@ -415,6 +456,8 @@ pub async fn run_event_loop(
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
     let (file_tx, mut file_rx) = tokio::sync::mpsc::channel::<editor::PickerResult>(1000);
+    let (syntax_tx, mut syntax_rx) =
+        tokio::sync::mpsc::channel::<(BufferId, Language, Option<LineHighlights>, u64)>(16);
 
     let mut event_stream = EventStream::new();
     let mut tick_interval = interval(Duration::from_millis(16));
@@ -480,7 +523,7 @@ pub async fn run_event_loop(
 
             // Tick timer — background work (LSP, picker, animations)
             _ = tick_interval.tick() => {
-                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx).await;
+                process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
                 process_picker_results(editor, &mut preview_rx, &mut file_rx);
 
                 if editor.tick_cat_animation() {
@@ -1190,7 +1233,7 @@ fn spawn_picker_preview_loading(
     editor: &mut Editor,
     preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
 ) {
-    if !editor.should_load_picker_preview(200) {
+    if !editor.should_load_picker_preview(50) {
         return;
     }
 
@@ -1514,10 +1557,34 @@ async fn load_preview_async(file_path: &str) -> Option<editor::PreviewCache> {
     // Detect language
     let language = LanguageRegistry::detect_from_path(file_path);
 
-    // Create cache entry
+    // Parse syntax highlights in a background thread so the render thread doesn't block
+    let highlighted_lines = if let Some(lang) = language {
+        let content_for_parse = content.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(mut h) = SyntaxHighlighter::new(lang) {
+                h.parse(&content_for_parse);
+                let all = h.highlights_for_all_lines(&content_for_parse);
+                let mut map = HashMap::new();
+                for (i, line_h) in all.into_iter().enumerate() {
+                    if !line_h.is_empty() {
+                        map.insert(i, line_h);
+                    }
+                }
+                map
+            } else {
+                HashMap::new()
+            }
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    // Create cache entry with pre-populated highlights
     Some(editor::PreviewCache {
         content,
-        highlighted_lines: std::cell::RefCell::new(HashMap::new()),
+        highlighted_lines: std::cell::RefCell::new(highlighted_lines),
         language,
     })
 }

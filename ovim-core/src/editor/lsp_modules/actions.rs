@@ -444,9 +444,16 @@ impl Editor {
             .await;
 
         match result {
-            Ok(Some(_tokens)) => {
-                // TODO: Store and use semantic tokens for enhanced syntax highlighting
-                self.set_lsp_status("Semantic tokens received".to_string());
+            Ok(Some(tokens)) => {
+                if let Ok(Some(legend)) = ctx.lsp.get_semantic_tokens_legend(&ctx.language_id).await
+                {
+                    self.buffer_mut().decode_semantic_tokens(&tokens, &legend);
+                    self.set_lsp_status("Semantic tokens applied".to_string());
+                } else {
+                    self.set_lsp_status(
+                        "Semantic tokens received (no legend available)".to_string(),
+                    );
+                }
                 Ok(true)
             }
             Ok(None) => {

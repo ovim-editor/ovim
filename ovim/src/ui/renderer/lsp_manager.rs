@@ -114,7 +114,7 @@ pub fn render_lsp_manager(frame: &mut Frame, panel: &LspManagerPanel) {
 }
 
 fn render_filter_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
-    let icon = if panel.filter_focused { "/ " } else { "/ " };
+    let icon = "/ ";
     let query = &panel.filter_query;
 
     let text = if panel.filter_focused {

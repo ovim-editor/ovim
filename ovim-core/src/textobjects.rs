@@ -617,7 +617,6 @@ impl TextObjects {
         }
 
         // Find the closing tag
-        let _closing_tag_pattern = format!("</{}>", tag_name);
         let mut depth = 1;
         let mut search_pos = opening_tag_end + 1;
 

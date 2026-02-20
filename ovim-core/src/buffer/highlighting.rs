@@ -130,8 +130,8 @@ impl Buffer {
             return false;
         }
 
-        // Has file path, no syntax yet, and language is supported
-        if self.syntax.is_some() {
+        // Already has syntax or a background task is computing it
+        if self.syntax.is_some() || self.syntax_loading {
             return false;
         }
 
@@ -140,6 +140,68 @@ impl Buffer {
         } else {
             false
         }
+    }
+
+    /// Marks that a background task is computing initial syntax highlights.
+    /// Prevents `should_init_syntax()` from returning true again until the task completes.
+    pub fn mark_syntax_loading(&mut self) {
+        self.syntax_loading = true;
+    }
+
+    /// Clears the background syntax-loading flag without applying highlights.
+    pub fn clear_syntax_loading(&mut self) {
+        self.syntax_loading = false;
+    }
+
+    /// Returns the current highlight version counter.
+    /// Used to check if the buffer has been edited since a background parse started.
+    pub fn highlight_version(&self) -> u64 {
+        self.highlight_version
+    }
+
+    /// Applies pre-computed syntax highlights from a background task.
+    /// Returns true if the highlights were applied (version matched).
+    ///
+    /// After installing the cached highlights (so the next render is styled),
+    /// creates a SyntaxHighlighter on the main thread for future incremental updates.
+    pub fn apply_background_syntax(
+        &mut self,
+        lang: Language,
+        highlights: LineHighlights,
+        version: u64,
+    ) -> bool {
+        self.syntax_loading = false;
+
+        // Only apply if buffer hasn't been edited since the background parse started
+        if self.highlight_version != version {
+            return false;
+        }
+
+        // Install cached highlights so the next render shows styled text
+        self.cached_highlights = Some(highlights);
+
+        // Create a SyntaxHighlighter on the main thread for future incremental updates.
+        // This parses the current content, which is fast (~5ms for typical files) and
+        // doesn't cause FOUC since highlights are already cached above.
+        if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
+            let source = self.rope.to_string();
+            highlighter.parse(&source);
+
+            // For markdown files, also build code block cache
+            if lang == Language::Markdown {
+                if let Some(tree) = highlighter.tree() {
+                    let mut cache = crate::syntax::CodeBlockCache::new();
+                    cache.update_from_tree(tree, &source, self.highlight_version);
+                    self.code_block_cache = Some(cache);
+                }
+            }
+
+            self.syntax = Some(highlighter);
+            self.pending_rehighlight = false;
+            self.version += 1;
+        }
+
+        true
     }
 
     /// Builds the highlight cache for all lines
