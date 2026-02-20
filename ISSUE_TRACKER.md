@@ -161,6 +161,8 @@
 | OV-00197 | Pending | LOW | Low | [ERROR] Lua config command failures silently discarded — `let _ = InputHandler::execute_command_string(self, &cmd)` at lines 37, 55, 243, 255 suppresses all errors from user plugin/config commands. User won't know their config is broken. Should log or surface errors. (ovim-core/src/editor/lua_integration.rs:37,55,243,255) |
 | OV-00198 | Pending | LOW | Low | [ERROR] AI profile switch failures silently ignored — `let _ = self.ai_set_profile(&names[next_idx])` discards errors. User cycles profiles but doesn't know when one fails to activate. (ovim-core/src/editor/ai_integration.rs:62,135) |
 | OV-00199 | Duplicate | LOW | Low | [MOTION] Duplicate of OV-00169 — sentence motion trailing `\n` handling. |
+| OV-00200 | Triage | High | Low | `<Space>ai` doesn't seem to work with local models. It uses the OpenAI model by default, which doesn't match the lua config. Investigate why. OpenAI by default for `<Space>ai` is good, but the lua config not being honored should be investigated. It seems to be using the chat context config instead. |
+| OV-00201 | Triage | High | Low | Local models fail to use the chat when that is configured. It provides an incorrect tool call json, which is printed in the chat. Investigate why and ways to resolve it. This requires manual testing against the local Ollama model. |
 
 ## Bugs Filed Against Hyperion (if any)
 
