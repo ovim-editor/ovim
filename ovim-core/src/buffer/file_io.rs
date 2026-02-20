@@ -107,6 +107,7 @@ impl Buffer {
             line_ending,
             encoding,
             syntax: None,
+            syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,

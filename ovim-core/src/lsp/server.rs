@@ -1106,35 +1106,6 @@ impl LanguageServer {
         matches!(self.state().await, ServerState::Ready { .. })
     }
 
-    /// Queues an operation if server is not ready, or executes immediately if ready
-    /// (Reserved for request queueing implementation)
-    #[allow(dead_code)]
-    async fn queue_or_execute<F, Fut>(&self, op: PendingOperation, execute: F) -> Result<()>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<()>>,
-    {
-        let _prefix = self.log_prefix();
-        let mut state = self.inner.state.lock().await;
-
-        match &mut *state {
-            ServerState::Ready { .. } => {
-                drop(state); // Release lock before executing
-                execute().await
-            }
-            ServerState::Initializing {
-                pending_operations, ..
-            } => {
-                // Queuing operation while server initializes
-                pending_operations.push(op);
-                Ok(())
-            }
-            ServerState::Failed { error, .. } => Err(anyhow!("Server failed: {}", error)),
-            ServerState::Terminated => Err(anyhow!("Server has terminated")),
-            state => Err(anyhow!("Server in unexpected state: {:?}", state)),
-        }
-    }
-
     /// Sends a request and waits for the response
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         // Track LSP request metrics

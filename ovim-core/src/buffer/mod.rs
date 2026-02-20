@@ -46,6 +46,8 @@ pub struct Buffer {
     pub(super) encoding: FileEncoding,
     /// Optional syntax highlighter
     pub(super) syntax: Option<SyntaxHighlighter>,
+    /// True while a background task is computing initial syntax highlights
+    pub(super) syntax_loading: bool,
     /// Cached syntax highlights per line (line_idx -> Vec<(range, group)>)
     pub(super) cached_highlights: Option<LineHighlights>,
     /// Version counter for highlight cache (incremented on every edit)
@@ -95,6 +97,7 @@ impl Buffer {
             line_ending: LineEnding::default(),
             encoding: FileEncoding::default(),
             syntax: None,
+            syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
@@ -190,6 +193,7 @@ impl Buffer {
             line_ending: LineEnding::detect(content.as_bytes()),
             encoding: FileEncoding::Utf8, // from_str always gets valid UTF-8
             syntax: None,
+            syntax_loading: false,
             cached_highlights: None,
             highlight_version: 0,
             pending_rehighlight: false,
@@ -688,6 +692,7 @@ impl Buffer {
         }
 
         // Highlight caches: all line/col references are stale
+        self.syntax_loading = false;
         self.cached_highlights = None;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;

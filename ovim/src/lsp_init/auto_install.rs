@@ -18,6 +18,7 @@
 // The pattern: Try → Fail gracefully → Guide user to success
 
 use ovim::language_config::{AutoInstallConfig, InstallMethod};
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tokio::process::Command as TokioCommand;
@@ -300,21 +301,221 @@ async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult
 
 /// Install via GitHub release (download binary)
 async fn install_via_github(
-    _language_name: &str,
-    _repo: &str,
-    _asset_pattern: &str,
-    _install_path: &str,
+    language_name: &str,
+    repo: &str,
+    asset_pattern: &str,
+    install_path: &str,
 ) -> InstallResult {
-    // TODO: Implement GitHub release download
-    // This is more complex - needs:
-    // 1. Detect OS/arch
-    // 2. Fetch GitHub API for latest release
-    // 3. Find matching asset (using pattern)
-    // 4. Download and extract
-    // 5. Make executable and move to install_path
-    InstallResult::Failed(
-        "GitHub release installation not yet implemented. Install manually.".to_string(),
-    )
+    #[derive(Debug, Deserialize)]
+    struct GitHubRelease {
+        assets: Vec<GitHubAsset>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct GitHubAsset {
+        name: String,
+        browser_download_url: String,
+    }
+
+    if repo.split('/').count() != 2 {
+        return InstallResult::Failed(format!(
+            "Invalid GitHub repo '{repo}'. Expected format: owner/repo"
+        ));
+    }
+
+    let release_url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let client = match reqwest::Client::builder()
+        .user_agent("ovim-auto-install")
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return InstallResult::Failed(format!("Failed to initialize HTTP client: {e}"));
+        }
+    };
+
+    let release_res = match client
+        .get(&release_url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            return InstallResult::Failed(format!(
+                "Failed to query GitHub releases for {repo}: {e}"
+            ));
+        }
+    };
+
+    if !release_res.status().is_success() {
+        return InstallResult::Failed(format!(
+            "GitHub API request failed for {repo}: HTTP {}",
+            release_res.status()
+        ));
+    }
+
+    let release = match release_res.json::<GitHubRelease>().await {
+        Ok(release) => release,
+        Err(e) => {
+            return InstallResult::Failed(format!("Failed to parse GitHub release metadata: {e}"));
+        }
+    };
+
+    let Some(asset) = release
+        .assets
+        .iter()
+        .find(|asset| asset_matches_pattern(&asset.name, asset_pattern))
+    else {
+        return InstallResult::Failed(format!(
+            "No release asset matched pattern '{asset_pattern}' in {repo}"
+        ));
+    };
+
+    if is_archive_asset(&asset.name) {
+        return InstallResult::Failed(format!(
+            "Asset '{}' is an archive. Auto-extraction is not yet supported; install manually.",
+            asset.name
+        ));
+    }
+
+    ovim_core::lsp_info!(
+        "AutoInstall",
+        "Installing {} via GitHub release: {}/{}",
+        language_name,
+        repo,
+        asset.name
+    );
+
+    let download_res = match client
+        .get(&asset.browser_download_url)
+        .header("Accept", "application/octet-stream")
+        .send()
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            return InstallResult::Failed(format!(
+                "Failed to download GitHub asset '{}': {e}",
+                asset.name
+            ));
+        }
+    };
+
+    if !download_res.status().is_success() {
+        return InstallResult::Failed(format!(
+            "GitHub asset download failed for '{}': HTTP {}",
+            asset.name,
+            download_res.status()
+        ));
+    }
+
+    let bytes = match download_res.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return InstallResult::Failed(format!(
+                "Failed to read downloaded bytes for '{}': {e}",
+                asset.name
+            ));
+        }
+    };
+
+    let target_path = expand_install_path(install_path);
+    let parent = target_path.parent().map(PathBuf::from).unwrap_or_default();
+    if !parent.as_os_str().is_empty() {
+        if let Err(e) = tokio::fs::create_dir_all(&parent).await {
+            return InstallResult::Failed(format!(
+                "Failed to create install directory '{}': {e}",
+                parent.display()
+            ));
+        }
+    }
+
+    if let Err(e) = tokio::fs::write(&target_path, bytes).await {
+        return InstallResult::Failed(format!(
+            "Failed to write binary to '{}': {e}",
+            target_path.display()
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        if let Err(e) = tokio::fs::set_permissions(&target_path, perms).await {
+            return InstallResult::Failed(format!(
+                "Installed file but failed to set executable permissions on '{}': {e}",
+                target_path.display()
+            ));
+        }
+    }
+
+    InstallResult::Success(target_path)
+}
+
+fn expand_install_path(raw: &str) -> PathBuf {
+    let expanded = shellexpand::tilde(raw).into_owned();
+    PathBuf::from(expanded)
+}
+
+fn is_archive_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".zip")
+        || lower.ends_with(".tar")
+        || lower.ends_with(".tar.gz")
+        || lower.ends_with(".tgz")
+        || lower.ends_with(".tar.xz")
+        || lower.ends_with(".txz")
+        || lower.ends_with(".gz")
+}
+
+fn asset_matches_pattern(asset_name: &str, pattern: &str) -> bool {
+    if pattern.is_empty() || pattern == "*" {
+        return true;
+    }
+
+    // Supports a simple `*` wildcard in any position.
+    if !pattern.contains('*') {
+        return asset_name == pattern;
+    }
+
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let starts_anchored = !pattern.starts_with('*');
+    let ends_anchored = !pattern.ends_with('*');
+    let mut cursor = 0usize;
+
+    for (idx, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+
+        if idx == 0 && starts_anchored {
+            if !asset_name[cursor..].starts_with(part) {
+                return false;
+            }
+            cursor += part.len();
+            continue;
+        }
+
+        if idx == parts.len() - 1 && ends_anchored {
+            let remaining = &asset_name[cursor..];
+            if !remaining.ends_with(part) {
+                return false;
+            }
+            if let Some(pos) = remaining.rfind(part) {
+                cursor += pos + part.len();
+            }
+            continue;
+        }
+
+        if let Some(found_at) = asset_name[cursor..].find(part) {
+            cursor += found_at + part.len();
+        } else {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Install via custom shell command
@@ -379,5 +580,18 @@ mod tests {
 
         let failed = InstallResult::Failed("test error".to_string());
         assert!(matches!(failed, InstallResult::Failed(_)));
+    }
+
+    #[test]
+    fn test_asset_matches_pattern() {
+        assert!(asset_matches_pattern(
+            "typescript-language-server-linux-x64",
+            "typescript-language-server-*"
+        ));
+        assert!(asset_matches_pattern("gopls", "gopls"));
+        assert!(!asset_matches_pattern(
+            "clangd-arm64.zip",
+            "clangd-*-linux*"
+        ));
     }
 }

@@ -29,6 +29,12 @@ impl Editor {
         self.buffers.get(idx)
     }
 
+    /// Gets a mutable buffer by stable buffer ID.
+    pub fn get_buffer_by_id_mut(&mut self, buffer_id: BufferId) -> Option<&mut Buffer> {
+        let idx = self.find_buffer_index_by_id(buffer_id)?;
+        self.buffers.get_mut(idx)
+    }
+
     /// Gets a mutable reference to the current buffer
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         &mut self.buffers[self.current_buffer_index]
