@@ -17,12 +17,15 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
         let b = bridge.clone();
         let setup = lua.create_function(move |_lua, opts: Table| {
             // default_profile
-            if let Ok(dp) = opts.get::<_, String>("default_profile") {
-                b.set_ai_default_profile(dp);
+            let configured_default_profile = opts.get::<_, String>("default_profile").ok();
+            if let Some(ref dp) = configured_default_profile {
+                b.set_ai_default_profile(dp.clone());
             }
 
             // contexts — string shorthand or table form
+            let mut contexts_provided = false;
             if let Ok(contexts) = opts.get::<_, Table>("contexts") {
+                contexts_provided = true;
                 for pair in contexts.pairs::<String, Value>() {
                     let (key, val) = pair?;
                     let profile_name = match val {
@@ -38,6 +41,16 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                         }
                     };
                     b.set_ai_context(key, profile_name);
+                }
+            }
+            // If user sets only default_profile, keep contexts aligned with it.
+            // This lets user config override built-in context defaults without
+            // requiring a full contexts table.
+            if !contexts_provided {
+                if let Some(dp) = configured_default_profile {
+                    for ctx in ["selection", "chat", "query"] {
+                        b.set_ai_context(ctx.to_string(), dp.clone());
+                    }
                 }
             }
 

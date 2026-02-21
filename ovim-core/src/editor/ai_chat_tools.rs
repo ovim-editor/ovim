@@ -2100,6 +2100,33 @@ impl Editor {
         prompt
     }
 
+    fn build_tool_call_contract_prompt(
+        &self,
+        provider: crate::ai::AiProviderKind,
+        has_tools: bool,
+    ) -> Option<String> {
+        if !has_tools {
+            return None;
+        }
+
+        let provider_hint = match provider {
+            crate::ai::AiProviderKind::Ollama => {
+                "For Ollama specifically: emit structured tool calls, not raw JSON in content."
+            }
+            crate::ai::AiProviderKind::OpenAi | crate::ai::AiProviderKind::Anthropic => {
+                "Use the provider's structured tool-calling protocol for every tool invocation."
+            }
+        };
+
+        Some(format!(
+            "## Tool Calling Contract\n\
+             - When a tool is needed, emit a structured tool call.\n\
+             - Never print tool call JSON in plain assistant text.\n\
+             - After tool results are returned, continue with a normal-language response.\n\
+             - {provider_hint}"
+        ))
+    }
+
     /// Resolve profile, collect messages, and spawn a streaming AI request.
     ///
     /// Shared by `submit_ai_chat_message` (initial send) and `process_tool_calls`
@@ -2126,6 +2153,9 @@ impl Editor {
 
         let model_name = profile.model.clone();
         let remote_provider = profile.provider != crate::ai::AiProviderKind::Ollama;
+        let tool_schemas = self.build_tool_schemas_for_chat(&profile);
+        let tool_call_contract =
+            self.build_tool_call_contract_prompt(profile.provider, !tool_schemas.is_empty());
 
         // Resolution chain for chat system prompt:
         // 1. chat.opts.system_prompt (per-session override)
@@ -2159,11 +2189,16 @@ impl Editor {
             );
             system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx))
         };
+        let system_prompt = match (system_prompt, tool_call_contract.as_deref()) {
+            (Some(sp), Some(contract)) => Some(format!("{sp}\n\n{contract}")),
+            (Some(sp), None) => Some(sp),
+            (None, Some(contract)) => Some(contract.to_string()),
+            (None, None) => None,
+        };
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
         let editor_state_budget = if remote_provider { 2500 } else { 8000 };
         let editor_state = self.build_editor_state_context(editor_state_budget);
         let system_prompt = system_prompt.map(|sp| format!("{sp}\n\n{editor_state}"));
-        let tool_schemas = self.build_tool_schemas_for_chat(&profile);
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
 
         let messages: Vec<ChatMessage> = self
