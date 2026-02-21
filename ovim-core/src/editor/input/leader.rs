@@ -76,6 +76,10 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             })?;
             editor.reset_input_state();
         }
+        'a' => {
+            // <Space>a... - AI prefix
+            editor.set_input_state(InputState::Leader { keys: vec!['a'] });
+        }
         '?' => {
             // <Space>? - Open AI query (read-only)
             editor.open_ai_chat(crate::ai::chat_types::ChatOpts {
@@ -164,6 +168,18 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             let picker = Picker::new_live_grep(base_dir, preferred_dir);
             editor.set_picker(picker);
             editor.set_mode(Mode::Picker);
+            editor.reset_input_state();
+        }
+
+        // <Space>a... AI sequences
+        (&['a'], 'i') => {
+            // <Space>ai - Open AI chat (editable)
+            editor.open_ai_chat(crate::ai::chat_types::ChatOpts {
+                name: "chat".into(),
+                profile: editor.ai_chat_context_profile("chat"),
+                allow_edits: true,
+                ..Default::default()
+            })?;
             editor.reset_input_state();
         }
 

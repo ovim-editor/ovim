@@ -24,6 +24,9 @@ impl Editor {
             return false;
         };
         self.ai_state.active_profile = profile_name.to_string();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.opts.profile = Some(profile_name.to_string());
+        }
         self.ai_state.edit_format = profile.edit_format.clone();
         if let Some(idx) = self
             .ai_profile_names_sorted()
@@ -60,13 +63,6 @@ impl Editor {
         };
 
         let _ = self.ai_set_profile(&names[next_idx]);
-
-        // If a chat session is open, also update its pinned profile so that
-        // spawn_streaming_request (which prefers chat.opts.profile) uses the
-        // newly selected profile.
-        if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.opts.profile = Some(self.ai_state.active_profile.clone());
-        }
     }
 
     /// Opens the AI prompt model picker and highlights the current profile.

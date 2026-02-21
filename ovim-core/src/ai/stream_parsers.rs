@@ -390,6 +390,9 @@ pub async fn parse_ollama_stream<E: Display>(
     use std::future::poll_fn;
 
     let mut buf = SseLineBuffer::new();
+    // Shadow copy of all content chunks — used at stream end to attempt
+    // tool-call extraction if no structured tool_calls were received.
+    // Content is always sent immediately so the user sees streaming output.
     let mut accumulated_content = String::new();
     let mut got_structured_tool_calls = false;
 
@@ -452,7 +455,7 @@ pub async fn parse_ollama_stream<E: Display>(
                             // Some models emit raw JSON in content instead of
                             // using the structured tool_calls field.
                             if !got_structured_tool_calls {
-                                try_extract_tool_calls_from_content(
+                                emit_extracted_tool_calls(
                                     &accumulated_content,
                                     &tx,
                                 );
@@ -468,6 +471,9 @@ pub async fn parse_ollama_stream<E: Display>(
                 return;
             }
             None => {
+                if !got_structured_tool_calls {
+                    emit_extracted_tool_calls(&accumulated_content, &tx);
+                }
                 let _ = tx.send(StreamChunk::Done);
                 return;
             }
@@ -475,31 +481,45 @@ pub async fn parse_ollama_stream<E: Display>(
     }
 }
 
-/// Attempt to parse tool call JSON that a model emitted in `message.content`
-/// instead of using structured `tool_calls`. Supports two patterns:
+/// Try to extract tool calls from accumulated content and send them as
+/// `ToolCallComplete` chunks. Content chunks were already sent to the
+/// consumer, so the consumer will see both — the `ToolCallComplete`
+/// presence causes the tool-call path to be taken and the raw text
+/// content is ignored for that turn.
 ///
-/// 1. A single object: `{"name": "tool", "arguments": {...}}`
-/// 2. An array of objects: `[{"name": "tool", "arguments": {...}}, ...]`
-///
-/// If parsing succeeds, sends `ToolCallComplete` chunks. The content chunks
-/// were already sent to the consumer, so the consumer will see both — the
-/// `ToolCallComplete` presence will cause the tool-call path to be taken,
-/// and the raw text content is ignored for that turn.
-fn try_extract_tool_calls_from_content(
+/// Supports:
+/// - `{"name": "tool", "arguments": {...}}`
+/// - `[{"name": "tool", "arguments": {...}}, ...]`
+/// - `{"tool_calls": [...]}`
+/// - `{"function": {"name": "tool", "arguments": {...}}}`
+/// - Fenced code blocks wrapping any of the above
+fn emit_extracted_tool_calls(
     content: &str,
     tx: &UnboundedSender<StreamChunk>,
 ) {
     let trimmed = content.trim();
-    if trimmed.is_empty() || !trimmed.starts_with(['{', '[']) {
+    if trimmed.is_empty() {
         return;
     }
 
-    // Try to parse as JSON
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+    // Strip markdown code fence if present
+    let candidate = if trimmed.starts_with("```") {
+        extract_fenced_json(trimmed).unwrap_or(trimmed)
+    } else {
+        trimmed
+    };
+
+    if !candidate.starts_with('{') && !candidate.starts_with('[') {
+        return;
+    }
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
         return;
     };
 
     let calls: Vec<&serde_json::Value> = if let Some(arr) = value.as_array() {
+        arr.iter().collect()
+    } else if let Some(arr) = value.get("tool_calls").and_then(|v| v.as_array()) {
         arr.iter().collect()
     } else if value.is_object() {
         vec![&value]
@@ -508,23 +528,28 @@ fn try_extract_tool_calls_from_content(
     };
 
     for (i, tc) in calls.iter().enumerate() {
-        // Accept both {"name": ..., "arguments": ...} and
-        // {"function": {"name": ..., "arguments": ...}} formats
+        // Accept {"name": ..., "arguments": ...},
+        // {"tool": ..., "arguments": ...}, and
+        // {"function": {"name": ..., "arguments": ...}}.
         let (name, arguments) = if let Some(func) = tc.get("function") {
             let n = func.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let a = func
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            (n, a)
+            (n, normalize_tool_arguments(a))
         } else {
-            let n = tc.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let n = tc
+                .get("name")
+                .or_else(|| tc.get("tool"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
             let a = tc
                 .get("arguments")
                 .or_else(|| tc.get("parameters"))
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(Default::default()));
-            (n, a)
+            (n, normalize_tool_arguments(a))
         };
 
         if !name.is_empty() {
@@ -535,6 +560,25 @@ fn try_extract_tool_calls_from_content(
             });
         }
     }
+}
+
+fn normalize_tool_arguments(arguments: serde_json::Value) -> serde_json::Value {
+    if let Some(raw) = arguments.as_str() {
+        serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+    } else {
+        arguments
+    }
+}
+
+fn extract_fenced_json(content: &str) -> Option<&str> {
+    let start = content.find("```")?;
+    let rest = &content[start + 3..];
+    let newline_idx = rest.find('\n')?;
+    let body_start = start + 3 + newline_idx + 1;
+    let body = &content[body_start..];
+    let end = body.rfind("```")?;
+    Some(body[..end].trim())
 }
 
 // ---------------------------------------------------------------------------
@@ -980,7 +1024,10 @@ mod tests {
         ]);
         parse_ollama_stream(stream, tx).await;
         let chunks = collect_chunks(&mut rx);
-        // Content + ToolCallComplete + Done
+        // Content is sent immediately (user sees streaming output),
+        // then ToolCallComplete is emitted at done. The consumer's
+        // tool-call path takes precedence over the content.
+        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
         assert!(chunks.iter().any(|c| matches!(c, StreamChunk::ToolCallComplete { name, .. } if name == "read_file")));
         assert!(matches!(chunks.last().unwrap(), StreamChunk::Done));
     }

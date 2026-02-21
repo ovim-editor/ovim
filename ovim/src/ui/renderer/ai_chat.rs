@@ -986,8 +986,9 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
 
     let mut profile_names = editor.ai_profile_names_sorted();
     if profile_names.is_empty() {
-        profile_names.push(editor.ai_state.active_profile.clone());
+        profile_names.push(editor.ai_chat_effective_profile());
     }
+    let active_profile = editor.ai_chat_effective_profile();
 
     let mut spans: Vec<Span> = Vec::new();
     let mut used_width = 0usize;
@@ -1036,7 +1037,7 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
             break;
         }
 
-        let is_active = *name == editor.ai_state.active_profile;
+        let is_active = name == &active_profile;
         let style = if is_active {
             Style::default()
                 .fg(Color::White)

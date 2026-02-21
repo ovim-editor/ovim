@@ -115,6 +115,49 @@ fn test_visual_space_space_opens_ai_chat_with_selection_context() {
 }
 
 #[test]
+fn test_normal_space_ai_opens_ai_chat_with_chat_context_profile() {
+    let mut test = EditorTest::new("hello world\n");
+    test.editor.ai_state.config.profiles.clear();
+
+    let mut alpha = test_profile("alpha", AiProviderKind::Ollama, "model-a");
+    alpha.base_url = Some("http://127.0.0.1:11434".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("alpha".to_string(), alpha);
+
+    let mut beta = test_profile("beta", AiProviderKind::Ollama, "model-b");
+    beta.base_url = Some("http://127.0.0.1:11434".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("beta".to_string(), beta);
+
+    test.editor.ai_state.active_profile = "alpha".to_string();
+    test.editor
+        .ai_state
+        .config
+        .contexts
+        .insert("chat".to_string(), "beta".to_string());
+
+    test.keys("<Space>ai");
+
+    test.assert_mode(Mode::AiChat);
+    assert_eq!(test.editor.ai_state.active_profile, "alpha");
+    assert_eq!(test.editor.ai_chat_effective_profile(), "beta");
+    assert_eq!(
+        test.editor
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.opts.profile.as_deref()),
+        Some("beta")
+    );
+}
+
+#[test]
 fn test_ai_prompt_escape_clears_state() {
     let mut test = EditorTest::new("hello world\n");
 
@@ -344,6 +387,52 @@ fn test_ai_prompt_keyboard_model_picker_cycles_profiles() {
     assert_eq!(test.editor.ai_state.active_profile, "beta");
     test.press_key(KeyCode::Up);
     assert_eq!(test.editor.ai_state.active_profile, "alpha");
+}
+
+#[test]
+fn test_ai_chat_model_selector_cycle_updates_chat_profile() {
+    let mut test = EditorTest::new("hello world\n");
+    test.editor.ai_state.config.profiles.clear();
+
+    let mut alpha = test_profile("alpha", AiProviderKind::Ollama, "model-a");
+    alpha.base_url = Some("http://127.0.0.1:11434".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("alpha".to_string(), alpha);
+
+    let mut beta = test_profile("beta", AiProviderKind::Ollama, "model-b");
+    beta.base_url = Some("http://127.0.0.1:11434".to_string());
+    test.editor
+        .ai_state
+        .config
+        .profiles
+        .insert("beta".to_string(), beta);
+
+    test.editor.ai_state.active_profile = "alpha".to_string();
+    test.editor
+        .ai_state
+        .config
+        .contexts
+        .insert("chat".to_string(), "alpha".to_string());
+
+    test.keys("<Space>ai");
+    assert_eq!(test.editor.ai_chat_effective_profile(), "alpha");
+
+    test.press_key(KeyCode::Down);
+    test.press_key(KeyCode::Right);
+
+    assert_eq!(test.editor.ai_state.active_profile, "beta");
+    assert_eq!(test.editor.ai_chat_effective_profile(), "beta");
+    assert_eq!(
+        test.editor
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.opts.profile.as_deref()),
+        Some("beta")
+    );
 }
 
 #[test]

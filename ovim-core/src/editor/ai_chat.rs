@@ -27,13 +27,6 @@ impl Editor {
                 .insert(key, ConversationTree::new());
         }
 
-        // Set profile override if specified
-        if let Some(ref profile) = opts.profile {
-            if self.ai_state.config.resolve_profile(profile).is_some() {
-                self.ai_state.active_profile = profile.clone();
-            }
-        }
-
         // Send initial message if provided and conversation is empty
         let initial = opts.initial_message.clone();
         let buffer_clean = !self.buffer().is_modified();
@@ -318,6 +311,15 @@ impl Editor {
         }
         // Fallback to active profile
         Some(self.ai_state.active_profile.clone())
+    }
+
+    /// Effective profile currently used by the active chat session.
+    pub fn ai_chat_effective_profile(&self) -> String {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.opts.profile.clone())
+            .unwrap_or_else(|| self.ai_state.active_profile.clone())
     }
 
     // -----------------------------------------------------------------
