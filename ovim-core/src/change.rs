@@ -1484,7 +1484,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                 start_col -= 2;
                 break;
             } else if start_col >= 2
-                && (prev_ch == 'b' || prev_ch == 'o')
+                && (prev_ch == 'b' || prev_ch == 'B' || prev_ch == 'o' || prev_ch == 'O')
                 && chars[start_col - 2] == '0'
             {
                 start_col -= 2;
