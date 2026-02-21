@@ -564,6 +564,30 @@ fn test_ctrl_a_hex_cursor_on_hex_digit() {
     assert_eq!(test.buffer_content(), "val: 0x100\n");
 }
 
+#[test]
+fn test_ctrl_a_binary_uppercase_prefix_cursor_on_digit() {
+    let mut test = EditorTest::new("bits: 0B111");
+    test.keys("$");
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
+    assert_eq!(test.buffer_content(), "bits: 0b1000\n");
+}
+
+#[test]
+fn test_ctrl_a_octal_uppercase_prefix_cursor_on_digit() {
+    let mut test = EditorTest::new("perms: 0O7");
+    test.keys("$");
+    test.press_with(KeyCode::Char('a'), Modifiers::CONTROL);
+    assert_eq!(test.buffer_content(), "perms: 0o10\n");
+}
+
+#[test]
+fn test_ctrl_x_binary_uppercase_prefix_cursor_on_digit() {
+    let mut test = EditorTest::new("bits: 0B1000");
+    test.keys("$");
+    test.press_with(KeyCode::Char('x'), Modifiers::CONTROL);
+    assert_eq!(test.buffer_content(), "bits: 0b111\n");
+}
+
 // ============================================================================
 // OV-00037: Forward-only search when not on digit
 // ============================================================================

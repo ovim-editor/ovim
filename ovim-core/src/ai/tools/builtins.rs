@@ -4,6 +4,7 @@ use crate::ai::path_policy::{
 use crate::ai::scope::{Capabilities, RequiredScope, ScopeContext};
 use crate::ai::types::{DiagnosticFact, FileScope};
 use crate::editor::grep;
+use crate::unicode::byte_offset_for_grapheme;
 
 use super::{ParamType, SideEffect, ToolDefinition, ToolParam, ToolRegistry, ToolResult};
 
@@ -430,16 +431,20 @@ fn handle_read_selection(_args: &serde_json::Value, ctx: &ToolExecutionContext) 
 
     for i in start_line..=end_line {
         let line = lines[i];
+        let grapheme_col_to_byte = |col: usize| byte_offset_for_grapheme(line, col).unwrap_or(line.len());
         let slice = if i == start_line && i == end_line {
             // Single line selection
-            let sc = start_col.min(line.len());
-            let ec = end_col.min(line.len());
+            let mut sc = grapheme_col_to_byte(start_col);
+            let mut ec = grapheme_col_to_byte(end_col);
+            if sc > ec {
+                std::mem::swap(&mut sc, &mut ec);
+            }
             &line[sc..ec]
         } else if i == start_line {
-            let sc = start_col.min(line.len());
+            let sc = grapheme_col_to_byte(start_col);
             &line[sc..]
         } else if i == end_line {
-            let ec = end_col.min(line.len());
+            let ec = grapheme_col_to_byte(end_col);
             &line[..ec]
         } else {
             line
@@ -1368,6 +1373,20 @@ mod tests {
         match result {
             ToolResult::Success(s) => {
                 assert!(s.contains("world"));
+            }
+            ToolResult::Error(e) => panic!("expected success, got error: {e}"),
+        }
+    }
+
+    #[test]
+    fn read_selection_unicode_grapheme_boundaries() {
+        // Selection columns are grapheme-based; slicing must stay UTF-8 boundary-safe.
+        let mut ctx = test_ctx("a🙂b\nsecond line");
+        ctx.selection = Some((0, 1, 0, 2));
+        let result = execute_builtin("read_selection", &serde_json::json!({}), &ctx);
+        match result {
+            ToolResult::Success(s) => {
+                assert!(s.contains("🙂"));
             }
             ToolResult::Error(e) => panic!("expected success, got error: {e}"),
         }
