@@ -708,7 +708,8 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
     let line_len = grapheme_count(&line_text);
     let char_col = grapheme_to_char_col(&line_text, cursor_char_col);
     let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
-    let (_visual_row, sub_line) = wrap_map.cursor_to_visual(line_idx, disp_col, &line_text);
+    let (visual_row, _visual_col) = wrap_map.cursor_to_visual(line_idx, disp_col, &line_text);
+    let (_cursor_line, sub_line) = wrap_map.visual_to_logical(visual_row);
 
     let (screen_start, screen_end) = wrap_map
         .sub_line_display_range(&line_text, sub_line)
@@ -743,4 +744,44 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         .cursor_mut()
         .set_position(line_idx, target_col);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Modifiers;
+
+    #[test]
+    fn test_gj_preserves_visual_column_with_tab_and_nonuniform_wrap_segments() {
+        let mut editor = Editor::with_content("\t世b\n");
+
+        editor.ensure_wrap_map(5);
+
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, 0);
+        editor.set_pending_command('g');
+
+        try_handle(&mut editor, KeyEvent::new(KeyCode::Char('j'), Modifiers::NONE)).unwrap();
+
+        assert_eq!(editor.buffer().cursor().line(), 0);
+        assert_eq!(editor.buffer().cursor().col(), 1);
+    }
+
+    #[test]
+    fn test_g0_targets_wrap_segment_start_with_tab_and_nonuniform_wrap_segments() {
+        let mut editor = Editor::with_content("\t世b\n");
+
+        editor.ensure_wrap_map(5);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, 2);
+
+        let _ = move_to_screen_line_boundary(&mut editor, ScreenLineTarget::Start).unwrap();
+
+        assert_eq!(editor.buffer().cursor().line(), 0);
+        assert_eq!(editor.buffer().cursor().col(), 1);
+    }
 }
