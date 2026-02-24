@@ -2,9 +2,9 @@ use crate::{MouseButton, MouseEvent, MouseEventKind};
 use anyhow::Result;
 
 use crate::display::{char_display_width, display_col_to_char_col};
-use crate::unicode::{char_to_grapheme_col, grapheme_count};
 use crate::editor::Editor;
 use crate::mode::Mode;
+use crate::unicode::{char_to_grapheme_col, grapheme_count};
 
 /// Top-level mouse event dispatcher.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<()> {
@@ -48,8 +48,14 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
         return None;
     }
 
-    let text_width = editor.render_cache.last_text_width;
     let display_col_in_row = rel_col - gutter_width;
+    let line_text = |line: usize| {
+        editor
+            .buffer()
+            .line(line)
+            .map(|l| l.trim_end_matches('\n').to_string())
+            .unwrap_or_default()
+    };
 
     // Determine buffer line and full display column, accounting for wrap
     let (buffer_line, display_col) = if editor.options.wrap {
@@ -58,8 +64,12 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
             let absolute_visual_row = rel_row + viewport_visual_row;
             let (logical_line, sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             let line = logical_line.min(editor.buffer().line_count().saturating_sub(1));
-            // In wrap mode, display column = sub_line * wrap_width + col within row
-            let col = sub_line * text_width + display_col_in_row;
+            let row_text = line_text(line);
+            let (row_start, _) = wrap_map
+                .sub_line_display_range(&row_text, sub_line)
+                .unwrap_or((0, 0));
+            // In wrap mode, display columns are contiguous across segment starts.
+            let col = row_start + display_col_in_row;
             (line, col)
         } else {
             let line = (rel_row + editor.scroll_offset())
@@ -73,11 +83,7 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     };
 
     // Convert display column to character column using tab/wide-char aware function
-    let line_text = editor
-        .buffer()
-        .line(buffer_line)
-        .map(|l| l.trim_end_matches('\n').to_string())
-        .unwrap_or_default();
+    let line_text = line_text(buffer_line);
     let tab_width = editor.options.tab_width;
     let char_col = display_col_to_char_col(&line_text, display_col, tab_width);
     let grapheme_col = char_to_grapheme_col(&line_text, char_col);

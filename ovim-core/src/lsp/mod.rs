@@ -706,14 +706,11 @@ impl LspManager {
 
                     // Unversioned diagnostics arriving too soon after local edits can
                     // still be for older content (server race with newer didChange).
-                    let last_edit = self
-                        .last_local_edit
-                        .lock()
-                        .await
-                        .get(&uri)
-                        .copied();
+                    let last_edit = self.last_local_edit.lock().await.get(&uri).copied();
                     if let Some(edit_time) = last_edit {
-                        if edit_time.elapsed() < Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS) {
+                        if edit_time.elapsed()
+                            < Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS)
+                        {
                             crate::lsp_debug!(
                                 "DIAGNOSTICS",
                                 "Dropping unversioned diagnostics (recent local edit): server={} elapsed_ms={} uri={}",
@@ -944,6 +941,45 @@ mod tests {
             .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], None)
             .await;
 
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unversioned_diagnostics_accepted_after_local_changes_flushed() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
+
+        {
+            let mut versions = manager.document_versions.lock().await;
+            versions.insert(uri.clone(), 2);
+        }
+        {
+            let mut sent = manager.last_sent_versions.lock().await;
+            sent.insert(uri.clone(), 1);
+        }
+        {
+            let mut local_edit = manager.last_local_edit.lock().await;
+            let stable_time = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(2))
+                .expect("monotonic clock supports checked_sub");
+            local_edit.insert(uri.clone(), stable_time);
+        }
+
+        // Still drops before the latest version is marked as sent.
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], None)
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 0);
+
+        {
+            let mut sent = manager.last_sent_versions.lock().await;
+            sent.insert(uri.clone(), 2);
+        }
+
+        // Now that the document state is up to date, unversioned diagnostics should apply.
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], None)
+            .await;
         assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
     }
 

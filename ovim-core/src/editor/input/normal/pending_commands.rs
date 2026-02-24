@@ -5,9 +5,9 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{Editor, Motions, Operator, PendingChangeRepeat};
-use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -226,19 +226,23 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let disp_col =
                     crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
 
-                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col, &line_text);
+                let (visual_row, visual_col) =
+                    wrap_map.cursor_to_visual(line, disp_col, &line_text);
                 let target_row = visual_row + count;
                 let (new_line, sub_line) = wrap_map.visual_to_logical(
                     target_row.min(wrap_map.total_visual_lines().saturating_sub(1)),
                 );
-                // Compute target display col and convert back to char col
-                let target_disp_col =
-                    sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
                 let new_line_text = editor
                     .buffer()
                     .line(new_line)
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
+                // Compute target display col and convert back to char col
+                let (target_row_start, target_row_end) = wrap_map
+                    .sub_line_display_range(&new_line_text, sub_line)
+                    .unwrap_or((0, 0));
+                let target_disp_col = target_row_start
+                    + visual_col.min(target_row_end.saturating_sub(target_row_start));
                 let new_col = crate::display::display_col_to_char_col(
                     &new_line_text,
                     target_disp_col,
@@ -291,16 +295,20 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let disp_col =
                     crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
 
-                let (visual_row, _) = wrap_map.cursor_to_visual(line, disp_col, &line_text);
+                let (visual_row, visual_col) =
+                    wrap_map.cursor_to_visual(line, disp_col, &line_text);
                 let target_row = visual_row.saturating_sub(count);
                 let (new_line, sub_line) = wrap_map.visual_to_logical(target_row);
-                let target_disp_col =
-                    sub_line * wrap_map.wrap_width() + (disp_col % wrap_map.wrap_width());
                 let new_line_text = editor
                     .buffer()
                     .line(new_line)
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
+                let (target_row_start, target_row_end) = wrap_map
+                    .sub_line_display_range(&new_line_text, sub_line)
+                    .unwrap_or((0, 0));
+                let target_disp_col = target_row_start
+                    + visual_col.min(target_row_end.saturating_sub(target_row_start));
                 let new_col = crate::display::display_col_to_char_col(
                     &new_line_text,
                     target_disp_col,
@@ -691,21 +699,21 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         None => return Ok(()),
     };
     let tab_width = editor.options.tab_width;
-    let wrap_width = wrap_map.wrap_width().max(1);
 
     let line_text = editor
         .buffer()
         .line(line_idx)
         .map(|l| l.trim_end_matches('\n').to_string())
         .unwrap_or_default();
-    let line_disp_width: usize = crate::display::display_width(&line_text, tab_width);
     let line_len = grapheme_count(&line_text);
     let char_col = grapheme_to_char_col(&line_text, cursor_char_col);
     let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
     let (_visual_row, sub_line) = wrap_map.cursor_to_visual(line_idx, disp_col, &line_text);
 
-    let screen_start = sub_line * wrap_width;
-    let screen_end_exclusive = ((sub_line + 1) * wrap_width).min(line_disp_width.max(1));
+    let (screen_start, screen_end) = wrap_map
+        .sub_line_display_range(&line_text, sub_line)
+        .unwrap_or((0, 0));
+    let screen_end_exclusive = screen_end.max(1);
     let screen_end = screen_end_exclusive.saturating_sub(1);
 
     let target_disp_col = match target {
@@ -728,7 +736,8 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
 
     let target_char_col =
         crate::display::display_col_to_char_col(&line_text, target_disp_col, tab_width);
-    let target_col = char_to_grapheme_col(&line_text, target_char_col).min(line_len.saturating_sub(1));
+    let target_col =
+        char_to_grapheme_col(&line_text, target_char_col).min(line_len.saturating_sub(1));
     editor
         .buffer_mut()
         .cursor_mut()
