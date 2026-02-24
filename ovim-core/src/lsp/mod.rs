@@ -984,6 +984,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_versioned_diagnostics_stale_when_before_current_document_version() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
+
+        {
+            let mut versions = manager.document_versions.lock().await;
+            versions.insert(uri.clone(), 4);
+        }
+        {
+            let mut sent = manager.last_sent_versions.lock().await;
+            sent.insert(uri.clone(), 4);
+        }
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(2))
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 0);
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(4))
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_last_local_edit_cleanup_on_did_close_broadcast() {
         let manager = LspManager::new();
         let uri: Uri = "file:///test.rs".parse().unwrap();
