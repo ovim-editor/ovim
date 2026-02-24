@@ -892,4 +892,75 @@ mod tests {
             .await;
         assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_unversioned_diagnostics_dropped_just_after_local_edit() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
+
+        {
+            let mut versions = manager.document_versions.lock().await;
+            versions.insert(uri.clone(), 2);
+        }
+        {
+            let mut sent = manager.last_sent_versions.lock().await;
+            sent.insert(uri.clone(), 2);
+        }
+        {
+            let mut local_edit = manager.last_local_edit.lock().await;
+            local_edit.insert(uri.clone(), std::time::Instant::now());
+        }
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], None)
+            .await;
+
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_unversioned_diagnostics_accepted_after_settle() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
+
+        {
+            let mut versions = manager.document_versions.lock().await;
+            versions.insert(uri.clone(), 2);
+        }
+        {
+            let mut sent = manager.last_sent_versions.lock().await;
+            sent.insert(uri.clone(), 2);
+        }
+        {
+            let mut local_edit = manager.last_local_edit.lock().await;
+            let settle = std::time::Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS + 1);
+            let stable_time = std::time::Instant::now()
+                .checked_sub(settle)
+                .expect("monotonic clock supports checked_sub");
+            local_edit.insert(uri.clone(), stable_time);
+        }
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], None)
+            .await;
+
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_last_local_edit_cleanup_on_did_close_broadcast() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///test.rs".parse().unwrap();
+
+        manager
+            .last_local_edit
+            .lock()
+            .await
+            .insert(uri.clone(), std::time::Instant::now());
+
+        let _ = manager.did_close_broadcast(uri.clone(), "rust").await;
+
+        assert!(manager.last_local_edit.lock().await.get(&uri).is_none());
+        assert!(manager.get_diagnostics(&uri).await.is_empty());
+    }
 }
