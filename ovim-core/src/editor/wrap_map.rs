@@ -224,6 +224,59 @@ impl WrapMap {
         (base_row + sub_line, visual_col)
     }
 
+    /// Returns the absolute display-column range for a wrapped sub-line.
+    ///
+    /// The start and end are in global display columns on the source line, where
+    /// `sub_line` is the index of the wrapped visual segment.
+    /// Returns `None` if `sub_line` is out of range.
+    pub fn sub_line_display_range(
+        &self,
+        line_text: &str,
+        sub_line: usize,
+    ) -> Option<(usize, usize)> {
+        let wrap_points =
+            crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
+        if wrap_points.is_empty() {
+            if sub_line == 0 {
+                let end = crate::display::display_width(line_text, self.tab_width.max(1));
+                return Some((0, end));
+            }
+            return None;
+        }
+
+        let mut starts = Vec::with_capacity(wrap_points.len() + 1);
+        starts.push(0);
+        let mut wp_idx = 0;
+        let mut current_display = 0;
+        let tab_width = self.tab_width.max(1);
+
+        for (char_idx, ch) in line_text.chars().enumerate() {
+            if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
+                starts.push(current_display);
+                wp_idx += 1;
+            }
+            let ch_width = if ch == '\t' {
+                tab_width - (current_display % tab_width)
+            } else {
+                crate::display::char_display_width(ch)
+            };
+            current_display += ch_width;
+        }
+
+        if sub_line >= starts.len() {
+            return None;
+        }
+
+        let start = starts[sub_line];
+        let end = if sub_line + 1 < starts.len() {
+            starts[sub_line + 1]
+        } else {
+            current_display
+        };
+
+        Some((start, end))
+    }
+
     /// Counts total visual lines from `start_line` to `end_line` (exclusive).
     pub fn visual_lines_in_range(&self, start_line: usize, end_line: usize) -> usize {
         let start = self.visual_offsets.get(start_line).copied().unwrap_or(0);
@@ -491,5 +544,32 @@ mod tests {
         // Line 1: 1 visual row (base_row 2)
         assert_eq!(map.cursor_to_visual(1, 0, l1), (2, 0));
         assert_eq!(map.cursor_to_visual(1, 2, l1), (2, 2));
+    }
+
+    #[test]
+    fn test_sub_line_display_range_ascii_wrap() {
+        let map = WrapMap::new(1, 5, 4, 0, make_text(&["abcdefghij"]));
+        assert_eq!(map.sub_line_display_range("abcdefghij", 0), Some((0, 5)));
+        assert_eq!(map.sub_line_display_range("abcdefghij", 1), Some((5, 10)));
+        assert_eq!(map.sub_line_display_range("abcdefghij", 2), None);
+    }
+
+    #[test]
+    fn test_sub_line_display_range_wide_chars() {
+        // "世世世" with width 3 -> each wide char (2 cols) is wrapped separately.
+        let map = WrapMap::new(1, 3, 4, 0, make_text(&["世世世"]));
+        assert_eq!(map.sub_line_display_range("世世世", 0), Some((0, 2)));
+        assert_eq!(map.sub_line_display_range("世世世", 1), Some((2, 4)));
+        assert_eq!(map.sub_line_display_range("世世世", 2), Some((4, 6)));
+    }
+
+    #[test]
+    fn test_sub_line_display_range_tabs() {
+        // Wrap width 4, tab width 4: "\ta" -> [tab(4), "a"] -> wrap between entries
+        let map = WrapMap::new(1, 4, 4, 0, make_text(&["\ta"]));
+        assert_eq!(map.sub_line_display_range("\ta", 0), Some((0, 4)));
+        assert_eq!(map.sub_line_display_range("\ta", 1), Some((4, 5)));
+        assert_eq!(map.sub_line_display_range("", 0), Some((0, 0)));
+        assert_eq!(map.sub_line_display_range("", 1), None);
     }
 }

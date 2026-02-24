@@ -198,10 +198,10 @@ impl Default for EditorOptions {
 }
 
 use crate::buffer::Buffer;
-use crate::unicode::grapheme_to_char_col;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
+use crate::unicode::grapheme_to_char_col;
 use anyhow::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -733,11 +733,8 @@ impl Editor {
     }
 
     fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: usize) -> usize {
-        let line_text = self
-            .buffer()
-            .line(line_idx)
-            .unwrap_or_default()
-            .trim_end_matches('\n');
+        let line = self.buffer().line(line_idx).unwrap_or_default();
+        let line_text = line.trim_end_matches('\n');
         grapheme_to_char_col(line_text, grapheme_col)
     }
 
@@ -832,7 +829,8 @@ impl Editor {
                 // Wrap-aware scrolling: work in visual rows
                 // Get the display column for proper sub-line calculation
                 let line_text = self.cursor_line_text(cursor_line);
-                let cursor_char_col = self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
+                let cursor_char_col =
+                    self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
                 let disp_col = crate::display::char_col_to_display_col(
                     &line_text,
                     cursor_char_col,
@@ -909,7 +907,8 @@ impl Editor {
         // Convert char column to display column for proper horizontal scrolling
         let cursor_line = self.buffer().cursor().line();
         let tab_width = self.options.tab_width;
-        let cursor_char_col = self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
+        let cursor_char_col =
+            self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
         let cursor_display_col = {
             let line_text = self.buffer().line(cursor_line).unwrap_or_default();
             crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width)
@@ -1599,10 +1598,7 @@ impl Editor {
             }
             Mode::AiChat => {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
-                    if matches!(
-                        chat.focus,
-                        crate::ai::chat_types::ChatFocus::TextInput
-                    ) {
+                    if matches!(chat.focus, crate::ai::chat_types::ChatFocus::TextInput) {
                         chat.input.insert_str(chat.input_cursor, text);
                         chat.input_cursor += text.len();
                     }
