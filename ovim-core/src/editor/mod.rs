@@ -198,6 +198,7 @@ impl Default for EditorOptions {
 }
 
 use crate::buffer::Buffer;
+use crate::unicode::grapheme_to_char_col;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
@@ -699,27 +700,17 @@ impl Editor {
         // so the wrap map covers all valid cursor positions.
         let line_count = self.buffer().rope().len_lines();
         let buf_version = self.buffer().version();
-
-        // Check if existing map is up to date or can be incrementally updated
-        let needs_action = if let Some(ref map) = self.viewport.wrap_map {
+        if let Some(ref map) = self.viewport.wrap_map {
             if map.buffer_version() == buf_version
                 && map.wrap_width() == width
                 && map.line_count() == line_count
             {
-                return; // Already up to date
+                // Already up to date
+                return;
             }
-            if map.wrap_width() == width && map.line_count() == line_count {
-                // Only buffer content changed — can use incremental update
-                Some(true) // incremental
-            } else {
-                Some(false) // full rebuild
-            }
-        } else {
-            None // no map yet
-        };
+        }
 
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
-        let cursor_line = self.buffer().cursor().line();
         let rope = self.buffer().rope().clone();
         let make_line_text = |line_idx: usize| -> String {
             if line_idx < rope.len_lines() {
@@ -731,26 +722,31 @@ impl Editor {
             }
         };
 
-        match needs_action {
-            Some(true) => {
-                // Incremental: only invalidate cursor line
-                if let Some(map) = self.viewport.wrap_map.as_mut() {
-                    map.invalidate_line(cursor_line, make_line_text);
-                    map.set_buffer_version(buf_version);
-                }
-            }
-            Some(false) => {
-                // Full rebuild (width or line count changed)
-                if let Some(map) = self.viewport.wrap_map.as_mut() {
-                    map.rebuild(line_count, width, tab_width, buf_version, make_line_text);
-                }
-            }
-            None => {
-                // Build from scratch
-                let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_text);
-                self.viewport.wrap_map = Some(map);
-            }
+        if let Some(map) = self.viewport.wrap_map.as_mut() {
+            // On any version mismatch, full rebuild to avoid stale wrap rows.
+            map.rebuild(line_count, width, tab_width, buf_version, make_line_text);
+        } else {
+            // Build from scratch
+            let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_text);
+            self.viewport.wrap_map = Some(map);
         }
+    }
+
+    fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: usize) -> usize {
+        let line_text = self
+            .buffer()
+            .line(line_idx)
+            .unwrap_or_default()
+            .trim_end_matches('\n');
+        grapheme_to_char_col(line_text, grapheme_col)
+    }
+
+    fn cursor_line_text(&self, line_idx: usize) -> String {
+        self.buffer()
+            .line(line_idx)
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string()
     }
 
     /// Gets the horizontal scroll offset (leftmost visible column)
@@ -834,17 +830,12 @@ impl Editor {
         if wrap_map_usable {
             if let Some(ref wrap_map) = self.viewport.wrap_map {
                 // Wrap-aware scrolling: work in visual rows
-                let cursor_col = self.buffer().cursor().col();
                 // Get the display column for proper sub-line calculation
-                let line_text = if cursor_line < self.buffer().line_count() {
-                    let text = self.buffer().rope().line(cursor_line).to_string();
-                    text.trim_end_matches('\n').to_string()
-                } else {
-                    String::new()
-                };
+                let line_text = self.cursor_line_text(cursor_line);
+                let cursor_char_col = self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
                 let disp_col = crate::display::char_col_to_display_col(
                     &line_text,
-                    cursor_col,
+                    cursor_char_col,
                     self.options.tab_width,
                 );
                 let (cursor_visual_row, _) =
@@ -916,12 +907,12 @@ impl Editor {
 
         // Extract cursor column and options before mutably borrowing window_manager
         // Convert char column to display column for proper horizontal scrolling
-        let cursor_col = self.buffer().cursor().col();
         let cursor_line = self.buffer().cursor().line();
         let tab_width = self.options.tab_width;
+        let cursor_char_col = self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
         let cursor_display_col = {
             let line_text = self.buffer().line(cursor_line).unwrap_or_default();
-            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width)
+            crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width)
         };
         let wrap = self.options.wrap;
         let sidescroll = self.options.sidescroll;
@@ -1023,15 +1014,15 @@ impl Editor {
         }
 
         // Compute cursor sub-line within its logical line.
-        let cursor_col = self.buffer().cursor().col();
         let line_text = self
             .buffer()
             .line(cursor_line)
             .unwrap_or_default()
             .trim_end_matches('\n')
             .to_string();
+        let cursor_char_col = grapheme_to_char_col(&line_text, self.buffer().cursor().col());
         let cursor_display_col =
-            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width);
+            crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width);
         let cursor_subline = Self::cursor_subline_in_wrapped_line(
             &line_text,
             cursor_display_col,

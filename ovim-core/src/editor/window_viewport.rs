@@ -435,7 +435,8 @@ impl Editor {
         let tab_width = self.options.tab_width;
         let cursor_display_col = {
             let line_text = self.buffer().line(cursor_line).unwrap_or_default();
-            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width)
+            let char_col = crate::unicode::grapheme_to_char_col(&line_text, cursor_col);
+            crate::display::char_col_to_display_col(&line_text, char_col, tab_width)
         };
 
         if let Some(wm) = &mut self.window_manager {
@@ -460,7 +461,8 @@ impl Editor {
         let tab_width = self.options.tab_width;
         let cursor_display_col = {
             let line_text = self.buffer().line(cursor_line).unwrap_or_default();
-            crate::display::char_col_to_display_col(&line_text, cursor_col, tab_width)
+            let char_col = crate::unicode::grapheme_to_char_col(&line_text, cursor_col);
+            crate::display::char_col_to_display_col(&line_text, char_col, tab_width)
         };
 
         if let Some(wm) = &mut self.window_manager {

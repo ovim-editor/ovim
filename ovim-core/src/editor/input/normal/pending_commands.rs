@@ -5,6 +5,7 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{Editor, Motions, Operator, PendingChangeRepeat};
+use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent};
@@ -206,7 +207,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if let Some(wrap_map) = editor.wrap_map() {
                 let cursor = editor.buffer().cursor();
                 let line = cursor.line();
-                let char_col = cursor.col();
+                let char_col = grapheme_to_char_col(
+                    &editor
+                        .buffer()
+                        .line(line)
+                        .map(|l| l.trim_end_matches('\n').to_string())
+                        .unwrap_or_default(),
+                    cursor.col(),
+                );
                 let tab_width = editor.options.tab_width;
 
                 // Convert char col to display col for wrap map operations
@@ -237,11 +245,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     tab_width,
                 );
                 // Clamp col to line length
-                let max_col = new_line_text.chars().count().saturating_sub(1);
+                let max_col = grapheme_count(&new_line_text).saturating_sub(1);
+                let target_gcol = char_to_grapheme_col(&new_line_text, new_col);
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(new_line, new_col.min(max_col));
+                    .set_position(new_line, target_gcol.min(max_col));
             } else {
                 // No wrap map - fall back to regular j motion
                 for _ in 0..count {
@@ -264,7 +273,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if let Some(wrap_map) = editor.wrap_map() {
                 let cursor = editor.buffer().cursor();
                 let line = cursor.line();
-                let char_col = cursor.col();
+                let char_col = grapheme_to_char_col(
+                    &editor
+                        .buffer()
+                        .line(line)
+                        .map(|l| l.trim_end_matches('\n').to_string())
+                        .unwrap_or_default(),
+                    cursor.col(),
+                );
                 let tab_width = editor.options.tab_width;
 
                 let line_text = editor
@@ -290,11 +306,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     target_disp_col,
                     tab_width,
                 );
-                let max_col = new_line_text.chars().count().saturating_sub(1);
+                let max_col = grapheme_count(&new_line_text).saturating_sub(1);
+                let target_gcol = char_to_grapheme_col(&new_line_text, new_col);
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(new_line, new_col.min(max_col));
+                    .set_position(new_line, target_gcol.min(max_col));
             } else {
                 // No wrap map - fall back to regular k motion
                 for _ in 0..count {
@@ -643,7 +660,7 @@ enum ScreenLineTarget {
 fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
-    let char_col = cursor.col();
+    let cursor_char_col = cursor.col();
 
     // Without wrap map, g0/g^/g$/gm reduce to logical line semantics.
     if !editor.options.wrap || editor.wrap_map().is_none() {
@@ -652,7 +669,7 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
             .line(line_idx)
             .map(|l| l.trim_end_matches('\n').to_string())
             .unwrap_or_default();
-        let len = line_text.chars().count();
+        let len = grapheme_count(&line_text);
         let target_col = match target {
             ScreenLineTarget::Start => 0,
             ScreenLineTarget::FirstNonBlank => line_text
@@ -681,10 +698,9 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         .line(line_idx)
         .map(|l| l.trim_end_matches('\n').to_string())
         .unwrap_or_default();
-    let line_disp_width: usize = line_text
-        .chars()
-        .map(crate::display::char_display_width)
-        .sum();
+    let line_disp_width: usize = crate::display::display_width(&line_text, tab_width);
+    let line_len = grapheme_count(&line_text);
+    let char_col = grapheme_to_char_col(&line_text, cursor_char_col);
     let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
     let (_visual_row, sub_line) = wrap_map.cursor_to_visual(line_idx, disp_col, &line_text);
 
@@ -710,8 +726,9 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         }
     };
 
-    let target_col =
+    let target_char_col =
         crate::display::display_col_to_char_col(&line_text, target_disp_col, tab_width);
+    let target_col = char_to_grapheme_col(&line_text, target_char_col).min(line_len.saturating_sub(1));
     editor
         .buffer_mut()
         .cursor_mut()
