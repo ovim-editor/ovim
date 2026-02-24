@@ -243,6 +243,10 @@ impl LspManager {
             *v += 1;
             *v
         };
+        {
+            let mut local_edits = self.last_local_edit.lock().await;
+            local_edits.insert(uri.clone(), std::time::Instant::now());
+        }
 
         // Get or create debouncer for this document atomically.
         let debouncer_arc = self
@@ -337,6 +341,7 @@ impl LspManager {
 
         // Remove debouncer for this document
         self.change_debouncers.remove(&uri);
+        self.last_local_edit.lock().await.remove(&uri);
 
         // Note: We keep diagnostics - they should remain visible even after file is closed
 
@@ -526,6 +531,7 @@ impl LspManager {
         versions.remove(&uri);
         drop(versions);
         self.change_debouncers.remove(&uri);
+        self.last_local_edit.lock().await.remove(&uri);
 
         Ok(())
     }

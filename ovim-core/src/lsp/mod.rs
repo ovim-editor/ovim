@@ -44,6 +44,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -62,6 +63,11 @@ const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 /// (Reserved for future message size validation)
 #[allow(dead_code)]
 const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
+
+/// Unversioned diagnostics can arrive out-of-date during rapid edits/saves.
+/// Keep them suppressed briefly after local edits until LSP has a chance to
+/// compute diagnostics for the latest content.
+const UNVERSIONED_DIAGNOSTICS_SETTLE_MS: u64 = 150;
 
 /// Debounce duration for textDocument/didChange notifications (milliseconds)
 /// Coalesces rapid changes to reduce LSP traffic by ~1000x
@@ -163,6 +169,11 @@ pub struct LspManager {
     /// unversioned diagnostics must have been computed against old content.
     last_sent_versions: Mutex<HashMap<Uri, i32>>,
 
+    /// Last local edit time per document (for unversioned diagnostics staleness).
+    /// If an unversioned publishDiagnostics arrives right after this timestamp,
+    /// it may refer to pre-change content and should be ignored.
+    last_local_edit: Mutex<HashMap<Uri, Instant>>,
+
     /// Channel for receiving notifications from language servers (bounded to prevent memory issues)
     notification_tx: mpsc::Sender<LspNotification>,
     notification_rx: Mutex<mpsc::Receiver<LspNotification>>,
@@ -234,6 +245,7 @@ impl LspManager {
             merged_diagnostics_cache: Mutex::new(HashMap::new()),
             document_versions: Mutex::new(HashMap::new()),
             last_sent_versions: Mutex::new(HashMap::new()),
+            last_local_edit: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
             change_debouncers: DashMap::new(),
@@ -690,6 +702,27 @@ impl LspManager {
                             current_version
                         );
                         return;
+                    }
+
+                    // Unversioned diagnostics arriving too soon after local edits can
+                    // still be for older content (server race with newer didChange).
+                    let last_edit = self
+                        .last_local_edit
+                        .lock()
+                        .await
+                        .get(&uri)
+                        .copied();
+                    if let Some(edit_time) = last_edit {
+                        if edit_time.elapsed() < Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS) {
+                            crate::lsp_debug!(
+                                "DIAGNOSTICS",
+                                "Dropping unversioned diagnostics (recent local edit): server={} elapsed_ms={} uri={}",
+                                server_id,
+                                edit_time.elapsed().as_millis(),
+                                uri.as_str()
+                            );
+                            return;
+                        }
                     }
                 }
             }
