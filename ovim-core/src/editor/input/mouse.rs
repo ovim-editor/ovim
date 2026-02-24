@@ -2,6 +2,7 @@ use crate::{MouseButton, MouseEvent, MouseEventKind};
 use anyhow::Result;
 
 use crate::display::{char_display_width, display_col_to_char_col};
+use crate::unicode::{char_to_grapheme_col, grapheme_count};
 use crate::editor::Editor;
 use crate::mode::Mode;
 
@@ -79,15 +80,16 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
         .unwrap_or_default();
     let tab_width = editor.options.tab_width;
     let char_col = display_col_to_char_col(&line_text, display_col, tab_width);
+    let grapheme_col = char_to_grapheme_col(&line_text, char_col);
 
     // Clamp to line length (Normal mode: last char, Insert mode: past last char)
-    let line_len = line_text.chars().count();
+    let line_len = grapheme_count(&line_text);
     let max_col = if editor.mode() == Mode::Insert {
         line_len
     } else {
         line_len.saturating_sub(1)
     };
-    let clamped_col = char_col.min(max_col);
+    let clamped_col = grapheme_col.min(max_col);
 
     Some((buffer_line, clamped_col))
 }
