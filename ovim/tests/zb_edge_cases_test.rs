@@ -56,6 +56,39 @@ fn test_zb_at_end_of_file() {
 }
 
 #[test]
+fn test_zb_large_count_is_clamped_at_eof() {
+    // 50 lines (0-49), viewport 20 lines.
+    // Large count on `zb` should still keep cursor visible and avoid setting
+    // scroll offset past the file.
+    let content = (1..=50)
+        .map(|i| format!("Line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut test = EditorTest::new(&content);
+    test.editor.init_window_manager(80, 20);
+    test.editor.set_viewport_height(20);
+
+    // Move to last line (49) and use a large count value.
+    test.keys("G");
+    test.keys("20zb");
+
+    let after = ViewportAssertion::new(&test.editor);
+    assert_eq!(after.cursor_line(), 49, "Cursor should stay on last line");
+    assert_eq!(
+        after.scroll_offset(),
+        30,
+        "20zb at EOF should clamp scroll offset to the last valid value."
+    );
+    let bottom_pos = test.editor.viewport_height().saturating_sub(1);
+    assert_eq!(
+        after.line_at_viewport_position(bottom_pos),
+        49,
+        "Last line should still be visible at the bottom row when possible."
+    );
+}
+
+#[test]
 fn test_zb_then_j_at_end() {
     // This reproduces the reported bug:
     // "When I `j` to the bottom of the buffer and type `zb` it 'scrolls up' by one"
