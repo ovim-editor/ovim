@@ -286,22 +286,20 @@ fn test_percent_register_filename() {
 
     test.set_file_path("test.txt".to_string()).keys("\"%p"); // Paste filename after 't'
 
-    // TODO: % register (filename) not implemented - p has no effect
-    // When implemented, should be: "ttest.txtest content"
-    assert_eq!(test.buffer_content(), "test content\n");
-    test.assert_cursor(0, 0);
+    // % register resolves to current buffer path.
+    assert_eq!(test.buffer_content(), "ttest.txtest content\n");
+    test.assert_cursor(0, 8);
 }
 
 #[test]
 fn test_colon_register_last_command() {
     let mut test = EditorTest::new("test");
 
-    test.press(':').type_text("w").press_esc().keys("\":p"); // Paste last command after 't'
+    test.press(':').type_text("w").press_enter().keys("\":p"); // Paste last command after 't'
 
-    // TODO: : register (last command) not implemented - p has no effect
-    // When implemented, should be: "twest"
-    assert_eq!(test.buffer_content(), "test\n");
-    test.assert_cursor(0, 0);
+    // : register is the last command.
+    assert_eq!(test.buffer_content(), "twest\n");
+    test.assert_cursor(0, 1);
 }
 
 #[test]
@@ -314,10 +312,9 @@ fn test_dot_register_last_insert() {
         .keys("$") // End of line (cursor on 'e')
         .keys("\".p"); // Paste last inserted text after 'e'
 
-    // TODO: . register (last insert) not implemented - p has no effect
-    // When implemented, should be: "INSERTEDlineINSERTED"
-    assert_eq!(test.buffer_content(), "INSERTEDline\n");
-    test.assert_cursor(0, 11);
+    // . register is the last inserted text.
+    assert_eq!(test.buffer_content(), "INSERTEDlineINSERTED\n");
+    test.assert_cursor(0, 19);
 }
 
 // ============================================================================
@@ -368,10 +365,9 @@ fn test_slash_register_search_pattern() {
         .press_enter() // Search jumps to "world", cursor at 'w' (position 6)
         .keys("\"/p"); // Paste search pattern after 'w'
 
-    // TODO: / register (search pattern) not implemented - p has no effect
-    // When implemented, should paste "world" after 'w'
-    assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 6);
+    // / register is the latest search pattern.
+    assert_eq!(test.buffer_content(), "hello wworldorld\n");
+    test.assert_cursor(0, 11);
 }
 
 // ============================================================================

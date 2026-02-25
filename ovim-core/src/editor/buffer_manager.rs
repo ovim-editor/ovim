@@ -40,6 +40,13 @@ impl Editor {
         &mut self.buffers[self.current_buffer_index]
     }
 
+    /// Sets the current buffer file path and updates the % register
+    /// to keep register-based file operations in sync with the buffer path.
+    pub fn set_file_path(&mut self, path: String) {
+        self.buffer_mut().set_file_path(path.clone());
+        self.registers.set_current_file(path);
+    }
+
     /// Gets the number of open buffers
     pub fn buffer_count(&self) -> usize {
         self.buffers.len()
