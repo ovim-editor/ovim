@@ -1203,15 +1203,28 @@ pub fn render_buffer(
             let remapped_diagnostics: Vec<RemappedDiagnostic> = line_diagnostics
                 .iter()
                 .filter_map(|d| {
+                    // This renderer only handles diagnostics that start on this line.
+                    // LSP ranges for multi-line diagnostics are line-relative, so
+                    // clamp the end to line length instead of using end.character.
+                    if d.range.start.line as usize != line_idx {
+                        return None;
+                    }
+
                     // Convert UTF-16 offsets to char indices, then remap through expansion
                     let start_char = utf16_offset_to_char_idx(
                         line_text_original,
                         d.range.start.character as usize,
                     );
-                    let end_char = utf16_offset_to_char_idx(
-                        line_text_original,
-                        d.range.end.character as usize,
-                    );
+                    let line_char_count_for_diag = line_text_original.chars().count();
+                    let end_char = if d.range.end.line as usize > line_idx {
+                        line_char_count_for_diag
+                    } else {
+                        utf16_offset_to_char_idx(
+                            line_text_original,
+                            d.range.end.character as usize,
+                        )
+                        .min(line_char_count_for_diag)
+                    };
                     let color = match d.severity {
                         Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
                         Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
@@ -1221,6 +1234,14 @@ pub fn render_buffer(
                     };
                     let expanded_start = remap_char_col(start_char, &char_mapping);
                     let expanded_end = remap_char_col(end_char, &char_mapping);
+                    let (expanded_start, expanded_end) = if expanded_start <= expanded_end {
+                        (expanded_start, expanded_end)
+                    } else {
+                        (expanded_end, expanded_start)
+                    };
+                    if expanded_start == expanded_end {
+                        return None;
+                    }
 
                     // Adjust for horizontal viewport in nowrap mode
                     if !wrap {
@@ -1233,14 +1254,20 @@ pub fn render_buffer(
                             return None;
                         }
                         let offset_adj = if precedes { 1 } else { 0 };
-                        let sliced_start = display_col_to_char_idx(
+                        let mut sliced_start = display_col_to_char_idx(
                             &line_text,
                             start_display.saturating_sub(h_offset) + offset_adj,
                         );
-                        let sliced_end = display_col_to_char_idx(
+                        let mut sliced_end = display_col_to_char_idx(
                             &line_text,
                             end_display.saturating_sub(h_offset) + offset_adj,
                         );
+                        if sliced_start > sliced_end {
+                            std::mem::swap(&mut sliced_start, &mut sliced_end);
+                        }
+                        if sliced_start == sliced_end {
+                            return None;
+                        }
                         Some(RemappedDiagnostic {
                             start: sliced_start,
                             end: sliced_end,
@@ -1858,6 +1885,10 @@ pub fn render_line_with_highlights(
     for d in diagnostics {
         let s = d.start.min(num_chars);
         let e = d.end.min(num_chars);
+        let (s, e) = if s <= e { (s, e) } else { (e, s) };
+        if s == e {
+            continue;
+        }
         for slot in diag_per_char[s..e].iter_mut() {
             if slot.is_none() {
                 *slot = Some(d.color);
