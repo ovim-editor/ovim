@@ -1414,9 +1414,11 @@ impl Editor {
                     parent.display()
                 ));
             }
+            let target_path = absolute_path.to_string_lossy().to_string();
             let mut buffer = crate::buffer::Buffer::new();
-            buffer.set_file_path(absolute_path.to_string_lossy().to_string());
+            buffer.set_file_path(target_path.clone());
             self.add_buffer(buffer);
+            self.set_file_path(target_path);
         } else if !absolute_path.is_file() {
             return ToolResult::Error(format!(
                 "'{}' is not a file. Use list_files to see available files.",
@@ -3433,9 +3435,9 @@ mod tests {
     #[test]
     fn open_file_with_create_opens_missing_target() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        runtime.block_on(async {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let target = dir.path().join("new_file.rs");
+            runtime.block_on(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let target = dir.path().join("new_file.rs");
 
             let mut editor = Editor::default();
             editor
@@ -3477,6 +3479,7 @@ mod tests {
                 .buffer()
                 .file_path()
                 .is_some_and(|p| p.ends_with("new_file.rs")));
+            assert_eq!(editor.registers().get(Some('%')), target.to_string_lossy().to_string());
         });
     }
 

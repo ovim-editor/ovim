@@ -388,8 +388,8 @@ impl Editor {
     /// Opens a file, switching to existing buffer if already open
     /// or creating a new buffer if not
     pub fn open_file<P: AsRef<std::path::Path>>(&mut self, path: P) -> Result<()> {
+        let path = path.as_ref();
         let path_str = path
-            .as_ref()
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid file path"))?;
 
@@ -402,7 +402,36 @@ impl Editor {
 
         // File not open, load it
         let buffer = Buffer::load_file(path)?;
+        if let Some(file_path) = buffer.file_path() {
+            self.registers.set_current_file(file_path.to_string());
+        } else {
+            self.registers.set_current_file(path_str.to_string());
+        }
         self.add_buffer(buffer);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn open_file_updates_current_file_register() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("main.rs");
+
+        fs::write(&file, "hello\n").expect("write file");
+        let expected_path = file
+            .canonicalize()
+            .expect("canonicalize")
+            .to_string_lossy()
+            .to_string();
+
+        let mut editor = Editor::default();
+        editor.open_file(&file).expect("open file");
+
+        assert_eq!(editor.registers().get(Some('%')), expected_path);
     }
 }
