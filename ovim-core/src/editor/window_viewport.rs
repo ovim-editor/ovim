@@ -245,6 +245,8 @@ impl Editor {
             self.init_window_manager(80, 24);
         }
 
+        let buffer_line_count = self.buffer().line_count();
+
         // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
@@ -256,6 +258,12 @@ impl Editor {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
                 window.center_cursor();
+
+                let max_scroll_offset = buffer_line_count.saturating_sub(window.height() as usize);
+                let scroll_offset = window.scroll_offset();
+                if scroll_offset > max_scroll_offset {
+                    window.set_scroll_offset(max_scroll_offset);
+                }
             }
         }
 
