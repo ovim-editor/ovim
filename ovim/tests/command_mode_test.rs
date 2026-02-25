@@ -1,6 +1,7 @@
 mod helpers;
 
 use helpers::EditorTest;
+use ovim::editor::InputHandler;
 use ovim_core::KeyCode;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -322,6 +323,24 @@ fn test_command_yank() {
     test.press_enter();
 
     test.assert_mode(ovim::mode::Mode::Normal);
+}
+
+#[test]
+fn test_command_copy_missing_mark_reports_e20() {
+    let mut test = EditorTest::new("a\nb\nc\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "1 copy 'z").unwrap();
+
+    assert_eq!(test.editor.lsp_status(), "E20: Mark not set");
+}
+
+#[test]
+fn test_command_move_missing_mark_reports_e20() {
+    let mut test = EditorTest::new("a\nb\nc\n");
+
+    InputHandler::execute_command_string(&mut test.editor, "%move 'z").unwrap();
+
+    assert_eq!(test.editor.lsp_status(), "E20: Mark not set");
 }
 
 /// Test :set command
