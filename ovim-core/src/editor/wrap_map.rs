@@ -180,7 +180,13 @@ impl WrapMap {
             crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
 
         if wrap_points.is_empty() {
-            return (base_row, col);
+            if col < self.wrap_width {
+                return (base_row, col);
+            }
+            // Insert-mode cursor past the right edge (e.g. col == wrap_width
+            // when the line exactly fills the row). Compute virtual sub-row.
+            let sub = col / self.wrap_width;
+            return (base_row + sub, col % self.wrap_width);
         }
 
         // Walk characters, tracking display columns per wrap segment.
@@ -212,7 +218,13 @@ impl WrapMap {
         }
 
         let visual_col = col - segment_start_display;
-        (base_row + sub_line, visual_col)
+        if visual_col >= self.wrap_width {
+            // Insert-mode cursor past the right edge of the last segment
+            let extra = visual_col / self.wrap_width;
+            (base_row + sub_line + extra, visual_col % self.wrap_width)
+        } else {
+            (base_row + sub_line, visual_col)
+        }
     }
 
     /// Simpler cursor_to_visual that works like the old API when line text isn't available.
@@ -544,6 +556,27 @@ mod tests {
         // Line 1: 1 visual row (base_row 2)
         assert_eq!(map.cursor_to_visual(1, 0, l1), (2, 0));
         assert_eq!(map.cursor_to_visual(1, 2, l1), (2, 2));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_insert_at_exact_wrap_boundary() {
+        // Line exactly fills wrap_width — insert cursor at col == wrap_width
+        // should map to (next_row, 0), not (same_row, wrap_width)
+        let text = "abcde"; // 5 chars, wrap_width = 5 → no wrap points
+        let map = WrapMap::new(1, 5, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 1);
+        // Insert mode cursor one past the last char
+        assert_eq!(map.cursor_to_visual(0, 5, text), (1, 0));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_insert_at_wrapped_segment_boundary() {
+        // 10 chars, wrap at 5. Last segment "fghij" exactly fills row 1.
+        // Insert cursor at col 10 should go to (row 2, col 0).
+        let text = "abcdefghij";
+        let map = WrapMap::new(1, 5, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 2);
+        assert_eq!(map.cursor_to_visual(0, 10, text), (2, 0));
     }
 
     #[test]
