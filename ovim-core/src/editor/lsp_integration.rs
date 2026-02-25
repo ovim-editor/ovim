@@ -608,6 +608,9 @@ impl Editor {
                     match crate::buffer::Buffer::load_file(&path) {
                         Ok(buffer) => {
                             self.buffers[self.current_buffer_index] = buffer;
+                            if let Some(new_path) = self.buffer().file_path() {
+                                self.registers.set_current_file(new_path.to_string());
+                            }
                         }
                         Err(_) => {
                             self.set_lsp_status("Failed to open file".to_string());
@@ -1322,5 +1325,69 @@ impl Editor {
             language_id,
             server_ids,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::lsp_state::PendingLspRequest;
+    use crate::lsp::uri_from_file_path;
+    use lsp_types::{Location, Position, Range};
+    use tokio::sync::oneshot;
+
+    fn unique_id() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_handle_location_result_new_tab_updates_current_file_register() {
+        let test_dir = std::env::temp_dir().join(format!("ovim-lsp-location-test-{}", unique_id()));
+        std::fs::create_dir_all(&test_dir).unwrap();
+
+        let source = test_dir.join("source.rs");
+        let target = test_dir.join("target.rs");
+
+        std::fs::write(&source, "source\n").unwrap();
+        std::fs::write(&target, "target\n").unwrap();
+
+        let source_path = std::fs::canonicalize(&source)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let target_path = std::fs::canonicalize(&target)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let mut editor = Editor::with_content("source\n");
+        editor.set_file_path(source_path);
+
+        let uri = uri_from_file_path(&target).unwrap();
+        let location = Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0)));
+
+        let (_, receiver) = oneshot::channel::<anyhow::Result<Option<Location>>>();
+        let pending = PendingLspRequest {
+            task: tokio::spawn(async { Ok(None) }),
+            receiver,
+            started: std::time::Instant::now(),
+        };
+
+        let handled = editor.handle_location_result(
+            Ok(Some(location)),
+            pending,
+            "Definition",
+            "LSP-DEFINITION",
+            true,
+        );
+        assert!(handled);
+        assert_eq!(editor.registers().get(Some('%')), target_path);
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(target);
+        let _ = std::fs::remove_dir(test_dir);
     }
 }
