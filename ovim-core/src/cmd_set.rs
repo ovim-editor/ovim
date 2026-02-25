@@ -94,6 +94,18 @@ const BOOL_OPTIONS: &[BoolOption] = &[
         get: |e| e.options.file_tree_reveal,
         set: |e, v| e.options.file_tree_reveal = v,
     },
+    BoolOption {
+        name: "markdownconceal",
+        alias: "mdc",
+        get: |e| e.options.markdown_conceal,
+        set: |e, v| e.options.markdown_conceal = v,
+    },
+    BoolOption {
+        name: "markdownprettytables",
+        alias: "mdpt",
+        get: |e| e.options.markdown_pretty_tables,
+        set: |e, v| e.options.markdown_pretty_tables = v,
+    },
 ];
 
 fn ok(message: Option<String>) -> CommandResult {

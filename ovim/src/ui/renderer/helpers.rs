@@ -1,4 +1,5 @@
 use crate::display::{char_display_width, control_char_caret};
+use crate::ui::renderer::markdown_conceal::LineTransform;
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
 
@@ -55,6 +56,70 @@ pub fn expand_tabs_with_mapping(
     char_mapping.push(expanded_char_idx);
 
     (result, byte_mapping, control_ranges, char_mapping)
+}
+
+/// Compose a conceal transform (src->view) with tab expansion mapping.
+/// Returns the expanded text and a char_mapping from original char idx to expanded char idx.
+pub fn compose_conceal_and_tabs(
+    original: &str,
+    transform: &LineTransform,
+    tab_width: usize,
+) -> (
+    String,              // expanded text
+    Vec<(usize, usize)>, // byte mapping: original byte -> expanded byte
+    Vec<Range<usize>>,   // control ranges (from tab expansion)
+    Vec<usize>,          // char mapping: original char idx -> expanded char idx
+) {
+    // Expand the transformed text (post-conceal) for tabs/control chars
+    let (expanded, byte_map_after, control, char_map_after) =
+        expand_tabs_with_mapping(&transform.text, tab_width);
+
+    // Build byte mapping from original to expanded using src_to_view -> view_to_src/byte map
+    let mut orig_byte_to_expanded: Vec<(usize, usize)> = Vec::with_capacity(original.len() + 1);
+    let mut orig_char_to_expanded: Vec<usize> = Vec::new();
+
+    // Map original bytes to view chars, then to expanded bytes
+    // src_to_view len = src len + 1 (sentinel). view_to_src len = view chars + 1
+    for (byte_idx, view_char_idx) in transform.src_to_view.iter().enumerate() {
+        let view_char_idx = *view_char_idx;
+        let expanded_byte = if view_char_idx < byte_map_after.len() {
+            byte_map_after[view_char_idx].1
+        } else {
+            *byte_map_after
+                .last()
+                .map(|(_, b)| b)
+                .unwrap_or(&expanded.len())
+        };
+        orig_byte_to_expanded.push((byte_idx.min(original.len()), expanded_byte));
+    }
+
+    // Char mapping: walk original chars, map to view char, then to expanded char index
+    let mut view_char_indices: Vec<usize> = Vec::new();
+    for (ch_idx, (byte_idx, _)) in original.char_indices().enumerate() {
+        let view_idx = if byte_idx < transform.src_to_view.len() {
+            transform.src_to_view[byte_idx]
+        } else {
+            *transform.src_to_view.last().unwrap_or(&0)
+        };
+        view_char_indices.push(view_idx);
+        // Map to expanded char index via char_map_after
+        let exp_char_idx = if view_idx < char_map_after.len() {
+            char_map_after[view_idx]
+        } else {
+            *char_map_after.last().unwrap_or(&expanded.chars().count())
+        };
+        orig_char_to_expanded.push(exp_char_idx);
+        let _ = ch_idx; // silence unused variable warning
+    }
+    // sentinel
+    orig_char_to_expanded.push(*char_map_after.last().unwrap_or(&expanded.chars().count()));
+
+    (
+        expanded,
+        orig_byte_to_expanded,
+        control,
+        orig_char_to_expanded,
+    )
 }
 
 /// Expands tabs and control characters (simple version without mapping)

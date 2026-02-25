@@ -9,8 +9,11 @@ use ratatui::{
 };
 
 use crate::display::char_display_width;
+use crate::ui::renderer::markdown_conceal::{
+    is_separator_row, parse_table_row, render_table_block, scan_markdown_conceal,
+};
 
-use super::helpers::{expand_tabs_with_mapping, remap_char_col};
+use super::helpers::{compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
     blame_color_for_hash, get_diagnostic_sign_style, get_diagnostic_virtual_text_style,
@@ -972,6 +975,8 @@ pub fn render_buffer(
 
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < visible_lines {
+        // If we have pre-rendered table rows queued, emit them first.
+        // (Currently unused; table rendering is inline below.)
         if line_idx < rope.len_lines() {
             // --- Cache check: try to reuse a previously rendered stable line ---
             // Determine upfront if this line has transient overlays that prevent caching.
@@ -1028,6 +1033,8 @@ pub fn render_buffer(
                     text_width,
                     wrap,
                     tab_width,
+                    editor.options.markdown_conceal,
+                    editor.options.markdown_pretty_tables,
                 ) {
                     let cached_line = cached_line.clone();
                     // Use cached line — skip all expensive computation
@@ -1096,9 +1103,26 @@ pub fn render_buffer(
             // Remove trailing newline if present
             let line_text_original = line_text_raw.trim_end_matches('\n');
 
-            // Expand tabs to spaces for proper rendering and get byte mapping
-            let (line_text, byte_mapping, control_ranges, char_mapping) =
-                expand_tabs_with_mapping(line_text_original, tab_width);
+            // Optional markdown conceal
+            let (line_text, conceal_byte_map, control_ranges, char_mapping) = if buffer
+                .file_path()
+                .map(|p| p.ends_with(".md"))
+                .unwrap_or(false)
+                && editor.options.markdown_conceal
+            {
+                let spans = scan_markdown_conceal(line_text_original);
+                if spans.is_empty() {
+                    expand_tabs_with_mapping(line_text_original, tab_width)
+                } else {
+                    let transform = crate::ui::renderer::markdown_conceal::apply_conceal(
+                        line_text_original,
+                        &spans,
+                    );
+                    compose_conceal_and_tabs(line_text_original, &transform, tab_width)
+                }
+            } else {
+                expand_tabs_with_mapping(line_text_original, tab_width)
+            };
 
             // Keep a reference to expanded text before slicing (for highlight remapping)
             let expanded_text = line_text.clone();
@@ -1110,9 +1134,85 @@ pub fn render_buffer(
                 (line_text.to_string(), false, false)
             };
 
+            // Detect and pretty-print markdown tables (inline, conservative width check)
+            if buffer
+                .file_path()
+                .map(|p| p.ends_with(".md"))
+                .unwrap_or(false)
+                && editor.options.markdown_pretty_tables
+            {
+                if line_text_original.contains('|') && line_idx + 1 < rope.len_lines() {
+                    let next_line_raw = rope.line(line_idx + 1).to_string();
+                    let next_line = next_line_raw.trim_end_matches('\n');
+                    if let Some(header) =
+                        parse_table_row(line_text_original, editor.options.markdown_conceal)
+                    {
+                        if is_separator_row(next_line, header.cells.len()) {
+                            let mut rows = vec![header];
+                            let mut idx = line_idx + 2;
+                            while idx < rope.len_lines() {
+                                let raw = rope.line(idx).to_string();
+                                let trimmed = raw.trim_end_matches('\n');
+                                if let Some(r) =
+                                    parse_table_row(trimmed, editor.options.markdown_conceal)
+                                {
+                                    rows.push(r);
+                                    idx += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            let cols = rows[0].cells.len();
+                            let mut widths = vec![0usize; cols];
+                            for r in &rows {
+                                for (i, cell) in r.cells.iter().enumerate() {
+                                    widths[i] = widths[i].max(cell.width);
+                                }
+                            }
+
+                            let rendered = render_table_block(&rows, &widths, true);
+                            for (r_idx, (rendered_line, _)) in rendered.into_iter().enumerate() {
+                                if visual_rows_used >= visible_lines {
+                                    break;
+                                }
+                                let mut line = Line::from(rendered_line.clone());
+                                let line_len: usize =
+                                    line.spans.iter().map(|s| s.content.chars().count()).sum();
+                                if line_len < text_width {
+                                    line.spans
+                                        .push(Span::raw(" ".repeat(text_width - line_len)));
+                                }
+                                if gutter_area.is_some() {
+                                    gutter_lines.push(build_gutter_line(
+                                        editor,
+                                        buffer,
+                                        theme,
+                                        line_idx + r_idx,
+                                        line_num_width,
+                                        cursor_line_idx,
+                                        false,
+                                        &[],
+                                        blame_brackets
+                                            .as_ref()
+                                            .and_then(|b| b.get(line_idx + r_idx - start_line)),
+                                        blame_width,
+                                    ));
+                                }
+                                lines.push(line);
+                                visual_rows_used += 1;
+                            }
+
+                            line_idx = line_idx + rows.len() + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
             // Get syntax highlights for this line and remap them for expanded text
             let original_highlights = buffer.highlights_for_line(line_idx);
-            let mut syntax_highlights = remap_highlights(&original_highlights, &byte_mapping);
+            let mut syntax_highlights = remap_highlights(&original_highlights, &conceal_byte_map);
 
             // Shift syntax highlights for horizontal viewport if nowrap
             if !wrap {
@@ -1488,6 +1588,8 @@ pub fn render_buffer(
                     text_width,
                     wrap,
                     tab_width,
+                    editor.options.markdown_conceal,
+                    editor.options.markdown_pretty_tables,
                     line.clone(),
                     is_stable,
                 );
@@ -1569,6 +1671,8 @@ pub fn render_buffer(
                     text_width,
                     wrap,
                     tab_width,
+                    editor.options.markdown_conceal,
+                    editor.options.markdown_pretty_tables,
                     simple_line,
                     true,
                 );

@@ -592,9 +592,19 @@ fn set_cursor_position(
             String::new()
         };
         let line_text = line_text.trim_end_matches('\n');
+        let is_md = editor
+            .buffer()
+            .file_path()
+            .map(|p| p.ends_with(".md"))
+            .unwrap_or(false);
+        let line_text = if is_md && editor.options.markdown_conceal {
+            crate::editor::conceal_for_wrap(line_text)
+        } else {
+            line_text.to_string()
+        };
 
         let tab_width = editor.options.tab_width;
-        let display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+        let display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
 
         let buffer_area = layout.buffer_area;
         let gutter_width = layout.gutter_width;
@@ -603,7 +613,7 @@ fn set_cursor_position(
         let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
             if let Some(wrap_map) = editor.wrap_map() {
                 let (abs_visual_row, visual_col) =
-                    wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+                    wrap_map.cursor_to_visual(cursor_line, display_col, &line_text);
                 let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
                 let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
                 let screen_col = visual_col;
