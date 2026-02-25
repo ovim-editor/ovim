@@ -656,9 +656,24 @@ fn parse_range_with_status(
     }
 }
 
-/// Parses a single range endpoint (e.g., ".", "$", "5", "'a", "+3")
-fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
-    parse_range_endpoint_internal(editor, endpoint).ok()
+fn parse_range_endpoint_with_status(
+    editor: &mut Editor,
+    endpoint: &str,
+    invalid_status: Option<&str>,
+) -> Option<usize> {
+    match parse_range_endpoint_internal(editor, endpoint) {
+        Ok(line) => Some(line),
+        Err(ParseRangeError::MarkNotSet) => {
+            editor.set_lsp_status("E20: Mark not set".to_string());
+            None
+        }
+        Err(ParseRangeError::InvalidRange) => {
+            if let Some(status) = invalid_status {
+                editor.set_lsp_status(status.to_string());
+            }
+            None
+        }
+    }
 }
 
 fn parse_range_endpoint_internal(
@@ -1369,7 +1384,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
         if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             // Parse destination address
-            if let Some(dest_line) = parse_range_endpoint(editor, dest_str) {
+            if let Some(dest_line) = parse_range_endpoint_with_status(editor, dest_str, Some("E14: Invalid address"))
+            {
                 // Collect lines to copy
                 let mut lines_to_copy: Vec<String> = Vec::new();
                 for idx in start_line..=end_line {
@@ -1424,9 +1440,6 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     if count == 1 { "" } else { "s" }
                 ));
                 return Ok(());
-            } else {
-                editor.set_lsp_status("E14: Invalid address".to_string());
-                return Ok(());
             }
         }
     }
@@ -1451,7 +1464,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
         if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             // Parse destination address
-            if let Some(mut dest_line) = parse_range_endpoint(editor, dest_str) {
+            if let Some(mut dest_line) =
+                parse_range_endpoint_with_status(editor, dest_str, Some("E14: Invalid address"))
+            {
                 // Bug 2 fix: Check for invalid moves (moving to within the range)
                 // Should be <= end_line to prevent moving into self
                 if dest_line >= start_line && dest_line <= end_line {
@@ -1534,9 +1549,6 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     line_count,
                     if line_count == 1 { "" } else { "s" }
                 ));
-                return Ok(());
-            } else {
-                editor.set_lsp_status("E14: Invalid address".to_string());
                 return Ok(());
             }
         }
