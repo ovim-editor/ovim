@@ -265,11 +265,18 @@ impl Editor {
 
     /// Moves cursor line to top of viewport
     pub fn move_cursor_line_to_top(&mut self) {
+        self.move_cursor_line_to_top_with_offset(0);
+    }
+
+    /// Moves cursor line to viewport with an explicit top offset.
+    /// `top_offset` is the number of lines from viewport top where the cursor should land.
+    pub fn move_cursor_line_to_top_with_offset(&mut self, top_offset: usize) {
         // Initialize window manager if needed (fallback dimensions)
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
         }
 
+        let buffer_line_count = self.buffer().line_count();
         // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
@@ -280,7 +287,13 @@ impl Editor {
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_top(0);
+                window.move_cursor_to_top(top_offset);
+
+                let max_scroll_offset = buffer_line_count.saturating_sub(window.height() as usize);
+                let scroll_offset = window.scroll_offset();
+                if scroll_offset > max_scroll_offset {
+                    window.set_scroll_offset(max_scroll_offset);
+                }
             }
         }
 
@@ -290,11 +303,18 @@ impl Editor {
 
     /// Moves cursor line to bottom of viewport
     pub fn move_cursor_line_to_bottom(&mut self) {
+        self.move_cursor_line_to_bottom_with_offset(0);
+    }
+
+    /// Moves cursor line to bottom of viewport with an explicit bottom offset.
+    /// `bottom_offset` is the number of lines from viewport bottom where the cursor should land.
+    pub fn move_cursor_line_to_bottom_with_offset(&mut self, bottom_offset: usize) {
         // Initialize window manager if needed (fallback dimensions)
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
         }
 
+        let buffer_line_count = self.buffer().line_count();
         // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
@@ -305,7 +325,13 @@ impl Editor {
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_bottom(0);
+                window.move_cursor_to_bottom(bottom_offset);
+
+                let max_scroll_offset = buffer_line_count.saturating_sub(window.height() as usize);
+                let scroll_offset = window.scroll_offset();
+                if scroll_offset > max_scroll_offset {
+                    window.set_scroll_offset(max_scroll_offset);
+                }
             }
         }
 
