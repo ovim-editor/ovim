@@ -182,13 +182,40 @@ fn test_jump_near_end_of_file() {
     // Cursor should be on line 48 (0-indexed: 47)
     assert_eq!(viewport.cursor_line(), 47);
 
-    // Centering: scroll_offset = 47 - 10 = 37
-    // This will show lines 37-49 (13 lines visible, 7 blank lines at bottom)
-    // Note: We don't clamp to avoid blank lines - centering is more important
+    // With 50 lines and a viewport height of 20, centering line 47 needs
+    // scroll_offset = 47 - 10 = 37, but it is clamped to the last legal value
+    // so the viewport doesn't expose empty lines near EOF.
     assert_eq!(
         viewport.scroll_offset(),
-        37,
-        "Jump to line 48 near EOF: centers cursor (scroll_offset=37). Got {}",
+        30,
+        "Jump to line 48 near EOF should clamp to top scroll_offset 30. Got {}",
+        viewport.scroll_offset()
+    );
+}
+
+#[test]
+fn test_zz_at_end_of_file_is_clamped() {
+    let content = (1..=50)
+        .map(|i| format!("Line {}", i))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut test = EditorTest::new(&content);
+    test.editor.init_window_manager(80, 20);
+    test.editor.set_viewport_height(20);
+    test.editor.options.scrolloff = 0;
+
+    // Move to the last line and center it.
+    test.keys("G");
+    test.keys("zz");
+
+    let viewport = ViewportAssertion::new(&test.editor);
+
+    assert_eq!(viewport.cursor_line(), 49);
+    assert_eq!(
+        viewport.scroll_offset(),
+        30,
+        "zz near EOF should clamp scroll_offset to the last valid start line. Got {}",
         viewport.scroll_offset()
     );
 }
