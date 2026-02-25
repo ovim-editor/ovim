@@ -17,6 +17,7 @@ mod layout;
 pub mod line_cache;
 pub mod lsp_manager;
 mod markdown;
+mod markdown_conceal;
 mod overlays;
 mod picker_widget;
 mod status_widgets;

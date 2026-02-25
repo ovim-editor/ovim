@@ -29,6 +29,7 @@ mod lsp_ui;
 mod lua_integration;
 mod macros;
 mod mark_jump;
+mod markdown_utils;
 mod marks;
 pub(crate) mod motions;
 mod navigation_state;
@@ -84,6 +85,7 @@ pub use lsp_manager_panel::LspManagerPanel;
 pub use lsp_state::{HoverContentType, LspAction, LspResultType, LspState};
 pub use lsp_ui::LspUi;
 pub use macros::MacroManager;
+pub use markdown_utils::conceal_for_wrap;
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
 pub use navigation_state::NavigationState;
@@ -163,6 +165,10 @@ pub struct EditorOptions {
     pub file_tree_reveal: bool,
     /// Show git blame gutter (default: false)
     pub blame: bool,
+    /// Conceal markdown constructs (links, images) when rendering (default: true)
+    pub markdown_conceal: bool,
+    /// Pretty-print markdown tables with aligned columns (default: true)
+    pub markdown_pretty_tables: bool,
     /// Background color for textwidth margins
     pub margin_color: MarginColor,
     /// Extra columns of normal background between text edge and shaded margin area (default: 0)
@@ -192,6 +198,8 @@ impl Default for EditorOptions {
             clipboard: "unnamedplus".to_string(),
             file_tree_reveal: true,
             blame: false,
+            markdown_conceal: true,
+            markdown_pretty_tables: true,
             margin_color: MarginColor::None,
             margin_padding: 0,
         }
@@ -717,11 +725,22 @@ impl Editor {
 
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let rope = self.buffer().rope().clone();
-        let make_line_text = |line_idx: usize| -> String {
+        let is_md = self
+            .buffer()
+            .file_path()
+            .map(|p| p.ends_with(".md"))
+            .unwrap_or(false);
+        let conceal = self.options.markdown_conceal && is_md;
+        let make_line_text = move |line_idx: usize| -> String {
             if line_idx < rope.len_lines() {
                 let line = rope.line(line_idx);
                 let text = line.to_string();
-                text.trim_end_matches('\n').to_string()
+                let trimmed = text.trim_end_matches('\n');
+                if conceal {
+                    conceal_for_wrap(trimmed)
+                } else {
+                    trimmed.to_string()
+                }
             } else {
                 String::new()
             }

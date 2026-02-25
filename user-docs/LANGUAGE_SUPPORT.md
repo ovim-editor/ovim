@@ -405,3 +405,8 @@ ovim check-lsp yourfile.ext --verbose
 ```
 
 **Can't find what you need?** The configuration system is designed to be hackable. Check the examples above and the embedded `languages.toml` for patterns to follow.
+
+
+### Markdown UI options
+- `:set mdc` / `:set nomdc` — conceal inline link URLs and image targets in previews and hover windows.
+- `:set mdpt` / `:set nomdpt` — pretty-print pipe tables with aligned columns and box-drawing borders in previews/hover.

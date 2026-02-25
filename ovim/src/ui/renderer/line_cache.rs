@@ -25,6 +25,10 @@ struct LineCacheKey {
     wrap: bool,
     /// Tab width setting
     tab_width: usize,
+    /// Whether markdown conceal was active for this render
+    markdown_conceal: bool,
+    /// Whether markdown pretty tables were active for this render
+    markdown_pretty_tables: bool,
 }
 
 /// A cached rendered line (before soft-wrap splitting).
@@ -109,6 +113,8 @@ impl LineRenderCache {
         text_width: usize,
         wrap: bool,
         tab_width: usize,
+        markdown_conceal: bool,
+        markdown_pretty_tables: bool,
     ) -> Option<&Line<'static>> {
         // Fast path: if buffer version changed, invalidate everything
         if buffer_version != self.last_buffer_version {
@@ -126,6 +132,8 @@ impl LineRenderCache {
             text_width,
             wrap,
             tab_width,
+            markdown_conceal,
+            markdown_pretty_tables,
         };
 
         if let Some((cached_key, cached)) = self.entries.get(&line_idx) {
@@ -151,6 +159,8 @@ impl LineRenderCache {
         text_width: usize,
         wrap: bool,
         tab_width: usize,
+        markdown_conceal: bool,
+        markdown_pretty_tables: bool,
         line: Line<'static>,
         is_stable: bool,
     ) {
@@ -170,6 +180,8 @@ impl LineRenderCache {
             text_width,
             wrap,
             tab_width,
+            markdown_conceal,
+            markdown_pretty_tables,
         };
         self.entries
             .insert(line_idx, (key, CachedLine { line, is_stable }));
@@ -189,9 +201,21 @@ mod tests {
     fn cache_hit() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1; // sync version
-        cache.put(1, 0, 1, 0, 80, false, 4, make_line("hello"), true);
+        cache.put(
+            1,
+            0,
+            1,
+            0,
+            80,
+            false,
+            4,
+            false,
+            false,
+            make_line("hello"),
+            true,
+        );
 
-        let result = cache.get(1, 0, 1, 0, 80, false, 4);
+        let result = cache.get(1, 0, 1, 0, 80, false, 4, false, false);
         assert!(result.is_some());
         assert_eq!(cache.hits, 1);
         assert_eq!(cache.misses, 0);
@@ -201,10 +225,22 @@ mod tests {
     fn cache_miss_version_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(1, 0, 1, 0, 80, false, 4, make_line("hello"), true);
+        cache.put(
+            1,
+            0,
+            1,
+            0,
+            80,
+            false,
+            4,
+            false,
+            false,
+            make_line("hello"),
+            true,
+        );
 
         // Buffer version changed
-        let result = cache.get(1, 0, 2, 0, 80, false, 4);
+        let result = cache.get(1, 0, 2, 0, 80, false, 4, false, false);
         assert!(result.is_none());
         assert_eq!(cache.misses, 1);
     }
@@ -213,10 +249,22 @@ mod tests {
     fn cache_miss_viewport_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(1, 0, 1, 0, 80, false, 4, make_line("hello"), true);
+        cache.put(
+            1,
+            0,
+            1,
+            0,
+            80,
+            false,
+            4,
+            false,
+            false,
+            make_line("hello"),
+            true,
+        );
 
         // h_offset changed
-        let result = cache.get(1, 0, 1, 5, 80, false, 4);
+        let result = cache.get(1, 0, 1, 5, 80, false, 4, false, false);
         assert!(result.is_none());
     }
 
@@ -225,9 +273,21 @@ mod tests {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
         // Store with is_stable=false (e.g., cursor line)
-        cache.put(1, 0, 1, 0, 80, false, 4, make_line("cursor"), false);
+        cache.put(
+            1,
+            0,
+            1,
+            0,
+            80,
+            false,
+            4,
+            false,
+            false,
+            make_line("cursor"),
+            false,
+        );
 
-        let result = cache.get(1, 0, 1, 0, 80, false, 4);
+        let result = cache.get(1, 0, 1, 0, 80, false, 4, false, false);
         assert!(result.is_none()); // Should not hit
     }
 
