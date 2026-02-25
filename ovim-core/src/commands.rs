@@ -971,6 +971,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             let path_str = absolute_path.to_string_lossy().to_string();
                             new_buffer.set_file_path(path_str.clone());
                             editor.add_buffer(new_buffer);
+                            editor.set_file_path(path_str);
                             editor.mark_dirty();
 
                             // Update tab title to match the new file
