@@ -390,42 +390,48 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_pending_operator(Operator::Fold);
         }
         ('z', KeyCode::Char('z')) => {
+            // [count]zz — scroll cursor line (or line [count]) to center
+            move_cursor_to_count_line(editor);
             editor.center_cursor_in_viewport();
             editor.clear_count();
         }
         ('z', KeyCode::Char('t')) => {
-            let top_offset = editor.effective_count().saturating_sub(1);
-            editor.move_cursor_line_to_top_with_offset(top_offset);
+            // [count]zt — scroll cursor line (or line [count]) to top
+            move_cursor_to_count_line(editor);
+            editor.move_cursor_line_to_top();
             editor.clear_count();
         }
         ('z', KeyCode::Char('b')) => {
-            let bottom_offset = editor.effective_count().saturating_sub(1);
-            editor.move_cursor_line_to_bottom_with_offset(bottom_offset);
+            // [count]zb — scroll cursor line (or line [count]) to bottom
+            move_cursor_to_count_line(editor);
+            editor.move_cursor_line_to_bottom();
             editor.clear_count();
         }
         ('z', KeyCode::Char('s')) => {
-            // zs - scroll horizontally to put cursor at start (left edge)
             editor.scroll_cursor_to_left_edge();
             editor.clear_count();
         }
         ('z', KeyCode::Char('e')) => {
-            // ze - scroll horizontally to put cursor at end (right edge)
             editor.scroll_cursor_to_right_edge();
             editor.clear_count();
         }
         ('z', KeyCode::Enter) => {
-            let top_offset = editor.effective_count().saturating_sub(1);
-            editor.move_cursor_line_to_top_with_offset(top_offset);
+            // [count]z<CR> — like zt, then first non-blank
+            move_cursor_to_count_line(editor);
+            editor.move_cursor_line_to_top();
             Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
         }
         ('z', KeyCode::Char('-')) => {
-            let bottom_offset = editor.effective_count().saturating_sub(1);
-            editor.move_cursor_line_to_bottom_with_offset(bottom_offset);
+            // [count]z- — like zb, then first non-blank
+            move_cursor_to_count_line(editor);
+            editor.move_cursor_line_to_bottom();
             Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
         }
         ('z', KeyCode::Char('.')) => {
+            // [count]z. — like zz, then first non-blank
+            move_cursor_to_count_line(editor);
             editor.center_cursor_in_viewport();
             Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
@@ -759,6 +765,20 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         .cursor_mut()
         .set_position(line_idx, target_col);
     Ok(())
+}
+
+/// If the editor has an explicit count, move cursor to that line (1-indexed).
+/// Used by viewport commands (zt, zz, zb, etc.) where [count] means
+/// "use line [count]" not "repeat [count] times".
+fn move_cursor_to_count_line(editor: &mut Editor) {
+    if let Some(count) = editor.count() {
+        let target = count.saturating_sub(1); // 1-indexed → 0-indexed
+        let max_line = editor.buffer().line_count().saturating_sub(1);
+        let line = target.min(max_line);
+        let col = editor.buffer().cursor().col();
+        editor.buffer_mut().cursor_mut().set_position(line, col);
+        editor.buffer_mut().validate_cursor_position();
+    }
 }
 
 #[cfg(test)]
