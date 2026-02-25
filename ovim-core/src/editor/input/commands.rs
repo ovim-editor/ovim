@@ -259,7 +259,9 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
     let confirm = flags.contains('c');
 
     // Determine the range using the new parser (returns inclusive range)
-    let (start_line, end_line) = if let Some((start, end)) = parse_range(editor, range_str) {
+    let (start_line, end_line) = if let Some((start, end)) =
+        parse_range_with_status(editor, range_str, None)
+    {
         (start, end)
     } else {
         // Invalid range
@@ -581,28 +583,41 @@ fn handle_global_command(
 /// Parses an Ex command range (e.g., "1,5", "%", ".", "'a,'b")
 /// Returns (start_line, end_line) as 0-indexed, inclusive
 pub fn parse_range(editor: &Editor, range_str: &str) -> Option<(usize, usize)> {
+    parse_range_internal(editor, range_str).ok()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ParseRangeError {
+    MarkNotSet,
+    InvalidRange,
+}
+
+fn parse_range_internal(
+    editor: &Editor,
+    range_str: &str,
+) -> Result<(usize, usize), ParseRangeError> {
     let range_str = range_str.trim();
 
     if range_str.is_empty() {
         // No range - current line only
         let cursor_line = editor.buffer().cursor().line();
-        return Some((cursor_line, cursor_line));
+        return Ok((cursor_line, cursor_line));
     }
 
     // Handle % (all lines)
     if range_str == "%" {
         if editor.buffer().line_count() == 0 {
-            return None;
+            return Err(ParseRangeError::InvalidRange);
         }
-        return Some((0, editor.buffer().line_count().saturating_sub(1)));
+        return Ok((0, editor.buffer().line_count().saturating_sub(1)));
     }
 
     // Handle visual selection markers
     if range_str == "'<,'>" || range_str.contains("'<") {
         if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
-            return Some((start_line, end_line));
+            return Ok((start_line, end_line));
         }
-        return None;
+        return Err(ParseRangeError::InvalidRange);
     }
 
     // Handle ranges with comma (e.g., "1,5", ".,$ ", "'a,'b")
@@ -610,66 +625,92 @@ pub fn parse_range(editor: &Editor, range_str: &str) -> Option<(usize, usize)> {
         let start_part = range_str[..comma_idx].trim();
         let end_part = range_str[comma_idx + 1..].trim();
 
-        let start = parse_range_endpoint(editor, start_part)?;
-        let end = parse_range_endpoint(editor, end_part)?;
+        let start = parse_range_endpoint_internal(editor, start_part)?;
+        let end = parse_range_endpoint_internal(editor, end_part)?;
 
-        return Some((start.min(end), start.max(end)));
+        return Ok((start.min(end), start.max(end)));
     }
 
     // Single endpoint
-    let line = parse_range_endpoint(editor, range_str)?;
-    Some((line, line))
+    let line = parse_range_endpoint_internal(editor, range_str)?;
+    Ok((line, line))
+}
+
+fn parse_range_with_status(
+    editor: &mut Editor,
+    range_str: &str,
+    invalid_status: Option<&str>,
+) -> Option<(usize, usize)> {
+    match parse_range_internal(editor, range_str) {
+        Ok(range) => Some(range),
+        Err(ParseRangeError::MarkNotSet) => {
+            editor.set_lsp_status("E20: Mark not set".to_string());
+            None
+        }
+        Err(ParseRangeError::InvalidRange) => {
+            if let Some(status) = invalid_status {
+                editor.set_lsp_status(status.to_string());
+            }
+            None
+        }
+    }
 }
 
 /// Parses a single range endpoint (e.g., ".", "$", "5", "'a", "+3")
 fn parse_range_endpoint(editor: &Editor, endpoint: &str) -> Option<usize> {
+    parse_range_endpoint_internal(editor, endpoint).ok()
+}
+
+fn parse_range_endpoint_internal(
+    editor: &Editor,
+    endpoint: &str,
+) -> Result<usize, ParseRangeError> {
     let endpoint = endpoint.trim();
     let cursor_line = editor.buffer().cursor().line();
     let last_line = editor.buffer().line_count().saturating_sub(1);
 
     // . = current line
     if endpoint == "." {
-        return Some(cursor_line);
+        return Ok(cursor_line);
     }
 
     // $ = last line
     if endpoint == "$" {
-        return Some(last_line);
+        return Ok(last_line);
     }
 
     // 'x = mark
     if endpoint.starts_with('\'') && endpoint.len() == 2 {
-        let mark_char = endpoint.chars().nth(1)?;
+        let mark_char = endpoint
+            .chars()
+            .nth(1)
+            .ok_or(ParseRangeError::InvalidRange)?;
         if let Some(mark) = editor.nav.marks.get_mark(mark_char) {
-            return Some(mark.line);
+            return Ok(mark.line);
         }
-        // TODO (Bug 1): Add "E20: Mark not set" error message
-        // Currently returns None silently. To fix, need to refactor parse_range_endpoint
-        // to return Result<usize, String> instead of Option<usize> so we can propagate
-        // error messages, or change signature to take &mut Editor to set status directly.
-        return None;
+        return Err(ParseRangeError::MarkNotSet);
     }
 
     // +N or -N (relative to current line)
     if let Some(rest) = endpoint.strip_prefix('+') {
-        let offset: usize = rest.parse().ok()?;
-        return Some((cursor_line + offset).min(last_line));
+        let offset: usize = rest.parse().map_err(|_| ParseRangeError::InvalidRange)?;
+        return Ok((cursor_line + offset).min(last_line));
     }
     if let Some(rest) = endpoint.strip_prefix('-') {
-        let offset: usize = rest.parse().ok()?;
-        return Some(cursor_line.saturating_sub(offset));
+        let offset: usize = rest.parse().map_err(|_| ParseRangeError::InvalidRange)?;
+        return Ok(cursor_line.saturating_sub(offset));
     }
 
     // Plain number (1-indexed in Vim, convert to 0-indexed)
     if let Ok(line_num) = endpoint.parse::<usize>() {
         if line_num == 0 {
-            return Some(0);
+            return Ok(0);
         }
         // Convert to 0-indexed and clamp to valid range
-        return Some((line_num.saturating_sub(1)).min(last_line));
+        return Ok((line_num.saturating_sub(1)).min(last_line));
     }
 
-    None
+    Err(ParseRangeError::InvalidRange)
 }
 
 /// Handles shell command execution (:! or :.! or :%!)
@@ -695,13 +736,11 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
 
     if is_filter {
         // Parse the range
-        let (start_line, end_line) = match parse_range(editor, range_str) {
-            Some(range) => range,
-            None => {
-                editor.set_lsp_status("Invalid range".to_string());
-                return Ok(());
-            }
-        };
+                let (start_line, end_line) =
+                    match parse_range_with_status(editor, range_str, Some("Invalid range")) {
+                        Some(range) => range,
+                        None => return Ok(()),
+                    };
 
         // Get the text from the range
         let mut input_text = String::new();
@@ -834,11 +873,12 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 let insert_line = if range_str.is_empty() {
                     // Insert after current line
                     editor.buffer().cursor().line() + 1
-                } else if let Some((_, end_line)) = parse_range(editor, range_str) {
+                } else if let Some((_, end_line)) =
+                    parse_range_with_status(editor, range_str, Some("Invalid range"))
+                {
                     // Insert after the range end line
                     end_line + 1
                 } else {
-                    editor.set_lsp_status("Invalid range".to_string());
                     return Ok(());
                 };
 
@@ -927,7 +967,9 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
     let content = if range_str.is_empty() {
         // Write entire buffer
         editor.buffer().rope().to_string()
-    } else if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+    } else if let Some((start_line, end_line)) =
+        parse_range_with_status(editor, range_str, Some("Invalid range"))
+    {
         // Write specified range
         let mut text = String::new();
         for line_idx in start_line..=end_line {
@@ -937,7 +979,6 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
         }
         text
     } else {
-        editor.set_lsp_status("Invalid range".to_string());
         return Ok(());
     };
 
@@ -1161,7 +1202,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle goto line (just a number or range without command)
     if cmd_part.is_empty() && !range_str.is_empty() {
-        if let Some((start_line, _end_line)) = parse_range(editor, range_str) {
+        if let Some((start_line, _end_line)) = parse_range_with_status(editor, range_str, None) {
             editor.buffer_mut().cursor_mut().set_position(start_line, 0);
             return Ok(());
         }
@@ -1169,7 +1210,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle ranged delete command (:d or :delete)
     if cmd_part == "d" || cmd_part == "delete" {
-        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+        if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             let cursor_before = editor.cursor_position();
             let (deleted_text, edits) = editor
                 .buffer_mut()
@@ -1196,7 +1237,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle ranged yank command (:y or :yank)
     if cmd_part == "y" || cmd_part == "yank" {
-        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+        if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             let mut yanked_lines = Vec::new();
             for line_idx in start_line..=end_line {
                 if let Some(line) = editor.buffer().line(line_idx) {
@@ -1214,7 +1255,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle :sort command (sorts lines in range)
     if cmd_part == "sort" || cmd_part.starts_with("sort ") {
-        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+        if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             let reverse = cmd_part.contains('!') || cmd_part.contains(" r");
             let numeric = cmd_part.contains(" n");
             let unique = cmd_part.contains(" u");
@@ -1326,7 +1367,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             return Ok(());
         }
 
-        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+        if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             // Parse destination address
             if let Some(dest_line) = parse_range_endpoint(editor, dest_str) {
                 // Collect lines to copy
@@ -1408,7 +1449,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             return Ok(());
         }
 
-        if let Some((start_line, end_line)) = parse_range(editor, range_str) {
+        if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             // Parse destination address
             if let Some(mut dest_line) = parse_range_endpoint(editor, dest_str) {
                 // Bug 2 fix: Check for invalid moves (moving to within the range)
@@ -1527,12 +1568,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             // Vim's :global defaults to the entire buffer, not the current line.
             None
         } else {
-            match parse_range(editor, range_str) {
+            match parse_range_with_status(editor, range_str, Some("E14: Invalid address")) {
                 Some(r) => Some(r),
-                None => {
-                    editor.set_lsp_status("E14: Invalid address".to_string());
-                    return Ok(());
-                }
+                None => return Ok(()),
             }
         };
 
@@ -1631,4 +1669,18 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_range_with_status_reports_missing_mark() {
+        let mut editor = Editor::with_content("a\nb\nc\n");
+        let range = parse_range_with_status(&mut editor, "1,'a", None);
+
+        assert_eq!(range, None);
+        assert_eq!(editor.lsp_status(), "E20: Mark not set");
+    }
 }
