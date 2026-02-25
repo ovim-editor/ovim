@@ -58,8 +58,8 @@ fn test_zb_at_end_of_file() {
 #[test]
 fn test_zb_large_count_is_clamped_at_eof() {
     // 50 lines (0-49), viewport 20 lines.
-    // Large count on `zb` should still keep cursor visible and avoid setting
-    // scroll offset past the file.
+    // [count]zb means "put line [count] at bottom of viewport".
+    // A count beyond the file should clamp to the last line.
     let content = (1..=50)
         .map(|i| format!("Line {}", i))
         .collect::<Vec<_>>()
@@ -69,22 +69,21 @@ fn test_zb_large_count_is_clamped_at_eof() {
     test.editor.init_window_manager(80, 20);
     test.editor.set_viewport_height(20);
 
-    // Move to last line (49) and use a large count value.
-    test.keys("G");
-    test.keys("20zb");
+    // 999zb should clamp to last line (49) and put it at bottom.
+    test.keys("999zb");
 
     let after = ViewportAssertion::new(&test.editor);
-    assert_eq!(after.cursor_line(), 49, "Cursor should stay on last line");
+    assert_eq!(after.cursor_line(), 49, "Cursor should be on last line");
     assert_eq!(
         after.scroll_offset(),
         30,
-        "20zb at EOF should clamp scroll offset to the last valid value."
+        "999zb should clamp to last line and set scroll_offset = 49 - 19 = 30"
     );
     let bottom_pos = test.editor.viewport_height().saturating_sub(1);
     assert_eq!(
         after.line_at_viewport_position(bottom_pos),
         49,
-        "Last line should still be visible at the bottom row when possible."
+        "Last line should be visible at the bottom row."
     );
 }
 
