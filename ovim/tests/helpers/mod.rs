@@ -361,7 +361,7 @@ impl EditorTest {
 
     /// Set file path without loading
     pub fn set_file_path(&mut self, path: String) -> &mut Self {
-        self.editor.buffer_mut().set_file_path(path);
+        self.editor.set_file_path(path);
         self
     }
 }

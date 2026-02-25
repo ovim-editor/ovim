@@ -394,11 +394,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('z', KeyCode::Char('t')) => {
-            editor.move_cursor_line_to_top();
+            let top_offset = editor.effective_count().saturating_sub(1);
+            editor.move_cursor_line_to_top_with_offset(top_offset);
             editor.clear_count();
         }
         ('z', KeyCode::Char('b')) => {
-            editor.move_cursor_line_to_bottom();
+            let bottom_offset = editor.effective_count().saturating_sub(1);
+            editor.move_cursor_line_to_bottom_with_offset(bottom_offset);
             editor.clear_count();
         }
         ('z', KeyCode::Char('s')) => {
@@ -412,12 +414,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('z', KeyCode::Enter) => {
-            editor.move_cursor_line_to_top();
+            let top_offset = editor.effective_count().saturating_sub(1);
+            editor.move_cursor_line_to_top_with_offset(top_offset);
             Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
         }
         ('z', KeyCode::Char('-')) => {
-            editor.move_cursor_line_to_bottom();
+            let bottom_offset = editor.effective_count().saturating_sub(1);
+            editor.move_cursor_line_to_bottom_with_offset(bottom_offset);
             Motions::first_non_blank(editor.buffer_mut());
             editor.clear_count();
         }
@@ -449,8 +453,19 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // '"' - Register selection
         // =====================================================================
-        ('"', KeyCode::Char(ch))
-            if ch.is_ascii_alphanumeric() || ch == '"' || ch == '_' || ch == '+' || ch == '*' =>
+        (
+            '"',
+            KeyCode::Char(ch),
+        ) if ch.is_ascii_alphanumeric()
+            || ch == '"'
+            || ch == '_'
+            || ch == '+'
+            || ch == '*'
+            || ch == '%'
+            || ch == '.'
+            || ch == ':'
+            || ch == '#'
+            || ch == '/' =>
         {
             editor.set_pending_register(ch);
         }
