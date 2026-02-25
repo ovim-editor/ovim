@@ -964,12 +964,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         {
                             // Create a new empty buffer with the given filename
                             use crate::buffer::Buffer;
-                            let mut new_buffer = Buffer::new();
+                            let new_buffer = Buffer::new();
                             // Normalize the path
                             let absolute_path = std::path::absolute(&filename)
                                 .unwrap_or_else(|_| std::path::PathBuf::from(&filename));
                             let path_str = absolute_path.to_string_lossy().to_string();
-                            new_buffer.set_file_path(path_str.clone());
                             editor.add_buffer(new_buffer);
                             editor.set_file_path(path_str);
                             editor.mark_dirty();

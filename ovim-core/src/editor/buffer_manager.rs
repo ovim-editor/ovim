@@ -402,12 +402,12 @@ impl Editor {
 
         // File not open, load it
         let buffer = Buffer::load_file(path)?;
-        if let Some(file_path) = buffer.file_path() {
-            self.registers.set_current_file(file_path.to_string());
-        } else {
-            self.registers.set_current_file(path_str.to_string());
-        }
+        let resolved_path = buffer
+            .file_path()
+            .unwrap_or(path_str)
+            .to_string();
         self.add_buffer(buffer);
+        self.registers.set_current_file(resolved_path);
         Ok(())
     }
 }
