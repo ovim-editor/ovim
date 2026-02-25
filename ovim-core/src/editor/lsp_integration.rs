@@ -608,8 +608,8 @@ impl Editor {
                     match crate::buffer::Buffer::load_file(&path) {
                         Ok(buffer) => {
                             self.buffers[self.current_buffer_index] = buffer;
-                            if let Some(new_path) = self.buffer().file_path() {
-                                self.registers.set_current_file(new_path.to_string());
+                            if let Some(path) = self.buffer().file_path() {
+                                self.registers.set_current_file(path.to_string());
                             }
                         }
                         Err(_) => {
@@ -1336,20 +1336,12 @@ mod tests {
     use lsp_types::{Location, Position, Range};
     use tokio::sync::oneshot;
 
-    fn unique_id() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_handle_location_result_new_tab_updates_current_file_register() {
-        let test_dir = std::env::temp_dir().join(format!("ovim-lsp-location-test-{}", unique_id()));
-        std::fs::create_dir_all(&test_dir).unwrap();
+        let test_dir = tempfile::tempdir().expect("tempdir");
 
-        let source = test_dir.join("source.rs");
-        let target = test_dir.join("target.rs");
+        let source = test_dir.path().join("source.rs");
+        let target = test_dir.path().join("target.rs");
 
         std::fs::write(&source, "source\n").unwrap();
         std::fs::write(&target, "target\n").unwrap();
@@ -1385,9 +1377,5 @@ mod tests {
         );
         assert!(handled);
         assert_eq!(editor.registers().get(Some('%')), target_path);
-
-        let _ = std::fs::remove_file(source);
-        let _ = std::fs::remove_file(target);
-        let _ = std::fs::remove_dir(test_dir);
     }
 }

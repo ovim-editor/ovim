@@ -1415,8 +1415,7 @@ impl Editor {
                 ));
             }
             let target_path = absolute_path.to_string_lossy().to_string();
-            let mut buffer = crate::buffer::Buffer::new();
-            buffer.set_file_path(target_path.clone());
+            let buffer = crate::buffer::Buffer::new();
             self.add_buffer(buffer);
             self.set_file_path(target_path);
         } else if !absolute_path.is_file() {
@@ -3435,9 +3434,9 @@ mod tests {
     #[test]
     fn open_file_with_create_opens_missing_target() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
-            runtime.block_on(async {
-                let dir = tempfile::tempdir().expect("tempdir");
-                let target = dir.path().join("new_file.rs");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("new_file.rs");
 
             let mut editor = Editor::default();
             editor

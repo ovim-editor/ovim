@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
                 e
             );
             ed = Editor::new();
-            ed.buffer_mut().set_file_path(file.path.clone());
+            ed.set_file_path(file.path.clone());
         }
         // Jump to line:col if specified
         if let Some(line) = file.line {
