@@ -124,8 +124,20 @@ impl RegisterManager {
         self.set_with_type(register, value, RegisterType::Character);
     }
 
+    /// Returns true if the register is read-only (%, ., :, /, #).
+    /// Writes to these registers should be silently ignored.
+    pub fn is_read_only(register: char) -> bool {
+        matches!(register, '%' | '.' | ':' | '/' | '#')
+    }
+
     /// Sets a register value with explicit type
     pub fn set_with_type(&mut self, register: Option<char>, value: String, reg_type: RegisterType) {
+        // Silently ignore writes to read-only registers
+        if let Some(reg) = register {
+            if Self::is_read_only(reg) {
+                return;
+            }
+        }
         let content = RegisterContent::new(value.clone(), reg_type);
         match register {
             None => {
