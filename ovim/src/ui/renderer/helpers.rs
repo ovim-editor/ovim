@@ -76,9 +76,28 @@ pub fn remap_char_col(original_col: usize, char_mapping: &[usize]) -> usize {
     }
 }
 
-/// Converts a character column index to a display column, accounting for tabs and wide characters
-pub fn char_col_to_display_col(text: &str, char_col: usize, tab_width: usize) -> usize {
-    crate::display::char_col_to_display_col(text, char_col, tab_width)
+/// Converts a grapheme column (cursor.col()) to a display column.
+///
+/// Iterates graphemes directly and sums their display widths, handling tabs.
+/// This is correct for multi-codepoint graphemes (ZWJ emoji, combining marks)
+/// where `char_col_to_display_col` would over-count by summing per-char widths.
+pub fn grapheme_col_to_display_col(text: &str, grapheme_col: usize, tab_width: usize) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    let mut display_col = 0;
+    for (i, grapheme) in text.graphemes(true).enumerate() {
+        if i >= grapheme_col {
+            break;
+        }
+        if grapheme == "\t" {
+            let spaces = tab_width - (display_col % tab_width);
+            display_col += spaces;
+        } else {
+            display_col += UnicodeWidthStr::width(grapheme);
+        }
+    }
+    display_col
 }
 
 /// Truncates text to fit within a display width, accounting for wide characters
@@ -208,5 +227,69 @@ mod tests {
     #[test]
     fn test_remap_char_col_empty() {
         assert_eq!(remap_char_col(5, &[]), 5); // passthrough for empty mapping
+    }
+
+    // ================================================================
+    // grapheme_col_to_display_col tests
+    // ================================================================
+
+    #[test]
+    fn test_grapheme_display_col_ascii() {
+        // ASCII: grapheme index == char index == display col
+        assert_eq!(grapheme_col_to_display_col("hello", 0, 4), 0);
+        assert_eq!(grapheme_col_to_display_col("hello", 3, 4), 3);
+        assert_eq!(grapheme_col_to_display_col("hello", 5, 4), 5);
+    }
+
+    #[test]
+    fn test_grapheme_display_col_zwj_emoji() {
+        // "a👨‍👩‍👧‍👦b" — 3 graphemes, 8 chars (a=1, ZWJ emoji=6 chars, b=1)
+        // Grapheme 0 ('a') → char 0 → display 0
+        // Grapheme 1 (emoji) → char 1 → display 1 (emoji is width 2)
+        // Grapheme 2 ('b') → char 7 → display 3 (after emoji width 2)
+        let text = "a👨\u{200D}👩\u{200D}👧\u{200D}👦b";
+        assert_eq!(grapheme_col_to_display_col(text, 0, 4), 0);
+        assert_eq!(grapheme_col_to_display_col(text, 1, 4), 1);
+        assert_eq!(grapheme_col_to_display_col(text, 2, 4), 3);
+    }
+
+    #[test]
+    fn test_grapheme_display_col_combining_mark() {
+        // "e\u{0301}x" = 'é' + 'x' — 2 graphemes, 3 chars
+        // Grapheme 0 (é) → char 0 → display 0
+        // Grapheme 1 (x) → char 2 → display 1 (combining mark is zero-width)
+        let text = "e\u{0301}x";
+        assert_eq!(grapheme_col_to_display_col(text, 0, 4), 0);
+        assert_eq!(grapheme_col_to_display_col(text, 1, 4), 1);
+    }
+
+    #[test]
+    fn test_grapheme_display_col_flag_emoji() {
+        // "a🇺🇸b" — 3 graphemes, 4 chars (regional indicators are 2 chars)
+        // Grapheme 0 ('a') → char 0 → display 0
+        // Grapheme 1 (flag) → char 1 → display 1
+        // Grapheme 2 ('b') → char 3 → display 3 (flag is width 2)
+        let text = "a🇺🇸b";
+        assert_eq!(grapheme_col_to_display_col(text, 0, 4), 0);
+        assert_eq!(grapheme_col_to_display_col(text, 1, 4), 1);
+        assert_eq!(grapheme_col_to_display_col(text, 2, 4), 3);
+    }
+
+    #[test]
+    fn test_grapheme_display_col_with_tab() {
+        // "👨‍👩‍👧‍👦\tx" — 3 graphemes (emoji, tab, x)
+        // Emoji is width 2, tab at col 2 expands by 2 to reach col 4
+        let text = "👨\u{200D}👩\u{200D}👧\u{200D}👦\tx";
+        assert_eq!(grapheme_col_to_display_col(text, 0, 4), 0);  // emoji at display 0
+        assert_eq!(grapheme_col_to_display_col(text, 1, 4), 2);  // tab starts at display 2
+        assert_eq!(grapheme_col_to_display_col(text, 2, 4), 4);  // x after tab expands to col 4
+    }
+
+    #[test]
+    fn test_grapheme_display_col_cjk() {
+        // "你好x" — 3 graphemes, 3 chars, but CJK chars are width 2
+        assert_eq!(grapheme_col_to_display_col("你好x", 0, 4), 0);
+        assert_eq!(grapheme_col_to_display_col("你好x", 1, 4), 2);
+        assert_eq!(grapheme_col_to_display_col("你好x", 2, 4), 4);
     }
 }

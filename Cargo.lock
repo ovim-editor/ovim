@@ -2048,6 +2048,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tree-sitter",
+ "unicode-segmentation",
  "unicode-width 0.1.14",
  "which",
 ]
