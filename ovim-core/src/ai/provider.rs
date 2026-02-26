@@ -558,8 +558,7 @@ fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> 
 
     // Build a map from tool_call_id → tool_name so we can emit `tool_name`
     // on Tool role messages (Ollama doesn't use `tool_call_id`).
-    let mut id_to_name: std::collections::HashMap<&str, &str> =
-        std::collections::HashMap::new();
+    let mut id_to_name: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     for m in messages {
         if m.role == ChatRole::Assistant {
             for tc in &m.tool_calls {

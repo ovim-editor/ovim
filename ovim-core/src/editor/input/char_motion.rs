@@ -89,9 +89,7 @@ fn handle_jump_mark_line(editor: &mut Editor, target: char) {
         return;
     }
 
-    if !(target.is_ascii_lowercase()
-        || target.is_ascii_uppercase()
-        || matches!(target, '.' | '^'))
+    if !(target.is_ascii_lowercase() || target.is_ascii_uppercase() || matches!(target, '.' | '^'))
     {
         return;
     }

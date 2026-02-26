@@ -455,10 +455,7 @@ pub async fn parse_ollama_stream<E: Display>(
                             // Some models emit raw JSON in content instead of
                             // using the structured tool_calls field.
                             if !got_structured_tool_calls {
-                                emit_extracted_tool_calls(
-                                    &accumulated_content,
-                                    &tx,
-                                );
+                                emit_extracted_tool_calls(&accumulated_content, &tx);
                             }
                             let _ = tx.send(StreamChunk::Done);
                             return;
@@ -493,10 +490,7 @@ pub async fn parse_ollama_stream<E: Display>(
 /// - `{"tool_calls": [...]}`
 /// - `{"function": {"name": "tool", "arguments": {...}}}`
 /// - Fenced code blocks wrapping any of the above
-fn emit_extracted_tool_calls(
-    content: &str,
-    tx: &UnboundedSender<StreamChunk>,
-) {
+fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return;
@@ -1028,7 +1022,9 @@ mod tests {
         // then ToolCallComplete is emitted at done. The consumer's
         // tool-call path takes precedence over the content.
         assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
-        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::ToolCallComplete { name, .. } if name == "read_file")));
+        assert!(chunks.iter().any(
+            |c| matches!(c, StreamChunk::ToolCallComplete { name, .. } if name == "read_file")
+        ));
         assert!(matches!(chunks.last().unwrap(), StreamChunk::Done));
     }
 

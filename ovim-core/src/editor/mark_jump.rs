@@ -70,7 +70,8 @@ impl Editor {
                 // Load the file if mark targets a concrete path different from current.
                 if let Some(mark_path) = global_mark.file_path.as_deref() {
                     let current_file = self.buffer().file_path().map(|s| s.to_string());
-                    if current_file.as_deref() != Some(mark_path) && self.load_file(mark_path).is_err()
+                    if current_file.as_deref() != Some(mark_path)
+                        && self.load_file(mark_path).is_err()
                     {
                         return false; // Failed to load file
                     }
@@ -140,7 +141,8 @@ impl Editor {
                 // Load the file if mark targets a concrete path different from current.
                 if let Some(mark_path) = global_mark.file_path.as_deref() {
                     let current_file = self.buffer().file_path().map(|s| s.to_string());
-                    if current_file.as_deref() != Some(mark_path) && self.load_file(mark_path).is_err()
+                    if current_file.as_deref() != Some(mark_path)
+                        && self.load_file(mark_path).is_err()
                     {
                         return false; // Failed to load file
                     }
