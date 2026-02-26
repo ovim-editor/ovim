@@ -103,8 +103,7 @@ impl SyntaxHighlighter {
 
                 // Binary search to find the first line that could overlap.
                 // A line overlaps if its end byte > start_byte.
-                let first_line = line_end_bytes
-                    .partition_point(|&line_end| line_end <= start_byte);
+                let first_line = line_end_bytes.partition_point(|&line_end| line_end <= start_byte);
 
                 // Walk forward from there until lines no longer overlap
                 for line_idx in first_line..lines.len() {
@@ -204,8 +203,7 @@ impl SyntaxHighlighter {
 
                 // Binary search within the viewport range to find first overlapping line.
                 // A line overlaps if its end byte > start_byte.
-                let first_rel = line_end_bytes
-                    .partition_point(|&line_end| line_end <= start_byte);
+                let first_rel = line_end_bytes.partition_point(|&line_end| line_end <= start_byte);
 
                 for rel_idx in first_rel..actual_len {
                     let line_idx = start_line + rel_idx;
@@ -268,8 +266,7 @@ impl SyntaxHighlighter {
                     },
                 );
 
-                let mut matches =
-                    cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+                let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
 
                 while let Some(m) = matches.next() {
                     for capture in m.captures {
@@ -498,7 +495,8 @@ const result = greet("World");"#;
         assert_eq!(range.len(), 3, "Should cover lines 1..4");
         for i in 0..3 {
             assert_eq!(
-                range[i], all[1 + i],
+                range[i],
+                all[1 + i],
                 "Line range[{}] should match all_lines[{}]",
                 i,
                 1 + i

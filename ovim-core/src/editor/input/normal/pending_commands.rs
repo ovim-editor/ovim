@@ -792,13 +792,14 @@ mod tests {
 
         editor.ensure_wrap_map(5);
 
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(0, 0);
+        editor.buffer_mut().cursor_mut().set_position(0, 0);
         editor.set_pending_command('g');
 
-        try_handle(&mut editor, KeyEvent::new(KeyCode::Char('j'), Modifiers::NONE)).unwrap();
+        try_handle(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('j'), Modifiers::NONE),
+        )
+        .unwrap();
 
         assert_eq!(editor.buffer().cursor().line(), 0);
         assert_eq!(editor.buffer().cursor().col(), 1);
@@ -809,10 +810,7 @@ mod tests {
         let mut editor = Editor::with_content("\t世b\n");
 
         editor.ensure_wrap_map(5);
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(0, 2);
+        editor.buffer_mut().cursor_mut().set_position(0, 2);
 
         let _ = move_to_screen_line_boundary(&mut editor, ScreenLineTarget::Start).unwrap();
 

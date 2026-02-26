@@ -431,7 +431,8 @@ fn handle_read_selection(_args: &serde_json::Value, ctx: &ToolExecutionContext) 
 
     for i in start_line..=end_line {
         let line = lines[i];
-        let grapheme_col_to_byte = |col: usize| byte_offset_for_grapheme(line, col).unwrap_or(line.len());
+        let grapheme_col_to_byte =
+            |col: usize| byte_offset_for_grapheme(line, col).unwrap_or(line.len());
         let slice = if i == start_line && i == end_line {
             // Single line selection
             let mut sc = grapheme_col_to_byte(start_col);

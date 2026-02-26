@@ -213,7 +213,11 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
                 let (snap_tx, snap_rx) = oneshot::channel();
-                if state.tx.send(ApiRequest::GetSnapshotLight(snap_tx)).is_err() {
+                if state
+                    .tx
+                    .send(ApiRequest::GetSnapshotLight(snap_tx))
+                    .is_err()
+                {
                     break;
                 }
                 if let Ok(super::state::ApiResponse::Snapshot(snapshot)) = snap_rx.await {
