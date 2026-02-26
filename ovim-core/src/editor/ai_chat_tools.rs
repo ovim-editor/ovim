@@ -1347,6 +1347,8 @@ impl Editor {
             }
             let buffer = crate::buffer::Buffer::load_file(absolute_path)
                 .map_err(|e| format!("failed to open '{}': {}", absolute_path.display(), e))?;
+            // Push directly (not add_buffer) to avoid changing current_buffer_index
+            // or % register — AI chat tracks its active buffer via active_buffer_id.
             self.buffers.push(buffer);
             self.lsp_state.needs_lsp_init = true;
             let idx = self.buffers.len().saturating_sub(1);
@@ -1379,6 +1381,7 @@ impl Editor {
 
         let mut buffer = crate::buffer::Buffer::new();
         buffer.set_file_path(absolute_path.to_string_lossy().to_string());
+        // Push directly (not add_buffer) — see comment above.
         self.buffers.push(buffer);
         self.lsp_state.needs_lsp_init = true;
         let idx = self.buffers.len().saturating_sub(1);
