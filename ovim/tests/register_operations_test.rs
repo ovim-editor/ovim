@@ -706,3 +706,167 @@ fn test_swap_words_with_registers() {
     assert_eq!(test.buffer_content(), " hello\n");
     test.assert_cursor(0, 5);
 }
+
+// ============================================================================
+// Read-only registers — writes silently ignored (%, ., :, /, #)
+// ============================================================================
+
+#[test]
+fn test_yank_to_percent_register_is_ignored() {
+    // "% register holds current filename. Yanking to it should not overwrite.
+    let mut test = EditorTest::new("hello world");
+    test.set_file_path("test.rs".to_string());
+
+    // Try to yank "hello" into % register
+    test.keys("\"%yiw");
+
+    // % register should still be the filename, not "hello"
+    assert_eq!(test.editor.registers().get(Some('%')), "test.rs");
+}
+
+#[test]
+fn test_delete_to_percent_register_is_ignored() {
+    // Deleting to % should not overwrite the filename register
+    let mut test = EditorTest::new("hello world");
+    test.set_file_path("test.rs".to_string());
+
+    // Try to delete word into % register
+    test.keys("\"%dw");
+
+    // % register should still be the filename
+    assert_eq!(test.editor.registers().get(Some('%')), "test.rs");
+    // But the word should still be deleted from the buffer
+    assert_eq!(test.buffer_content(), "world\n");
+}
+
+#[test]
+fn test_yank_to_dot_register_is_ignored() {
+    // . register holds last inserted text
+    let mut test = EditorTest::new("hello world");
+
+    // Insert some text first to populate . register
+    test.keys("ihey<Esc>");
+
+    let dot_before = test.editor.registers().get(Some('.'));
+
+    // Try to yank into . register
+    test.keys("w\".yiw");
+
+    // . register should be unchanged
+    assert_eq!(test.editor.registers().get(Some('.')), dot_before);
+}
+
+#[test]
+fn test_yank_to_colon_register_is_ignored() {
+    let mut test = EditorTest::new("hello world");
+
+    // Set : register via a command
+    test.keys(":set number<Enter>");
+
+    let colon_before = test.editor.registers().get(Some(':'));
+
+    // Try to yank into : register
+    test.keys("\":yiw");
+
+    // : register should be unchanged
+    assert_eq!(test.editor.registers().get(Some(':')), colon_before);
+}
+
+#[test]
+fn test_yank_to_slash_register_is_ignored() {
+    let mut test = EditorTest::new("hello world");
+
+    // Set / register via a search
+    test.keys("/hello<Enter>");
+
+    let slash_before = test.editor.registers().get(Some('/'));
+
+    // Try to yank into / register
+    test.keys("\"/yiw");
+
+    // / register should be unchanged
+    assert_eq!(test.editor.registers().get(Some('/')), slash_before);
+}
+
+#[test]
+fn test_yank_to_hash_register_is_ignored() {
+    let mut test = EditorTest::new("hello world");
+
+    // # register holds alternate filename — set it indirectly
+    test.editor.registers_mut().set_alternate_file("alt.rs".to_string());
+
+    // Try to yank into # register
+    test.keys("\"#yiw");
+
+    // # register should still be alternate filename
+    assert_eq!(test.editor.registers().get(Some('#')), "alt.rs");
+}
+
+#[test]
+fn test_read_only_register_yank_still_populates_unnamed() {
+    // When yanking to a read-only register, the text should still go
+    // to the unnamed register (default behavior)
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"%yiw");
+
+    // Unnamed register should have "hello"
+    assert_eq!(test.editor.registers().get(None), "hello");
+}
+
+#[test]
+fn test_read_only_register_delete_still_populates_unnamed() {
+    // When deleting to a read-only register, the text should still go
+    // to the unnamed and delete history registers
+    let mut test = EditorTest::new("hello world");
+
+    test.keys("\"%dw");
+
+    // Unnamed register should have "hello "
+    assert_eq!(test.editor.registers().get(None), "hello ");
+    // Delete history register 1 should also have it
+    assert_eq!(test.editor.registers().get(Some('1')), "hello ");
+}
+
+#[test]
+fn test_read_only_register_set_with_type_safety_net() {
+    // Direct set_with_type calls to read-only registers should also be ignored
+    use ovim::editor::RegisterType;
+
+    let mut test = EditorTest::new("hello");
+    test.set_file_path("original.rs".to_string());
+
+    // Try to directly set % register through set_with_type
+    test.editor.registers_mut().set_with_type(
+        Some('%'),
+        "overwritten".to_string(),
+        RegisterType::Character,
+    );
+
+    // Should still be the original
+    assert_eq!(test.editor.registers().get(Some('%')), "original.rs");
+}
+
+#[test]
+fn test_all_read_only_registers_reject_set() {
+    use ovim::editor::{RegisterManager, RegisterType};
+
+    let mut regs = RegisterManager::new();
+    regs.set_current_file("file.rs".to_string());
+    regs.set_alternate_file("alt.rs".to_string());
+    regs.set_last_inserted("inserted".to_string());
+    regs.set_last_command("command".to_string());
+    regs.set_last_search("pattern".to_string());
+
+    // Try to overwrite each read-only register
+    for &reg in &['%', '#', '.', ':', '/'] {
+        regs.set_with_type(Some(reg), "hacked".to_string(), RegisterType::Character);
+    }
+
+    // All should retain their original values
+    assert_eq!(regs.get(Some('%')), "file.rs");
+    assert_eq!(regs.get(Some('#')), "alt.rs");
+    assert_eq!(regs.get(Some('.')), "inserted");
+    assert_eq!(regs.get(Some(':')), "command");
+    assert_eq!(regs.get(Some('/')), "pattern");
+}

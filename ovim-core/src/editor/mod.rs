@@ -1479,6 +1479,14 @@ impl Editor {
             self.input.pending_register = None;
             match reg {
                 '_' => return, // black hole register: discard
+                r if RegisterManager::is_read_only(r) => {
+                    // Read-only registers: silently use default behavior
+                    self.registers.yank_with_type(text.clone(), reg_type);
+                    if !self.options.clipboard.is_empty() {
+                        self.registers.set_clipboard(text);
+                    }
+                    return;
+                }
                 '+' | '*' => {
                     self.registers.set_clipboard(text.clone());
                     self.registers.set_with_type(Some(reg), text, reg_type);
@@ -1511,6 +1519,14 @@ impl Editor {
             self.input.pending_register = None;
             match reg {
                 '_' => return, // black hole register: discard
+                r if RegisterManager::is_read_only(r) => {
+                    // Read-only registers: silently use default behavior
+                    self.registers.delete_with_type(text.clone(), reg_type);
+                    if !self.options.clipboard.is_empty() {
+                        self.registers.set_clipboard(text);
+                    }
+                    return;
+                }
                 '+' | '*' => {
                     self.registers.set_clipboard(text.clone());
                     self.registers.set_with_type(Some(reg), text, reg_type);
