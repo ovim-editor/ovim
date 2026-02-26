@@ -5,6 +5,17 @@ use crate::buffer::{Buffer, BufferId};
 use crate::change::Change;
 use anyhow::Result;
 
+/// Returns true if the path looks like a scratch buffer (e.g., `[LspInfo]`).
+/// Scratch buffer paths use the `[Title]` convention and should not pollute
+/// the `%` (current file) or `#` (alternate file) registers.
+fn is_scratch_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .map(|f| f.starts_with('[') && f.ends_with(']'))
+        .unwrap_or(false)
+}
+
 impl Editor {
     /// Gets a reference to the current buffer
     pub fn buffer(&self) -> &Buffer {
@@ -94,9 +105,11 @@ impl Editor {
     /// Switches to a buffer by index (0-based)
     pub fn switch_to_buffer(&mut self, index: usize) {
         if index < self.buffers.len() && index != self.current_buffer_index {
-            // Save current file to alternate file register
+            // Save current file to alternate file register (skip scratch buffers)
             if let Some(current_path) = self.buffer().file_path() {
-                self.registers.set_alternate_file(current_path.to_string());
+                if !is_scratch_path(current_path) {
+                    self.registers.set_alternate_file(current_path.to_string());
+                }
             }
 
             self.current_buffer_index = index;
@@ -108,9 +121,11 @@ impl Editor {
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
-            // Update current file register
+            // Update current file register (skip scratch buffers like [LspInfo])
             if let Some(new_path) = self.buffer().file_path() {
-                self.registers.set_current_file(new_path.to_string());
+                if !is_scratch_path(new_path) {
+                    self.registers.set_current_file(new_path.to_string());
+                }
             }
 
             // Refresh per-file diagnostic caches (counts + current_file_diagnostics)
@@ -124,9 +139,11 @@ impl Editor {
             // BUG FIX #4: Save old file path for didClose before switching
             let old_file_path = self.buffer().file_path().map(|s| s.to_string());
 
-            // Save current file to alternate file register
+            // Save current file to alternate file register (skip scratch buffers)
             if let Some(current_path) = old_file_path.as_ref() {
-                self.registers.set_alternate_file(current_path.to_string());
+                if !is_scratch_path(current_path) {
+                    self.registers.set_alternate_file(current_path.to_string());
+                }
             }
 
             self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
@@ -138,9 +155,11 @@ impl Editor {
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
-            // Update current file register
+            // Update current file register (skip scratch buffers like [LspInfo])
             if let Some(new_path) = self.buffer().file_path() {
-                self.registers.set_current_file(new_path.to_string());
+                if !is_scratch_path(new_path) {
+                    self.registers.set_current_file(new_path.to_string());
+                }
             }
 
             // Refresh per-file diagnostic caches after file switch
@@ -159,9 +178,11 @@ impl Editor {
             // BUG FIX #4: Save old file path for didClose before switching
             let old_file_path = self.buffer().file_path().map(|s| s.to_string());
 
-            // Save current file to alternate file register
+            // Save current file to alternate file register (skip scratch buffers)
             if let Some(current_path) = old_file_path.as_ref() {
-                self.registers.set_alternate_file(current_path.to_string());
+                if !is_scratch_path(current_path) {
+                    self.registers.set_alternate_file(current_path.to_string());
+                }
             }
 
             self.current_buffer_index = if self.current_buffer_index == 0 {
@@ -177,9 +198,11 @@ impl Editor {
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
-            // Update current file register
+            // Update current file register (skip scratch buffers like [LspInfo])
             if let Some(new_path) = self.buffer().file_path() {
-                self.registers.set_current_file(new_path.to_string());
+                if !is_scratch_path(new_path) {
+                    self.registers.set_current_file(new_path.to_string());
+                }
             }
 
             // Refresh per-file diagnostic caches after file switch
@@ -400,7 +423,10 @@ impl Editor {
             return Ok(());
         }
 
-        // File not open, load it
+        // File not open, load it.
+        // Buffer::load_file always canonicalizes via normalize_path(), so
+        // file_path() is always Some. The unwrap_or is a defensive fallback
+        // that is unreachable in practice.
         let buffer = Buffer::load_file(path)?;
         let resolved_path = buffer
             .file_path()
@@ -417,6 +443,20 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn is_scratch_path_detects_bracket_names() {
+        // Absolute paths with bracket filenames are scratch buffers
+        assert!(is_scratch_path("/some/path/[LspInfo]"));
+        assert!(is_scratch_path("/Users/foo/[Diagnostics]"));
+        assert!(is_scratch_path("[Scratch]"));
+
+        // Regular file paths are not scratch buffers
+        assert!(!is_scratch_path("/some/path/main.rs"));
+        assert!(!is_scratch_path("file.txt"));
+        assert!(!is_scratch_path("/path/to/[partial"));
+        assert!(!is_scratch_path("/path/to/partial]"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn open_file_updates_current_file_register() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -432,6 +472,79 @@ mod tests {
         let mut editor = Editor::default();
         editor.open_file(&file).expect("open file");
 
+        assert_eq!(editor.registers().get(Some('%')), expected_path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn scratch_buffer_does_not_update_percent_register() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "hello\n").expect("write file");
+
+        let expected_path = file
+            .canonicalize()
+            .expect("canonicalize")
+            .to_string_lossy()
+            .to_string();
+
+        let mut editor = Editor::default();
+        editor.open_file(&file).expect("open file");
+        assert_eq!(editor.registers().get(Some('%')), expected_path);
+
+        // Opening a scratch buffer should NOT overwrite %
+        editor.open_scratch_buffer("LspInfo", "some info");
+        assert_eq!(editor.registers().get(Some('%')), expected_path);
+
+        // Switching back to the real file should preserve %
+        editor.switch_to_buffer(0);
+        assert_eq!(editor.registers().get(Some('%')), expected_path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn scratch_buffer_does_not_update_alternate_register() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "hello\n").expect("write");
+
+        let expected_path = file.canonicalize().unwrap().to_string_lossy().to_string();
+
+        let mut editor = Editor::default();
+        editor.open_file(&file).expect("open file");
+        // Set # to a known value
+        editor.registers_mut().set_alternate_file(expected_path.clone());
+
+        // Open scratch buffer — it should NOT overwrite #
+        editor.open_scratch_buffer("Scratch", "scratch content");
+        assert_eq!(editor.registers().get(Some('#')), expected_path);
+
+        // Switching from scratch to real file should NOT set # to scratch path
+        editor.switch_to_buffer(0);
+        assert_eq!(editor.registers().get(Some('#')), expected_path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn next_prev_buffer_skip_scratch_for_registers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "hello\n").expect("write");
+
+        let expected_path = file
+            .canonicalize()
+            .expect("canonicalize")
+            .to_string_lossy()
+            .to_string();
+
+        let mut editor = Editor::default();
+        editor.open_file(&file).expect("open file");
+        editor.open_scratch_buffer("Info", "info");
+
+        // We're now on the scratch buffer (index 1).
+        // next_buffer should cycle to file (index 0) and update %
+        editor.next_buffer();
+        assert_eq!(editor.registers().get(Some('%')), expected_path);
+
+        // prev_buffer back to scratch — % should remain the real file
+        editor.prev_buffer();
         assert_eq!(editor.registers().get(Some('%')), expected_path);
     }
 }
