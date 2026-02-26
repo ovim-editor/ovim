@@ -591,17 +591,7 @@ fn set_cursor_position(
         } else {
             String::new()
         };
-        let line_text = line_text.trim_end_matches('\n');
-        let is_md = editor
-            .buffer()
-            .file_path()
-            .map(|p| p.ends_with(".md"))
-            .unwrap_or(false);
-        let line_text = if is_md && editor.options.markdown_conceal {
-            crate::editor::conceal_for_wrap(line_text)
-        } else {
-            line_text.to_string()
-        };
+        let line_text = line_text.trim_end_matches('\n').to_string();
 
         let tab_width = editor.options.tab_width;
         let display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);

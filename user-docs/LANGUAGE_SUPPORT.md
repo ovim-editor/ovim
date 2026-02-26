@@ -408,5 +408,4 @@ ovim check-lsp yourfile.ext --verbose
 
 
 ### Markdown UI options
-- `:set mdc` / `:set nomdc` — conceal inline link URLs and image targets in previews and hover windows.
-- `:set mdpt` / `:set nomdpt` — pretty-print pipe tables with aligned columns and box-drawing borders in previews/hover.
+- `:set mdc` / `:set nomdc` — conceal inline link URLs and image targets (cursor line always shows raw markdown).
