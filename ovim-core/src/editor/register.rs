@@ -130,7 +130,14 @@ impl RegisterManager {
         matches!(register, '%' | '.' | ':' | '/' | '#')
     }
 
-    /// Sets a register value with explicit type
+    /// Sets a register value with explicit type.
+    ///
+    /// This is a raw-API safety net: it silently blocks writes to read-only
+    /// registers (%, ., :, /, #) so that no code path — even one that bypasses
+    /// the higher-level `yank_to_register` / `delete_to_register` helpers — can
+    /// corrupt read-only state.  The higher-level helpers additionally implement
+    /// Vim's "fall back to unnamed register" semantics for read-only targets;
+    /// callers wanting that behavior should go through those helpers instead.
     pub fn set_with_type(&mut self, register: Option<char>, value: String, reg_type: RegisterType) {
         // Silently ignore writes to read-only registers
         if let Some(reg) = register {
