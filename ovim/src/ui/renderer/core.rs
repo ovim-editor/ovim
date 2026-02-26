@@ -16,7 +16,7 @@ use std::io;
 use super::buffer::{render_buffer, WindowRenderContext};
 use super::dashboard::render_dashboard;
 use super::file_tree_widget::render_file_tree;
-use super::helpers::char_col_to_display_col;
+use super::helpers::grapheme_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::line_cache::LineRenderCache;
 use super::overlays::{
@@ -560,7 +560,7 @@ fn set_cursor_position(
         let line_text = line_text.trim_end_matches('\n');
 
         let tab_width = editor.options.tab_width;
-        let display_col = char_col_to_display_col(line_text, cursor_col, tab_width);
+        let display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
 
         let buffer_area = layout.buffer_area;
         let gutter_width = layout.gutter_width;
