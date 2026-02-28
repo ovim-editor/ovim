@@ -81,6 +81,72 @@ async fn process_editor_tick(
     // Poll DAP (debug adapter) events
     if editor.process_dap_events() > 0 {
         editor.mark_dirty();
+        // Auto-fetch stack trace when we stop
+        if editor.debug_state().stopped_thread.is_some()
+            && editor.debug_state().stack_frames.is_empty()
+        {
+            editor.dap_manager_mut().pending_action =
+                Some(ovim::dap::PendingDebugAction::FetchState);
+        }
+    }
+
+    // Process pending debug actions (async)
+    if let Some(action) = editor.dap_manager_mut().pending_action.take() {
+        use ovim::dap::PendingDebugAction;
+        match action {
+            PendingDebugAction::Start { command, args } => {
+                if let Err(e) = editor.start_debug_session(&command, &args).await {
+                    editor.set_lsp_status(format!("Debug start failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::Stop => {
+                if let Err(e) = editor.stop_debug_session().await {
+                    editor.set_lsp_status(format!("Debug stop failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::Continue => {
+                if let Err(e) = editor.debug_continue().await {
+                    editor.set_lsp_status(format!("Debug continue failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::StepOver => {
+                if let Err(e) = editor.debug_step_over().await {
+                    editor.set_lsp_status(format!("Debug step failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::StepIn => {
+                if let Err(e) = editor.debug_step_in().await {
+                    editor.set_lsp_status(format!("Debug step in failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::StepOut => {
+                if let Err(e) = editor.debug_step_out().await {
+                    editor.set_lsp_status(format!("Debug step out failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::FetchState => {
+                let _ = editor.debug_fetch_stack_trace().await;
+                let _ = editor.debug_fetch_scopes().await;
+                // Fetch variables for all non-expensive scopes
+                let scope_refs: Vec<u64> = editor
+                    .debug_state()
+                    .scopes
+                    .iter()
+                    .filter(|s| !s.expensive)
+                    .map(|s| s.variables_reference)
+                    .collect();
+                for var_ref in scope_refs {
+                    let _ = editor.debug_fetch_variables(var_ref).await;
+                }
+                editor.mark_dirty();
+            }
+        }
     }
 
     // Spawn background syntax highlighting instead of blocking the main thread.

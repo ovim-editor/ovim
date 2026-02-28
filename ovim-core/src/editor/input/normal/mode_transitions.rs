@@ -192,9 +192,37 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.toggle_file_tree();
             Ok(true)
         }
+        // F5 - continue / start debug
+        KeyCode::F(5) => {
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::Continue);
+            }
+            Ok(true)
+        }
         // F9 - toggle breakpoint at cursor line
         KeyCode::F(9) => {
             editor.toggle_breakpoint();
+            Ok(true)
+        }
+        // F10 - step over
+        KeyCode::F(10) => {
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::StepOver);
+            }
+            Ok(true)
+        }
+        // F11 - step in (without Shift) / step out (with Shift)
+        KeyCode::F(11) => {
+            if editor.is_debug_active() {
+                let action = if key_event.modifiers.contains(Modifiers::SHIFT) {
+                    crate::dap::PendingDebugAction::StepOut
+                } else {
+                    crate::dap::PendingDebugAction::StepIn
+                };
+                editor.dap_manager_mut().pending_action = Some(action);
+            }
             Ok(true)
         }
         _ => Ok(false),

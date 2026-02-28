@@ -1528,6 +1528,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 handle_workflow_command(editor, command)
             } else if command == "session" || command.starts_with("session ") {
                 handle_session_command(editor, command)
+            } else if command == "debug" || command.starts_with("debug ") {
+                handle_debug_command(editor, command)
             // Handle :! shell command execution
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 if shell_cmd.trim().is_empty() {
@@ -2153,6 +2155,104 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
         _ => CommandResult::Error(ErrorResponse {
             error: format!(
                 "Unknown session subcommand: '{}'. Usage: :session [start NAME|stop|list]",
+                subcmd
+            ),
+        }),
+    }
+}
+
+fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
+    use crate::dap::PendingDebugAction;
+
+    let subcmd = command.strip_prefix("debug").unwrap_or("").trim();
+
+    match subcmd {
+        "breakpoint" | "bp" => {
+            editor.toggle_breakpoint();
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Breakpoint toggled".to_string()),
+                line_count: None,
+            })
+        }
+        "panels" => {
+            editor.toggle_debug_panels();
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: None,
+                line_count: None,
+            })
+        }
+        "continue" | "c" => {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Continue);
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Continue".to_string()),
+                line_count: None,
+            })
+        }
+        "next" | "n" | "step" => {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::StepOver);
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Step over".to_string()),
+                line_count: None,
+            })
+        }
+        "stepin" | "si" => {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::StepIn);
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Step in".to_string()),
+                line_count: None,
+            })
+        }
+        "stepout" | "so" => {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::StepOut);
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Step out".to_string()),
+                line_count: None,
+            })
+        }
+        "stop" => {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Stop);
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Stopping debug session".to_string()),
+                line_count: None,
+            })
+        }
+        s if s.starts_with("start ") => {
+            let rest = s["start ".len()..].trim();
+            let mut parts = rest.split_whitespace();
+            let Some(cmd) = parts.next() else {
+                return CommandResult::Error(ErrorResponse {
+                    error: "Usage: :debug start <command> [args...]".to_string(),
+                });
+            };
+            let args: Vec<String> = parts.map(String::from).collect();
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
+                command: cmd.to_string(),
+                args,
+            });
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Starting debug adapter: {}", cmd)),
+                line_count: None,
+            })
+        }
+        "" => CommandResult::Success(SuccessResponse {
+            success: true,
+            message: Some(
+                "Usage: :debug [start <cmd>|stop|continue|next|stepin|stepout|breakpoint|panels]"
+                    .to_string(),
+            ),
+            line_count: None,
+        }),
+        _ => CommandResult::Error(ErrorResponse {
+            error: format!(
+                "Unknown debug subcommand: '{}'. Usage: :debug [start|stop|continue|next|stepin|stepout|breakpoint|panels]",
                 subcmd
             ),
         }),
