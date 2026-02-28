@@ -66,6 +66,8 @@ pub enum PendingDebugAction {
     StepOut,
     /// Fetch stack trace + scopes + variables for the stopped thread.
     FetchState,
+    /// Sync all breakpoints to the adapter and send configurationDone.
+    SyncBreakpoints,
 }
 
 /// Central coordinator for debug sessions.
@@ -286,7 +288,8 @@ impl DapManager {
                     self.state.stopped_thread = None;
                 }
                 DapEvent::Initialized => {
-                    // The adapter is ready — configurationDone can be sent.
+                    // The adapter is ready — sync breakpoints then send configurationDone.
+                    self.pending_action = Some(PendingDebugAction::SyncBreakpoints);
                 }
             }
             count += 1;

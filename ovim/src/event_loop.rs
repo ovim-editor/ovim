@@ -130,6 +130,22 @@ async fn process_editor_tick(
                 }
                 editor.mark_dirty();
             }
+            PendingDebugAction::SyncBreakpoints => {
+                // Send all existing breakpoints to the debug adapter, then configurationDone.
+                let paths: Vec<std::path::PathBuf> = editor
+                    .debug_state()
+                    .breakpoints
+                    .keys()
+                    .cloned()
+                    .collect();
+                for path in &paths {
+                    let _ = editor.debug_sync_breakpoints(path).await;
+                }
+                if let Err(e) = editor.dap_manager_mut().configuration_done().await {
+                    editor.set_lsp_status(format!("configurationDone failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
             PendingDebugAction::FetchState => {
                 let _ = editor.debug_fetch_stack_trace().await;
                 let _ = editor.debug_fetch_scopes().await;
