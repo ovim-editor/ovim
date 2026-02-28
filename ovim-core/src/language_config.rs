@@ -45,6 +45,9 @@ pub struct LanguageConfig {
 
     /// LSP server configuration (optional)
     pub lsp: Option<LspConfig>,
+
+    /// DAP server configuration (optional)
+    pub dap: Option<DapConfig>,
 }
 
 /// Syntax highlighting configuration
@@ -119,6 +122,28 @@ pub struct CompanionLspConfig {
     /// Alternative commands to try if primary fails
     #[serde(default)]
     pub fallback_commands: Vec<String>,
+}
+
+/// Debug Adapter Protocol (DAP) server configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DapConfig {
+    /// Primary server command (e.g., "hyperion-lsp")
+    pub command: String,
+
+    /// Command-line arguments (e.g., ["dap"])
+    #[serde(default)]
+    pub args: Vec<String>,
+
+    /// Alternative commands to try if primary fails
+    #[serde(default)]
+    pub fallback_commands: Vec<String>,
+
+    /// Project root markers (searched in order)
+    #[serde(default)]
+    pub root_markers: Vec<String>,
+
+    /// Installation instructions (shown on failure)
+    pub install_hint: Option<String>,
 }
 
 /// LSP server configuration
@@ -555,6 +580,27 @@ pub fn find_lsp_command(config: &LspConfig) -> Option<String> {
     None
 }
 
+/// Find the DAP server command, trying primary then fallbacks.
+///
+/// Same strategy as `find_lsp_command`.
+pub fn find_dap_command(config: &DapConfig) -> Option<String> {
+    if which::which(&config.command).is_ok() {
+        return Some(config.command.clone());
+    }
+
+    for fallback in &config.fallback_commands {
+        let expanded = shellexpand::tilde(fallback).to_string();
+        if std::path::Path::new(&expanded).exists() {
+            return Some(expanded);
+        }
+        if which::which(&expanded).is_ok() {
+            return Some(expanded);
+        }
+    }
+
+    None
+}
+
 /// Find project root by walking up and checking markers
 ///
 /// Walks up the directory tree from the file, checking for marker files
@@ -634,6 +680,7 @@ mod tests {
                 path_filenames: vec![],
                 syntax: None,
                 lsp: None,
+                dap: None,
             },
             LanguageConfig {
                 id: "markdown".to_string(),
@@ -643,6 +690,7 @@ mod tests {
                 path_filenames: vec![],
                 syntax: None,
                 lsp: None,
+                dap: None,
             },
         ];
 
@@ -672,6 +720,7 @@ mod tests {
                 path_filenames: vec![],
                 syntax: None,
                 lsp: None,
+                dap: None,
             },
             LanguageConfig {
                 id: "markdown".to_string(),
@@ -681,6 +730,7 @@ mod tests {
                 path_filenames: vec![],
                 syntax: None,
                 lsp: None,
+                dap: None,
             },
         ];
 
@@ -776,6 +826,7 @@ mod tests {
             path_filenames: vec!["ghostty/config".to_string()],
             syntax: None,
             lsp: None,
+            dap: None,
         }];
 
         let registry = LanguageRegistry::build_indices(languages, vec![]);
@@ -816,6 +867,7 @@ mod tests {
                 path_filenames: vec![],
                 syntax: None,
                 lsp: None,
+                dap: None,
             },
             LanguageConfig {
                 id: "ghostty".to_string(),
@@ -825,6 +877,7 @@ mod tests {
                 path_filenames: vec!["ghostty/config".to_string()],
                 syntax: None,
                 lsp: None,
+                dap: None,
             },
         ];
 

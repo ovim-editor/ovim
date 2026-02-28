@@ -6,6 +6,7 @@
 use super::*;
 use crate::dap::state::DebugState;
 use crate::dap::DapManager;
+use crate::language_config::DapConfig;
 use std::path::Path;
 
 impl Editor {
@@ -174,6 +175,14 @@ impl Editor {
             self.dap_manager.state.update_execution_position();
             self.mark_dirty();
         }
+    }
+
+    /// Returns the DAP config for the current buffer's language, if any.
+    pub fn dap_config_for_current_file(&self) -> Option<&'static DapConfig> {
+        let fp = self.buffer().file_path()?;
+        let reg = crate::language_config::LanguageRegistry::try_get()?;
+        let lang = reg.detect(fp)?;
+        lang.dap.as_ref()
     }
 
     /// Returns the current execution file and line (1-based), if any.

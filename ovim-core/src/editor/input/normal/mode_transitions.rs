@@ -192,11 +192,29 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.toggle_file_tree();
             Ok(true)
         }
-        // F5 - continue / start debug
+        // F5 - continue (if active) or auto-start debug session
         KeyCode::F(5) => {
             if editor.is_debug_active() {
                 editor.dap_manager_mut().pending_action =
                     Some(crate::dap::PendingDebugAction::Continue);
+            } else {
+                // Auto-detect DAP adapter from current file
+                let dap_start = editor
+                    .buffer()
+                    .file_path()
+                    .and_then(|fp| {
+                        crate::language_config::LanguageRegistry::try_get()
+                            .and_then(|reg| reg.detect(fp))
+                    })
+                    .and_then(|lang| lang.dap.as_ref())
+                    .and_then(|config| {
+                        crate::language_config::find_dap_command(config)
+                            .map(|cmd| (cmd, config.args.clone()))
+                    });
+                if let Some((command, args)) = dap_start {
+                    editor.dap_manager_mut().pending_action =
+                        Some(crate::dap::PendingDebugAction::Start { command, args });
+                }
             }
             Ok(true)
         }
