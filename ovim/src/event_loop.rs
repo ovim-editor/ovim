@@ -94,7 +94,9 @@ async fn process_editor_tick(
     if let Some(action) = editor.dap_manager_mut().pending_action.take() {
         use ovim::dap::PendingDebugAction;
         match action {
-            PendingDebugAction::Start { command, args } => {
+            PendingDebugAction::Start { command, args, run_config } => {
+                // Store the run config on DapManager before spawning.
+                editor.dap_manager_mut().run_config = run_config;
                 if let Err(e) = editor.start_debug_session(&command, &args).await {
                     editor.set_lsp_status(format!("Debug start failed: {}", e));
                 }
@@ -127,6 +129,77 @@ async fn process_editor_tick(
             PendingDebugAction::StepOut => {
                 if let Err(e) = editor.debug_step_out().await {
                     editor.set_lsp_status(format!("Debug step out failed: {}", e));
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::LaunchOrAttach => {
+                use ovim::debug_config::DebugRunKind;
+                let result = if let Some(run_cfg) = editor.dap_manager_mut().run_config.clone() {
+                    let default_root = std::env::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                        .to_string_lossy()
+                        .to_string();
+                    match run_cfg.kind {
+                        DebugRunKind::Gradle { task, args, project_root } => {
+                            let root = project_root.unwrap_or_else(|| default_root.clone());
+                            editor.set_lsp_status(format!("Running gradle {} --debug-jvm...", task));
+                            editor.mark_dirty();
+                            match spawn_gradle_and_wait(&task, &args, &root).await {
+                                Ok(child) => {
+                                    editor.dap_manager_mut().gradle_child = Some(child);
+                                    let attach_config = serde_json::json!({
+                                        "host": "127.0.0.1",
+                                        "port": 5005,
+                                        "projectRoot": root,
+                                    });
+                                    editor.dap_manager_mut().attach(attach_config).await
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                        DebugRunKind::Attach { host, port, project_root } => {
+                            let root = project_root.unwrap_or(default_root);
+                            let attach_cfg = serde_json::json!({
+                                "host": host,
+                                "port": port,
+                                "projectRoot": root,
+                            });
+                            editor.dap_manager_mut().attach(attach_cfg).await
+                        }
+                        DebugRunKind::Launch { main_class, classpath, args, jvm_args, cwd, project_root } => {
+                            let root = project_root.unwrap_or(default_root);
+                            let mut launch_cfg = serde_json::json!({
+                                "mainClass": main_class,
+                                "projectRoot": root,
+                            });
+                            if let Some(cp) = classpath {
+                                launch_cfg["classpath"] = serde_json::json!(cp);
+                            }
+                            if !args.is_empty() {
+                                launch_cfg["args"] = serde_json::json!(args);
+                            }
+                            if !jvm_args.is_empty() {
+                                launch_cfg["jvmArgs"] = serde_json::json!(jvm_args);
+                            }
+                            if let Some(cwd) = cwd {
+                                launch_cfg["cwd"] = serde_json::json!(cwd);
+                            }
+                            editor.dap_manager_mut().launch(launch_cfg).await
+                        }
+                    }
+                } else {
+                    // No run config — skip launch/attach, just sync breakpoints.
+                    Ok(())
+                };
+                match result {
+                    Ok(()) => {
+                        // Queue breakpoint sync after successful launch/attach.
+                        editor.dap_manager_mut().pending_action =
+                            Some(PendingDebugAction::SyncBreakpoints);
+                    }
+                    Err(e) => {
+                        editor.set_lsp_status(format!("Debug launch/attach failed: {}", e));
+                    }
                 }
                 editor.mark_dirty();
             }
@@ -1599,6 +1672,60 @@ fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
         picker: None,
         hover_info: editor.hover_info().map(|s| s.to_string()),
     }
+}
+
+/// Spawn `gradle <task> --debug-jvm [extra_args]` and wait for the JVM to start listening.
+///
+/// Reads stderr lines until "Listening for transport dt_socket at address:" appears,
+/// then returns the child process (caller stores it for cleanup). Times out after 60s.
+async fn spawn_gradle_and_wait(
+    task: &str,
+    extra_args: &[String],
+    cwd: &str,
+) -> anyhow::Result<tokio::process::Child> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command;
+
+    let gradle_cmd = if cfg!(windows) { "gradlew.bat" } else { "./gradlew" };
+    // Fall back to system gradle if wrapper doesn't exist.
+    let cmd = if std::path::Path::new(cwd).join(gradle_cmd).exists() {
+        gradle_cmd
+    } else {
+        "gradle"
+    };
+
+    let mut child = Command::new(cmd)
+        .arg(task)
+        .arg("--debug-jvm")
+        .args(extra_args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn gradle: {e}"))?;
+
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no stderr from gradle"))?;
+
+    let mut reader = BufReader::new(stderr).lines();
+
+    let listening = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        while let Ok(Some(line)) = reader.next_line().await {
+            if line.contains("Listening for transport dt_socket at address:") {
+                return Ok(());
+            }
+        }
+        Err(anyhow::anyhow!(
+            "gradle process exited before JVM started listening"
+        ))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for gradle --debug-jvm to start"))?;
+
+    listening?;
+    Ok(child)
 }
 
 fn create_buffer_info(editor: &Editor) -> BufferInfo {

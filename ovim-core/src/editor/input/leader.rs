@@ -151,7 +151,7 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
                     });
                 if let Some((command, args)) = dap_start {
                     editor.dap_manager_mut().pending_action =
-                        Some(crate::dap::PendingDebugAction::Start { command, args });
+                        Some(crate::dap::PendingDebugAction::Start { command, args, run_config: None });
                 }
             }
             editor.reset_input_state();

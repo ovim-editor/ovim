@@ -24,6 +24,7 @@ use anyhow::Result;
 use std::path::Path;
 use tokio::sync::mpsc;
 
+use crate::debug_config::DebugRunConfig;
 use client::DebugAdapterClient;
 use state::DebugState;
 use types::*;
@@ -52,8 +53,12 @@ pub enum DapEvent {
 /// Pending debug action to execute in the async event loop.
 #[derive(Debug, Clone)]
 pub enum PendingDebugAction {
-    /// Start a debug session with command + args.
-    Start { command: String, args: Vec<String> },
+    /// Start a debug session with command + args + optional run config.
+    Start {
+        command: String,
+        args: Vec<String>,
+        run_config: Option<DebugRunConfig>,
+    },
     /// Stop the current session.
     Stop,
     /// Continue execution.
@@ -66,6 +71,8 @@ pub enum PendingDebugAction {
     StepOut,
     /// Fetch stack trace + scopes + variables for the stopped thread.
     FetchState,
+    /// Send launch or attach based on run config, then sync breakpoints.
+    LaunchOrAttach,
     /// Sync all breakpoints to the adapter and send configurationDone.
     SyncBreakpoints,
 }
@@ -82,6 +89,12 @@ pub struct DapManager {
     event_tx: mpsc::Sender<DapEvent>,
     /// Pending action to execute in the async event loop.
     pub pending_action: Option<PendingDebugAction>,
+    /// The chosen run configuration for the current session.
+    pub run_config: Option<DebugRunConfig>,
+    /// Available debug configs for picker selection (temporary, cleared after selection).
+    pub available_debug_configs: Vec<DebugRunConfig>,
+    /// Background Gradle process (killed on disconnect).
+    pub gradle_child: Option<tokio::process::Child>,
 }
 
 impl DapManager {
@@ -93,6 +106,9 @@ impl DapManager {
             event_rx,
             event_tx,
             pending_action: None,
+            run_config: None,
+            available_debug_configs: Vec::new(),
+            gradle_child: None,
         }
     }
 
@@ -244,6 +260,11 @@ impl DapManager {
         if let Some(client) = self.client.take() {
             client.disconnect(true).await?;
         }
+        // Kill the Gradle background process if one is running.
+        if let Some(mut child) = self.gradle_child.take() {
+            let _ = child.kill().await;
+        }
+        self.run_config = None;
         self.state.clear();
         Ok(())
     }
@@ -288,8 +309,13 @@ impl DapManager {
                     self.state.stopped_thread = None;
                 }
                 DapEvent::Initialized => {
-                    // The adapter is ready — sync breakpoints then send configurationDone.
-                    self.pending_action = Some(PendingDebugAction::SyncBreakpoints);
+                    // The adapter is ready. If we have a run config, launch/attach first;
+                    // otherwise fall back to just syncing breakpoints (legacy flow).
+                    if self.run_config.is_some() {
+                        self.pending_action = Some(PendingDebugAction::LaunchOrAttach);
+                    } else {
+                        self.pending_action = Some(PendingDebugAction::SyncBreakpoints);
+                    }
                 }
             }
             count += 1;

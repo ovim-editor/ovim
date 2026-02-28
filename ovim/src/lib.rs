@@ -22,6 +22,7 @@ pub use ovim_core::color;
 pub use ovim_core::command_result;
 pub use ovim_core::commands;
 pub use ovim_core::dap;
+pub use ovim_core::debug_config;
 pub use ovim_core::dashboard;
 pub use ovim_core::display;
 pub use ovim_core::editor;

@@ -124,6 +124,17 @@ impl Picker {
         )
     }
 
+    /// Creates a new debug config picker
+    pub fn new_debug_config(base_dir: PathBuf, items: Vec<String>) -> Self {
+        let preferred_dir = base_dir.clone();
+        Self::new_fuzzy_list(
+            base_dir,
+            preferred_dir,
+            Self::items_to_results(items),
+            FuzzyListKind::DebugConfig,
+        )
+    }
+
     /// Sets the prompt for the picker
     pub fn set_prompt(&mut self, _prompt: String) {}
 }

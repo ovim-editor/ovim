@@ -307,6 +307,9 @@ impl Picker {
                     col: result.col,
                 })
             }
+            PickerBackend::FuzzyList(FuzzyListKind::DebugConfig) => {
+                Some(PickerAction::SelectDebugConfig { index: result.line })
+            }
             PickerBackend::Nucleo(_) | PickerBackend::Grep(_) => Some(PickerAction::OpenFile {
                 path: result.location.clone(),
                 line: result.line,
@@ -341,7 +344,7 @@ impl Picker {
             PickerBackend::Nucleo(_) => &PickerMode::FindFiles,
             PickerBackend::Grep(_) => &PickerMode::LiveGrep,
             PickerBackend::FuzzyList(kind) => match kind {
-                FuzzyListKind::Custom => &PickerMode::Custom,
+                FuzzyListKind::Custom | FuzzyListKind::DebugConfig => &PickerMode::Custom,
                 FuzzyListKind::Completion => &PickerMode::Completion,
                 FuzzyListKind::LspLocations => &PickerMode::LspLocations,
             },
