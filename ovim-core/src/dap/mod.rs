@@ -49,6 +49,25 @@ pub enum DapEvent {
     Initialized,
 }
 
+/// Pending debug action to execute in the async event loop.
+#[derive(Debug, Clone)]
+pub enum PendingDebugAction {
+    /// Start a debug session with command + args.
+    Start { command: String, args: Vec<String> },
+    /// Stop the current session.
+    Stop,
+    /// Continue execution.
+    Continue,
+    /// Step over.
+    StepOver,
+    /// Step into.
+    StepIn,
+    /// Step out.
+    StepOut,
+    /// Fetch stack trace + scopes + variables for the stopped thread.
+    FetchState,
+}
+
 /// Central coordinator for debug sessions.
 pub struct DapManager {
     /// The active debug adapter client.
@@ -59,6 +78,8 @@ pub struct DapManager {
     event_rx: mpsc::Receiver<DapEvent>,
     /// Sender side (given to the client).
     event_tx: mpsc::Sender<DapEvent>,
+    /// Pending action to execute in the async event loop.
+    pub pending_action: Option<PendingDebugAction>,
 }
 
 impl DapManager {
@@ -69,6 +90,7 @@ impl DapManager {
             state: DebugState::new(),
             event_rx,
             event_tx,
+            pending_action: None,
         }
     }
 

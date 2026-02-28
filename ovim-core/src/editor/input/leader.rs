@@ -131,6 +131,46 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.toggle_breakpoint();
             editor.reset_input_state();
         }
+        (&['d'], 'c') => {
+            // <Space>dc - Continue execution
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::Continue);
+            }
+            editor.reset_input_state();
+        }
+        (&['d'], 'n') => {
+            // <Space>dn - Step over (next)
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::StepOver);
+            }
+            editor.reset_input_state();
+        }
+        (&['d'], 'i') => {
+            // <Space>di - Step into
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::StepIn);
+            }
+            editor.reset_input_state();
+        }
+        (&['d'], 'o') => {
+            // <Space>do - Step out
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::StepOut);
+            }
+            editor.reset_input_state();
+        }
+        (&['d'], 's') => {
+            // <Space>ds - Stop debug session
+            if editor.is_debug_active() {
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::Stop);
+            }
+            editor.reset_input_state();
+        }
         (&['d'], 'v') => {
             // <Space>dv - Toggle debug panels visibility
             editor.toggle_debug_panels();
