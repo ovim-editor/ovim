@@ -66,6 +66,9 @@ impl Buffer {
         self.version += 1;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
+        // Invalidate code block cache so stale byte offsets don't override
+        // the fresh tree-sitter highlights that viewport rehighlight provides
+        self.code_block_cache = None;
     }
 
     /// Deletes text in a range and returns the deleted text
@@ -164,6 +167,7 @@ impl Buffer {
         self.version += 1;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
+        self.code_block_cache = None;
 
         deleted
     }
@@ -229,6 +233,7 @@ impl Buffer {
         self.version += 1;
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
+        self.code_block_cache = None;
     }
 
     /// Replaces the entire buffer content
