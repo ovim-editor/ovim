@@ -523,7 +523,46 @@ impl Editor {
             PickerAction::ApplyCompletion { index } => {
                 self.apply_completion(index);
             }
+            PickerAction::SelectDebugConfig { index } => {
+                self.select_debug_config(index);
+            }
         }
         Ok(())
+    }
+
+    /// Select a debug run config by index and start the debug session.
+    fn select_debug_config(&mut self, index: usize) {
+        let configs = &self.dap_manager.available_debug_configs;
+        if index >= configs.len() {
+            self.set_lsp_status("Invalid debug config index".to_string());
+            return;
+        }
+        let config = configs[index].clone();
+        self.dap_manager.available_debug_configs.clear();
+
+        // Detect the DAP adapter command from the current file's language config.
+        let dap_start = self
+            .buffer()
+            .file_path()
+            .and_then(|fp| {
+                crate::language_config::LanguageRegistry::try_get()
+                    .and_then(|reg| reg.detect(fp))
+            })
+            .and_then(|lang| lang.dap.as_ref())
+            .and_then(|dap_config| {
+                crate::language_config::find_dap_command(dap_config)
+                    .map(|cmd| (cmd, dap_config.args.clone()))
+            });
+
+        if let Some((command, args)) = dap_start {
+            self.dap_manager.pending_action =
+                Some(crate::dap::PendingDebugAction::Start {
+                    command,
+                    args,
+                    run_config: Some(config),
+                });
+        } else {
+            self.set_lsp_status("No DAP adapter configured for this language".to_string());
+        }
     }
 }

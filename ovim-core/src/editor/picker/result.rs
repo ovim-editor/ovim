@@ -27,6 +27,8 @@ pub enum PickerAction {
     ApplyCodeAction { index: usize },
     /// Apply a completion by index
     ApplyCompletion { index: usize },
+    /// Select a debug run configuration by index
+    SelectDebugConfig { index: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

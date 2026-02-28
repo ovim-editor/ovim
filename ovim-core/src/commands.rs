@@ -2249,6 +2249,7 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
                 command: cmd.clone(),
                 args: args.clone(),
+                run_config: None,
             });
             CommandResult::Success(SuccessResponse {
                 success: true,
@@ -2268,6 +2269,7 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
                 command: cmd.to_string(),
                 args,
+                run_config: None,
             });
             CommandResult::Success(SuccessResponse {
                 success: true,
