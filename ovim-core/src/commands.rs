@@ -2223,12 +2223,45 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
                 line_count: None,
             })
         }
+        "start" => {
+            // Auto-detect DAP adapter from the current file's language config
+            let dap_config = editor
+                .buffer()
+                .file_path()
+                .and_then(|fp| {
+                    crate::language_config::LanguageRegistry::try_get()
+                        .and_then(|reg| reg.detect(fp))
+                })
+                .and_then(|lang| lang.dap.as_ref());
+
+            let Some(config) = dap_config else {
+                return CommandResult::Error(ErrorResponse {
+                    error: "No DAP adapter configured for this language. Use :debug start <command> [args...]".to_string(),
+                });
+            };
+            let Some(cmd) = crate::language_config::find_dap_command(config) else {
+                let hint = config.install_hint.as_deref().unwrap_or("Install the debug adapter and ensure it's in PATH");
+                return CommandResult::Error(ErrorResponse {
+                    error: format!("DAP adapter '{}' not found. {}", config.command, hint),
+                });
+            };
+            let args = config.args.clone();
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
+                command: cmd.clone(),
+                args: args.clone(),
+            });
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some(format!("Starting debug adapter: {} {}", cmd, args.join(" "))),
+                line_count: None,
+            })
+        }
         s if s.starts_with("start ") => {
             let rest = s["start ".len()..].trim();
             let mut parts = rest.split_whitespace();
             let Some(cmd) = parts.next() else {
                 return CommandResult::Error(ErrorResponse {
-                    error: "Usage: :debug start <command> [args...]".to_string(),
+                    error: "Usage: :debug start [command] [args...]".to_string(),
                 });
             };
             let args: Vec<String> = parts.map(String::from).collect();
