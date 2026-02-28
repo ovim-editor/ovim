@@ -21,6 +21,7 @@ mod input;
 mod input_context;
 mod input_state;
 mod keymap;
+mod debug_integration;
 mod lsp_integration;
 pub mod lsp_manager_panel;
 mod lsp_state;
@@ -299,6 +300,8 @@ pub struct Editor {
     pub ui_panels: UiPanels,
     /// LSP UI panel state (manager panel and install progress)
     pub lsp_ui: LspUi,
+    /// DAP (Debug Adapter Protocol) manager for debug sessions
+    dap_manager: crate::dap::DapManager,
     /// AI prompt, pending jobs, and in-buffer agent logs
     pub ai_state: ai_state::AiState,
     /// API server port (set during startup, used by :session start/stop)
@@ -405,6 +408,7 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
+            dap_manager: crate::dap::DapManager::new(),
             ai_state: ai_state::AiState::default(),
             api_port: None,
             active_session: None,
@@ -451,6 +455,7 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             lsp_ui: LspUi::default(),
+            dap_manager: crate::dap::DapManager::new(),
             ai_state: ai_state::AiState::default(),
             api_port: None,
             active_session: None,

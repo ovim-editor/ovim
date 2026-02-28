@@ -92,6 +92,10 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
         }
 
         // Multi-key sequences - accumulate the key
+        'd' => {
+            // <Space>d... - Debug prefix
+            editor.set_input_state(InputState::Leader { keys: vec!['d'] });
+        }
         'l' => {
             // <Space>l... - LSP manager prefix
             editor.set_input_state(InputState::Leader { keys: vec!['l'] });
@@ -121,6 +125,18 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
 /// Handles subsequent keys in a leader sequence.
 fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) -> Result<()> {
     match (keys, next_key) {
+        // <Space>d... sequences (debug)
+        (&['d'], 'b') => {
+            // <Space>db - Toggle breakpoint at cursor line
+            editor.toggle_breakpoint();
+            editor.reset_input_state();
+        }
+        (&['d'], 'v') => {
+            // <Space>dv - Toggle debug panels visibility
+            editor.toggle_debug_panels();
+            editor.reset_input_state();
+        }
+
         // <Space>l... sequences
         (&['l'], 'm') => {
             // <Space>lm - LSP Manager panel

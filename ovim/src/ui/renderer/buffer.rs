@@ -539,14 +539,26 @@ fn build_gutter_line(
         "  ".to_string()
     };
 
-    // Diagnostic signs take priority over agent edits > git signs
+    // Sign priority: breakpoint+exec > breakpoint > execution line > diagnostics > agent edits > git
+    let line_1based = (line_idx + 1) as u64;
+    let has_breakpoint = editor.has_breakpoint_at(line_1based);
+    let is_exec_line = editor
+        .execution_position()
+        .is_some_and(|(_, exec_line)| exec_line == line_1based);
+
     let buffer_id = buffer.id();
     let is_agent_edit = editor
         .ai_chat_state()
         .map(|c| c.agent_edits.is_line_modified(buffer_id, line_idx))
         .unwrap_or(false);
 
-    let (sign_text, sign_color) = if !line_diagnostics.is_empty() {
+    let (sign_text, sign_color) = if has_breakpoint && is_exec_line {
+        ("●▶", Color::Red)
+    } else if has_breakpoint {
+        ("● ", Color::Red)
+    } else if is_exec_line {
+        ("▶ ", Color::Yellow)
+    } else if !line_diagnostics.is_empty() {
         let severity = line_diagnostics[0].severity;
         get_diagnostic_sign_style(severity)
     } else if is_agent_edit {

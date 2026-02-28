@@ -78,6 +78,11 @@ async fn process_editor_tick(
         }
     }
 
+    // Poll DAP (debug adapter) events
+    if editor.process_dap_events() > 0 {
+        editor.mark_dirty();
+    }
+
     // Spawn background syntax highlighting instead of blocking the main thread.
     // This eliminates the flash of unstyled content (FOUC) on file open.
     if editor.buffer().should_init_syntax() {

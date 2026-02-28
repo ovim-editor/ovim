@@ -140,6 +140,50 @@ fn is_blame_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<u
     }
 }
 
+/// Returns the buffer line if the click lands in the sign column (first 2 chars of gutter).
+fn is_sign_column_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
+    let area = editor.render_cache.last_buffer_area?;
+    let gutter_width = editor.render_cache.last_gutter_width;
+    let blame_width = editor.render_cache.last_blame_width;
+
+    if gutter_width == 0 {
+        return None;
+    }
+
+    if screen_col < area.x
+        || screen_row < area.y
+        || screen_col >= area.x + area.width
+        || screen_row >= area.y + area.height
+    {
+        return None;
+    }
+
+    let rel_col = (screen_col - area.x) as usize;
+
+    // Sign column starts after blame, spans 2 columns (SIGN_WIDTH)
+    let sign_start = blame_width;
+    let sign_end = blame_width + 2; // SIGN_WIDTH
+
+    if rel_col < sign_start || rel_col >= sign_end {
+        return None;
+    }
+
+    let rel_row = (screen_row - area.y) as usize;
+    let buffer_line = if editor.options.wrap {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+            let absolute_visual_row = rel_row + viewport_visual_row;
+            let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
+            logical_line.min(editor.buffer().line_count().saturating_sub(1))
+        } else {
+            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+        }
+    } else {
+        (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+    };
+    Some(buffer_line)
+}
+
 /// Returns the buffer line if the click lands in the gutter area.
 fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<usize> {
     let area = editor.render_cache.last_buffer_area?;
@@ -228,6 +272,13 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     if let Some(line) = is_blame_click(editor, col, row) {
         editor.buffer_mut().cursor_mut().set_position(line, 0);
         editor.show_blame_info();
+        return Ok(());
+    }
+
+    // Check sign column click → toggle breakpoint
+    if let Some(line) = is_sign_column_click(editor, col, row) {
+        editor.buffer_mut().cursor_mut().set_position(line, 0);
+        editor.toggle_breakpoint();
         return Ok(());
     }
 
