@@ -10,6 +10,7 @@ pub mod cat_animation;
 pub mod conversation_tree;
 mod core;
 pub mod dashboard;
+mod debug_panels;
 mod file_tree_widget;
 mod helpers;
 mod layout;

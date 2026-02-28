@@ -43,6 +43,8 @@ struct FrameAreas {
     command_chunk: Rect,
     progress_chunk: Option<Rect>,
     chat_area: Option<Rect>,
+    debug_side_area: Option<Rect>,
+    debug_output_area: Option<Rect>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +95,36 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         (Some(horizontal_chunks[0]), horizontal_chunks[1])
     } else {
         (None, remaining_area)
+    };
+
+    // Debug panels (if visible and session active)
+    let debug_panels_visible =
+        editor.debug_state().panels_visible && editor.debug_state().session_active;
+
+    // Debug side panel (right) — split from content area
+    let (content_area, debug_side_area) = if debug_panels_visible {
+        let width = (content_area.width / 3).min(50).max(25);
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(width)])
+            .split(content_area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (content_area, None)
+    };
+
+    // Debug output panel (bottom) — split from content area
+    let (content_area, debug_output_area) = if debug_panels_visible
+        && !editor.debug_state().output_lines.is_empty()
+    {
+        let height = 6u16.min(content_area.height / 4);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(height)])
+            .split(content_area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (content_area, None)
     };
 
     // Buffer + optional progress line + status line + command/prompt area
@@ -162,6 +194,8 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         command_chunk,
         progress_chunk,
         chat_area,
+        debug_side_area,
+        debug_output_area,
     })
 }
 
@@ -854,6 +888,14 @@ impl Renderer {
                 Some(crate::key_convert::convert_ratatui_rect(chat_area));
         } else {
             editor.render_cache.last_chat_area = None;
+        }
+
+        // Render debug panels (if visible)
+        if let Some(debug_side) = areas.debug_side_area {
+            super::debug_panels::render_debug_side_panel(frame, editor, debug_side);
+        }
+        if let Some(debug_output) = areas.debug_output_area {
+            super::debug_panels::render_debug_output(frame, editor, debug_output);
         }
 
         // Render status + overlays + cursor
