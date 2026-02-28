@@ -234,26 +234,24 @@ impl Buffer {
 
         if newline_count == 0 {
             // Single-line insertion: shift highlights on the same line
-            // TODO: Use grapheme cluster library for proper multi-codepoint emoji handling
-            // Currently chars().count() splits multi-codepoint emojis incorrectly
-            let char_count = text.chars().count();
+            // Use byte length since highlight cache stores byte offsets
+            let insert_byte_len = text.len();
 
             for (range, _) in &mut cache[line] {
                 if range.start >= col {
                     // Highlight starts after insertion point: shift right
-                    range.start += char_count;
-                    range.end += char_count;
+                    range.start += insert_byte_len;
+                    range.end += insert_byte_len;
                 } else if range.end > col {
                     // Highlight contains insertion point: extend end
-                    range.end += char_count;
+                    range.end += insert_byte_len;
                 }
             }
         } else {
             // Multi-line insertion: handle line splits and shifts
             let lines: Vec<&str> = text.split('\n').collect();
-            // TODO: Use grapheme cluster library for proper multi-codepoint emoji handling
-            // Currently chars().count() splits multi-codepoint emojis incorrectly
-            let last_line_len = lines.last().map(|s| s.chars().count()).unwrap_or(0);
+            // Use byte length since highlight cache stores byte offsets
+            let last_line_len = lines.last().map(|s| s.len()).unwrap_or(0);
 
             // Split the current line's highlights at the insertion point
             let current_line_highlights = cache[line].clone();
@@ -320,17 +318,17 @@ impl Buffer {
         // Calculate new_end position based on newlines in inserted text
         let newline_count = text.matches('\n').count();
         let new_end_position = if newline_count == 0 {
-            // Single-line insertion
+            // Single-line insertion — col is already a byte offset
             tree_sitter::Point {
                 row: line,
-                column: col + text.chars().count(),
+                column: col + text.len(),
             }
         } else {
             // Multi-line insertion
             let last_line = text.split('\n').next_back().unwrap_or("");
             tree_sitter::Point {
                 row: line + newline_count,
-                column: last_line.chars().count(),
+                column: last_line.len(),
             }
         };
 

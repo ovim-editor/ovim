@@ -30,11 +30,17 @@ impl Buffer {
         let inserted_len = text.chars().count();
         self.ai_adjust_locks_for_insert(insert_pos, inserted_len);
 
+        // Convert char col to byte col for highlighting (cache stores byte offsets)
+        let line_start_char = self.rope.line_to_char(line);
+        let col_clamped = col.min(self.rope.len_chars() - line_start_char);
+        let byte_col = self.rope.char_to_byte(line_start_char + col_clamped)
+            - self.rope.char_to_byte(line_start_char);
+
         // Create tree-sitter edit BEFORE modifying rope (needs old state)
-        let ts_edit = self.create_ts_insert_edit(line, col, text);
+        let ts_edit = self.create_ts_insert_edit(line, byte_col, text);
 
         // Shift highlights BEFORE modifying rope
-        self.shift_highlights_for_insertion(line, col, text);
+        self.shift_highlights_for_insertion(line, byte_col, text);
 
         self.rope.insert(insert_pos, text);
         self.modified = true;
@@ -115,17 +121,24 @@ impl Buffer {
 
         let deleted = self.rope.slice(start_pos..end_pos).to_string();
 
+        // Convert char cols to byte cols for highlighting (cache stores byte offsets)
+        let start_byte_col = self.rope.char_to_byte(start_line_char + actual_start_col)
+            - self.rope.char_to_byte(start_line_char);
+        let end_line_char_offset = self.rope.line_to_char(actual_end_line);
+        let end_byte_col = self.rope.char_to_byte(end_line_char_offset + actual_end_col)
+            - self.rope.char_to_byte(end_line_char_offset);
+
         // Create tree-sitter edit BEFORE modifying rope (needs old state)
         let ts_edit = self.create_ts_delete_edit(
             start_line,
-            actual_start_col,
+            start_byte_col,
             actual_end_line,
-            actual_end_col,
+            end_byte_col,
             &deleted,
         );
 
         // Shift highlights BEFORE modifying rope
-        self.shift_highlights_for_deletion(start_line, start_col, end_line, end_col);
+        self.shift_highlights_for_deletion(start_line, start_byte_col, actual_end_line, end_byte_col);
 
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
@@ -177,15 +190,23 @@ impl Buffer {
         self.ai_adjust_locks_for_delete(start_pos, end_pos);
 
         let start_line = self.rope.char_to_line(start_pos);
-        let start_col = start_pos - self.rope.line_to_char(start_line);
+        let start_char_col = start_pos - self.rope.line_to_char(start_line);
         let end_line = self.rope.char_to_line(end_pos);
-        let end_col = end_pos - self.rope.line_to_char(end_line);
+        let end_char_col = end_pos - self.rope.line_to_char(end_line);
 
         let deleted = self.rope.slice(start_pos..end_pos).to_string();
 
+        // Convert char cols to byte cols for highlighting (cache stores byte offsets)
+        let start_line_char = self.rope.line_to_char(start_line);
+        let start_byte_col = self.rope.char_to_byte(start_line_char + start_char_col)
+            - self.rope.char_to_byte(start_line_char);
+        let end_line_char_offset = self.rope.line_to_char(end_line);
+        let end_byte_col = self.rope.char_to_byte(end_line_char_offset + end_char_col)
+            - self.rope.char_to_byte(end_line_char_offset);
+
         let ts_edit =
-            self.create_ts_delete_edit(start_line, start_col, end_line, end_col, &deleted);
-        self.shift_highlights_for_deletion(start_line, start_col, end_line, end_col);
+            self.create_ts_delete_edit(start_line, start_byte_col, end_line, end_byte_col, &deleted);
+        self.shift_highlights_for_deletion(start_line, start_byte_col, end_line, end_byte_col);
 
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
