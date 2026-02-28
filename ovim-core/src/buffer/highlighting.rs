@@ -726,6 +726,17 @@ impl Buffer {
                 cache[line_idx] = highlights;
             }
         }
+
+        // For markdown files, also rebuild the code block cache so that
+        // language-specific highlighting inside fenced code blocks is
+        // available immediately (not deferred to the debounced full rebuild).
+        if syntax.language() == Language::Markdown && self.code_block_cache.is_none() {
+            if let Some(tree) = syntax.tree() {
+                let mut cb_cache = CodeBlockCache::new();
+                cb_cache.update_from_tree(tree, &content, self.highlight_version);
+                self.code_block_cache = Some(cb_cache);
+            }
+        }
     }
 
     /// Applies re-highlighted results if version matches
