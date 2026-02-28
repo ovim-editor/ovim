@@ -192,6 +192,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.toggle_file_tree();
             Ok(true)
         }
+        // F9 - toggle breakpoint at cursor line
+        KeyCode::F(9) => {
+            editor.toggle_breakpoint();
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
