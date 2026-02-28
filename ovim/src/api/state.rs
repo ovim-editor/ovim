@@ -448,7 +448,13 @@ pub fn format_context_window(
         let line = if line_idx < lines.len() {
             let content = lines[line_idx];
             if content.len() > 80 {
-                format!("{}...", &content[..77])
+                let truncate_at = content
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .take_while(|&i| i <= 77)
+                    .last()
+                    .unwrap_or(0);
+                format!("{}...", &content[..truncate_at])
             } else {
                 content.to_string()
             }
