@@ -131,6 +131,37 @@ fn color_to_ansi_fg(color: Color) -> String {
     }
 }
 
+/// Strips ANSI escape sequences, returning the plain character grid.
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip CSI sequences: ESC [ ... final_byte
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Consume parameter bytes (0x30–0x3F), intermediate (0x20–0x2F),
+                // then the final byte (0x40–0x7E).
+                loop {
+                    match chars.peek() {
+                        Some(&c) if ('@'..='~').contains(&c) => {
+                            chars.next();
+                            break;
+                        }
+                        Some(_) => {
+                            chars.next();
+                        }
+                        None => break,
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Converts ratatui Color to ANSI background code
 fn color_to_ansi_bg(color: Color) -> String {
     match color {

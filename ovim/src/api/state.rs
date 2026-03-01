@@ -16,7 +16,12 @@ pub enum ApiRequest {
     GetMode(oneshot::Sender<ApiResponse>),
     SetMode(String, oneshot::Sender<ApiResponse>),
     ExecuteCommand(String, oneshot::Sender<ApiResponse>),
-    GetRender(oneshot::Sender<ApiResponse>),
+    GetRender {
+        width: u16,
+        height: u16,
+        plain: bool,
+        tx: oneshot::Sender<ApiResponse>,
+    },
     GetLspStatus(oneshot::Sender<ApiResponse>),
     GetHealth(oneshot::Sender<ApiResponse>),
     GetMetrics(oneshot::Sender<ApiResponse>),
