@@ -226,14 +226,42 @@ pub async fn execute_command(
 }
 
 /// Handler for GET /render
-/// Returns pixel-perfect ANSI representation of the editor
-pub async fn get_render(State(state): State<ApiState>) -> Response {
+/// Returns pixel-perfect ANSI representation of the editor.
+///
+/// Query params:
+///   `width`  — terminal columns (default 120, max 500)
+///   `height` — terminal rows   (default 40, max 200)
+///   `plain`  — if `true`, strip ANSI escapes and return the raw character grid
+#[derive(Deserialize)]
+pub struct RenderQuery {
+    pub width: Option<u16>,
+    pub height: Option<u16>,
+    pub plain: Option<bool>,
+}
+
+pub async fn get_render(
+    State(state): State<ApiState>,
+    axum::extract::Query(params): axum::extract::Query<RenderQuery>,
+) -> Response {
     let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
     metrics::HTTP_REQUESTS_TOTAL.inc();
 
+    let width = params.width.unwrap_or(120).min(500).max(10);
+    let height = params.height.unwrap_or(40).min(200).max(3);
+    let plain = params.plain.unwrap_or(false);
+
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetRender(tx)).is_err() {
+    if state
+        .tx
+        .send(ApiRequest::GetRender {
+            width,
+            height,
+            plain,
+            tx,
+        })
+        .is_err()
+    {
         return error_response("Editor not available");
     }
 

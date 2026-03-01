@@ -895,17 +895,23 @@ async fn handle_api_request(
             let response: ApiResponse = commands::execute_command(editor, &command).into();
             let _ = tx.send(response);
         }
-        ApiRequest::GetRender(tx) => {
-            // Default dimensions: 80x24
-            const DEFAULT_WIDTH: u16 = 80;
-            const DEFAULT_HEIGHT: u16 = 24;
-
-            match ovim::ui::render_editor_to_ansi(editor, DEFAULT_WIDTH, DEFAULT_HEIGHT) {
+        ApiRequest::GetRender {
+            width,
+            height,
+            plain,
+            tx,
+        } => {
+            match ovim::ui::render_editor_to_ansi(editor, width, height) {
                 Ok(ansi) => {
+                    let output = if plain {
+                        ovim::ui::strip_ansi(&ansi)
+                    } else {
+                        ansi
+                    };
                     let render_info = RenderInfo {
-                        width: DEFAULT_WIDTH,
-                        height: DEFAULT_HEIGHT,
-                        ansi,
+                        width,
+                        height,
+                        ansi: output,
                     };
                     let _ = tx.send(ApiResponse::Render(render_info));
                 }
