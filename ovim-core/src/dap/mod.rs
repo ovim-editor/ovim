@@ -81,6 +81,8 @@ pub enum PendingDebugAction {
     Evaluate { expression: String },
     /// Fetch variables for an expanded object reference.
     FetchVariables { var_ref: u64 },
+    /// Fetch run configurations from TOML + LSP, then start or open picker.
+    FetchRunConfigs,
 }
 
 /// Central coordinator for debug sessions.

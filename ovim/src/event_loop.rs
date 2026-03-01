@@ -276,6 +276,81 @@ async fn process_editor_tick(
                 let _ = editor.debug_fetch_variables(var_ref).await;
                 editor.mark_dirty();
             }
+            PendingDebugAction::FetchRunConfigs => {
+                let project_root = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+                // 1. Load TOML configs (fast, sync)
+                let mut configs = ovim::debug_config::load_debug_configs(&project_root);
+
+                // 2. Request LSP run configurations (async, tolerant of errors)
+                if let Some(lsp_manager) = editor.lsp_manager() {
+                    let lsp_configs = lsp_manager.run_configurations().await;
+                    configs.extend(ovim::debug_config::parse_lsp_run_configs(&lsp_configs));
+                }
+
+                editor.set_lsp_status(String::new());
+
+                if configs.is_empty() {
+                    // No config file — fall back to auto-detect from language
+                    let dap_start = editor
+                        .buffer()
+                        .file_path()
+                        .and_then(|fp| {
+                            ovim::language_config::LanguageRegistry::try_get()
+                                .and_then(|reg| reg.detect(fp))
+                        })
+                        .and_then(|lang| lang.dap.as_ref())
+                        .and_then(|config| {
+                            ovim::language_config::find_dap_command(config)
+                                .map(|cmd| (cmd, config.args.clone()))
+                        });
+                    if let Some((command, args)) = dap_start {
+                        editor.dap_manager_mut().pending_action =
+                            Some(PendingDebugAction::Start { command, args, run_config: None });
+                    } else {
+                        editor.set_lsp_status(
+                            "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter."
+                                .to_string(),
+                        );
+                    }
+                } else if configs.len() == 1 {
+                    // Single config — use it directly
+                    let config = configs.into_iter().next().unwrap();
+                    let dap_start = editor
+                        .buffer()
+                        .file_path()
+                        .and_then(|fp| {
+                            ovim::language_config::LanguageRegistry::try_get()
+                                .and_then(|reg| reg.detect(fp))
+                        })
+                        .and_then(|lang| lang.dap.as_ref())
+                        .and_then(|dap_config| {
+                            ovim::language_config::find_dap_command(dap_config)
+                                .map(|cmd| (cmd, dap_config.args.clone()))
+                        });
+                    if let Some((command, args)) = dap_start {
+                        editor.dap_manager_mut().pending_action =
+                            Some(PendingDebugAction::Start {
+                                command,
+                                args,
+                                run_config: Some(config),
+                            });
+                    }
+                } else {
+                    // Multiple configs — open picker
+                    let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
+                    editor.dap_manager_mut().available_debug_configs = configs;
+                    let picker = ovim::editor::picker::Picker::new_debug_config(
+                        project_root,
+                        names,
+                    );
+                    editor.set_picker(picker);
+                    editor.set_mode(ovim::mode::Mode::Picker);
+                    editor.mark_picker_selection_changed();
+                }
+                editor.mark_dirty();
+            }
         }
     }
 
