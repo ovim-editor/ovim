@@ -308,6 +308,7 @@ impl DapManager {
                     self.state.stopped_thread = *thread_id;
                     self.state.stop_reason = Some(reason.clone());
                     self.state.is_running = false;
+                    self.state.panels_visible = true;
                 }
                 DapEvent::Continued { thread_id: _ } => {
                     self.state.is_running = true;
@@ -333,6 +334,7 @@ impl DapManager {
                     self.state.session_active = false;
                     self.state.is_running = false;
                     self.state.stopped_thread = None;
+                    self.state.panels_visible = false;
                 }
                 DapEvent::Initialized => {
                     // The adapter is ready. If we have a run config, launch/attach first;

@@ -1552,6 +1552,52 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         error: "Not stopped at a breakpoint".to_string(),
                     })
                 }
+            } else if let Some(name) = command.strip_prefix("DebugExpand ") {
+                // :DebugExpand <name> — toggle expansion of a variable in the debug panel
+                let name = name.trim();
+                if name.is_empty() {
+                    CommandResult::Error(ErrorResponse {
+                        error: "Usage: :DebugExpand <variable_name>".to_string(),
+                    })
+                } else if !editor.is_debug_stopped() {
+                    CommandResult::Error(ErrorResponse {
+                        error: "Not stopped at a breakpoint".to_string(),
+                    })
+                } else {
+                    // Find the variable by name in all loaded variable scopes
+                    let mut found_ref: Option<u64> = None;
+                    let state = editor.debug_state();
+                    for vars in state.variables.values() {
+                        for var in vars {
+                            if var.name == name && var.variables_reference > 0 {
+                                found_ref = Some(var.variables_reference);
+                                break;
+                            }
+                        }
+                        if found_ref.is_some() {
+                            break;
+                        }
+                    }
+                    if let Some(var_ref) = found_ref {
+                        if editor.dap_manager_mut().state.expanded_refs.contains(&var_ref) {
+                            editor.dap_manager_mut().state.expanded_refs.remove(&var_ref);
+                        } else {
+                            editor.dap_manager_mut().state.expanded_refs.insert(var_ref);
+                            editor.dap_manager_mut().pending_action =
+                                Some(crate::dap::PendingDebugAction::FetchVariables { var_ref });
+                        }
+                        editor.mark_dirty();
+                        CommandResult::Success(SuccessResponse {
+                            success: true,
+                            message: Some(format!("Toggled expansion of '{}'", name)),
+                            line_count: None,
+                        })
+                    } else {
+                        CommandResult::Error(ErrorResponse {
+                            error: format!("Variable '{}' not found or not expandable", name),
+                        })
+                    }
+                }
             } else if let Some(condition) = command.strip_prefix("DebugCondition ") {
                 // :DebugCondition <expr> — set conditional breakpoint at cursor
                 let condition = condition.trim().to_string();
