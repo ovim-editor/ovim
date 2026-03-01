@@ -387,6 +387,21 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
         return Some(KeyEvent::new(KeyCode::Char(c), Modifiers::CONTROL));
     }
 
+    // Handle Shift- prefix
+    if let Some(inner) = key_name.strip_prefix("S-") {
+        return parse_special_key(inner)
+            .map(|e| KeyEvent::new(e.code, e.modifiers | Modifiers::SHIFT));
+    }
+
+    // Handle function keys: F1-F12
+    if let Some(num) = key_name.strip_prefix('F') {
+        if let Ok(n) = num.parse::<u8>() {
+            if (1..=12).contains(&n) {
+                return Some(KeyEvent::new(KeyCode::F(n), Modifiers::NONE));
+            }
+        }
+    }
+
     // Handle common special keys
     match key_name {
         "CR" | "Enter" => Some(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
@@ -398,6 +413,11 @@ fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
         "Down" => Some(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
         "Left" => Some(KeyEvent::new(KeyCode::Left, Modifiers::NONE)),
         "Right" => Some(KeyEvent::new(KeyCode::Right, Modifiers::NONE)),
+        "Space" => Some(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE)),
+        "Home" => Some(KeyEvent::new(KeyCode::Home, Modifiers::NONE)),
+        "End" => Some(KeyEvent::new(KeyCode::End, Modifiers::NONE)),
+        "PageUp" => Some(KeyEvent::new(KeyCode::PageUp, Modifiers::NONE)),
+        "PageDown" => Some(KeyEvent::new(KeyCode::PageDown, Modifiers::NONE)),
         _ => None,
     }
 }
