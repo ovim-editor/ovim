@@ -75,6 +75,12 @@ pub enum PendingDebugAction {
     LaunchOrAttach,
     /// Sync all breakpoints to the adapter and send configurationDone.
     SyncBreakpoints,
+    /// Select a stack frame and refresh variables.
+    SelectFrame { index: usize },
+    /// Evaluate an expression and show result.
+    Evaluate { expression: String },
+    /// Fetch variables for an expanded object reference.
+    FetchVariables { var_ref: u64 },
 }
 
 /// Central coordinator for debug sessions.
@@ -176,8 +182,14 @@ impl DapManager {
             path: Some(path.to_string_lossy().to_string()),
         };
 
-        let source_bps: Vec<DapSourceBreakpoint> =
-            lines.iter().map(|&line| DapSourceBreakpoint { line }).collect();
+        // Include conditions from state when syncing breakpoints.
+        let source_bps: Vec<DapSourceBreakpoint> = lines
+            .iter()
+            .map(|&line| DapSourceBreakpoint {
+                line,
+                condition: self.state.breakpoint_condition(path, line).map(|s| s.to_owned()),
+            })
+            .collect();
 
         let result = client.set_breakpoints(&source, &source_bps).await?;
 
@@ -253,6 +265,20 @@ impl DapManager {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no debug adapter running"))?;
         client.variables(variables_reference).await
+    }
+
+    /// Evaluate an expression in the context of a frame.
+    pub async fn evaluate(
+        &self,
+        expression: &str,
+        frame_id: Option<u64>,
+        context: Option<&str>,
+    ) -> Result<(String, Option<String>, u64)> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no debug adapter running"))?;
+        client.evaluate(expression, frame_id, context).await
     }
 
     /// Disconnect from the debug adapter.

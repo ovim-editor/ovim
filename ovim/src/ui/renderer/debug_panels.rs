@@ -152,41 +152,60 @@ fn render_variables(frame: &mut Frame, editor: &Editor, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )));
 
-        // Variables in this scope
+        // Variables in this scope (with recursive expansion)
         if let Some(vars) = state.variables.get(&scope.variables_reference) {
             for var in vars {
-                let expand_marker = if var.variables_reference > 0 {
-                    if state.expanded_refs.contains(&var.variables_reference) {
-                        "▾ "
-                    } else {
-                        "▸ "
-                    }
-                } else {
-                    "  "
-                };
-
-                let type_str = var
-                    .type_
-                    .as_deref()
-                    .map(|t| format!(" ({})", t))
-                    .unwrap_or_default();
-
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {}{}", expand_marker, var.name),
-                        Style::default().fg(Color::White),
-                    ),
-                    Span::styled(" = ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        var.value.clone(),
-                        Style::default().fg(Color::Green),
-                    ),
-                    Span::styled(type_str, Style::default().fg(Color::DarkGray)),
-                ]));
+                render_variable_tree(&mut lines, state, var, 1);
             }
         }
     }
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
+}
+
+/// Recursively render a variable and its children if expanded.
+fn render_variable_tree<'a>(
+    lines: &mut Vec<Line<'a>>,
+    state: &ovim_core::dap::state::DebugState,
+    var: &ovim_core::dap::types::DapVariable,
+    depth: usize,
+) {
+    let indent = "  ".repeat(depth);
+    let expand_marker = if var.variables_reference > 0 {
+        if state.expanded_refs.contains(&var.variables_reference) {
+            "▾ "
+        } else {
+            "▸ "
+        }
+    } else {
+        "  "
+    };
+
+    let type_str = var
+        .type_
+        .as_deref()
+        .map(|t| format!(" ({})", t))
+        .unwrap_or_default();
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{}{}{}", indent, expand_marker, var.name),
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(" = ", Style::default().fg(Color::DarkGray)),
+        Span::styled(var.value.clone(), Style::default().fg(Color::Green)),
+        Span::styled(type_str, Style::default().fg(Color::DarkGray)),
+    ]));
+
+    if var.variables_reference > 0
+        && state.expanded_refs.contains(&var.variables_reference)
+        && depth < 10
+    {
+        if let Some(children) = state.variables.get(&var.variables_reference) {
+            for child in children {
+                render_variable_tree(lines, state, child, depth + 1);
+            }
+        }
+    }
 }

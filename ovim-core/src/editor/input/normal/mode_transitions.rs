@@ -266,8 +266,16 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // F9 - toggle breakpoint at cursor line
-        KeyCode::F(9) => {
+        KeyCode::F(9) if !key_event.modifiers.contains(Modifiers::SHIFT) => {
             editor.toggle_breakpoint();
+            Ok(true)
+        }
+        // Shift+F9 - toggle conditional breakpoint (prompts for condition)
+        KeyCode::F(9) if key_event.modifiers.contains(Modifiers::SHIFT) => {
+            // Enter command mode with ":DebugCondition " pre-filled.
+            editor.clear_command_line();
+            editor.insert_into_command_line("DebugCondition ");
+            editor.set_mode(Mode::Command);
             Ok(true)
         }
         // F10 - step over

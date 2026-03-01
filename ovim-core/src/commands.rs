@@ -1530,6 +1530,56 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 handle_session_command(editor, command)
             } else if command == "debug" || command.starts_with("debug ") {
                 handle_debug_command(editor, command)
+            } else if let Some(expr) = command.strip_prefix("eval ") {
+                // :eval <expression> — evaluate expression in debug context
+                if editor.is_debug_stopped() {
+                    let expression = expr.trim().to_string();
+                    if expression.is_empty() {
+                        CommandResult::Error(ErrorResponse {
+                            error: "Usage: :eval <expression>".to_string(),
+                        })
+                    } else {
+                        editor.dap_manager_mut().pending_action =
+                            Some(crate::dap::PendingDebugAction::Evaluate { expression });
+                        CommandResult::Success(SuccessResponse {
+                            success: true,
+                            message: Some("Evaluating...".to_string()),
+                            line_count: None,
+                        })
+                    }
+                } else {
+                    CommandResult::Error(ErrorResponse {
+                        error: "Not stopped at a breakpoint".to_string(),
+                    })
+                }
+            } else if let Some(condition) = command.strip_prefix("DebugCondition ") {
+                // :DebugCondition <expr> — set conditional breakpoint at cursor
+                let condition = condition.trim().to_string();
+                if condition.is_empty() {
+                    // Empty condition = remove condition (convert to unconditional)
+                    if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                        let line = editor.buffer().cursor().line() as u64 + 1;
+                        let path = std::path::PathBuf::from(&file_path);
+                        editor.dap_manager_mut().state.set_breakpoint_condition(&path, line, None);
+                    }
+                } else {
+                    editor.toggle_conditional_breakpoint(condition);
+                }
+                // Sync breakpoints if debug is active.
+                if editor.is_debug_active() {
+                    if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
+                        let path = std::path::PathBuf::from(&file_path);
+                        let lines = editor.dap_manager_mut().state.breakpoint_lines(&path);
+                        let _ = lines; // Sync will happen in event loop via pending action
+                        editor.dap_manager_mut().pending_action =
+                            Some(crate::dap::PendingDebugAction::SyncBreakpoints);
+                    }
+                }
+                CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Conditional breakpoint set".to_string()),
+                    line_count: None,
+                })
             // Handle :! shell command execution
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 if shell_cmd.trim().is_empty() {

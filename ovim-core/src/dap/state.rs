@@ -16,6 +16,8 @@ pub struct BreakpointState {
     pub verified: bool,
     /// DAP-assigned breakpoint ID.
     pub id: Option<u64>,
+    /// Condition expression for conditional breakpoints (None = unconditional).
+    pub condition: Option<String>,
 }
 
 /// All debug state for the editor.
@@ -96,6 +98,7 @@ impl DebugState {
                 line,
                 verified: false,
                 id: None,
+                condition: None,
             });
         }
 
@@ -120,21 +123,27 @@ impl DebugState {
     /// Update breakpoints with responses from the debug adapter.
     pub fn update_breakpoints(&mut self, path: &Path, dap_bps: &[DapBreakpoint]) {
         let entry = self.breakpoints.entry(path.to_path_buf()).or_default();
+        let old_entries = entry.clone();
         entry.clear();
         for bp in dap_bps {
             if let Some(line) = bp.line {
+                // Preserve existing condition if the breakpoint was already there.
+                let existing_condition = old_entries.iter()
+                    .find(|old| old.line == line)
+                    .and_then(|old| old.condition.clone());
                 entry.push(BreakpointState {
                     line,
                     verified: bp.verified,
                     id: bp.id,
+                    condition: existing_condition,
                 });
             }
         }
     }
 
-    /// Update the execution position from the top stack frame.
+    /// Update the execution position from the selected stack frame.
     pub fn update_execution_position(&mut self) {
-        if let Some(frame) = self.stack_frames.first() {
+        if let Some(frame) = self.stack_frames.get(self.selected_frame) {
             self.execution_line = Some(frame.line);
             self.execution_file = frame
                 .source
@@ -145,6 +154,34 @@ impl DebugState {
             self.execution_line = None;
             self.execution_file = None;
         }
+    }
+
+    /// Set a condition on a breakpoint. If the breakpoint doesn't exist, creates it.
+    pub fn set_breakpoint_condition(&mut self, path: &Path, line: u64, condition: Option<String>) {
+        let entry = self.breakpoints.entry(path.to_path_buf()).or_default();
+        if let Some(bp) = entry.iter_mut().find(|bp| bp.line == line) {
+            bp.condition = condition;
+        } else {
+            entry.push(BreakpointState {
+                line,
+                verified: false,
+                id: None,
+                condition,
+            });
+        }
+    }
+
+    /// Get the condition for a breakpoint at a given line, if any.
+    pub fn breakpoint_condition(&self, path: &Path, line: u64) -> Option<&str> {
+        self.breakpoints
+            .get(path)
+            .and_then(|bps| bps.iter().find(|bp| bp.line == line))
+            .and_then(|bp| bp.condition.as_deref())
+    }
+
+    /// Check if a breakpoint at the given line is conditional.
+    pub fn is_conditional_breakpoint(&self, path: &Path, line: u64) -> bool {
+        self.breakpoint_condition(path, line).is_some()
     }
 
     /// Clear all debug state (on session end).

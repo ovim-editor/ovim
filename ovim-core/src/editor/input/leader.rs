@@ -193,6 +193,20 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.toggle_debug_panels();
             editor.reset_input_state();
         }
+        (&['d'], 'k') => {
+            // <Space>dk - Select frame up (caller)
+            if editor.is_debug_active() {
+                editor.select_frame_up();
+            }
+            editor.reset_input_state();
+        }
+        (&['d'], 'j') => {
+            // <Space>dj - Select frame down (callee)
+            if editor.is_debug_active() {
+                editor.select_frame_down();
+            }
+            editor.reset_input_state();
+        }
 
         // <Space>l... sequences
         (&['l'], 'm') => {

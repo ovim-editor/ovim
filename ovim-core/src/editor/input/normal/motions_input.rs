@@ -37,9 +37,22 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
 
-        // K - show hover information (LSP)
+        // K - debug evaluate (when stopped) or LSP hover
         KeyCode::Char('K') => {
-            editor.request_hover();
+            if editor.is_debug_stopped() {
+                // Evaluate word under cursor via DAP.
+                let word = editor.buffer().word_under_cursor()
+                    .map(|(w, _, _)| w)
+                    .unwrap_or_default();
+                if !word.is_empty() {
+                    editor.dap_manager_mut().pending_action =
+                        Some(crate::dap::PendingDebugAction::Evaluate {
+                            expression: word,
+                        });
+                }
+            } else {
+                editor.request_hover();
+            }
             editor.clear_count();
             Ok(true)
         }

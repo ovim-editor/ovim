@@ -233,6 +233,47 @@ async fn process_editor_tick(
                 for var_ref in scope_refs {
                     let _ = editor.debug_fetch_variables(var_ref).await;
                 }
+                // Also fetch expanded object refs
+                let expanded: Vec<u64> = editor
+                    .debug_state()
+                    .expanded_refs
+                    .iter()
+                    .copied()
+                    .collect();
+                for var_ref in expanded {
+                    let _ = editor.debug_fetch_variables(var_ref).await;
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::SelectFrame { index: _ } => {
+                // Frame already selected by select_stack_frame(). Refresh scopes + variables.
+                let _ = editor.debug_fetch_scopes().await;
+                let scope_refs: Vec<u64> = editor
+                    .debug_state()
+                    .scopes
+                    .iter()
+                    .filter(|s| !s.expensive)
+                    .map(|s| s.variables_reference)
+                    .collect();
+                for var_ref in scope_refs {
+                    let _ = editor.debug_fetch_variables(var_ref).await;
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::Evaluate { expression } => {
+                let frame_id = editor.selected_frame_id();
+                match editor.dap_manager().evaluate(&expression, frame_id, Some("hover")).await {
+                    Ok((result, _type, _var_ref)) => {
+                        editor.set_lsp_status(format!("{expression} = {result}"));
+                    }
+                    Err(e) => {
+                        editor.set_lsp_status(format!("Eval error: {e}"));
+                    }
+                }
+                editor.mark_dirty();
+            }
+            PendingDebugAction::FetchVariables { var_ref } => {
+                let _ = editor.debug_fetch_variables(var_ref).await;
                 editor.mark_dirty();
             }
         }
