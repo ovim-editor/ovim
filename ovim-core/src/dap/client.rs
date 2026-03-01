@@ -274,6 +274,36 @@ impl DebugAdapterClient {
         Ok(vars)
     }
 
+    pub async fn evaluate(
+        &self,
+        expression: &str,
+        frame_id: Option<u64>,
+        context: Option<&str>,
+    ) -> Result<(String, Option<String>, u64)> {
+        let mut args = serde_json::json!({ "expression": expression });
+        if let Some(fid) = frame_id {
+            args["frameId"] = serde_json::json!(fid);
+        }
+        if let Some(ctx) = context {
+            args["context"] = serde_json::json!(ctx);
+        }
+        let result = self.request("evaluate", Some(args)).await?;
+        let eval_result = result
+            .get("result")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let type_ = result
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
+        let variables_reference = result
+            .get("variablesReference")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        Ok((eval_result, type_, variables_reference))
+    }
+
     pub async fn disconnect(&self, terminate_debuggee: bool) -> Result<()> {
         let args = serde_json::json!({
             "terminateDebuggee": terminate_debuggee,

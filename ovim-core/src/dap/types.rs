@@ -15,6 +15,8 @@ pub struct DapSource {
 #[serde(rename_all = "camelCase")]
 pub struct DapSourceBreakpoint {
     pub line: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

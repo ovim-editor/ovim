@@ -168,13 +168,77 @@ impl Editor {
         self.mark_dirty();
     }
 
-    /// Select a stack frame by index.
+    /// Select a stack frame by index. Queues fetch of scopes/variables for the new frame
+    /// and navigates the editor to the frame's source location.
     pub fn select_stack_frame(&mut self, index: usize) {
         if index < self.dap_manager.state.stack_frames.len() {
             self.dap_manager.state.selected_frame = index;
             self.dap_manager.state.update_execution_position();
+
+            // Navigate to the frame's source location.
+            if let Some(frame) = self.dap_manager.state.stack_frames.get(index) {
+                let line = frame.line.saturating_sub(1) as usize;
+                let path = frame
+                    .source
+                    .as_ref()
+                    .and_then(|s| s.path.clone());
+                if let Some(path) = path {
+                    if self.load_file(&path).is_ok() {
+                        self.buffer_mut().cursor_mut().set_position(line, 0);
+                        self.buffer_mut().validate_cursor_position();
+                    }
+                }
+            }
+
+            // Queue scopes + variables refresh for the new frame.
+            self.dap_manager.pending_action =
+                Some(crate::dap::PendingDebugAction::SelectFrame { index });
             self.mark_dirty();
         }
+    }
+
+    /// Select the next frame up (caller).
+    pub fn select_frame_up(&mut self) {
+        let current = self.dap_manager.state.selected_frame;
+        let max = self.dap_manager.state.stack_frames.len();
+        if max > 0 && current + 1 < max {
+            self.select_stack_frame(current + 1);
+        }
+    }
+
+    /// Select the next frame down (callee).
+    pub fn select_frame_down(&mut self) {
+        let current = self.dap_manager.state.selected_frame;
+        if current > 0 {
+            self.select_stack_frame(current - 1);
+        }
+    }
+
+    /// Whether the debugger is stopped (at a breakpoint/step, not running).
+    pub fn is_debug_stopped(&self) -> bool {
+        self.dap_manager.is_active()
+            && !self.dap_manager.state.is_running
+            && self.dap_manager.state.stopped_thread.is_some()
+    }
+
+    /// Get the selected frame's DAP frame ID (for evaluate context).
+    pub fn selected_frame_id(&self) -> Option<u64> {
+        self.dap_manager
+            .state
+            .stack_frames
+            .get(self.dap_manager.state.selected_frame)
+            .map(|f| f.id)
+    }
+
+    /// Toggle a conditional breakpoint — prompts for condition via command line.
+    pub fn toggle_conditional_breakpoint(&mut self, condition: String) {
+        let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) else {
+            return;
+        };
+        let line = self.buffer().cursor().line() as u64 + 1;
+        let path = std::path::PathBuf::from(&file_path);
+        self.dap_manager.state.set_breakpoint_condition(&path, line, Some(condition));
+        self.mark_dirty();
     }
 
     /// Returns the DAP config for the current buffer's language, if any.
