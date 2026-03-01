@@ -35,6 +35,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_pending_operator();
             editor.clear_pending_command();
             editor.reset_input_state();
+            // Cancel pending FetchRunConfigs if waiting for LSP response
+            if matches!(
+                editor.dap_manager_mut().pending_action,
+                Some(crate::dap::PendingDebugAction::FetchRunConfigs)
+            ) {
+                editor.dap_manager_mut().pending_action = None;
+                editor.set_lsp_status(String::new());
+            }
             Ok(true)
         }
         // i - insert before cursor
@@ -192,76 +200,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.toggle_file_tree();
             Ok(true)
         }
-        // F5 - continue (if active) or start debug session with config picker
+        // F5 - continue (if active) or fetch run configs asynchronously
         KeyCode::F(5) => {
             if editor.is_debug_active() {
                 editor.dap_manager_mut().pending_action =
                     Some(crate::dap::PendingDebugAction::Continue);
             } else {
-                // Load debug configs from .ovim/debug.toml + IntelliJ
-                let project_root = std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let mut configs = crate::debug_config::load_debug_configs(&project_root);
-                configs.extend(crate::debug_config::load_intellij_configs(&project_root));
-
-                if configs.is_empty() {
-                    // No config file — fall back to auto-detect from language
-                    let dap_start = editor
-                        .buffer()
-                        .file_path()
-                        .and_then(|fp| {
-                            crate::language_config::LanguageRegistry::try_get()
-                                .and_then(|reg| reg.detect(fp))
-                        })
-                        .and_then(|lang| lang.dap.as_ref())
-                        .and_then(|config| {
-                            crate::language_config::find_dap_command(config)
-                                .map(|cmd| (cmd, config.args.clone()))
-                        });
-                    if let Some((command, args)) = dap_start {
-                        editor.dap_manager_mut().pending_action =
-                            Some(crate::dap::PendingDebugAction::Start { command, args, run_config: None });
-                    } else {
-                        editor.set_lsp_status(
-                            "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter."
-                                .to_string(),
-                        );
-                    }
-                } else if configs.len() == 1 {
-                    // Single config — use it directly
-                    let config = configs.into_iter().next().unwrap();
-                    let dap_start = editor
-                        .buffer()
-                        .file_path()
-                        .and_then(|fp| {
-                            crate::language_config::LanguageRegistry::try_get()
-                                .and_then(|reg| reg.detect(fp))
-                        })
-                        .and_then(|lang| lang.dap.as_ref())
-                        .and_then(|dap_config| {
-                            crate::language_config::find_dap_command(dap_config)
-                                .map(|cmd| (cmd, dap_config.args.clone()))
-                        });
-                    if let Some((command, args)) = dap_start {
-                        editor.dap_manager_mut().pending_action =
-                            Some(crate::dap::PendingDebugAction::Start {
-                                command,
-                                args,
-                                run_config: Some(config),
-                            });
-                    }
-                } else {
-                    // Multiple configs — open picker
-                    let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
-                    editor.dap_manager_mut().available_debug_configs = configs;
-                    let picker = crate::editor::picker::Picker::new_debug_config(
-                        project_root,
-                        names,
-                    );
-                    editor.set_picker(picker);
-                    editor.set_mode(crate::mode::Mode::Picker);
-                    editor.mark_picker_selection_changed();
-                }
+                editor.dap_manager_mut().pending_action =
+                    Some(crate::dap::PendingDebugAction::FetchRunConfigs);
+                editor.set_lsp_status("Loading run configurations...".to_string());
             }
             Ok(true)
         }

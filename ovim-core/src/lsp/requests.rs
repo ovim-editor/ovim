@@ -1377,6 +1377,30 @@ impl LspManager {
         Ok(Some(result))
     }
 
+    /// Request run configurations from the Java LSP server via `workspace/executeCommand`.
+    ///
+    /// Sends `hyperion.runConfigurations` and parses the response as a JSON array.
+    /// Returns an empty vec on error or if no Java server is available.
+    pub async fn run_configurations(&self) -> Vec<serde_json::Value> {
+        let result = self
+            .execute_command(
+                "hyperion.runConfigurations".to_owned(),
+                None,
+                "java",
+            )
+            .await;
+        match result {
+            Ok(Some(value)) => {
+                if let Some(arr) = value.as_array() {
+                    arr.clone()
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Requests inlay hints for a document range
     pub async fn inlay_hints(
         &self,
