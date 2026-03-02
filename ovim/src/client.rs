@@ -243,6 +243,31 @@ impl OvimClient {
         Ok(response.json()?)
     }
 
+    /// Get plain-text TUI render
+    pub fn get_render_plain(&self, width: u16, height: u16) -> Result<String> {
+        let response = self
+            .client
+            .get(format!("{}/render", self.base_url))
+            .query(&[
+                ("width", width.to_string()),
+                ("height", height.to_string()),
+                ("plain", "true".to_string()),
+            ])
+            .send()
+            .context("Failed to send request")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Failed to get render");
+        }
+
+        let info: Value = response.json()?;
+        Ok(info
+            .get("ansi")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
+    }
+
     /// Send MCP JSON-RPC request
     pub fn send_mcp_request(&self, method: &str, params: Value, id: i64) -> Result<Value> {
         let request = json!({
