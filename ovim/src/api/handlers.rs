@@ -1,8 +1,8 @@
-use super::state::{ApiRequest, ApiState};
+use super::state::{ApiRequest, ApiResponse, ApiState};
 use crate::metrics;
 use axum::{
     extract::State,
-    http::{header, StatusCode},
+    http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     Json as JsonExtractor,
 };
@@ -46,11 +46,14 @@ pub async fn send_keys(
 
     // Validate input length
     if payload.keys.len() > MAX_KEYS_LENGTH {
-        return validation_error(&format!(
-            "Keys input too large: {} bytes (max: {} bytes)",
-            payload.keys.len(),
-            MAX_KEYS_LENGTH
-        ));
+        return plain_text_error(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "Keys input too large: {} bytes (max: {} bytes)",
+                payload.keys.len(),
+                MAX_KEYS_LENGTH
+            ),
+        );
     }
 
     let (tx, rx) = oneshot::channel();
@@ -60,12 +63,40 @@ pub async fn send_keys(
         .send(ApiRequest::SendKeys(payload.keys, tx))
         .is_err()
     {
-        return error_response("Editor not available");
+        return plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Editor not available");
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
-        Err(_) => error_response("Failed to send keys"),
+        Ok(response) => send_keys_to_plain_text(response),
+        Err(_) => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to send keys"),
+    }
+}
+
+/// Convert a SendKeys API response into a plain-text HTTP response with metadata headers.
+fn send_keys_to_plain_text(response: ApiResponse) -> Response {
+    match response {
+        ApiResponse::SendKeysResult(result) => {
+            let ctx = &result.context;
+            let mut builder = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Ovim-Success", "true")
+                .header("X-Ovim-Mode", &ctx.mode)
+                .header("X-Ovim-Line", (ctx.line + 1).to_string())
+                .header("X-Ovim-Column", (ctx.column + 1).to_string());
+
+            if let Some(ref file) = ctx.file {
+                if let Ok(val) = HeaderValue::from_str(file) {
+                    builder = builder.header("X-Ovim-File", val);
+                }
+            }
+
+            builder.body(ctx.context.clone().into()).unwrap()
+        }
+        ApiResponse::Error(err) => {
+            plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, &err.error)
+        }
+        _ => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected response type"),
     }
 }
 
@@ -262,12 +293,31 @@ pub async fn get_render(
         })
         .is_err()
     {
-        return error_response("Editor not available");
+        return plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Editor not available");
     }
 
     match rx.await {
-        Ok(response) => Json(response).into_response(),
-        Err(_) => error_response("Failed to render"),
+        Ok(response) => render_to_plain_text(response),
+        Err(_) => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Failed to render"),
+    }
+}
+
+/// Convert a Render API response into a plain-text HTTP response with metadata headers.
+fn render_to_plain_text(response: ApiResponse) -> Response {
+    match response {
+        ApiResponse::Render(info) => {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                .header("X-Ovim-Width", info.width.to_string())
+                .header("X-Ovim-Height", info.height.to_string())
+                .body(info.ansi.into())
+                .unwrap()
+        }
+        ApiResponse::Error(err) => {
+            plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, &err.error)
+        }
+        _ => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected response type"),
     }
 }
 
@@ -609,4 +659,14 @@ fn validation_error(message: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+/// Plain-text error response (for endpoints that return text/plain)
+fn plain_text_error(status: StatusCode, message: &str) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header("X-Ovim-Success", "false")
+        .body(message.to_string().into())
+        .unwrap()
 }
