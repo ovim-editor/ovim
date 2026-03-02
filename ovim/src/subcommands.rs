@@ -983,8 +983,8 @@ fn cmd_hover(session_name: &str) -> Result<()> {
     client.send_keys("K").context("Failed to send hover keys")?;
 
     let mut hover_info = None;
-    for _ in 0..10 {
-        thread::sleep(Duration::from_millis(100));
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(200));
         let snapshot = client.get_snapshot().context("Failed to get snapshot")?;
         if snapshot.mode.contains("HOVER") {
             hover_info = snapshot.hover_info;

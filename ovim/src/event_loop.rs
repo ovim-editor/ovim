@@ -869,6 +869,19 @@ async fn handle_api_request(
                     // Process any LSP actions that were triggered by the keys
                     editor.process_pending_lsp_actions().await;
 
+                    // If a hover request was just spawned, wait for the LSP to respond
+                    // so the caller gets the result instead of null
+                    if editor.has_pending_hover() {
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+                        while editor.has_pending_hover() {
+                            if tokio::time::Instant::now() >= deadline {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                            editor.poll_pending_lsp_responses();
+                        }
+                    }
+
                     if success {
                         // Create context window showing the result of the key operation
                         let buffer = editor.buffer();
