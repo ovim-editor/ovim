@@ -540,7 +540,7 @@ fn zt_then_zz_then_zb() {
 // subsequent cursor movements (j/k/etc).
 
 #[test]
-fn zt_ignores_scrolloff() {
+fn zt_respects_scrolloff() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
@@ -549,7 +549,8 @@ fn zt_ignores_scrolloff() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 24, "zt puts cursor at row 0, ignoring scrolloff");
+    // zt respects scrolloff: cursor is scrolloff lines from top
+    assert_eq!(vp.scroll_offset(), 19, "zt respects scrolloff: 24-5=19");
 }
 
 #[test]
@@ -566,7 +567,7 @@ fn zz_ignores_scrolloff() {
 }
 
 #[test]
-fn zb_ignores_scrolloff() {
+fn zb_respects_scrolloff() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
@@ -575,11 +576,13 @@ fn zb_ignores_scrolloff() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 5, "zb puts cursor at last row, ignoring scrolloff");
+    // zb respects scrolloff: cursor is scrolloff lines from bottom
+    // bottom_position = 19 - 5 = 14, scroll = 24 - 14 = 10
+    assert_eq!(vp.scroll_offset(), 10, "zb respects scrolloff: 24-(19-5)=10");
 }
 
 #[test]
-fn z_enter_ignores_scrolloff() {
+fn z_enter_respects_scrolloff() {
     let content = make_indented_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
@@ -587,7 +590,7 @@ fn z_enter_ignores_scrolloff() {
     test.keys("z<CR>");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 24, "z<CR> ignores scrolloff like zt");
+    assert_eq!(vp.scroll_offset(), 19, "z<CR> respects scrolloff like zt: 24-5=19");
 }
 
 #[test]
@@ -603,7 +606,7 @@ fn z_dot_ignores_scrolloff() {
 }
 
 #[test]
-fn z_minus_ignores_scrolloff() {
+fn z_minus_respects_scrolloff() {
     let content = make_indented_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
@@ -611,7 +614,7 @@ fn z_minus_ignores_scrolloff() {
     test.keys("z-");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 5, "z- ignores scrolloff like zb");
+    assert_eq!(vp.scroll_offset(), 10, "z- respects scrolloff like zb: 24-(19-5)=10");
 }
 
 // ==========================================================================
@@ -622,38 +625,35 @@ fn z_minus_ignores_scrolloff() {
 // j/k should cause the viewport to scroll so scrolloff is respected again.
 
 #[test]
-fn zt_then_j_reengages_scrolloff() {
+fn zt_then_j_no_scroll_needed() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
     test.keys("24j");
-    test.keys("zt"); // cursor at row 0, scroll=24
-    test.keys("j");  // cursor moves to line 25
+    test.keys("zt"); // scroll=19, cursor at row 5 (scrolloff)
+    test.keys("j");  // cursor moves to line 25, row 6 — still in safe zone
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    // Scrolloff wants 5 lines above cursor: scroll_offset = 25 - 5 = 20
-    assert_eq!(vp.scroll_offset(), 20,
-        "after zt+j, scrolloff re-engages: cursor needs 5 lines above");
+    // Cursor at row 6 (25-19), safe zone is [5, 14]. No scroll needed.
+    assert_eq!(vp.scroll_offset(), 19,
+        "after zt+j, cursor stays in safe zone — no jump");
 }
 
 #[test]
-fn zb_then_k_reengages_scrolloff() {
+fn zb_then_k_no_scroll_needed() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
     test.keys("24j");
-    test.keys("zb"); // cursor at bottom row (row 19), scroll=5
-    test.keys("k");  // cursor moves to line 23
+    test.keys("zb"); // scroll=10, cursor at row 14 (scrolloff from bottom)
+    test.keys("k");  // cursor moves to line 23, row 13 — still in safe zone
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 23);
-    // Cursor at line 23, scroll=5, viewport shows 5-24
-    // Cursor is at viewport row 23-5=18. Bottom is row 19.
-    // Distance from bottom = 19-18 = 1 < scrolloff 5, so viewport scrolls.
-    // scrolloff wants 5 lines below cursor: scroll = 23 - (20-1-5) = 23 - 14 = 9
-    assert_eq!(vp.scroll_offset(), 9,
-        "after zb+k, scrolloff re-engages: cursor needs 5 lines below");
+    // Cursor at row 13 (23-10), safe zone is [5, 14]. No scroll needed.
+    assert_eq!(vp.scroll_offset(), 10,
+        "after zb+k, cursor stays in safe zone — no jump");
 }
 
 #[test]
@@ -679,26 +679,24 @@ fn zt_then_multiple_j_scrolloff_tracks() {
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 3;
     test.keys("24j");
-    test.keys("zt"); // scroll=24, cursor at row 0
+    test.keys("zt"); // scroll=21 (24-3), cursor at row 3
 
-    // First j: cursor at line 25, row 1. Outside safe zone [3, 16].
-    // Scroll adjusts to put cursor at row 3: scroll = 25-3 = 22
+    // First j: cursor at line 25, row 4. Safe zone [3, 16]. In zone.
     test.keys("j");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 22,
-        "after zt + 1j: cursor enters scrolloff zone, scroll adjusts");
+    assert_eq!(vp.scroll_offset(), 21,
+        "after zt + 1j: cursor in safe zone, no scroll");
 
-    // Second j: cursor at line 26, row = 26-22 = 4. Inside safe zone [3, 16].
-    // No scroll needed — cursor has enough room above and below.
+    // Second j: cursor at line 26, row 5. In zone.
     test.keys("j");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 22,
+    assert_eq!(vp.scroll_offset(), 21,
         "after zt + 2j: cursor within safe zone, no scroll");
 
-    // Third j: cursor at line 27, row = 27-22 = 5. Still inside safe zone.
+    // Third j: cursor at line 27, row 6. Still in zone.
     test.keys("j");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 22,
+    assert_eq!(vp.scroll_offset(), 21,
         "after zt + 3j: cursor within safe zone, no scroll");
 }
 
@@ -708,20 +706,18 @@ fn zb_then_multiple_k_scrolloff_tracks() {
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 3;
     test.keys("24j");
-    test.keys("zb"); // scroll=5, cursor at row 19 (bottom)
+    test.keys("zb"); // scroll=8 (24-16), cursor at row 16
 
-    // First k: cursor at line 23, row = 23-5 = 18. Outside safe zone [3, 16].
-    // Scroll adjusts to put cursor at row 16: scroll = 23-16 = 7
+    // First k: cursor at line 23, row 15. Safe zone [3, 16]. In zone.
     test.keys("k");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 7,
-        "after zb + 1k: cursor enters scrolloff zone, scroll adjusts");
+    assert_eq!(vp.scroll_offset(), 8,
+        "after zb + 1k: cursor in safe zone, no scroll");
 
-    // Second k: cursor at line 22, row = 22-7 = 15. Inside safe zone [3, 16].
-    // No scroll needed.
+    // Second k: cursor at line 22, row 14. In zone.
     test.keys("k");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 7,
+    assert_eq!(vp.scroll_offset(), 8,
         "after zb + 2k: cursor within safe zone, no scroll");
 }
 
@@ -733,27 +729,28 @@ fn zb_then_multiple_k_scrolloff_tracks() {
 fn zt_with_scrolloff_larger_than_half_viewport() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
-    test.editor.options.scrolloff = 15; // > 20/2
+    test.editor.options.scrolloff = 15; // > 20/2, clamped to 9
     test.keys("24j");
     test.keys("zt");
 
     let vp = ViewportAssertion::new(&test.editor);
-    // zt itself ignores scrolloff
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 24, "zt ignores even large scrolloff");
+    // scrolloff=15 clamped to (20-1)/2=9, scroll = 24-9 = 15
+    assert_eq!(vp.scroll_offset(), 15, "zt with large scrolloff clamped to 9: 24-9=15");
 }
 
 #[test]
 fn zb_with_scrolloff_larger_than_half_viewport() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
-    test.editor.options.scrolloff = 15;
+    test.editor.options.scrolloff = 15; // clamped to 9
     test.keys("24j");
     test.keys("zb");
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 5, "zb ignores even large scrolloff");
+    // scrolloff=15 clamped to 9, bottom_position = 19-9 = 10, scroll = 24-10 = 14
+    assert_eq!(vp.scroll_offset(), 14, "zb with large scrolloff clamped to 9: 24-10=14");
 }
 
 // ==========================================================================
@@ -761,19 +758,19 @@ fn zb_with_scrolloff_larger_than_half_viewport() {
 // ==========================================================================
 
 #[test]
-fn count_zt_with_scrolloff_ignores_scrolloff() {
+fn count_zt_with_scrolloff_respects_scrolloff() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
-    test.keys("25zt"); // line 25 (1-indexed) → line 24 (0-indexed) at top
+    test.keys("25zt"); // line 25 (1-indexed) → line 24 (0-indexed)
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 24, "[count]zt ignores scrolloff");
+    assert_eq!(vp.scroll_offset(), 19, "[count]zt respects scrolloff: 24-5=19");
 }
 
 #[test]
-fn count_zb_with_scrolloff_ignores_scrolloff() {
+fn count_zb_with_scrolloff_respects_scrolloff() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
@@ -781,21 +778,21 @@ fn count_zb_with_scrolloff_ignores_scrolloff() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 5, "[count]zb ignores scrolloff");
+    assert_eq!(vp.scroll_offset(), 10, "[count]zb respects scrolloff: 24-(19-5)=10");
 }
 
 #[test]
-fn count_zt_then_j_reengages_scrolloff() {
+fn count_zt_then_j_no_scroll_needed() {
     let content = make_content(50);
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
-    test.keys("25zt"); // line 24 at top, scroll=24
-    test.keys("j");    // line 25
+    test.keys("25zt"); // scroll=19, cursor at row 5
+    test.keys("j");    // cursor 25, row 6 — in safe zone
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 20,
-        "[count]zt + j re-engages scrolloff: 25 - 5 = 20");
+    assert_eq!(vp.scroll_offset(), 19,
+        "[count]zt + j: cursor in safe zone, no scroll");
 }
 
 // ==========================================================================
@@ -822,13 +819,13 @@ fn zt_then_j_with_scrolloff_1() {
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 1;
     test.keys("24j");
-    test.keys("zt"); // scroll=24, cursor at row 0
-    test.keys("j");  // line 25, scrolloff=1 wants 1 line above → scroll=24
+    test.keys("zt"); // scroll=23 (24-1), cursor at row 1
+    test.keys("j");  // line 25, row 2. Safe zone [1,18]. In zone.
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 24,
-        "scrolloff=1: scroll = 25 - 1 = 24");
+    assert_eq!(vp.scroll_offset(), 23,
+        "scrolloff=1: cursor in safe zone, no scroll");
 }
 
 #[test]
@@ -837,14 +834,14 @@ fn zt_then_j_with_scrolloff_10() {
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 10;
     test.keys("24j");
-    test.keys("zt"); // scroll=24, cursor at row 0
-    test.keys("j");  // line 25
+    // scrolloff=10 clamped to 9. zt: scroll = 24-9 = 15, cursor at row 9
+    test.keys("zt");
+    test.keys("j");  // cursor 25, row 10. Safe zone [9, 10]. In zone.
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    // scrolloff=10 is clamped to (height-1)/2 = 9 (Vim behavior)
-    assert_eq!(vp.scroll_offset(), 16,
-        "scrolloff=10 clamped to 9: scroll = 25 - 9 = 16");
+    assert_eq!(vp.scroll_offset(), 15,
+        "scrolloff=10 clamped to 9: cursor in safe zone, no scroll");
 }
 
 #[test]
@@ -853,14 +850,13 @@ fn zb_then_k_with_scrolloff_1() {
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 1;
     test.keys("24j");
-    test.keys("zb"); // scroll=5, cursor at row 19
-    test.keys("k");  // line 23, cursor at row 18
+    test.keys("zb"); // scroll=6 (24-18), cursor at row 18
+    test.keys("k");  // cursor 23, row 17. Safe zone [1,18]. In zone.
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 23);
-    // Row 18, bottom is 19, distance=1 which equals scrolloff → no scroll needed
-    assert_eq!(vp.scroll_offset(), 5,
-        "scrolloff=1, cursor 1 from bottom: no scroll needed");
+    assert_eq!(vp.scroll_offset(), 6,
+        "scrolloff=1: cursor in safe zone, no scroll");
 }
 
 // ==========================================================================

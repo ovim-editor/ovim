@@ -271,9 +271,9 @@ impl Editor {
         self.viewport.skip_scroll_update = true;
     }
 
-    /// Moves cursor line to top of viewport
+    /// Moves cursor line to top of viewport, respecting scrolloff
     pub fn move_cursor_line_to_top(&mut self) {
-        self.move_cursor_line_to_top_with_offset(0);
+        self.move_cursor_line_to_top_with_offset(self.options.scrolloff);
     }
 
     /// Moves cursor line to viewport with an explicit top offset.
@@ -309,9 +309,9 @@ impl Editor {
         self.viewport.skip_scroll_update = true;
     }
 
-    /// Moves cursor line to bottom of viewport
+    /// Moves cursor line to bottom of viewport, respecting scrolloff
     pub fn move_cursor_line_to_bottom(&mut self) {
-        self.move_cursor_line_to_bottom_with_offset(0);
+        self.move_cursor_line_to_bottom_with_offset(self.options.scrolloff);
     }
 
     /// Moves cursor line to bottom of viewport with an explicit bottom offset.

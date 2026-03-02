@@ -136,9 +136,9 @@ fn test_zb_then_j_at_end() {
         test.editor.scroll_offset()
     );
 
-    // 48G moves to 0-indexed line 47 (display line 48)
-    // zb should position line 47 at bottom of viewport
-    // scroll_offset = 47 - 19 = 28
+    // 48G moves to 0-indexed line 47
+    // zb with scrolloff=10 (clamped to 9): bottom_position=10, scroll=47-10=37
+    // max_scroll=50-20=30, so clamped to 30
     assert_eq!(
         viewport_after_zb.cursor_line(),
         47,
@@ -146,8 +146,8 @@ fn test_zb_then_j_at_end() {
     );
     assert_eq!(
         viewport_after_zb.scroll_offset(),
-        28,
-        "Scroll should be 47 - 19 = 28"
+        30,
+        "Scroll should be min(47-10, 30) = 30"
     );
 
     // Now move down to line 48
@@ -158,14 +158,12 @@ fn test_zb_then_j_at_end() {
 
     let viewport = ViewportAssertion::new(&test.editor);
 
-    // After j, cursor moves to line 48.
-    // Scrolloff (default 10, clamped to 9 for viewport=20) re-engages:
-    // ideal offset = 48 + 9 + 1 - 20 = 38, but max_scroll = 50 - 20 = 30, so clamped to 30.
+    // After j, cursor at line 48. Scroll stays at 30 (cursor in safe zone).
     assert_eq!(viewport.cursor_line(), 48);
     assert_eq!(
         viewport.scroll_offset(),
         30,
-        "Should scroll with scrolloff re-engaged"
+        "Scroll stays at 30"
     );
 }
 
@@ -207,20 +205,19 @@ fn test_zb_when_line_in_middle_of_viewport() {
     );
 
     // 30G goes to 0-indexed line 29
-    // zb should position line 29 at bottom of viewport (position 19 in viewport)
-    // scroll_offset = 29 - 19 = 10
+    // zb with scrolloff=10 (clamped to 9): bottom_position=10, scroll=29-10=19
     assert_eq!(after.cursor_line(), 29, "Cursor should be at line 29");
     assert_eq!(
         after.scroll_offset(),
-        10,
-        "Scroll should be 10 to position line 29 at bottom"
+        19,
+        "Scroll should be 29-10=19 with scrolloff"
     );
 
-    // Verify line 29 is at position 19 (bottom) in viewport
+    // Verify line 29 is at position 10 (scrolloff from bottom) in viewport
     assert_eq!(
         29 - after.scroll_offset(),
-        19,
-        "Line 29 should be at viewport position 19 (bottom)"
+        10,
+        "Line 29 should be at viewport position 10 (scrolloff from bottom)"
     );
 }
 

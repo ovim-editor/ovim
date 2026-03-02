@@ -89,27 +89,26 @@ fn test_viewport_command_scrolloff_reengages_on_movement() {
     // Cursor should be on line 24
     assert_eq!(viewport.cursor_line(), 24);
 
-    // zt explicitly positions the cursor line at the top of the viewport (ignores scrolloff)
-    // scroll_offset = cursor_line = 24
+    // zt respects scrolloff: cursor line is scrolloff lines from the top
+    // scroll_offset = cursor_line - scrolloff = 24 - 5 = 19
     assert_eq!(
         viewport.scroll_offset(),
-        24,
-        "zt should position at scroll_offset=24. Got {}",
+        19,
+        "zt should respect scrolloff. Got {}",
         viewport.scroll_offset()
     );
 
-    // Now move down one line — scrolloff re-engages (matches Vim behavior).
-    // Cursor at line 25, scrolloff=5, so scroll adjusts to keep 5 lines above cursor.
+    // Move down one line — cursor stays within scrolloff zone, no viewport jump
     test.keys("j");
 
     let viewport = ViewportAssertion::new(&test.editor);
     assert_eq!(viewport.cursor_line(), 25);
 
-    // scrolloff=5: cursor needs 5 lines above it → scroll_offset = 25 - 5 = 20
+    // Cursor is now 6 lines from top (25 - 19), well within scrolloff — no scroll change
     assert_eq!(
         viewport.scroll_offset(),
-        20,
-        "After zt+j, scrolloff re-engages. Got {}",
+        19,
+        "After zt+j, viewport should not jump. Got {}",
         viewport.scroll_offset()
     );
 }
