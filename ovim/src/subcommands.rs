@@ -632,7 +632,10 @@ fn cmd_send(session_name: &str, keys: &str) -> Result<()> {
         .send_keys(keys)
         .context("Failed to send keys to session")?;
 
-    println!("Keys sent to session '{}'", session.session_name);
+    match client.get_render_plain(120, 35) {
+        Ok(render) => print!("{}", render),
+        Err(_) => println!("Keys sent to session '{}'", session.session_name),
+    }
     Ok(())
 }
 
