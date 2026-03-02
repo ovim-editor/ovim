@@ -1,12 +1,13 @@
 ---
-source: tests/undo_redo_comprehensive_test.rs
+source: ovim/tests/undo_redo_comprehensive_test.rs
+assertion_line: 388
 expression: test.snapshot_state()
 ---
 Mode: Normal
-Cursor: 1:0
+Cursor: 2:0
 Lines: 3
 
 Buffer:
 bc
-[d]ef
-ghi
+ef
+[h]i
