@@ -213,6 +213,11 @@ impl Editor {
     /// Polls pending LSP responses (non-blocking)
     /// Returns true if a response was processed and UI should redraw
     ///
+    /// Returns true if a hover response is pending (spawned but not yet received).
+    pub fn has_pending_hover(&self) -> bool {
+        self.lsp_state.pending_lsp_responses.hover.is_some()
+    }
+
     /// Each response type is polled independently so that e.g. a hover request
     /// doesn't block or clobber a goto-definition request.
     pub fn poll_pending_lsp_responses(&mut self) -> bool {
