@@ -305,14 +305,23 @@ impl OvimClient {
         use nix::sys::signal::{kill, Signal};
         use nix::unistd::Pid;
 
-        kill(Pid::from_raw(session.pid as i32), Signal::SIGTERM)
-            .context("Failed to kill process")?;
+        let pid = Pid::from_raw(session.pid as i32);
+        kill(pid, Signal::SIGTERM).context("Failed to kill process")?;
 
-        // Wait a bit for graceful shutdown
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Poll for exit instead of unconditionally sleeping
+        let mut exited = false;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Signal 0 checks if process exists without sending a signal
+            if kill(pid, None).is_err() {
+                exited = true;
+                break;
+            }
+        }
 
-        // If still running, send SIGKILL
-        if kill(Pid::from_raw(session.pid as i32), Signal::SIGKILL).is_ok() {
+        if !exited {
+            // Still running after 500ms, force kill
+            let _ = kill(pid, Signal::SIGKILL);
             ovim_core::log_warn!(
                 "client",
                 "Process {} did not exit gracefully, sent SIGKILL",
