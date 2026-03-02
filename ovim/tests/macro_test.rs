@@ -105,14 +105,16 @@ fn test_at_with_count() {
         .press('q')
         .keys("3@a"); // Play 3 times
 
-    assert_eq!(test.buffer_content(), "\n\nc\nd\ne\n");
-    test.assert_cursor(2, 0);
+    // Recording phase deletes 'a' (iter 0), then 3@a deletes b,c,d (iters 1-3)
+    assert_eq!(test.buffer_content(), "\n\n\n\ne\n");
+    test.assert_cursor(4, 0);
 }
 
 #[test]
 fn test_at_at_repeat_last() {
     let mut test = EditorTest::new("a\nb\nc\nd");
 
+    // Recording deletes 'a', @a deletes 'b', @@ deletes 'c'
     test.press('q')
         .press('a')
         .press('x')
@@ -123,8 +125,8 @@ fn test_at_at_repeat_last() {
         .press('@')
         .press('@'); // Repeat last macro with @@
 
-    assert_eq!(test.buffer_content(), "\n\nc\nd\n");
-    test.assert_cursor(2, 0);
+    assert_eq!(test.buffer_content(), "\n\n\nd\n");
+    test.assert_cursor(3, 0);
 }
 
 // ============================================================================

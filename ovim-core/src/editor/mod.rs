@@ -135,6 +135,9 @@ pub struct EditorOptions {
     /// Maximum width of text content (default: None = use full terminal width)
     /// When set, content is centered horizontally with margins on both sides
     pub textwidth: Option<usize>,
+    /// Highlight a vertical column at the specified column (default: None)
+    /// Useful for keeping lines under a certain width
+    pub colorcolumn: Option<usize>,
     /// Ignore case in search patterns (default: false)
     pub ignorecase: bool,
     /// Smart case: case-insensitive if pattern is all lowercase, case-sensitive otherwise (default: false)
@@ -181,6 +184,7 @@ impl Default for EditorOptions {
             relative_number: false,
             scroll: None,
             textwidth: Some(150),
+            colorcolumn: None,
             ignorecase: false,
             smartcase: false,
             cursorline: false,
@@ -525,6 +529,16 @@ impl Editor {
     /// Gets a macro by register for playback
     pub fn get_macro(&self, register: char) -> Option<&Vec<crate::KeyEvent>> {
         self.macro_manager.get_macro(register)
+    }
+
+    /// Sets the last played macro register (for @@)
+    pub fn set_last_played_macro(&mut self, register: char) {
+        self.macro_manager.set_last_played(register);
+    }
+
+    /// Gets the last played macro register (for @@)
+    pub fn last_played_macro(&self) -> Option<char> {
+        self.macro_manager.last_played()
     }
 
     /// Gets the current mode

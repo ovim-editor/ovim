@@ -10,6 +10,8 @@ pub struct MacroManager {
     recording: Option<char>,
     /// Events being recorded
     current_recording: Vec<KeyEvent>,
+    /// Last played macro register (for @@)
+    last_played: Option<char>,
 }
 
 impl Default for MacroManager {
@@ -25,6 +27,7 @@ impl MacroManager {
             macros: HashMap::new(),
             recording: None,
             current_recording: Vec::new(),
+            last_played: None,
         }
     }
 
@@ -72,10 +75,21 @@ impl MacroManager {
         self.macros.get(&register)
     }
 
+    /// Sets the last played register (for @@)
+    pub fn set_last_played(&mut self, register: char) {
+        self.last_played = Some(register);
+    }
+
+    /// Gets the last played register (for @@)
+    pub fn last_played(&self) -> Option<char> {
+        self.last_played
+    }
+
     /// Clears all macros
     pub fn clear(&mut self) {
         self.macros.clear();
         self.recording = None;
         self.current_recording.clear();
+        self.last_played = None;
     }
 }
