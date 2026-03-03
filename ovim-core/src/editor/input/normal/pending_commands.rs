@@ -492,13 +492,18 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor.clear_count();
                 if let Some(events) = editor.get_macro(register) {
                     let events = events.clone();
-                    for _ in 0..count {
+                    editor.clear_macro_abort();
+                    'outer_repeat: for _ in 0..count {
                         for event in &events {
                             crate::editor::input::InputHandler::handle_key_event(
                                 editor, *event,
                             )?;
+                            if editor.macro_aborted() {
+                                break 'outer_repeat;
+                            }
                         }
                     }
+                    editor.clear_macro_abort();
                 }
             }
         }
@@ -508,11 +513,16 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_last_played_macro(ch);
             if let Some(events) = editor.get_macro(ch) {
                 let events = events.clone();
-                for _ in 0..count {
+                editor.clear_macro_abort();
+                'outer: for _ in 0..count {
                     for event in &events {
                         crate::editor::input::InputHandler::handle_key_event(editor, *event)?;
+                        if editor.macro_aborted() {
+                            break 'outer;
+                        }
                     }
                 }
+                editor.clear_macro_abort();
             }
         }
 

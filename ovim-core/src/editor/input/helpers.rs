@@ -64,21 +64,29 @@ pub fn move_right(editor: &mut Editor) {
 
 pub fn move_up(editor: &mut Editor) {
     let count = editor.effective_count();
+    let line_before = editor.buffer().cursor().line();
     let cursor = editor.buffer_mut().cursor_mut();
     cursor.move_up(count);
     clamp_cursor_with_goal_column(editor);
     editor.clear_count();
+    if editor.buffer().cursor().line() == line_before {
+        editor.signal_macro_abort();
+    }
 }
 
 pub fn move_down(editor: &mut Editor) {
     let count = editor.effective_count();
     let max_line = editor.buffer().line_count().saturating_sub(1);
 
+    let line_before = editor.buffer().cursor().line();
     let cursor = editor.buffer_mut().cursor_mut();
     let new_line = (cursor.line() + count).min(max_line);
     cursor.set_line(new_line);
     clamp_cursor_with_goal_column(editor);
     editor.clear_count();
+    if editor.buffer().cursor().line() == line_before {
+        editor.signal_macro_abort();
+    }
 }
 
 pub fn clamp_cursor_to_line(editor: &mut Editor) {
