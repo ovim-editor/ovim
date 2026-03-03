@@ -246,6 +246,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             handle_y_big_w(editor, count)?;
             true
         }
+        (Operator::Yank, KeyCode::Char('l')) | (Operator::Yank, KeyCode::Right) => {
+            handle_yl(editor, count)?;
+            true
+        }
+        (Operator::Yank, KeyCode::Char('%')) => {
+            handle_y_percent(editor)?;
+            true
+        }
 
         // =====================================================================
         // Change operations
@@ -312,6 +320,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Change, KeyCode::Char('W')) => {
             handle_c_big_w(editor, count)?;
+            true
+        }
+        (Operator::Change, KeyCode::Char('%')) => {
+            handle_c_percent(editor)?;
             true
         }
 
@@ -1746,6 +1758,107 @@ fn handle_y_caret(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
+fn handle_yl(editor: &mut Editor, count: usize) -> Result<()> {
+    let line_idx = editor.buffer().cursor().line();
+    let col = editor.buffer().cursor().col();
+    let line_len = editor
+        .buffer()
+        .line(line_idx)
+        .map(|l| l.trim_end_matches('\n').chars().count())
+        .unwrap_or(0);
+    if col >= line_len.saturating_sub(1) {
+        // At or past last char — yank single char if on last char
+        if col < line_len {
+            let yanked = yank_range(editor, line_idx, col, line_idx, col + 1);
+            editor.yank_to_register(yanked);
+            editor.set_yank_flash_range(line_idx, col, line_idx, col);
+        }
+        editor.clear_count();
+        return Ok(());
+    }
+    let end_col = (col + count).min(line_len);
+    let yanked = yank_range(editor, line_idx, col, line_idx, end_col);
+    editor.yank_to_register(yanked);
+    editor.set_yank_flash_range(line_idx, col, line_idx, end_col.saturating_sub(1));
+    editor.clear_count();
+    Ok(())
+}
+
+fn handle_y_percent(editor: &mut Editor) -> Result<()> {
+    use crate::editor::Motions;
+
+    let buf = editor.buffer();
+    let start_line = buf.cursor().line();
+    let start_col = buf.cursor().col();
+    let rope = buf.rope();
+
+    // Build absolute position
+    let mut abs_start = 0;
+    for i in 0..start_line {
+        if i < rope.len_lines() {
+            abs_start += rope.line(i).len_chars();
+        }
+    }
+    abs_start += start_col;
+
+    let text = rope.to_string();
+    let chars: Vec<char> = text.chars().collect();
+
+    if abs_start >= chars.len() {
+        editor.clear_count();
+        return Ok(());
+    }
+
+    let current_char = chars[abs_start];
+    let (is_opening, matching_char) = match current_char {
+        '(' => (true, ')'),
+        ')' => (false, '('),
+        '[' => (true, ']'),
+        ']' => (false, '['),
+        '{' => (true, '}'),
+        '}' => (false, '{'),
+        '<' => (true, '>'),
+        '>' => (false, '<'),
+        _ => {
+            editor.clear_count();
+            return Ok(());
+        }
+    };
+
+    let match_pos = if is_opening {
+        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
+    } else {
+        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
+    };
+
+    let Some(abs_end) = match_pos else {
+        editor.clear_count();
+        return Ok(());
+    };
+
+    // Convert absolute positions to (line, col)
+    let (lo, hi) = if abs_start < abs_end {
+        (abs_start, abs_end)
+    } else {
+        (abs_end, abs_start)
+    };
+
+    let lo_line = rope.char_to_line(lo);
+    let lo_col = lo - rope.line_to_char(lo_line);
+    let hi_line = rope.char_to_line(hi);
+    let hi_col = hi - rope.line_to_char(hi_line);
+    // Include the matching bracket character itself
+    let yanked = yank_range(editor, lo_line, lo_col, hi_line, hi_col + 1);
+    if yanked.contains('\n') {
+        editor.yank_to_register_with_type(yanked, RegisterType::Line);
+    } else {
+        editor.yank_to_register(yanked);
+    }
+    editor.set_yank_flash_range(lo_line, lo_col, hi_line, hi_col);
+    editor.clear_count();
+    Ok(())
+}
+
 fn handle_y_big_w(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
     let start_col = editor.buffer().cursor().col();
@@ -1983,6 +2096,34 @@ fn handle_c_caret(editor: &mut Editor) -> Result<()> {
 
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteToFirstNonBlank,
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
+fn handle_c_percent(editor: &mut Editor) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor
+        .buffer_mut()
+        .record(|buf| buf.delete_to_matching_bracket());
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action: RepeatAction::DeleteToMatchingBracket,
         linewise: false,
         delete_token,
     });
