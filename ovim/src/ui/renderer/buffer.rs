@@ -317,6 +317,56 @@ fn apply_bg_to_column_range(line: &mut Line<'static>, start_col: usize, end_col:
     line.spans = new_spans;
 }
 
+/// Apply a foreground color and modifier to a column range of a rendered line.
+fn apply_fg_modifier_to_column_range(
+    line: &mut Line<'static>,
+    start_col: usize,
+    end_col_exclusive: usize,
+    fg: Color,
+    modifier: Modifier,
+) {
+    let mut new_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_col = 0;
+
+    for span in line.spans.drain(..) {
+        let span_len = span.content.chars().count();
+        let span_end = current_col + span_len;
+
+        if span_end <= start_col || current_col >= end_col_exclusive {
+            new_spans.push(span);
+        } else if current_col >= start_col && span_end <= end_col_exclusive {
+            new_spans.push(Span::styled(
+                span.content,
+                span.style.fg(fg).add_modifier(modifier),
+            ));
+        } else {
+            let chars: Vec<char> = span.content.chars().collect();
+            let range_start = start_col.saturating_sub(current_col);
+            let range_end = end_col_exclusive.saturating_sub(current_col).min(chars.len());
+
+            if range_start > 0 {
+                let before: String = chars[..range_start].iter().collect();
+                new_spans.push(Span::styled(before, span.style));
+            }
+            if range_start < range_end {
+                let middle: String = chars[range_start..range_end].iter().collect();
+                new_spans.push(Span::styled(
+                    middle,
+                    span.style.fg(fg).add_modifier(modifier),
+                ));
+            }
+            if range_end < chars.len() {
+                let after: String = chars[range_end..].iter().collect();
+                new_spans.push(Span::styled(after, span.style));
+            }
+        }
+
+        current_col = span_end;
+    }
+
+    line.spans = new_spans;
+}
+
 /// Find matching bracket position if cursor is on a bracket
 fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usize, usize)> {
     let cursor = buffer.cursor();
@@ -1107,20 +1157,27 @@ pub fn render_buffer(
             let line_text_original = line_text_raw.trim_end_matches('\n');
 
             // Optional markdown conceal (skip on cursor line so editing isn't blind)
-            let (line_text, conceal_byte_map, control_ranges, char_mapping) =
+            let (line_text, conceal_byte_map, control_ranges, char_mapping, concealed_links) =
                 if is_md_file && editor.options.markdown_conceal && !is_cursor_line_for_conceal {
                     let spans = scan_markdown_conceal(line_text_original);
                     if spans.is_empty() {
-                        expand_tabs_with_mapping(line_text_original, tab_width)
+                        let (t, m, cr, cm) = expand_tabs_with_mapping(line_text_original, tab_width);
+                        (t, m, cr, cm, Vec::new())
                     } else {
                         let transform = crate::ui::renderer::markdown_conceal::apply_conceal(
                             line_text_original,
                             &spans,
                         );
-                        compose_conceal_and_tabs(line_text_original, &transform, tab_width)
+                        let links = crate::ui::renderer::markdown_conceal::extract_concealed_links(
+                            &spans,
+                            &transform,
+                        );
+                        let (t, m, cr, cm) = compose_conceal_and_tabs(line_text_original, &transform, tab_width);
+                        (t, m, cr, cm, links)
                     }
                 } else {
-                    expand_tabs_with_mapping(line_text_original, tab_width)
+                    let (t, m, cr, cm) = expand_tabs_with_mapping(line_text_original, tab_width);
+                    (t, m, cr, cm, Vec::new())
                 };
 
             // Keep a reference to expanded text before slicing (for highlight remapping)
@@ -1430,7 +1487,8 @@ pub fn render_buffer(
                 || !ai_prompt_ranges.is_empty()
                 || !ai_lock_ranges.is_empty()
                 || !ai_generated_ranges.is_empty()
-                || !ai_selected_ranges.is_empty();
+                || !ai_selected_ranges.is_empty()
+                || !concealed_links.is_empty();
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -1492,6 +1550,20 @@ pub fn render_buffer(
                 let ai_selected_bg = Color::Rgb(44, 64, 78);
                 for (start_col, end_col) in &ai_selected_ranges {
                     apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_selected_bg);
+                }
+
+                // Apply concealed link underline styling
+                if !concealed_links.is_empty() {
+                    let link_color = Color::Rgb(100, 149, 237); // Cornflower blue
+                    for link in &concealed_links {
+                        apply_fg_modifier_to_column_range(
+                            &mut line,
+                            link.view_start,
+                            link.view_end,
+                            link_color,
+                            Modifier::UNDERLINED,
+                        );
+                    }
                 }
 
                 // Apply bracket highlighting
